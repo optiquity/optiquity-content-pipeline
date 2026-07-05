@@ -1,0 +1,11 @@
+name: guard-no-content
+on:
+  push:
+  pull_request:
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure framework repo has no client/instance content
+        run: bash scripts/check-no-content.sh

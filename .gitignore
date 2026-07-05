@@ -1,0 +1,23 @@
+# Framework-owned .gitignore — ignores ONLY local/ephemeral cruft.
+#
+# It deliberately does NOT ignore your content. A private (checked-out) instance versions its full
+# history: populated registries, per-client workspaces, and generated output/ and state.md are all
+# tracked, for durability and history. "Public stays empty of client content" is enforced by
+# scripts/check-no-content.sh in CI (docs/operating-model.md), NOT by this file.
+#
+# NOTE: Graphify graphs do NOT live in this repo. They live in each client repo's local checkout
+# (graphify-out/, gitignored there) and are read by path. Nothing graph-related is stored here.
+#
+# state.md is derived from the tracking spreadsheet (the SSOT) but is still tracked in your
+# instance for history. The spreadsheet remains authoritative on any disagreement.
+
+# Cloned OSS reference repos consulted when authoring agents/skills — license-separate,
+# never committed into this MIT framework. See docs/agents-and-skills-sourcing.md.
+/reference/
+
+# OS / editor / local cruft.
+.DS_Store
+*.local.*
+*.swp
+.idea/
+.vscode/
