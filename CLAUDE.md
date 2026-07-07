@@ -37,6 +37,25 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
 8. **Verify external tool details.** Confirm tool flags/versions with `--help`/docs before
    scripting (esp. Graphify serve/MCP + output-path flags — mission §10.4 open items).
 
+## Framework-ops agents (common rules)
+
+These apply to every `ops-*` agent spawned to work on this repo. (The orchestration pipelines and
+spawn discipline are the **main session's** playbook — see `docs/ops-workflow.md`.)
+
+- **You are spawned with an isolated launch worktree (channel workaround for CLI bug #73647), but you
+  work in the main checkout.** `cd` to the repo root and do all reads/edits there; the unused launch
+  worktree auto-cleans. (Actually working *inside* the isolated worktree is deferred — see
+  `docs/ops-workflow.md`.)
+- **Agents never commit.** No state-changing git verb (add/commit/push/merge/reset/checkout/apply/
+  worktree/…). Do the work, write a report to the handoff path in your prompt; only the main session
+  commits, with the maintainer's approval (rule 7). See the `commit-discipline` skill.
+- **Verification before done.** Every change carries a literal verification command + result; "looks
+  right" is not verification. See the `verification-harness` skill.
+- **Your class (read-only vs. read-write) is stated in your agent file and is authoritative over your
+  tool grant** — a report-write permission does not make a read-only agent read-write.
+- **Respect the framework/instance + provenance/scope boundary** (rules 2/4/5). Consult the
+  `boundary-investigation` skill before touching any registry/template/workspace surface.
+
 ## Session workflow
 
 1. Read `state.md` (derived; for orientation) and the relevant part of `docs/mission.md`.
