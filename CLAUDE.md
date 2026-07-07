@@ -18,9 +18,12 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
    `state.md` is **always a derived convenience document** — a session-facing mirror of the
    spreadsheet, never an authority. If they disagree, the spreadsheet wins; update `state.md`
    to match, never the reverse.
-4. **PUBLIC FRAMEWORK STAYS EMPTY OF CLIENT CONTENT.** If this checkout is the public framework
-   repo, never add populated registries, `instance/profile.md`, or anything under
-   `workspaces/*/` other than `workspace.template/`. (A CI guard enforces this; don't rely on it alone.)
+4. **PUBLIC FRAMEWORK STAYS EMPTY OF CLIENT-SPECIFIC CONTENT.** Generic framework defaults —
+   entries, recipes, and folio types marked `provenance: framework` — are welcome in the public
+   repo (they are the deliverable). What must never appear: `instance/profile.md`, any entry marked
+   `provenance: instance`, or client content under `workspaces/*/` other than `workspace.template/`.
+   (A CI guard will enforce this once the `provenance:` convention is implemented — see
+   `docs/design-decisions.md` §3.9; don't rely on it alone.)
 5. **EXTEND, DON'T EDIT (framework vs. instance).** Downstream instances **add** files
    (populated registries, workspaces, PROFILE) and **never edit framework files**
    (`CLAUDE.md`, `docs/`, `*.template.*`, `.claude/`, `scripts/`). Framework improvements come from
