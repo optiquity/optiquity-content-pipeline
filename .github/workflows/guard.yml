@@ -1,4 +1,22 @@
-name: guard-no-content
+# guard.yml — the public repo's CI gate (plan step 13): the PA-1 public-boundary guard +
+# the SV11 schema-lint (design docs/design.md §10, §11.7).
+#
+# Q15 rule 5: the boundary guard's job is keeping the PUBLIC framework repo empty of
+# instance/client content; the private instance does not run this workflow, so it can
+# track its own content freely. Schema-lint (SV11) also runs here: framework-provenance
+# default entries must always validate against their co-located schemas.
+#
+# Baseline wiring (step-13 review RV-3): on pull_request events the SV11 diff clauses
+# (schema-change-without-bump, meaning-change-without-step, premature-prune, MIG-1
+# mutation) run against the PR BASE commit — the checked-out tree differs from that
+# baseline exactly by the PR's changes, so the clauses have real CI teeth. On push there
+# is no base ref; the git-HEAD default applies and the diff clauses are vacuous there
+# (tree == HEAD) — the snapshot clauses, entry validation, and the boundary guard remain
+# the push gate. Residual recorded for the step-40 sweep.
+#
+# The pytest suites covering both gates (tests/test_guard.py, tests/test_lint.py) run in
+# the ci.yml test job.
+name: guard
 on:
   push:
   pull_request:
@@ -7,5 +25,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Ensure framework repo has no client/instance content
+        with:
+          # Full history so the PR base commit exists locally for `git show` (RV-3).
+          fetch-depth: 0
+      - name: Public-boundary guard (no client/instance content; PA-1 scope)
         run: bash scripts/check-no-content.sh
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          # Mirror the local toolchain (uv 0.11.16 verified on the dev machine, plan T1).
+          version: "0.11.16"
+      - name: Sync project venv from the lockfile
+        run: uv sync --locked
+      - name: Schema lint (SV11 + Q15 default-deny provenance + schema validation)
+        env:
+          # Empty on push events; the PR base commit SHA on pull_request events (RV-3).
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$PR_BASE_SHA" ]; then
+            bash scripts/schema-lint.sh --git-ref "$PR_BASE_SHA"
+          else
+            bash scripts/schema-lint.sh
+          fi

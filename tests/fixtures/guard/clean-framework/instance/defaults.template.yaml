@@ -1,0 +1,3 @@
+# Synthetic guard fixture: instance/defaults.template.yaml is on the tracked-instance
+# allowlist (PA-1c) — the TEMPLATE for the T10 surface ships; the populated file never does.
+x-fixture: synthetic template placeholder

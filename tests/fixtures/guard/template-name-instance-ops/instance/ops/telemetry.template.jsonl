@@ -1,0 +1,1 @@
+{"x-fixture": "synthetic template-named instance/ops/ file (tests/fixtures/guard) - the *.template.* exemption never applies under instance/ops/ (step-13 review RV-1); must be flagged as LEAK[instance-ops]; never real ops state"}

@@ -1,0 +1,4 @@
+# Obviously-synthetic negative guard fixture (tests/fixtures/guard): tracked content in a
+# client workspace (workspaces/acme/ — the plan's own synthetic example). Must be flagged
+# as LEAK[workspace-content]; client isolation, CLAUDE.md rules 2/4. Never real config.
+x-fixture: synthetic workspace defaults - never real client data

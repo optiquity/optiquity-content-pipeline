@@ -1,0 +1,4 @@
+# Synthetic guard fixture (tests/fixtures/guard/clean-framework): the co-located SV4
+# schema manifest is framework mechanism and is exempt from the provenance requirement.
+schema_version: 1
+attributes: {}

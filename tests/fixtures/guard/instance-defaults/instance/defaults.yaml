@@ -1,0 +1,4 @@
+# Obviously-synthetic negative guard fixture (tests/fixtures/guard): a tracked
+# instance/defaults.yaml — the T10 global scope-default surface (PA-1c). It must be
+# flagged as LEAK[instance-defaults]; only defaults.template.yaml ever ships.
+x-fixture: synthetic instance defaults - never real config

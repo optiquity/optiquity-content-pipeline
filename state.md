@@ -111,6 +111,10 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
 - **→ whoever implements `extends:` partials (Q15ii; from step-12 review RV-4):** `_render_entry_text`
   hardcodes a three-key envelope; the partials case currently fails LOUDLY (never silently) and the
   renderer must be extended when partials land.
+- **→ Step 40 (from step-13 review):** (a) unknown-registry-root residual — a NEW top-level dir (e.g.
+  `voices2/`) is outside the PA-1 whitelist scope and passes the guard silently; sweep must reconcile the
+  root list with the repo map. (b) SV11 diff clauses run against a PR-base baseline in CI only where the
+  event provides one — verify the wiring covers the real workflow when the repo gains PRs.
 - **Housekeeping (from step-9 review RV-5):** `pipeline/attrtypes.py` fails `ruff format --check`
   (cosmetic; enforced battery is `ruff check`, which is green) — normalize opportunistically in a later
   step that touches the file; never as a standalone out-of-sequence commit.
