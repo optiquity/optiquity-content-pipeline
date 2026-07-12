@@ -1,0 +1,100 @@
+# platforms/_schema.yaml — co-located schema for the Platform rendering dimension
+# (design §5.1, §5.3; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10).
+#
+# Platform = destination + constraint layer, selected PER DELIVERABLE: routing, never an
+# instance-wide baseline (CA8 — Platform is excluded from the mandatory-global set, §12.3)
+# and never a folio property (§9.1). Facets (§5.1): rendering / discrete-registry /
+# single / override-projection YES — the one dimension whose entries project
+# cross-dimension values into the cascade (per-format advisories, per-format
+# reconcile-strategy defaults, a weak default output-type).
+#
+# The two ratified constraint classes are two attributes (CA9, §12.7):
+#   advisory_norms / format_advisories — advisory norms RIDE the M2 cascade as configured
+#       values; a recipe/run may deviate, firing a one-time lint warning (§8);
+#   hard_limits — live entirely OUTSIDE M2: never bound, never overridable, enforced at
+#       exactly one place — the reconcile pass's terminal gate (§16), which fits or
+#       blocks and never silently passes.
+#
+# Reconcile-strategy (§12.3) is an M2-bound render ATTRIBUTE, not a dimension. Its
+# defaulting is two-tier: L0 is the single-attribute schema floor declared HERE
+# (`reconcile_strategy`, default `adapt`); the per-(format × platform) default table
+# lives on the Platform entry's per-format projection (`reconcile_strategy_defaults`)
+# and merges below L5 exactly like the advisory projections do. Shipped framework
+# entries set only the table, keeping the two ratified tiers; recipe/run override the
+# strategy at L5/L6 (§12.3) — declaring the attribute on this schema is what makes an
+# L6 run override legal (overrides touch declared attributes of selected entries only,
+# §21.4).
+schema_version: 1
+attributes:
+  destination:
+    type: text
+    default: ""
+    definition: >-
+      Prose description of where deliverables routed to this platform are published —
+      the "destination" half of §5.3's destination + constraint layer. Routing
+      documentation for humans and review; never a cascade value.
+    definition_version: 1
+  advisory_norms:
+    type: map
+    default: {}
+    definition: >-
+      Platform-wide ADVISORY norms (CA9 advisory class, §12.7): named constraint values
+      (e.g. preferred_char_count) that ride the M2 cascade; recipe/run may deviate with
+      a one-time warning. Never hard feasibility — that is hard_limits.
+    definition_version: 1
+  hard_limits:
+    type: map
+    default: {}
+    definition: >-
+      Platform HARD limits (CA9 hard class, §12.7): named physical-feasibility values
+      (e.g. post_char_limit) enforced ONLY at the reconcile pass's terminal gate (§16).
+      Hard limits never enter M2: never bound as cascade values, never overridable.
+    definition_version: 1
+  format_advisories:
+    type:
+      type: map
+      element: map
+    default: {}
+    definition: >-
+      Per-format ADVISORY constraint projections (§5.3, §12.3): format entry id -> map
+      of advisory values refining advisory_norms for that format on this platform.
+      Merges into the cascade below L5 (map-merge, §12.3); advisory class only (CA9).
+    definition_version: 1
+  reconcile_strategy:
+    type:
+      type: enum
+      values: [adapt, split, pass, truncate]
+    default: adapt
+    definition: >-
+      The reconcile strategy consumed at §16 — an M2-bound render attribute, not a
+      dimension (§12.3). This schema default IS the two-tier defaulting's L0 floor
+      (`adapt`); shipped framework entries never set it (the per-format table below is
+      the other tier). Recipe/run override it at L5/L6; the executed strategy is
+      recorded in the fitted-level fit-binding (§16), and a strategy change against a
+      cached fit is a reconcile-input change (FR2) — loud, never a silent stale reuse.
+    definition_version: 1
+  reconcile_strategy_defaults:
+    type:
+      type: map
+      element:
+        type: enum
+        values: [adapt, split, pass, truncate]
+    default: {}
+    definition: >-
+      The per-(format × platform) reconcile-strategy DEFAULT table (§12.3), homed on the
+      Platform entry's per-format projection — Platform is the one dimension that
+      already projects per-format values into the cascade; homing a pair-keyed table on
+      Format would re-couple Format to platforms, which Q4 deleted. Keys are format
+      entry ids; values default the strategy for that pairing, merging below L5.
+    definition_version: 1
+  default_output_type:
+    type: text
+    default: ""
+    definition: >-
+      The platform-implied WEAK default output-type (§5.3, §12.3): when non-empty it
+      names an output-types entry id (resolved at M1 — an unknown id fails loudly). It
+      is a weak cross-dimension default: any explicit output-type at L3/L5/L6 beats it.
+      Empty means the platform implies no output-type. Declared as text, not ref,
+      because the schema requires a default for every attribute and the honest floor is
+      "none" — the empty string — which the ref slug alphabet cannot express (§7.4).
+    definition_version: 1

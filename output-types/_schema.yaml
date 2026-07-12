@@ -1,0 +1,19 @@
+# output-types/_schema.yaml — co-located schema for the Output-type rendering dimension
+# (design §5.1, §5.3, §12.3; SV4 §11.1/§13.4). Framework mechanism (§10).
+#
+# Scalar-parameter small registry (§5.1): an output-type is a pure serialization
+# COORDINATE — "how it is serialized" — and part of `deliverable-id` (§7.1). The
+# writer/side/engine/pin parameters that REALIZE an output-type live on the
+# render-targets registry (§17 RI12); by convention the render-target entry id equals
+# the output-type slug (dispatch = look up target by output-type). The slug is a
+# coordinate and is excluded from the serialize-inputs preimage; the target entry's
+# values are the inputs (§17 FR7.1).
+#
+# Output-type is MANDATORY-GLOBAL (CA8, §12.3): the instance must populate a global
+# default (L2). A Platform may contribute a WEAK default output-type that any explicit
+# L3/L5/L6 value beats (§12.3). Multi-select = rendering fanout (§5.1).
+#
+# Thin objects get thin schemas (§11.7 SV10): the entry id + body prose is the whole
+# object — declared explicitly as an empty manifest.
+schema_version: 1
+attributes: {}

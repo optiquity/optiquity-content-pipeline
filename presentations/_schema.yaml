@@ -1,0 +1,83 @@
+# presentations/_schema.yaml — co-located schema for the Presentation rendering
+# dimension (design §5.3 PD1–PD8; SV4 §11.1/§13.4). Framework mechanism (§10).
+#
+# One entry = one brand's complete cross-target look. Facets (PD1, §5.1): rendering /
+# discrete-registry / single / override-projection NO.
+#
+# The v1 manifest is EXACTLY the ratified PD2 minimal set — the levers that are Pandoc
+# flags, hashable files, or per-writer dispatch: `variables`, `highlight_style`,
+# `template`, `reference_doc`, `css`, `pdf`. `fonts` and `margins` ship INSIDE
+# `variables`; `variables` is the guaranteed grow-later hook — no future typesetting
+# need forces a schema break. Presentation never owns `writer` or `side` (render-target
+# fields, PD8/§17), and the html5/epub3 provenance-strip filter is serialize-owned — no
+# Presentation lever can disable it (PD3).
+#
+# Application (PD4): deterministic style at serialize, on the persisted AST — one
+# writer call, no LLM; the cheapest regeneration tier (§18). One interface (PD3):
+# lower(presentation, writer, output-type) -> RenderInputs{flags, variables,
+# assets+hashes, engine}; the pin bundle is its preimage (asset content hashes churn
+# the render digest even when no schema version moved, §17 FR7.1).
+#
+# Identity (PD5): `deliverable-id` gains the presentation slug; `artifact-id` and
+# `fitted-id` are untouched. Presentation is NOT mandatory-global (PD7, §12.3): the
+# framework `plain` entry is the schema floor — every default below encodes "Pandoc's
+# built-in look", so an entry that sets nothing IS plain, and shipping the dimension
+# causes zero id churn (§7.2).
+schema_version: 1
+attributes:
+  variables:
+    type: map
+    default: {}
+    definition: >-
+      Pandoc template variables applied at serialize (the -V key=value lever class).
+      Fonts and margins ship inside this map (PD2). The guaranteed grow-later hook:
+      bespoke per-writer needs (fixed-layout EPUB, bespoke PPTX) are absorbed
+      additively via writer-keyed submaps (PD8), never a schema change. Snapshotted
+      into the serialize-inputs preimage (§17 FR7.1).
+    definition_version: 1
+  highlight_style:
+    type: text
+    default: ""
+    definition: >-
+      Syntax-highlighting style name handed to the writer (the --highlight-style
+      lever, PD2). Empty means the pinned Pandoc default — the `plain` floor look
+      (PD7).
+    definition_version: 1
+  template:
+    type:
+      type: map
+      element: text
+    default: {}
+    definition: >-
+      Per-writer Pandoc template file paths, keyed by writer name (PD2 per-writer
+      dispatch; pptx has no template — its lever is reference_doc). Templates are
+      assets: cited by content hash in the pin bundle (§17 RI13/FR7.1).
+    definition_version: 1
+  reference_doc:
+    type:
+      type: map
+      element: text
+    default: {}
+    definition: >-
+      Per-writer --reference-doc file paths, keyed by writer name (PD2; the docx/pptx/
+      odt style carrier). Assets by content hash in the pin bundle (§17 RI13).
+    definition_version: 1
+  css:
+    type:
+      type: list
+      element: text
+    default: []
+    definition: >-
+      Ordered stylesheet file paths for the html/epub writers (PD2). Order is
+      load-bearing (the CSS cascade), hence an ordered `list`, never a `set` (§11.1).
+      Each file is an asset hashed into the render digest (§17 FR7.1).
+    definition_version: 1
+  pdf:
+    type: map
+    default: {}
+    definition: >-
+      PDF engine + engine options (PD2) for pdf serialization, lowered into
+      RenderInputs.engine (PD3). Empty rides the render target's own engine field; the
+      engine pin joins the RI13 bundle when pdf serializes internally (§17; gate-3
+      disposition ships pdf external with engine unset).
+    definition_version: 1

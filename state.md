@@ -111,6 +111,14 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
 - **→ whoever implements `extends:` partials (Q15ii; from step-12 review RV-4):** `_render_entry_text`
   hardcodes a three-key envelope; the partials case currently fails LOUDLY (never silently) and the
   renderer must be extended when partials land.
+- **→ Step 15 (from step-14 review RV-2, BINDING):** platform projections key format ids
+  (`short-opinion-post`, `long-form-essay`, `readme`) that do not exist until step 15 ships matching
+  format entries — step 15 MUST create exactly these ids (or amend the projections in the same step);
+  dangling keys currently load silently.
+- **→ Step 16 (from step-14 review RV-2):** M1 resolution must make dangling projection/ref keys LOUD
+  (the promised loud resolution); also handle the no-platform-selected reconcile-strategy floor edge.
+- **→ Step 15 or 27 (from step-14 review RV-3):** add a permanent pin-bundle equality test across all 7
+  carriers (schema default + 6 render-target entries).
 - **→ Step 40 (from step-13 review):** (a) unknown-registry-root residual — a NEW top-level dir (e.g.
   `voices2/`) is outside the PA-1 whitelist scope and passes the guard silently; sweep must reconcile the
   root list with the repo map. (b) SV11 diff clauses run against a PR-base baseline in CI only where the

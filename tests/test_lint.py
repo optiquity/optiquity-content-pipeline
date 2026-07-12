@@ -679,14 +679,24 @@ def test_older_steps_are_not_revalidated_against_the_current_schema(tmp_path):
 def test_repo_root_lints_clean_and_fixtures_are_out_of_scope():
     """The Verify-command surface: the REAL repo is green, and the tracked gadgets
     fixture collection (tests/fixtures/registries/gadgets — populated entries, one with
-    a trailing stamp) is NOT scanned: zero collections in scope today."""
+    a trailing stamp) is NOT scanned. Since step 14, real registry collections ARE in
+    scope (the five rendering-dimension registries landed first, §5.3/§17 RI12; step 15
+    adds the rest), so the proof is scope-shaped rather than count-pinned: everything
+    scanned sits in a named registry root (or instance/ or workspaces/), never under
+    tests/."""
     report = lint_tree(REPO_ROOT, now=NOW)
     assert report.ok, render_report(report)
-    assert report.collections_scanned == 0
-    assert report.entries_scanned == 0
+    scanned = list(iter_lint_collections(REPO_ROOT))
+    assert report.collections_scanned == len(scanned) >= 5  # step 14's five registries
+    assert report.entries_scanned > 0  # framework default entries are real now
     gadgets = REPO_ROOT / "tests" / "fixtures" / "registries" / "gadgets"
     assert (gadgets / "_schema.yaml").is_file()  # exists, yet out of scope
-    assert gadgets not in list(iter_lint_collections(REPO_ROOT))
+    assert gadgets not in scanned
+    in_scope_tops = set(REGISTRY_ROOTS) | {"instance", "workspaces"}
+    for coll in scanned:
+        parts = coll.relative_to(REPO_ROOT).parts
+        assert "tests" not in parts  # PA-1b: fixtures can never self-flag
+        assert parts[0] in in_scope_tops
 
 
 def test_scope_is_registry_roots_plus_instance_and_workspaces(tmp_path):

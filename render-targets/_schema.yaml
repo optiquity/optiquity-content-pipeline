@@ -1,0 +1,92 @@
+# render-targets/_schema.yaml — co-located schema for the render-target registry the
+# serialize dispatcher reads (design §17 RI12; one-file-add §5.4; schema-versioned like
+# every collection, §11.7 SV10). Framework mechanism (§10). NOT a dimension: a render
+# target REALIZES an output-type — by convention the entry id equals the output-type
+# slug (dispatch = look up target → produce AST → route by `side`).
+#
+# Internal vs external is a SETTING, not a format property (§14.2): a format switches
+# sides by editing ONE field here. Layer 3 (the Pandoc AST JSON) is ALWAYS produced and
+# persisted (RI6); `side: internal` additionally calls the pinned Pandoc writer
+# in-system for layer-2 bytes; `side: external` emits the layer-3 contract payload
+# (RI14) for an external actor. `side` is dispatch routing and is EXCLUDED from the
+# serialize-inputs preimage — flipping it neither invalidates bytes nor changes what
+# identical inputs would produce (§17 FR7.1).
+#
+# Pins (RI12/RI13): the pandoc pin bundle of record (gate step 3; step-06 build
+# parameter sheet item 3) — binary 3.10, AST api-version [1, 23, 1, 2], reader
+# markdown+fenced_divs+bracketed_spans. Pin values are config-pure — the preimage reads
+# the PINNED bundle (this config), never the installed environment — and are read
+# LITERALLY, not delta-encoded (§17 FR7.1). Shipped entries declare them explicitly
+# (RI12: entries declare writer, side, engine?, reference_doc?, and pins); the schema
+# defaults mirror the same recorded bundle so the L0 floor is never a stale pin.
+schema_version: 1
+attributes:
+  writer:
+    type: text
+    default: json
+    definition: >-
+      The Pandoc writer this target invokes, or `json` for raw-AST passthrough (RI12).
+      The floor is `json`: layer 3 is always produced (RI6), so a target that names no
+      writer hands off the AST itself. Writer names are validated against the pinned
+      binary's writer list at dispatch, not here (capability checks are the
+      dispatcher's, §17).
+    definition_version: 1
+  side:
+    type:
+      type: enum
+      values: [internal, external]
+    default: external
+    definition: >-
+      The §14.2 dispatch setting. internal = call the pinned Pandoc writer in-system
+      (layer-2 bytes). external = persist the AST + emit the layer-3 contract payload
+      (RI14). The floor is external — the route that assumes no in-system toolchain.
+      Excluded from the serialize-inputs preimage (§17 FR7.1): dispatch routing, not a
+      byte-determining input.
+    definition_version: 1
+  engine:
+    type: text
+    default: ""
+    definition: >-
+      Conversion engine for targets needing one beyond the writer (the PDF engine slot,
+      §17 RI13). Empty = unset. v1 ships `pdf` with engine unset and side external
+      (gate-3 disposition); internalizing pdf = pin an engine here + flip `side` — a
+      config edit, zero rework, with the engine pin joining the RI13 bundle.
+    definition_version: 1
+  reference_doc:
+    type: text
+    default: ""
+    definition: >-
+      The target's own default --reference-doc asset path (RI12), cited by content hash
+      in the render-binding (RI13). Empty = none. Presentation entries may also carry
+      per-writer reference docs (PD2, §5.3); the lowered RenderInputs reconcile the two
+      at dispatch (§17).
+    definition_version: 1
+  pandoc_version:
+    type: text
+    default: "3.10"
+    definition: >-
+      The pinned Pandoc BINARY version this target is certified against (RI13; pin of
+      record: gate step 3 / step-06 sheet item 3). Config-pure — never read from the
+      installed environment — and read literally by the serialize-inputs preimage
+      (§17 FR7.1).
+    definition_version: 1
+  pandoc_api_version:
+    type:
+      type: list
+      element: number
+    default: [1, 23, 1, 2]
+    definition: >-
+      The pinned Pandoc AST api-version (RI13); the pin of record is the verbatim
+      post-install RI7 printout (step-06 sheet item 3). A persisted AST whose
+      reader-pin digest mismatches the pinned toolchain is re-derived from IR-fitted
+      onto its new key — never misread, never overwritten (§17).
+    definition_version: 1
+  reader:
+    type: text
+    default: markdown+fenced_divs+bracketed_spans
+    definition: >-
+      The pinned reader + extension set for the single IR-fitted → AST parse (RI7):
+      fenced_divs carries parts, bracketed_spans carries provenance spans. Kept
+      explicit as drift armor even though both extensions are default-on at the pinned
+      binary (step-06 sheet item 3).
+    definition_version: 1

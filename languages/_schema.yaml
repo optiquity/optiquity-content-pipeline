@@ -1,0 +1,22 @@
+# languages/_schema.yaml — co-located schema for the Language rendering dimension
+# (design §5.1, §5.3, §12.3; SV4 §11.1/§13.4). Framework mechanism (§10).
+#
+# Scalar-parameter small registry (§5.1): the entry id IS the language tag (e.g. `en`);
+# entries carry only thin display facts — thin objects get thin schemas
+# (§11.7 SV10). Language is MANDATORY-GLOBAL (CA8, §12.3): the instance must populate a
+# global default (L2) — validation errors if absent. Language is part of `fitted-id`
+# (§7.1); multiple languages = rendering fanout (§12.3).
+#
+# Localization itself is a deferred reconcile-time LLM transform (Q13, §5.3, §16, §26):
+# non-free, non-deterministic, voice/provenance-preserving, with hard limits
+# re-validated after it. The registry ships now so the deferred feature drops into the
+# reconcile pass without redesign.
+schema_version: 1
+attributes:
+  name:
+    type: text
+    default: ""
+    definition: >-
+      Human-readable display name of the language (e.g. English). Documentation for
+      humans and review surfaces; never a cascade value beyond itself.
+    definition_version: 1
