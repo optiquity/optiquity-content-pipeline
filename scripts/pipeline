@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scripts/pipeline — thin operator entrypoint (plan T8): delegates to `python -m pipeline`
+# inside the uv-managed project venv. All real behavior lives in the package; this shim
+# only resolves the repo root so it works from any cwd. Subcommands land with their owning
+# plan steps (e.g. drift-report: step 12; ssot derive-state: step 22).
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec uv run --project "$REPO_ROOT" python -m pipeline "$@"

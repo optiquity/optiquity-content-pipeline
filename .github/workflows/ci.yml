@@ -1,0 +1,28 @@
+# ci.yml — test job (plan step 7): pytest + ruff, mirroring the local commands.
+# Lives alongside the guard workflow (guard.yml, untouched).
+#
+# PA-5: the default pytest run below deselects `live`-marked tests via the pyproject
+# addopts. This workflow must NEVER pass the live-marker opt-in flag — CI has no
+# subscription auth and never touches the live transport.
+#
+# PA-12: pandoc is deliberately NOT installed here; the pinned-pandoc CI install block
+# lands at plan step 27 with the serialize core.
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          # Mirror the local toolchain (uv 0.11.16 verified on the dev machine, plan T1).
+          version: "0.11.16"
+      - name: Sync project venv from the lockfile
+        run: uv sync --locked
+      - name: Run tests (live-marked tests deselected by pyproject addopts)
+        run: uv run pytest -q
+      - name: Lint
+        run: uv run ruff check .

@@ -24,6 +24,13 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
    - Durable rules always binding: client repos read-only · client isolation · subscription transport,
      NEVER API keys · no secrets · agents never commit · `CLAUDE.md` is maintainer-only (its pending
      proposed edits live at `_tmp .../ops-handoff/definitive-design/claude-md-proposed.diff`).
+   - **TOOL INSTALLS (maintainer directive 2026-07-12): NEVER performed by this session or its agents.**
+     Any system-level install (Homebrew, npm/npx, pkg installers, anything touching the machine outside
+     the repo's own uv venv) → report EXACTLY what is needed (tool, version, exact commands) to the
+     maintainer, who runs it in another chat session. Claude-session-related tooling (MCP servers etc.)
+     → raise with the maintainer for discussion first. Project-local Python deps declared in the repo's
+     `pyproject.toml` and installed into its own uv venv by the build's scaffolding are part of the build
+     itself, not tool installs — unless the maintainer says otherwise.
 2. **The build plan is FINAL:** `/Users/david/Developer/_tmp/optiquity-content-pipeline/ops-handoff/build/plan-final.md`
    (41 steps; gates 1–6 first; ★ first end-to-end output = step 28; ★ MVP = step 39).
    Adversarial + reconciliation ledgers sit beside it.
@@ -45,10 +52,57 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
       33 pre-sequenced step-scoped commits; gates 1–6 + 37 report-only; anything outside the sequence
       needs fresh approval.
 
+## Gate outcomes (running record)
+
+- **G1 (step 1): PASS** — all 6 FS primitives proven on the real APFS volume; FS substrate OK, no DB
+  fallback. Re-run G1 if `workspaces/` ever moves to iCloud/network storage. Commit primitive for step 20:
+  stdlib `os.link`+unlink (renamex_np is Darwin-only).
+- **G4 (step 2): PASS** — pin `ruamel.yaml==0.19.1`, `YAML(typ='safe', pure=True)`; splitter spec
+  S-E1..S-E12 in step-02 report (incl. S-E8: refuse `%` directive lines in frontmatter).
+- **G3+G6 (step 5): G3 PASS (query leg) / serve-MCP leg needs `graphifyy[mcp]` (maintainer install list,
+  NOT build-blocking); G6 CLOSED — no per-symbol review metadata in graph.json → `review_status: unknown`
+  designed degradation (§6.2).** Graphify 0.8.39 installed at `~/.local/bin/graphify` (uv tool `graphifyy`).
+  Adapter I/O contract for step 18 in step-05 report.
+- **G5 (step 4): PASS** — headless `claude -p --output-format json` works on subscription auth
+  (`authMethod: claude.ai`, `subscriptionType: max`), claude 2.1.207. **Step-23 wrapper env contract
+  (mandatory):** run under `env -u ANTHROPIC_API_KEY` + `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` (auto-memory
+  otherwise leaks state across -p calls from one cwd — probe-proven); wrapper owns timeouts (no CLI
+  timeout flag); never key success off `subtype` (use `is_error`/`terminal_reason`); `--bare` forbidden.
+  **⚠ F10 HAZARD FLAG for the maintainer: `ANTHROPIC_API_KEY` is present in the ambient environment** —
+  probes never used it, the wrapper will always unset it, but consider removing it from the shell env.
+  **G2 preliminary defaults:** `max_parallel_sessions=3`, lease TTL 30 min, wrapper hard-timeout 20 min
+  (timeout < TTL ⇒ expired lease implies dead process); replaced by telemetry at steps 37–38. Usage-limit
+  JSON shape UNVERIFIED (unsafe to trigger). Probe residue in ~/.claude/projects cleaned by main session.
+- **Designated demo graphs (read-only, never written):** e2e/MVP demo → `/Users/david/Developer/
+  optiquity-site/graphify-out/graph.json` (3 weeks stale — fine for build verification; re-graph is a
+  maintainer call, another session); tier-coverage tests → `/Users/david/Developer/
+  optiquity-ai-agent-config-pack-v11-dev/graphify-out/graph.json` (24k nodes, all three tiers present).
+- **Doc deviations found by step 5 (record per B2; sweep at step 40 must fix bootstrap.md):** bootstrap
+  B3's `graphify . --wiki` is stale for 0.8.39 — graphing is `graphify extract <path>`; wiki is
+  `graphify export wiki` (requires `.graphify_analysis.json`); `--graphml/--neo4j` moved under `export`;
+  `query` default `--budget` = 2000; MCP entry point is `graphify-mcp`, not `graphify serve`.
+
+## Maintainer install list (per the 2026-07-12 directive — maintainer executes in another session)
+
+- [ ] **`graphifyy[mcp]` extra** — closes G3's serve-MCP leg (NOT build-blocking; feeds mission D4):
+      `uv tool install --force "graphifyy[mcp]==0.8.39"` — or skip the install entirely and use the
+      vendor's ephemeral shape when needed: `uv run --with "graphifyy==0.8.39" --with mcp -m graphify.serve <graph>`.
+- [x] **Pandoc 3.10 — INSTALLED by maintainer 2026-07-12 + GATE 3 CLOSED.** RI7 round-trip proof PASS:
+      `pandoc-api-version [1,23,1,2]` (exactly the pin), Div/Span Attrs byte-equal both cycles; extension
+      snapshot saved at step-03/markdown-extensions-at-pin.txt. **Channel deviation noted:** maintainer
+      installed via Homebrew (`/opt/homebrew/bin/pandoc`), not the recommended release binary — pinned
+      VERSION matches so the gate closes; local exact-version re-install guarantees are weaker (brew),
+      CI unaffected (step 27 uses the checksummed release asset). **typst 0.15.0 also installed** — the
+      pre-identified future PDF engine is now available; `pdf` still ships `side: external` in v1 per the
+      reconciled plan (the internalization flip stays a one-field §17 RI12 change, post-MVP).
+
 ## Build checklist (mirror of the tracker page)
 
-- [ ] P0 gates 1–6 (reports only) — G1 FS atomicity · G4 YAML · Pandoc/RI7 · G5 transport · G3+G6
-      Graphify/review-metadata · §27.3 review pass [CHECKPOINT]
+- [x] P0 gates 1–6 (reports only) — COMPLETE 2026-07-12: G1 PASS · G4 PASS · G5 PASS · G3 PASS(query)/
+      serve-leg→install-list · G6 closed-by-design · Pandoc gate PENDING-INSTALL (decisions made; closure
+      = one mechanical ri7_roundtrip.sh run post-install; blocks step 27 only) · §27.3 review: ALL SEVEN
+      items RE-REGISTERED with named triggers, zero scope growth · gate-exit report + BUILD PARAMETER
+      SHEET at ops-handoff/build/step-06/report.md (coders' input of record)
 - [ ] P1 foundations 7–13 — scaffolding/CI · serialization · operator grammar · id family · schemas ·
       drift+migration · CI guards
 - [ ] P2 configuration 14–19 — registries (rendering, content, collections) · cascade M1+M2 ·

@@ -1,0 +1,56 @@
+# pyproject.toml — optiquity-content-pipeline (framework mechanism; provenance: framework)
+#
+# Plan step 7 (plan-final.md): uv-managed project, pinned deps per the step-6 gate-exit
+# parameter sheet (item 2: ruamel.yaml==0.19.1, pure mode, NO ruamel.yaml.clib), Python >=3.12
+# (T1), pytest (T3) + ruff (T4) pinned in the project venv.
+
+[project]
+name = "optiquity-content-pipeline"
+version = "0.1.0"
+description = "Framework mechanism code for the optiquity content pipeline (design: docs/design.md)."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = [
+    # G4 pin (step-2 gate; parameter sheet item 2): YAML 1.2 typed safe-load,
+    # used as YAML(typ='safe', pure=True). Do NOT add ruamel.yaml.clib.
+    "ruamel.yaml==0.19.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.15.21",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# T8: the `pipeline/` package lives flat at the repo root (not src/ layout).
+module-name = "pipeline"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# PA-5: the `live` marker gates every test that touches the live subscription
+# transport. The default run DESELECTS them via addopts below.
+#
+# REC-1 (pinned semantics): pytest PREPENDS `addopts` to the command line, and for
+# the single-value `-m` option the LAST occurrence wins. So a later explicit CLI
+# `-m live` overrides the default `-m 'not live'` — that explicit invocation
+# (e.g. `uv run pytest -m live`) is the ONLY opt-in to live-transport tests.
+# `.github/workflows/ci.yml` never passes it; CI never touches the live transport.
+addopts = "-m 'not live'"
+markers = [
+    "live: exercises the live subscription transport; deselected by default (PA-5), opt in only via an explicit CLI -m for this marker",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Pycodestyle/pyflakes + import order, modernization, and bugbear checks.
+select = ["E", "F", "W", "I", "UP", "B"]
