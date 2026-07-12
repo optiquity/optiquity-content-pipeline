@@ -1,0 +1,65 @@
+# voices/_schema.yaml — co-located schema for the Voice content dimension
+# (design §5.1, §5.2; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10).
+#
+# Voice = how it sounds. Facets (§5.1): content / PARAMETRIC / single /
+# override-projection NO. A named voice is a saved slider configuration + guidelines
+# (§5.2); sliders are tunable at recipe/run (the recipe's configured `values`, §12.5).
+# Voice binds at M2-compose; it is MANDATORY-GLOBAL (CA8, §12.3): the instance must
+# populate a global default voice (L2 — `instance/defaults.yaml`, T10), validation
+# errors if absent; this schema's slider floors sit beneath as the last-resort net.
+#
+# Voice owns ALL register/affect/manner (§5.2): formality, humor, warmth, energy,
+# narrator-persona, plus free-text guidelines. Guardrail: didactic function and
+# reading level are Persona (+ Format), NEVER Voice sliders (§5.2). Voice selection
+# resolves by the §12.3 chain (L2 < L3 < persona.default_voice < L5 recipe <
+# brand-authoritative L2/L3 value < L6 run); the resolved entry's VALUES then cascade
+# normally — slider maps merge rung-wise, guideline prose replaces wholesale (§12.3).
+#
+# The §12.6 `authoritative` flag (BO2) lives on the global/workspace Voice
+# SCOPE-DEFAULT schema (instance/defaults.yaml · workspaces/<client>/defaults.yaml) —
+# deliberately NOT declared here: brand arbitration is a property of the scope-default
+# VALUE, never of a voice entry. Voices generated from example text ("Voice-DNA") are
+# INFERRED until reviewed (§5.2) — a review-gate concern (§19), not an entry field.
+schema_version: 1
+attributes:
+  formality:
+    type: slider
+    default: 3
+    definition: >-
+      Register slider (§5.2, 1-5): 1 = casual/colloquial, 5 = formal/institutional.
+      Slider values map-merge across cascade rungs (§12.3); tunable at recipe/run.
+    definition_version: 1
+  humor:
+    type: slider
+    default: 3
+    definition: >-
+      Affect slider (§5.2, 1-5): 1 = entirely straight, 5 = playful/witty. Never a
+      didactic lever — reading level is Persona (+ Format), §5.2 guardrail.
+    definition_version: 1
+  warmth:
+    type: slider
+    default: 3
+    definition: >-
+      Affect slider (§5.2, 1-5): 1 = detached/clinical, 5 = personal/empathetic.
+    definition_version: 1
+  energy:
+    type: slider
+    default: 3
+    definition: >-
+      Manner slider (§5.2, 1-5): 1 = measured/calm, 5 = urgent/high-tempo.
+    definition_version: 1
+  narrator_persona:
+    type: text
+    default: ""
+    definition: >-
+      The narrator stance the writing speaks FROM (§5.2 "narrator-persona") — e.g. "a
+      colleague walking you through it". Distinct from the Persona dimension (who it
+      is FOR, §5.2). Prose; wholesale replace on cascade (§12.4).
+    definition_version: 1
+  guidelines:
+    type: markdown
+    default: ""
+    definition: >-
+      Free-text voice guidelines (§5.2): diction, sentence rhythm, what to avoid.
+      Prose never merges — wholesale replace across rungs (§12.4/§12.3).
+    definition_version: 1

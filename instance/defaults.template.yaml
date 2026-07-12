@@ -1,0 +1,49 @@
+# instance/defaults.template.yaml — TEMPLATE for the instance-global scope-default
+# surface (T10; design §12.2 rung L2, §13.1: a human-maintained pure value manifest).
+#
+# USAGE (extend-don't-edit, CLAUDE.md rule 5): copy to `instance/defaults.yaml` and
+# fill in. The populated file is INSTANCE DATA — `provenance: instance`, gitignored in
+# the public framework repo, and a named leak class in scripts/check-no-content.sh
+# (PA-1c: only this template ships). Never edit this template downstream.
+#
+# WHAT L2 IS (§12.2/§12.5): the instance-wide CONFIGURED baseline — persistent
+# configuration, never an "override" (overrides are the ephemeral L6 run layer only,
+# §12.5). Values here sit above entry defaults (L1) and below workspace defaults (L3),
+# recipe (L5), and run (L6); combination is type-driven (§12.4). Entry ids referenced
+# here resolve at M1 — an unknown id is a loud error (§11.1). Schema validation of the
+# populated file is enforced by the cascade (step 16).
+#
+# THE MANDATORY-GLOBAL SET (CA8, §12.3) — the instance MUST set all three; generation
+# validates and errors if any is absent. The baseline identity should be declared, not
+# an accidental fallback:
+#   voice        the instance's baseline Voice entry id
+#   language     the instance's baseline Language entry id
+#   output_type  the instance's baseline Output-type entry id
+# Platform is deliberately EXCLUDED (per-deliverable routing, never a baseline, CA8);
+# Presentation is excluded (the `plain` floor is the honest default, PD7); Topic/
+# Persona/Format/Goal are per-request content choices (§12.3).
+
+# --- The CA8 mandatory globals (uncomment and set all three) ---------------------
+
+# voice: clear-explainer          # a shipped default; a house voice is an x- entry
+# language: en
+# output_type: md
+
+# --- Brand-authoritative voice (§12.6 BO2, OPTIONAL) ------------------------------
+# The `authoritative` flag lives HERE on the scope-default value — never on a voice
+# entry. A flagged value elevates to just-below-run: strength a = beat
+# persona.default_voice only · b = beat through recipe (the DEFAULT for a bare
+# `true`) · c = beat the run too (opt-in hard-lock). A run that deviates from a/b
+# fires a one-time warning. Voice-only in v1 (§12.6). Flagged VALUES are instance
+# data; only the flag MECHANISM is framework (§12.6).
+#
+# voice:
+#   entry: x-house-voice
+#   authoritative: b
+
+# --- Optional configured values (attribute bindings at L2) ------------------------
+# Keys are §13.2 operator paths over declared attributes of selected entries; values
+# combine type-driven (§12.4 — inline combine operators like `tags+:` are legal, CM3).
+#
+# values:
+#   voice.warmth: 4

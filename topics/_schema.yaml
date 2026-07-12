@@ -1,0 +1,30 @@
+# topics/_schema.yaml — co-located schema for the Topic content dimension
+# (design §5.1, §5.2; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10).
+#
+# Topic = what is it about, and why it matters (§5.2). Facets (§5.1): content /
+# discrete-registry / single / override-projection NO. Topic binds at M2-compose and
+# enters `artifact-id` (§12.3).
+#
+# Topic owns the SUBJECT MATTER (grounded in sources — the entry body's prose names the
+# subject; the grounding itself is M3's, §6) plus `why` — the editorial significance.
+# It never touches audience (Persona), structure (Format), destination (Platform), or
+# the persuasion objective (Goal) — §5.2's ownership lines.
+#
+# SCOPE, not mechanism, separates archetype from bespoke (§5.2, §10): topics normally
+# live under `workspaces/<client>/topics/` (client-scoped by LOCATION; this shared root
+# is the universal-archetype home). The framework ships NO topic entries — topics are
+# per-client editorial data — so this collection is schema-only here; the stale
+# `topics/topic.template.md` is retained until the step-40 sweep (template-exempt from
+# lint/guard, PA-1a). Workspace topic collections validate against this same manifest
+# (SV4 co-location; one identical mechanism per §11.7 SV10).
+schema_version: 1
+attributes:
+  why:
+    type: markdown
+    default: ""
+    definition: >-
+      The editorial significance — why this subject matters now, and to whom it is
+      worth saying (§5.2 "plus `why`"). Free prose (wholesale replace on cascade —
+      prose never merges, §12.4). The subject matter itself is the entry's body prose;
+      factual grounding comes from sources at ground time (§6), never from config.
+    definition_version: 1

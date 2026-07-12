@@ -1,0 +1,61 @@
+# content-kinds/_schema.yaml — co-located schema for the content-kind registry
+# (design §6.1 Q10/SM5; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10).
+# NOT a dimension: a content-kind is the middle characterization tier — properties of
+# what a source's content IS — that a source instance tags into (`content_kind` on
+# sources/_schema.yaml). A small collection like any other (§6.1): provenance guard
+# (§10), schema-versioning (§11.7 SV10), one-file-add (§5.4).
+#
+# The kind-tier scores (§6.1 table): `authoritative`, `opinionated`, the
+# `freshness`-policy, `review_status`. An entry's values are the DEFAULT SCORE BUNDLE
+# for every source instance tagged into the kind; where the adapter classifies facts,
+# these refine PER-FACT at ground time (§6.1 — recomputed each run, never persisted).
+# An instance MAY override its kind's defaults via an `extends:` field-merge partial
+# (Mechanism 1, §12.1) — never by editing a shipped entry (§10 rule 2).
+#
+# Score VOCABULARY of record: sources/_schema.yaml (§6.2 "each defined once in the
+# source schema"). The kind-tier attributes here mirror those types EXACTLY — one
+# score, one fixed type and scale, so any two values of one score are comparable
+# (§6.2); `review_status` attaches at content-kind by ruling SM6 and is declared here.
+schema_version: 1
+attributes:
+  authoritative:
+    type: slider
+    default: 3
+    definition: >-
+      §6.2 score `authoritative` (scalar 1-5; asserted default per kind; attach:
+      content-kind -> per-fact refine). How definitive this kind of content is about
+      its subject. Serves grounding weight and conflict priority (§6.3: factual
+      outranks opinion). NOT the inverse of `opinionated` (§6.2).
+    definition_version: 1
+  opinionated:
+    type: slider
+    default: 3
+    definition: >-
+      §6.2 score `opinionated` (scalar 1-5; asserted default per kind; attach:
+      content-kind -> per-fact refine). How much of this kind of content is stance/
+      judgment rather than record. Serves selection/weight; independently useful from
+      `authoritative` — not its inverse (§6.2).
+    definition_version: 1
+  freshness:
+    type: text
+    default: ""
+    definition: >-
+      The kind-level FRESHNESS POLICY (§6.1 table: "freshness-policy"; §6.2 score
+      `freshness`, type date-window/range, DERIVED per-fact from commit/mtime). The
+      config-side carrier is a date-window expression in the §6.2/§6.3 predicate
+      vocabulary (e.g. "12mo" = content of this kind is a stale-risk beyond 12
+      months); empty = no kind-level policy, freshness is purely per-fact derived.
+      Consumed by the M3 resolver (step 17) as filter + weight input.
+    definition_version: 1
+  review_status:
+    type:
+      type: enum
+      values: [unreviewed, reviewed, formally-vetted, unknown]
+    default: unknown
+    definition: >-
+      §6.2 marginal ruled IN for v1 (SM6): categorical review state at content-kind,
+      refined per-fact where the adapter exposes merge/peer-review state. Degrades
+      gracefully to `unknown` (the G6 gate closed exactly there: graphify exposes no
+      per-symbol review metadata, so per-fact refinement rides this default) — the
+      floor IS the designed degradation.
+    definition_version: 1

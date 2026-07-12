@@ -117,6 +117,16 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
   dangling keys currently load silently.
 - **→ Step 16 (from step-14 review RV-2):** M1 resolution must make dangling projection/ref keys LOUD
   (the promised loud resolution); also handle the no-platform-selected reconcile-strategy floor edge.
+- **→ Step 16 (from step-15 review, validated):** loud M1 for ALL now-load-silent refs (topic/persona/
+  format/voice/goals/default_voice/content_kind/skeleton ids — reviewer probe transcripts in the step-15
+  report); ratify the T10 defaults-template shapes incl. the dual `voice:` form.
+- **→ Step 17 (from step-15 review, validated):** score→tier/scope mapping as code constants; freshness-
+  expression validation; the `+2`→int-2 note.
+- **→ Step 31 (from step-15 review RV-1, BINDING):** folio-type skeleton key WHITELIST (recipe slots +
+  `topic_slot`) — a skeleton with `platform: linkedin` currently passes lint silently (untyped map
+  interior); the reviewer's probe transcript is the acceptance seed.
+- **→ Step 40 (from step-15 review):** stale `workspaces/workspace.template/readme.md` (omits
+  defaults.yaml; mission-era wording) — already in the sweep's named scope.
 - **→ Step 15 or 27 (from step-14 review RV-3):** add a permanent pin-bundle equality test across all 7
   carriers (schema default + 6 render-target entries).
 - **→ Step 40 (from step-13 review):** (a) unknown-registry-root residual — a NEW top-level dir (e.g.

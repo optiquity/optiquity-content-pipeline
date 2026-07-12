@@ -1,0 +1,40 @@
+# goals/_schema.yaml — co-located schema for the Goal content dimension
+# (design §5.1, §5.2; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10).
+#
+# Goal = what outcome the artifact drives. Facets (§5.1): content / discrete-registry
+# / **SET** / override-projection NO — the one set-valued dimension: a recipe binds
+# `goals: [...]` and the piece serves the whole set (§5.2). Multi-select of goals
+# STACKS into one artifact (the one fanout exception); goal variants as separate
+# artifacts are a list of goal-sets. The goal-set is canonicalized (sorted, deduped)
+# into `artifact-id` (§7.1); its default combine across rungs is REPLACE (§12.4).
+# Goal-set overload warns, never blocks (§8).
+#
+# A goal entry may contribute source-selection clauses (§6.3) and weight nudges
+# (§12.7 CA10): the clauses ride M3's goal-implied layer (workspace-default ->
+# goal-implied -> recipe -> run, §12.1) — M3 machinery lands at step 17; a
+# goal-implied weight nudge adjusts only the WORKSPACE BASELINE and never moves an
+# explicit user weight at recipe/run (CA10).
+schema_version: 1
+attributes:
+  kind:
+    type:
+      type: enum
+      values: [strategic, action]
+    default: strategic
+    definition: >-
+      The §5.2 goal tag: `strategic` = an outcome the piece advances (explain,
+      convince); `action` = a concrete reader act — a CTA is simply a goal with
+      `kind: action` (§5.2). No separate CTA mechanism exists.
+    definition_version: 1
+  source_selection:
+    type: map
+    default: {}
+    definition: >-
+      Partial §6.3 source-selection contribution: any of `require` (hard predicates),
+      `prefer` (soft weight nudges — the §12.7 CA10 lever), `span` (positive coverage),
+      `on_conflict` (strategy). Clauses reference score CHARACTERISTICS only, never
+      source ids (§6.3); they ride M3's goal-implied layer (§12.1) — later layers may
+      add, tighten, or (most-local-wins, warned) relax them (§6.4 SM3). Example (§6.3):
+      convince -> prefer authoritative +2; require traceability. The clause grammar is
+      parsed by the M3 resolver (step 17); this map carries it as authored.
+    definition_version: 1

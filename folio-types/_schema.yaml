@@ -1,0 +1,38 @@
+# folio-types/_schema.yaml — co-located schema for the folio-type registry (design
+# §9.6; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10). NOT a
+# dimension: a folio TYPE is a framework-shippable blueprint (`provenance: framework`,
+# one-file-add, schema-versioned per §11.7 — folio *instances* are workspace data and
+# never public, §9.1) declaring a typed folio's MEMBER ROLES AND STRUCTURE.
+#
+# THE DIRECTIVE (§9.6, B4-2): a folio type declares roles and per-role recipe
+# skeletons — NEVER dimension values. Each role names the SHAPE of a member (which
+# Format genre, which topic archetype slot, …) that the GENERATING RUN instantiates;
+# concrete dimension values come from the generating recipe/run, never from the folio
+# or its type. Shared grounding is a property of the generating run (one pinned
+# source commit-map + one effective source-subset at begin-session), guaranteed by
+# run mechanics — the folio stores nothing (B4-2). The type is consumed at generation
+# time only; post-generation it remains on the folio as declared structure for
+# discovery and role-based ordering reconstruction (§9.6) — it never influences
+# rendering, manifest resolution, or the cascade. Roles are recorded on the MEMBER
+# RECORD at add-time (B4-3): point-in-time slugs, never migrated with the type
+# (MIG-7); an unknown recorded slug surfaces AS-IS, never dropped or remapped.
+schema_version: 1
+attributes:
+  roles:
+    type:
+      type: list
+      element: map
+    default: []
+    definition: >-
+      The ORDERED declared role structure (§9.6 — order feeds role-based ordering
+      reconstruction from tracked data). Each item is a map with `role` (the §7.4
+      role slug written into member records at add-time, B4-3) and optional
+      `skeleton` — the per-role RECIPE SKELETON (§9.6): partial recipe slots in the
+      recipes/_schema.yaml vocabulary (e.g. `format`, `goals`, a prose `topic_slot`)
+      that the generating run instantiates into a concrete recipe. Skeleton slots are
+      blueprint inputs to the run, never folio-held dimension values (the DIRECTIVE);
+      unknown ids inside a skeleton fail loudly when the run resolves them (§11.1).
+      Duplicate role slugs are legal on folio MEMBERSHIP (§9.6 regeneration) but this
+      declared structure lists each role once. Ordered `list`: union is a schema
+      error (§11.1); replace-only on cascade — a folio type is a coherent blueprint.
+    definition_version: 1

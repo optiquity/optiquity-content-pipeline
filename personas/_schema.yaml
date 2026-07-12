@@ -1,0 +1,72 @@
+# personas/_schema.yaml — co-located schema for the Persona content dimension
+# (design §5.1, §5.2; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10).
+#
+# Persona = who is it for. Facets (§5.1): content / discrete-registry / single /
+# override-projection NO — but it PROVIDES the `default_voice` ref, consumed by Voice
+# (Q6; the sole cross-dimension *default* provider for Voice; cascade placement CA2,
+# §12.3: persona.default_voice beats the L2/L3 scope-default voices and yields to the
+# L5 recipe voice, the §12.6 brand-authoritative flag, and the L6 run).
+#
+# Persona owns AUDIENCE FACTS ONLY (§5.2): role/relationship, knowledge level,
+# motivation, objections, credibility signals. It owns NO register/affect — all of
+# that is Voice (§5.2); didactic function and reading level are Persona (+ Format),
+# never Voice sliders (§5.2 guardrail). Reading context ("skims on mobile") is
+# Platform's, not Persona's. A persona is a coherent bundle — its attributes co-vary —
+# so the fact attributes default to wholesale replace (§12.4), never piecewise blends.
+schema_version: 1
+attributes:
+  role:
+    type: text
+    default: ""
+    definition: >-
+      The audience's role/relationship to the content (§5.2 audience facts): who they
+      are professionally and how they stand relative to the subject (evaluator, user,
+      buyer, peer). Fact, not register — how the piece SOUNDS is Voice.
+    definition_version: 1
+  knowledge_level:
+    type: text
+    default: ""
+    definition: >-
+      What this audience already knows — what to assume vs. explain (§5.2 "knowledge
+      level"; didactic calibration is Persona + Format, never Voice). Prose fact, e.g.
+      "expert practitioner in the field, new to this specific system".
+    definition_version: 1
+  motivation:
+    type: text
+    default: ""
+    definition: >-
+      What this audience wants from the content (§5.2 "motivation") — the question
+      they are trying to answer or the decision they are trying to make.
+    definition_version: 1
+  objections:
+    type:
+      type: list
+      element: text
+    default: []
+    definition: >-
+      What makes this audience dismiss a piece (§5.2 "objections") — skepticisms the
+      content must anticipate. Ordered prose items; replace-only on cascade (§12.4:
+      list union is a schema error — a persona is a coherent bundle, §5.2).
+    definition_version: 1
+  credibility_signals:
+    type:
+      type: list
+      element: text
+    default: []
+    definition: >-
+      What "this author is credible" looks like TO THEM (§5.2 "credibility signals") —
+      the evidence shapes that earn this audience's trust. Ordered prose items;
+      replace-only on cascade (§12.4).
+    definition_version: 1
+  default_voice:
+    type: ref
+    default: clear-explainer
+    definition: >-
+      The Voice entry id this persona's coherent bundle implies (Q6, §5.2) — the sole
+      cross-dimension default provider for Voice. Cascade placement is CA2 (§12.3):
+      it beats the L2/L3 scope-default voices (selecting a persona is a per-artifact
+      editorial act) and yields to the L5 recipe voice, a §12.6 brand-authoritative
+      flagged value (BO2), and the L6 run. The floor names the framework default voice
+      `clear-explainer` (a shipped entry, so the floor always resolves); an unknown id
+      fails loudly at M1 resolution (§11.1).
+    definition_version: 1

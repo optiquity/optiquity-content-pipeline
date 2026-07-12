@@ -1,0 +1,48 @@
+# workspaces/workspace.template/defaults.yaml — TEMPLATE for the per-client
+# scope-default surface (T10; design §12.2 rung L3). Ships inside the
+# workspace.template/ directory (the framework deliverable, guard-exempt PA-1a);
+# the instantiated copy at `workspaces/<client>/defaults.yaml` is CLIENT DATA — a
+# named leak class in scripts/check-no-content.sh (PA-1c), never public.
+#
+# USAGE: instantiating a workspace copies this file to
+# `workspaces/<client>/defaults.yaml`. Everything here is OPTIONAL (§12.3: L3 is an
+# optional rung for every dimension): a workspace only declares where this client's
+# baseline DIFFERS from the instance globals (instance/defaults.yaml, L2). The CA8
+# mandatory-global set (voice, language, output_type) is satisfied at L2 — a
+# workspace never has to restate it. Persistent configuration, never an "override"
+# (§12.5); ids resolve at M1, unknown ids fail loudly (§11.1); schema validation of
+# the populated file is enforced by the cascade (step 16).
+#
+# CLIENT ISOLATION (CLAUDE.md rule 2; §10): scope is encoded by location — values
+# here bind THIS workspace only and can never leak into another. Client-authored
+# entries referenced here live under this workspace (or instance-global) with the
+# `x-` id prefix (§11.4).
+
+# --- Optional per-client baseline entry selections (L3) ---------------------------
+
+# voice: x-client-voice           # this client's baseline voice
+# language: en
+# output_type: md
+
+# --- Client-brand-authoritative voice (§12.6 BO2, OPTIONAL) -----------------------
+# A client brand voice is flagged HERE, at that client's L3 — never global (§12.6:
+# isolation). Strengths as at L2: a | b (default for bare `true`) | c.
+#
+# voice:
+#   entry: x-client-brand-voice
+#   authoritative: b
+
+# --- Optional configured values (attribute bindings at L3) ------------------------
+#
+# values:
+#   voice.formality: 4
+
+# --- M3 workspace defaults (§12.1, OPTIONAL) --------------------------------------
+# The workspace-default layer of source selection (§6.3 grammar; resolver = step 17):
+# hard/soft clauses over score characteristics, never source ids.
+#
+# source_selection:
+#   require:
+#     - freshness < 24mo
+#   prefer:
+#     - trusted: +1

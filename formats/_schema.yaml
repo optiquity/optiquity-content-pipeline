@@ -1,0 +1,34 @@
+# formats/_schema.yaml — co-located schema for the Format content dimension
+# (design §5.1, §5.2; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10).
+#
+# Format = what shape/genre. Facets (§5.1): content / discrete-registry / single /
+# override-projection NO. Format binds at M2-compose and enters `artifact-id` (§12.3);
+# it shapes the IR's structure (§15).
+#
+# Formats are PLATFORM-AGNOSTIC GENRES (§5.2: `short-opinion-post`, `long-form-essay`,
+# `readme`). There is NO `valid_platforms` attribute and NO hard compatibility data on
+# any Format entry (Q4, §8): pairing is user-driven; the effective allow-list is
+# emergent from configuration (§12); a strange pairing gets a one-time advisory lint
+# (`nonsensical-pairing`, §8/§21.7), never a block. Platform-side per-format advisory
+# projections and reconcile-strategy defaults live on Platform entries (§12.3) —
+# homing pair-keyed data here would re-couple Format to platforms, which Q4 deleted.
+#
+# The genre's rhetorical structure is the entry's body prose (consumed at compose,
+# §15); the ONE structural attribute is `parts` (Q14). Composing two genres is TWO
+# artifacts, grouped by a folio — never a composite (§5.2). Per-part cascade
+# refinement is a deferred slot (§12.3, §26).
+schema_version: 1
+attributes:
+  parts:
+    type:
+      type: list
+      element: text
+    default: []
+    definition: >-
+      Optional ORDERED list of named intra-genre sub-outputs, defined entirely inside
+      this one governing Format entry (Q14, §5.2; e.g. slide-deck -> [slides,
+      presenter-notes]). One format selected -> one artifact with named parts; part
+      names surface as part Div ids in the IR/AST (§15). Empty = a single-part genre.
+      Ordered `list` by design: `union` on it is a schema-validation ERROR (§11.1 CM3
+      — format.parts is the design's own example) and cascade combination is replace.
+    definition_version: 1

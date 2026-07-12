@@ -1,0 +1,129 @@
+# recipes/_schema.yaml — co-located schema for the recipe registry (design §8; SV4
+# §11.1/§13.4). Framework mechanism (provenance/scope: §10). NOT a dimension: a recipe
+# is the per-artifact binding unit — **recipe -> one artifact** (§8): it binds one
+# entry per content dimension (Topic, Persona, Format, Voice) + a goal-set +
+# configured values, and MAY pin rendering targets (else they are supplied at run).
+# A selection multi-selects across dimensions and fans out into many recipes (§8);
+# every fanout item is id-keyed, commit-pinned, idempotent (§7).
+#
+# The recipe is the M2 spine's L5 rung (§12.2): it binds only the attributes it SETS —
+# unset slots fall through to workspace/global/entry/schema floors. Pairing is
+# user-driven (Q4, §8): NOTHING here filters format×platform combinations; a strange
+# pairing draws the one-time advisory `nonsensical-pairing` lint (§8/§21.7), never a
+# block. One-file-add (§5.4): a new recipe = one conforming file, nothing else.
+#
+# Dimension slots are entry-id references resolved by M1 (framework -> instance-global
+# -> workspace, §12.1); an unknown entry id is a LOUD error at resolution (§11.1),
+# never a silent skip — resolution machinery is step 16.
+schema_version: 1
+attributes:
+  topic:
+    type: text
+    default: ""
+    definition: >-
+      The Topic entry id this recipe binds (§8). Declared as text with an empty floor
+      — not ref — because topics are normally workspace-scoped editorial data (§5.2,
+      §10) and the framework ships none: the honest floor is "unset — supplied by the
+      workspace/selection/run", which the ref slug alphabet cannot express (§7.4; the
+      platforms `default_output_type` precedent). Non-empty values resolve at M1
+      against the topic registries in scope; unknown or still-empty at generation
+      time fails loudly (§11.1) — a recipe generates nothing without a topic.
+    definition_version: 1
+  persona:
+    type: ref
+    default: technical-evaluator
+    definition: >-
+      The Persona entry id this recipe binds (§8) — who the artifact is for (§5.2).
+      The floor names the shipped framework persona `technical-evaluator`, so the
+      floor always resolves; unknown ids fail loudly at M1 (§11.1). The bound
+      persona's `default_voice` enters the Voice chain at its CA2 slot (§12.3).
+    definition_version: 1
+  format:
+    type: ref
+    default: short-opinion-post
+    definition: >-
+      The Format entry id this recipe binds (§8) — the platform-agnostic genre
+      (§5.2). The floor names the shipped `short-opinion-post`, so the floor always
+      resolves; unknown ids fail loudly at M1 (§11.1). No compatibility data rides
+      this slot (Q4).
+    definition_version: 1
+  voice:
+    type: ref
+    default: clear-explainer
+    definition: >-
+      The Voice entry id this recipe binds — the L5 rung of the §12.3 voice selection
+      chain. A recipe that SETS this beats `persona.default_voice` and the L2/L3
+      scope defaults (and yields to a §12.6 brand-authoritative value and the L6
+      run); a recipe that leaves it UNSET lets the chain resolve naturally (CA2) —
+      shipped framework recipes leave it unset for exactly that reason. The floor
+      (`clear-explainer`, a shipped entry) is the L0 last-resort net only (§12.3),
+      never an L5 binding.
+    definition_version: 1
+  goals:
+    type:
+      type: set
+      element: ref
+    default: []
+    definition: >-
+      The goal-set this artifact serves (§5.2: Goal is SET-valued within one
+      artifact; goals STACK, the one fanout exception). Unordered set of goal entry
+      ids, canonicalized (sorted, deduped) into `artifact-id` (§7.1/§12.4); default
+      combine across rungs is REPLACE (§12.4 "the goal-set default is replace" — no
+      `combine:` override here). Goal variants as separate artifacts are a list of
+      goal-sets at selection (§5.2), not a recipe concern. Bound goals contribute
+      their §6.3 clauses at M3's goal-implied layer (§12.1).
+    definition_version: 1
+  values:
+    type: map
+    default: {}
+    definition: >-
+      CONFIGURED VALUES bound at L5 (§8 "configured values"; §12.5 terminology:
+      persistent scopes hold configuration, never "overrides") — attribute bindings
+      applied over the resolved entries at M2, e.g. voice slider tweaks (§5.2:
+      sliders are tunable at recipe/run). Keys are §13.2 operator paths (inline
+      combine operators legal per CM3, e.g. `tags+`); values combine type-driven
+      (§12.4). Consumed by the cascade at step 16.
+    definition_version: 1
+  platforms:
+    type:
+      type: set
+      element: ref
+    default: []
+    definition: >-
+      Optional PINNED Platform entry ids (§8 "may pin rendering targets (else they
+      are supplied at run)"). Platform is per-deliverable routing (CA8); multiple
+      pins = rendering fanout, one deliverable per platform (§5.1). Empty = supplied
+      at run. Pinning here is L5 in the selection cascade (§12.1/§12.3).
+    definition_version: 1
+  languages:
+    type:
+      type: set
+      element: ref
+    default: []
+    definition: >-
+      Optional pinned Language entry ids (§8; §12.3: multiple languages = rendering
+      fanout; Language is mandatory-global CA8, so empty = the L2/L3 default
+      supplies it at run).
+    definition_version: 1
+  output_types:
+    type:
+      type: set
+      element: ref
+    default: []
+    definition: >-
+      Optional pinned Output-type entry ids (§8; §12.3: Output-type is
+      mandatory-global CA8 with a weak platform-implied default beneath explicit
+      values; multiple pins = rendering fanout). Empty = supplied by the cascade at
+      run.
+    definition_version: 1
+  presentations:
+    type:
+      type: set
+      element: ref
+    default: []
+    definition: >-
+      Optional pinned Presentation entry ids (§8; PD7: Presentation is NOT
+      mandatory-global — the framework `plain` entry is the schema floor, so empty
+      costs nothing and causes zero id churn). Multiple pins = rendering fanout
+      (§5.1).
+    definition_version: 1
