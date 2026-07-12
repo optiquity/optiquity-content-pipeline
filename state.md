@@ -96,6 +96,14 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
       pre-identified future PDF engine is now available; `pdf` still ships `side: external` in v1 per the
       reconciled plan (the internalization flip stays a one-field §17 RI12 change, post-MVP).
 
+## Step carry-forwards (reviewer notes binding on later steps)
+
+- **→ Step 11 (from step-8 review RV-3):** the `_schema.yaml` loader must apply the same `%`-directive
+  refusal as the frontmatter splitter (`load_yaml` alone honors an in-document `%YAML 1.1` directive —
+  spec-conformant at step 8, but schema files must refuse it).
+- **→ Step 21 (from step-7 review RV-2):** fold a `__pycache__/` line into step 21's `.gitignore` edit.
+  Until then, all commits are by explicit file list, never `git add -A`.
+
 ## Build checklist (mirror of the tracker page)
 
 - [x] P0 gates 1–6 (reports only) — COMPLETE 2026-07-12: G1 PASS · G4 PASS · G5 PASS · G3 PASS(query)/
