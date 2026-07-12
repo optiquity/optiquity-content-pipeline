@@ -106,6 +106,11 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
 - **→ Step 13 (from step-11 review RV-3):** SV11 schema-lint must assert CROSS-COLLECTION EQUALITY of the
   per-file `schema_version:` values (one global number copied across N `_schema.yaml` files — lint catches
   a skewed file).
+- **→ Step 13 (from step-12 review RV-3):** SV11 clause-4 window-sanity lint must refuse future-dated and
+  non-monotonic `released:` dates in `pipeline/migrations.yaml` (the registry loader accepts them silently).
+- **→ whoever implements `extends:` partials (Q15ii; from step-12 review RV-4):** `_render_entry_text`
+  hardcodes a three-key envelope; the partials case currently fails LOUDLY (never silently) and the
+  renderer must be extended when partials land.
 - **Housekeeping (from step-9 review RV-5):** `pipeline/attrtypes.py` fails `ruff format --check`
   (cosmetic; enforced battery is `ruff check`, which is green) — normalize opportunistically in a later
   step that touches the file; never as a standalone out-of-sequence commit.
