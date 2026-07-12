@@ -3,6 +3,9 @@
 How to run this as an **open-source framework you maintain** plus **private instances** (yours and,
 if you like, others') that pull your improvements non-destructively.
 
+> **Authority:** provenance/scope authority now lives in `docs/design.md` §10; this document is the
+> conforming two-repo how-to.
+
 ## The two repos
 
 | Repo | Contains | Never contains |
@@ -15,18 +18,34 @@ public repo to make their own private instances.
 
 ## The ownership boundary (why updates stay clean)
 
-**Framework and instance content never share a file.** Git merges at file granularity, so a merge
-only conflicts when *both* sides edit the *same* file. Therefore:
+**Ownership is mixed-provenance** (`docs/design.md` §10): **provenance** — who authored an entry
+(`provenance: framework | instance`) — is a **metadata tag**; **scope** — where it applies — is
+**location**. Shared registry directories hold framework-shipped defaults and instance-global
+additions side by side, distinguished by the tag, never by the directory. Client scope is still
+structural: `workspaces/<client>/` entries apply to that client only.
+
+Updates stay clean because framework and instance content never share a **file** (git merges at
+file granularity, so a merge only conflicts when *both* sides edit the *same* file):
 
 - **Framework-owned (upstream edits these):** `CLAUDE.md`, `docs/*`, `*.template.*`, `.claude/*`,
-  `scripts/*`, `.github/*`, `.gitignore`, `LICENSE`, `README.md`, `quickstart.md`.
-- **Instance-owned (you add these; upstream never touches them):** `personas/<id>.md`,
-  `platforms/<id>.md`, `formats/<id>.md`, `workspaces/<client>/**`, `instance/profile.md`,
-  `state.md` (derived from the spreadsheet SSOT, **but tracked in your instance for history**).
+  `scripts/*`, `.github/*`, `.gitignore`, `LICENSE`, `README.md`, `quickstart.md`, and every
+  shipped `provenance: framework` registry entry (default voices, platform profiles, recipes,
+  folio types, content-kinds, the `plain` presentation).
+- **Instance-owned (you add these; upstream never touches them):** instance-global registry
+  entries in the shared dirs (`provenance: instance`, ids/filenames carrying the reserved `x-`
+  prefix — `docs/design.md` §11.4 — so framework↔instance filename collisions are impossible),
+  `content-kinds/` additions, `workspaces/<client>/**` — including client-scoped entries and
+  **workspace `extends:` partials**, the partial-customization path that field-merges over a
+  shipped entry instead of editing it — `instance/profile.md`, `instance/ops/` stores
+  (presence-lease registry, telemetry — mechanism framework, data instance; `docs/design.md`
+  §22.5, §23), and `state.md` (derived from the spreadsheet SSOT, **but tracked in your instance
+  for history**).
 
-**The linchpin rule:** downstream **extends by adding files** and **never edits framework files**.
-Want to change framework behavior? Change it in the **public** repo (you maintain it) and pull.
-This guarantees conflict-free updates.
+**The linchpin rule:** downstream **extends by adding files** and **never edits framework files —
+including shipped `provenance: framework` entries**. Customizing a shipped entry means adding a
+workspace (or instance-global) `extends:` partial, never an in-place edit. Want to change
+framework behavior? Change it in the **public** repo (you maintain it) and pull. This guarantees
+conflict-free updates.
 
 ## Updating a private instance
 

@@ -1,5 +1,28 @@
 # Repo-Grounded Content Generation Pipeline — Project & Technical Requirements
 
+> **⚠ SUPERSESSION BANNER (2026-07-11, placement package A4-2).** The design content of this
+> document is superseded by [`docs/design.md`](design.md) — the single design SSOT. On any
+> conflict, `docs/design.md` wins. This document is retained as the product/PRD + sourcing/ops
+> context. The sections below are **not rewritten**; use this banner to know what still stands.
+> (Authoritative map: `docs/design.md` Appendix B, §B.3.)
+>
+> **DEAD — superseded by `docs/design.md`** (new homes in parentheses):
+>
+> - **§1's MVP definition + success criteria** (→ design §25). The rest of §1 stands as PRD context.
+> - **§2 System architecture** (→ design §2, §14).
+> - **§3 Content matrix + extensibility model** (→ design §5; the 4-axis matrix and the inline
+>   compatibility text are obsolete — the matrix is nine axes, §5.4).
+> - **§4 Selection / fanout / compatibility filter / identity / config** (→ design §7, §8, §12,
+>   §13; the compatibility filter is **DELETED** per Q4 — the allow-list is emergent, design §8).
+> - **§8 Configuration artifacts & how-to-extend procedures** (→ design §5.4, §23; §8.2 → design
+>   §8/§12/§13; §8.3 agents/commands → design §27.4; §8.4/§8.5 → design §5.4 + §27.4).
+> - **§10.4 open-decision rows D1** (→ design §13, closed) **and D2** (→ design §7.4, closed).
+>
+> **RETAINED (living, not design):** §0 document control · §5 phased plan (update against design
+> §25 — maintainer call) · §6 dependencies/install · §7 component vetting · §9 security/read-only
+> model (render-side additions live in design §15–§17) · §10 risks (minus the D1/D2 rows above) ·
+> the appendices.
+
 > **Status:** Living document · **Version:** 0.2.0 · **Last updated:** 2026-07-05
 > **Owner:** David · **Methodology:** Waterfall / ad-hoc, spreadsheet-tracked
 > **Nature:** This is a living document. Sections, tooling picks, personas, formats, and pipeline
