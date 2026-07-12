@@ -134,12 +134,34 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
   defaults.yaml; mission-era wording) — already in the sweep's named scope.
 - **→ Step 15 or 27 (from step-14 review RV-3):** add a permanent pin-bundle equality test across all 7
   carriers (schema default + 6 render-target entries).
+- **→ Step 19 or 25 (from step-18 review RV-2):** `ParsedQuery.truncated` is parsed but dropped by
+  `ground()` — partial grounding is invisible to the resolver; needs a warning channel through base.py/
+  grounding.py where a step owns those files.
+- **→ next pyproject-owning step (from step-18 review RV-3, one line):** amend the `live` marker
+  description to cover machine-local tests, not just subscription transport.
+- **Live-test env bindings (post step-18 RV-1):** the live adapter battery reads
+  `PIPELINE_LIVE_DEMO_GRAPH` / `PIPELINE_LIVE_TIER_GRAPH` (skip when unset). This machine's values:
+  optiquity-site + config-pack graphify-out paths (see "Designated demo graphs" above).
 - **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
   (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
   extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
-- **→ Step 40 (maintainer, 2026-07-12):** the swept quickstart/README must include an explicit
-  "adding a default entry" walkthrough (one-file contract + template + lint/CI verification) — the
-  authoring how-to currently lives only in stale templates. Within the sweep's existing mandate.
+- **→ Step 40 (maintainer, 2026-07-12, EXPANDED):** the swept docs must document ALL THREE entry-authoring
+  modes the maintainer ratified: (1) FULLY MANUAL — the one-file contract walkthrough (template + schema +
+  lint/CI verification); (2) INTERACTIVE/ASSISTED — how to have a Claude session author + review entries
+  (the coder→reviewer chain pattern); (3) RESEARCHER-ASSISTED — the researcher→coder→reviewer chain for
+  batch-proposing candidate entries. Documentation of process, not new machinery.
+
+## QUEUED: registry expansion (maintainer-ordered 2026-07-12; runs immediately after step 18's chain)
+13 new framework default entries, full coder→reviewer→fix chain + ONE step-scoped commit (fresh maintainer
+authorization given in the ordering message; outside the 33-sequence):
+- **Persona:** tech-journalist · product-reviewer · technical-documentation-writer · product-manager ·
+  executive-coach
+- **Format:** medium-review-post · how-to-documentation · product-requirements-document
+- **Platform:** medium-post · substack-post · corporate-website · press-release
+- **Output-type:** plain-text (+ its render-target twin; pandoc `plain` writer)
+Sequenced AFTER step 18 closes so the new registry files don't contaminate step 18's review scope checks.
+Also in flight: a researcher report proposing ≥10 candidate default entries per dimension (ideas only,
+maintainer picks; report-only, no repo changes).
 - **→ Step 40 (from step-13 review):** (a) unknown-registry-root residual — a NEW top-level dir (e.g.
   `voices2/`) is outside the PA-1 whitelist scope and passes the guard silently; sweep must reconcile the
   root list with the repo map. (b) SV11 diff clauses run against a PR-base baseline in CI only where the

@@ -1,0 +1,70 @@
+{
+  "built_at_commit": "1111111111222222222233333333334444444444",
+  "directed": true,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "id": "widget-config",
+      "label": "Widget service configuration",
+      "source_file": "src/widget/config.py",
+      "source_location": "L42",
+      "community": 1
+    },
+    {
+      "id": "gadget-note",
+      "label": "Gadget cache sizing note",
+      "source_file": "notes/gadget-sizing.md",
+      "source_location": "lines 3-9",
+      "community": 1
+    },
+    {
+      "id": "review-thread",
+      "label": "Timeout review thread",
+      "source_file": "https://example.test/review#timeout",
+      "source_location": null,
+      "community": 2
+    },
+    {
+      "id": "roadmap-idea",
+      "label": "Anchorless roadmap idea",
+      "source_file": null,
+      "source_location": null,
+      "community": 2
+    }
+  ],
+  "links": [
+    {
+      "source": "widget-config",
+      "target": "gadget-note",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 0.97,
+      "source_file": "src/widget/config.py",
+      "source_location": "L42",
+      "weight": 1,
+      "context": "call"
+    },
+    {
+      "source": "gadget-note",
+      "target": "review-thread",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.61,
+      "source_file": "https://example.test/review#timeout",
+      "source_location": null,
+      "weight": 1
+    },
+    {
+      "source": "widget-config",
+      "target": "roadmap-idea",
+      "relation": "rationale_for",
+      "confidence": "AMBIGUOUS",
+      "confidence_score": 0.32,
+      "source_file": null,
+      "source_location": null,
+      "weight": 1
+    }
+  ],
+  "hyperedges": []
+}
