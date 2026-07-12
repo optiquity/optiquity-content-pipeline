@@ -103,6 +103,9 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
   spec-conformant at step 8, but schema files must refuse it).
 - **→ Step 21 (from step-7 review RV-2):** fold a `__pycache__/` line into step 21's `.gitignore` edit.
   Until then, all commits are by explicit file list, never `git add -A`.
+- **→ Step 13 (from step-11 review RV-3):** SV11 schema-lint must assert CROSS-COLLECTION EQUALITY of the
+  per-file `schema_version:` values (one global number copied across N `_schema.yaml` files — lint catches
+  a skewed file).
 - **Housekeeping (from step-9 review RV-5):** `pipeline/attrtypes.py` fails `ruff format --check`
   (cosmetic; enforced battery is `ruff check`, which is green) — normalize opportunistically in a later
   step that touches the file; never as a standalone out-of-sequence commit.

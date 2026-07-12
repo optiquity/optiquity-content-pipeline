@@ -1,0 +1,75 @@
+# TEST FIXTURE (tests/fixtures/registries/gadgets/) — obviously-generic values only; never
+# client data. A fake "gadgets" collection whose manifest exercises every §11.1 attribute
+# type exactly once, plus the §12.4 per-set default combine operator. Loaded by
+# tests/test_schema.py and tests/test_entries.py (plan step 11).
+schema_version: 3
+attributes:
+  color:
+    type:
+      type: enum
+      values: [red, green, blue]
+    default: red
+    definition: The single example color token the gadget renders with.
+    definition_version: 1
+  weight:
+    type: number
+    default: 1.5
+    definition: Example numeric weight in abstract units.
+    definition_version: 1
+  intensity:
+    type: slider
+    default: 3
+    definition: Example 1-5 intensity dial.
+    definition_version: 3
+  span:
+    type: range
+    default: [1, 10]
+    definition: Example inclusive numeric lo-hi pair.
+    definition_version: 1
+  parent:
+    type: ref
+    default: example-base
+    definition: Entry id of the example gadget this one derives from.
+    definition_version: 2
+  enabled:
+    type: bool
+    default: true
+    definition: Whether the example gadget is switched on.
+    definition_version: 1
+  active_window:
+    type: date-window
+    default: [2026-01-01, 2026-12-31]
+    definition: Example calendar window the gadget is active in.
+    definition_version: 1
+  steps:
+    type:
+      type: list
+      element: text
+    default: [first, second]
+    definition: Ordered example steps - a list, so union here is a schema error.
+    definition_version: 1
+  tags:
+    type:
+      type: set
+      element: text
+    combine: union
+    default: []
+    definition: Unordered example tag set with a schema-level default combine of union.
+    definition_version: 2
+  labels:
+    type:
+      type: map
+      element: text
+    default: {}
+    definition: Example string-to-string label map.
+    definition_version: 1
+  summary:
+    type: text
+    default: ""
+    definition: Free-text example summary - replaced wholesale, prose never merges.
+    definition_version: 1
+  briefing:
+    type: markdown
+    default: ""
+    definition: Markdown example body copy.
+    definition_version: 1
