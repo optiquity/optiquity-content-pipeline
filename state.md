@@ -103,6 +103,13 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
   spec-conformant at step 8, but schema files must refuse it).
 - **→ Step 21 (from step-7 review RV-2):** fold a `__pycache__/` line into step 21's `.gitignore` edit.
   Until then, all commits are by explicit file list, never `git add -A`.
+- **Housekeeping (from step-9 review RV-5):** `pipeline/attrtypes.py` fails `ruff format --check`
+  (cosmetic; enforced battery is `ruff check`, which is green) — normalize opportunistically in a later
+  step that touches the file; never as a standalone out-of-sequence commit.
+- **Adjudication of record (step-9 review RV-4):** TWO ALPHABETS confirmed — §7.4 strict slug governs
+  registry ENTRY IDS/filenames; §13.2 operator paths name schema ATTRIBUTES where medial `_` is required
+  (`word_limit`, §21.3's `fit_current` etc.); collision hunt negative (paths never reach filename
+  carriers). Documented in docs/reference/operator-grammar.md §2.
 
 ## Build checklist (mirror of the tracker page)
 
