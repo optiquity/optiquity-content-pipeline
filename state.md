@@ -134,6 +134,12 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
   defaults.yaml; mission-era wording) — already in the sweep's named scope.
 - **→ Step 15 or 27 (from step-14 review RV-3):** add a permanent pin-bundle equality test across all 7
   carriers (schema default + 6 render-target entries).
+- **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
+  (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
+  extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
+- **→ Step 40 (maintainer, 2026-07-12):** the swept quickstart/README must include an explicit
+  "adding a default entry" walkthrough (one-file contract + template + lint/CI verification) — the
+  authoring how-to currently lives only in stale templates. Within the sweep's existing mandate.
 - **→ Step 40 (from step-13 review):** (a) unknown-registry-root residual — a NEW top-level dir (e.g.
   `voices2/`) is outside the PA-1 whitelist scope and passes the guard silently; sweep must reconcile the
   root list with the repo map. (b) SV11 diff clauses run against a PR-base baseline in CI only where the
