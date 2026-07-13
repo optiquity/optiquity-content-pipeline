@@ -9,17 +9,17 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 30 (review gates §19 + wiring) done, reviewer CLEAN.
-Two advisory LLM review gates: artifact review (once per artifact, pre-fanout; short-circuits to
-already-reviewed with zero LLM on re-drive; a forced re-fit never re-runs it — FR5) and full deliverable
-review (every deliverable incl. every fit/serialize revision, keyed by deliverable-id — FR7.5). Both produce
-IMMUTABLE id-addressed records under `reviews/<id>` (no-overwrite `write_new`; never transfer across
-revisions), secret-scanned before persist, and advance SSOT status (artifact-reviewed / deliverable-reviewed)
-via the write-only advance hook — reviews NEVER mutate output or gate correctness (verified by before/after
-store-tree byte snapshots; compose/dispatch stay ssot-free). Backward-compatible (compose/dispatch/driver
-edits additive; prior 1626 tests unchanged). Progress = 30/41 + R1 done · 24/33 step-scoped commits (+3
-authorized extras). Baseline green: 1641 passed (6 deselected/zero-live). Next: step 31 (folios & folio
-types §9).
+**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 31 (folios & folio types §9) done, reviewer CLEAN.
+Folios as PURE PURPOSEFUL SETS — A4-4 ZERO folio-level state proven (folio record is exactly
+{id,purpose,folio_type?,provenance}; member exactly {added_ts,pin?,role?}; reverse index DERIVED not stored;
+grep rendering_intent=0). Append-only membership (§27.3) with atomic replacing-rename updates reusing the
+step-21 S4 primitive (concurrent differing updates → one atomic winner, both get member-updated, added_ts
+preserved). Frozen-pin id-forms (B4-2/3), no auto-create/auto-add (F6), intra-workspace enforcement, unknown
+recorded role surfaced AS-IS after a folio-type rename. The BINDING step-15 folio-type skeleton whitelist
+lands (recipe-slots + topic_slot; singular `platform:` smuggler refused; plural recipe slots admitted = recipe
+template state, never folio state). Progress = 31/41 + R1 done · 25/33 step-scoped commits (+3 authorized
+extras). Baseline green: 1682 passed (6 deselected/zero-live). Next: step 32 (API core I — invoke, workspace
+isolation, token, result contract + code taxonomy).
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
@@ -209,14 +209,14 @@ main without isolation). If a future coder still lands files in a worktree, reco
 - **→ Step 26 (from step-25 review obs-1, cheap hardening):** a non-numeric `hard_limit` raises
   `ReconcileError` only at the terminal gate — for a non-`pass` strategy that fires AFTER one LLM call
   (wasted spend). Add a pre-LLM numeric-limit type check in request assembly/`_validate_request`.
-- **→ Step 36 or 40 (from step-25 + step-26 reviews, INV-CORRECTNESS roots expansion — batch all THREE):**
+- **→ Step 36 sweep (from step-25/26/31 reviews, INV-CORRECTNESS roots expansion — batch all FOUR):**
   the import-lint `CORRECTNESS_ROOTS` (`tests/test_inv_correctness.py:45`) watches store/claims/spine/sweep/
-  parallel. Add `fit_resolution` + `reconcile` + `compose` TOGETHER (one small expanded-scope pass; editing
-  that shared test file is out of a coder's per-step 2-file scope). Rationale: `fit_resolution` is the
-  strongest candidate (claim-adjacent resolution rule; §22.7 PC12 names "both resolution rules" SSOT-
-  independent); `reconcile`/`compose` are pure producers. The invariant HOLDS today (`ssot` doesn't exist
-  yet) and step 26's local AST no-ssot guard is a real-but-weaker substitute (own-imports only, not the
-  transitive closure the roots lint walks) — so this is owed-soon defense-in-depth, not a live defect.
+  parallel. Add `fit_resolution` + `reconcile` + `compose` + `folios` TOGETHER (one small expanded-scope pass;
+  editing that shared test file is out of a coder's per-step scope). Rationale: `fit_resolution` and `folios`
+  are content-addressed marker/resolution stores (§22.7 PC12 names "both resolution rules" SSOT-independent);
+  `reconcile`/`compose` are pure producers. The invariant HOLDS today (`ssot` doesn't exist yet) and each has
+  a local AST no-ssot guard in its own test (own-imports only, weaker than the transitive-closure roots lint)
+  — owed-soon defense-in-depth, not a live defect. Step-31 reviewer recommended the step-36 sweep landing.
 - **→ §26 localization GA (post-MVP, from step-25 review obs-2/obs-4):** (a) the reconciler prompt/parse are
   built from `request.canonical_ir` while assembly uses `localized_ir` — identical in v1 (localize no-op);
   once localization is real the prompt must read the LOCALIZED IR. (b) a `pass` with language≠source is
