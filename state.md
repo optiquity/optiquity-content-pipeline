@@ -9,15 +9,17 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 3 → 4.** Step 29 (serialize completion, §17) done, reviewer CLEAN.
-Full PD3 presentation lowering, the FR7.3 serialize-revision auto-mint (deliverable-level analog of step-26
-FR2, same self-heal-on-revert; auto-mints instead of serve-latest because re-serialize is free+deterministic;
-mint-in-render-only), the RI13 pin bundle (record-only, moves no id), and the RI14 external layer-3 payload
-(all 5 components; provenance stripped UNCONDITIONALLY + a has_provenance fail-closed re-check; secret-in-
-metadata resolved — upstream _scan_no_secrets covers everything reaching the payload). Content-addressing
-airtight both directions (asset edit churns; side/minted_ts/schema_version excluded). Progress = 29/41 +
-R1 done · 23/33 step-scoped commits (+3 authorized extras). Baseline green: 1626 passed (6 deselected/
-zero-live). Next: step 30 (review gates §19 — enters Phase 4).
+**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 30 (review gates §19 + wiring) done, reviewer CLEAN.
+Two advisory LLM review gates: artifact review (once per artifact, pre-fanout; short-circuits to
+already-reviewed with zero LLM on re-drive; a forced re-fit never re-runs it — FR5) and full deliverable
+review (every deliverable incl. every fit/serialize revision, keyed by deliverable-id — FR7.5). Both produce
+IMMUTABLE id-addressed records under `reviews/<id>` (no-overwrite `write_new`; never transfer across
+revisions), secret-scanned before persist, and advance SSOT status (artifact-reviewed / deliverable-reviewed)
+via the write-only advance hook — reviews NEVER mutate output or gate correctness (verified by before/after
+store-tree byte snapshots; compose/dispatch stay ssot-free). Backward-compatible (compose/dispatch/driver
+edits additive; prior 1626 tests unchanged). Progress = 30/41 + R1 done · 24/33 step-scoped commits (+3
+authorized extras). Baseline green: 1641 passed (6 deselected/zero-live). Next: step 31 (folios & folio
+types §9).
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
@@ -162,6 +164,10 @@ main without isolation). If a future coder still lands files in a worktree, reco
 - **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
   (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
   extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
+- **→ Step 40 (from step-30 review nit, cosmetic):** `pipeline/review.py` `_ast_provenance_summary` labels
+  `provenance_span_count = len(fact_ids)` — that is the DISTINCT-fact count, not the raw Span count (two
+  spans citing one fact count as 1). Harmless (advisory LLM context) but the name over-promises; rename to
+  `provenance_fact_count` or count spans separately in the sweep.
 - **→ Step 40 (from step-29 review obs-1, cosmetic):** `pipeline/serialize.py:668` `except IdError` is dead
   code — `delta_vs_floor` raises `PreimageError`, not `IdError`, so the wrap-to-`SerializeError` never fires
   (a `PreimageError` propagates loudly regardless). Catch `PreimageError` or drop the try in the sweep

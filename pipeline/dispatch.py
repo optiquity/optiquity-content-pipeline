@@ -23,22 +23,35 @@ Design authority: `docs/design.md`
 UNCONDITIONALLY when `should_strip` is true, before the writer runs. A client/Presentation
 config therefore cannot disable it (§17, PD3).
 
-No SSOT import (INV-CORRECTNESS, §22.7).
+**Review 2 wiring (§19, PA-10).** `review_deliverable` runs the ADVISORY deliverable review
+POST-bytes, on EVERY deliverable (including every fit/serialize revision). It is a thin wrapper
+over `pipeline.review` (itself SSOT-free): produce an immutable id-addressed record, then
+advance the deliverable SSOT row to `deliverable-reviewed` through the SAME write-only hook the
+caller supplies. It NEVER mutates the deliverable bytes/AST/records; it only advances STATUS.
+`dispatch()` itself is unchanged (pure routing) — the review is a sibling wiring function.
+
+No SSOT import (INV-CORRECTNESS, §22.7): this module advances the SSOT only via the write-only
+`review_advance` hook a caller supplies, and imports no SSOT module.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from pipeline import review
 from pipeline.canonical import canonical_json_bytes
 from pipeline.filters.provenance_strip import should_strip, strip_provenance
+from pipeline.review import ReviewOutcome
 from pipeline.serialize import (
     PANDOC_BINARY_DEFAULT,
     PandocUnavailableError,
     SerializeError,
     run_pandoc_bytes,
 )
+from pipeline.store import WorkspaceStore
+from pipeline.transport import Runner
 
 __all__ = [
     "EXTERNAL_DEFERRED",
@@ -52,6 +65,7 @@ __all__ = [
     "dispatch",
     "lower_plain",
     "render_target_from_entry",
+    "review_deliverable",
 ]
 
 #: The pinned in-system writer set (gate step 3: md→markdown, html→html5, docx→docx, plus the
@@ -214,3 +228,48 @@ def dispatch(
         stripped=strip,
         output_bytes=outcome.stdout,
     )
+
+
+# ---------------------------------------------------------------------------
+# Review 2 wiring (§19, PA-10): the deliverable review runs POST-bytes, on EVERY deliverable.
+# ---------------------------------------------------------------------------
+
+
+def review_deliverable(
+    *,
+    store: WorkspaceStore,
+    deliverable_id: str,
+    fitted_ir: Mapping[str, Any],
+    ast: Mapping[str, Any],
+    hard_limits: Mapping[str, Any] | None = None,
+    context: Mapping[str, Any] | None = None,
+    review_runner: Runner | None = None,
+    review_advance: Callable[[str], None] | None = None,
+    review_model: str | None = None,
+    review_timeout_seconds: float | None = None,
+) -> ReviewOutcome:
+    """Run the §19 deliverable review (Review 2) for one deliverable, then advance the
+    deliverable SSOT row to `deliverable-reviewed` via the write-only `review_advance` hook.
+
+    Runs the FULL review on EVERY deliverable INCLUDING every fit/serialize revision (FR5,
+    FR7.5): the review is keyed by `deliverable_id`, so a revision (a distinct id) always gets
+    its OWN record — a record NEVER transfers across revisions (§19). Reads the fitted IR + the
+    AST (§17: provenance lives at the IR/AST layer, never in the output bytes) + the effective
+    `hard_limits`. It is ADVISORY (never blocks) and NEVER mutates the deliverable's
+    bytes/AST/records — it only produces an immutable id-addressed record and advances STATUS.
+    The advance runs only when a record now exists (`persisted`). `review_runner` is the review
+    transport seam (injectable for tests; None = real transport)."""
+    outcome = review.review_deliverable(
+        store=store,
+        deliverable_id=deliverable_id,
+        fitted_ir=fitted_ir,
+        ast=ast,
+        hard_limits=hard_limits,
+        context=context,
+        runner=review_runner,
+        model=review_model,
+        timeout_seconds=review_timeout_seconds,
+    )
+    if outcome.persisted and review_advance is not None:
+        review_advance(deliverable_id)  # SSOT advance is write-only w.r.t. control flow
+    return outcome

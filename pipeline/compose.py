@@ -22,6 +22,13 @@ Design authority: `docs/design.md`
            `is_done` FIRST and skips the (expensive) LLM entirely, driving the spine only to
            complete any lagging bookkeeping. INV-CORRECTNESS (§22.7): this module imports NO
            SSOT module; S5 advancement rides the write-only `AdvanceHook` a caller supplies.
+  §19    — **Review 1 (the artifact review) is wired here (PA-10).** Post-mint, ONCE per
+           artifact, this stage runs the ADVISORY artifact review (`pipeline.review`, itself
+           SSOT-free) and advances the artifact SSOT row to `artifact-reviewed` through the
+           SAME write-only hook mechanism (`review_advance`) — so compose still imports no
+           SSOT module. The review NEVER mutates the persisted IR; it only produces an
+           immutable id-addressed record and advances STATUS. It is off by default
+           (backward-compatible): the pre-review compose path is unchanged.
   §21.9 (F10) — the writer is invoked through `pipeline.transport` on the Claude SUBSCRIPTION,
            never API keys; per step-23 advisory A2 the child runs in a dedicated NON-REPO
            `cwd` (see below), never the repo working tree.
@@ -73,12 +80,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pipeline import ir
+from pipeline import ir, review
 from pipeline.canonical import canonical_json_bytes
 from pipeline.claims import ClaimRegistry
 from pipeline.grounding import GroundedFact
 from pipeline.ids import part_id
 from pipeline.prompts import load_template
+from pipeline.review import ReviewOutcome
 from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive
 from pipeline.store import WorkspaceStore, is_done
 from pipeline.transport import Runner, TransportResult, invoke_headless
@@ -158,7 +166,9 @@ class ComposeOutcome:
     persisted envelope on success (None otherwise); `spine_result` carries the §22.3
     persistence outcome; `attempts` counts writer invocations (0 on the idempotent path);
     `violations` accumulates the per-attempt contract-violation messages; `transport_result`
-    is the last transport outcome (None on the idempotent path).
+    is the last transport outcome (None on the idempotent path). `review` is the §19 artifact
+    review (Review 1) outcome when the caller wired review in (None when review is disabled —
+    the default; the review is ADVISORY and never changes `status`/`code`, §19).
     """
 
     status: Literal["ok", "error"]
@@ -169,6 +179,7 @@ class ComposeOutcome:
     violations: tuple[str, ...]
     spine_result: SpineResult | None
     transport_result: TransportResult | None
+    review: ReviewOutcome | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +497,43 @@ def _persist(
 
 
 # ---------------------------------------------------------------------------
+# Review 1 wiring (§19, PA-10): the artifact review runs POST-mint, ONCE per artifact. It is
+# ADVISORY — it produces an immutable id-addressed record (`pipeline.review`, which imports NO
+# SSOT module) and advances the SSOT STATUS via the write-only `review_advance` hook the caller
+# supplies. It NEVER mutates the persisted IR and never changes the compose status/code.
+# ---------------------------------------------------------------------------
+
+
+def _run_artifact_review(
+    request: ComposeRequest,
+    ir_doc: Mapping[str, Any] | None,
+    *,
+    store: WorkspaceStore,
+    review_runner: Runner | None,
+    review_advance: AdvanceHook | None,
+    review_model: str | None,
+    review_timeout_seconds: float | None,
+) -> ReviewOutcome:
+    """Run the §19 artifact review after the IR is materialized, then advance the artifact SSOT
+    row to `artifact-reviewed` (via the opaque `review_advance` hook — compose never imports the
+    SSOT). `ir_doc` is the fresh envelope on the hot path; None on the idempotent path, where the
+    review loads the persisted IR itself. Idempotent by review-record existence (§19): a re-drive
+    never re-runs the LLM. The advance runs only when a record now exists (`persisted`)."""
+    outcome = review.review_artifact(
+        store=store,
+        artifact_id=request.artifact_id,
+        ir_doc=ir_doc,
+        context=request.effective_values,
+        runner=review_runner,
+        model=review_model,
+        timeout_seconds=review_timeout_seconds,
+    )
+    if outcome.persisted and review_advance is not None:
+        review_advance(request.artifact_id)  # SSOT advance is write-only w.r.t. control flow
+    return outcome
+
+
+# ---------------------------------------------------------------------------
 # The compose stage entry point.
 # ---------------------------------------------------------------------------
 
@@ -501,6 +549,10 @@ def compose_artifact(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     model: str | None = None,
     timeout_seconds: float | None = None,
+    review_runner: Runner | None = None,
+    review_advance: AdvanceHook | None = None,
+    review_model: str | None = None,
+    review_timeout_seconds: float | None = None,
 ) -> ComposeOutcome:
     """Compose one artifact: prompt → writer → strict IR gate (bounded re-ask) → persist.
 
@@ -512,13 +564,36 @@ def compose_artifact(
     own code; a CONTRACT violation re-asks up to `max_attempts`, and a persistently-violating
     writer is returned as `compose-contract-violation` and NEVER persisted. A valid IR is
     persisted via a spine claim on the artifact-id (§22.3).
-    """
+
+    **Review 1 wiring (§19, PA-10).** When `review_advance` is supplied, the ADVISORY artifact
+    review runs POST-mint (on both the fresh and the idempotent paths — ONCE per artifact by
+    review-record existence), producing an immutable id-addressed record and advancing the
+    artifact SSOT row to `artifact-reviewed` via the write-only hook. It NEVER mutates the
+    persisted IR and never changes this outcome's `status`/`code`; its result rides
+    `ComposeOutcome.review`. Review is DISABLED by default (`review_advance=None`) — the
+    pre-review compose behavior is unchanged. `review_runner` is the review transport seam
+    (injectable for tests; None = real transport, like the writer)."""
     if max_attempts < 1:
         raise ComposeError(f"compose-error: max_attempts must be ≥ 1, got {max_attempts}")
     ledger, entries = build_grounding_ledger(
         request.grounded_facts, source_repos=request.source_repos
     )
     lookup = _recorded_preimage_lookup(store)
+
+    # §19: the artifact review is wired iff the caller supplied a `review_advance` hook (the
+    # driver's opt-in). A closure keeps the four review knobs out of the ok-path signatures.
+    def maybe_review(ir_doc: Mapping[str, Any] | None) -> ReviewOutcome | None:
+        if review_advance is None:
+            return None
+        return _run_artifact_review(
+            request,
+            ir_doc,
+            store=store,
+            review_runner=review_runner,
+            review_advance=review_advance,
+            review_model=review_model,
+            review_timeout_seconds=review_timeout_seconds,
+        )
 
     # §21.8 idempotency floor: an existing artifact is composed exactly once — no LLM.
     if is_done(store, request.artifact_id):
@@ -541,6 +616,7 @@ def compose_artifact(
             violations=(),
             spine_result=result,
             transport_result=None,
+            review=maybe_review(None),  # §19: review runs post-mint (loads the IR if absent)
         )
 
     own_cwd = cwd is None
@@ -584,6 +660,7 @@ def compose_artifact(
                 violations=tuple(violations),
                 spine_result=result,
                 transport_result=transport,
+                review=maybe_review(doc),  # §19: Review 1, post-mint, on the fresh IR
             )
         # Re-ask bound exhausted: caught, and NEVER persisted (§21.9).
         return ComposeOutcome(

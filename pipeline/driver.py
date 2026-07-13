@@ -6,7 +6,11 @@ Design authority: `docs/design.md`
         cascade → M2 render cascade, §8/§12) → COMPOSE (the writer stage, a LIVE
         subscription LLM call, §15) → RECONCILE (the fit pass, §16) → SERIALIZE (the
         pinned Pandoc pass + dispatch, §17) → PERSIST (the S0–S6 spine, §22.3) → the
-        SSOT row advance (§24, the derived convenience).
+        two REVIEW gates (§19: the artifact review once post-compose, the deliverable
+        review post-bytes on every deliverable — advisory, advancing SSOT STATUS only,
+        never mutating the persisted output) → the SSOT row advance (§24, the derived
+        convenience). The reviews ride the existing compose/dispatch advance-hook
+        mechanism; the driver stays thin and imports the SSOT only as the orchestrator.
   §25 — this is a BUILD MILESTONE, explicitly NOT the MVP. It exercises ONE concrete
         thread from a REAL graph through a REAL LLM to a REAL deliverable, the earliest
         real end-to-end output the design's own gates allow (gates precede build; every
@@ -57,7 +61,12 @@ from pipeline.cascade import (
     resolve_render,
 )
 from pipeline.compose import ComposeRequest, compose_artifact
-from pipeline.dispatch import dispatch, lower_plain, render_target_from_entry
+from pipeline.dispatch import (
+    dispatch,
+    lower_plain,
+    render_target_from_entry,
+    review_deliverable,
+)
 from pipeline.fanout import SelectionRequest
 from pipeline.grounding import GroundingOutcome, build_pool, ground_item
 from pipeline.ids import mint_artifact_id
@@ -99,7 +108,8 @@ class DriverError(RuntimeError):
 
 @dataclass(frozen=True)
 class DeliverableResult:
-    """One rendered deliverable: its id, on-disk bytes, and the identity records."""
+    """One rendered deliverable: its id, on-disk bytes, the identity records, and the §19
+    deliverable-review (Review 2) verdict/code (advisory — never gates the thread)."""
 
     deliverable_id: str
     fitted_id: str
@@ -113,11 +123,14 @@ class DeliverableResult:
     preview: str
     fit_binding: Mapping[str, Any]
     render_binding: Mapping[str, Any]
+    review_code: str = ""
+    review_verdict: str | None = None
 
 
 @dataclass(frozen=True)
 class ArtifactResult:
-    """One composed artifact + its deliverables, plus the composition-binding proof."""
+    """One composed artifact + its deliverables, plus the composition-binding proof and the §19
+    artifact-review (Review 1) verdict/code (advisory — never gates the thread)."""
 
     artifact_id: str
     query: str
@@ -128,6 +141,8 @@ class ArtifactResult:
     transport_cost_usd: float | None
     artifact_record_path: str
     deliverables: tuple[DeliverableResult, ...]
+    review_code: str = ""
+    review_verdict: str | None = None
 
 
 @dataclass(frozen=True)
@@ -332,11 +347,13 @@ def _run_deliverable(
     deliverable: DeliverableItem,
     canonical_ir: Mapping[str, Any],
     source_commit_digest: str,
+    model: str | None,
     log: Log,
 ) -> DeliverableResult:
     """Thread one deliverable coordinate: reconcile (fit) → serialize (pinned Pandoc) →
     persist the fitted IR + the render-binding + the layer-2 bytes; advance the
-    deliverable SSOT row `planned → fitted → rendered`."""
+    deliverable SSOT row `planned → fitted → rendered`; then run the §19 deliverable
+    review (Review 2) POST-bytes, advancing the row to `deliverable-reviewed`."""
     d = deliverable
     ssot.register(
         d.deliverable_id,
@@ -474,6 +491,29 @@ def _run_deliverable(
         f"{bytes_path.name} ({len(output_bytes)} bytes)"
     )
 
+    # §19 Review 2: the FULL deliverable review runs POST-bytes (row now at `rendered`),
+    # advancing the deliverable row to `deliverable-reviewed`. It reads the fitted IR + the
+    # AST + the hard limits and NEVER mutates the persisted bytes/records (advisory).
+    review = review_deliverable(
+        store=store,
+        deliverable_id=d.deliverable_id,
+        fitted_ir=fitted_ir,
+        ast=ast,
+        hard_limits=hard_limits,
+        context={
+            "platform": d.platform,
+            "language": d.language,
+            "output_type": d.output_type,
+            "presentation": d.presentation,
+            "writer": target.writer,
+            "side": target.side,
+            "document_count": len(units),
+        },
+        review_advance=ssot.advance_hook("deliverable-reviewed"),
+        review_model=model,
+    )
+    log(f"    review: deliverable {review.code} verdict={review.verdict}")
+
     preview = output_bytes.decode("utf-8", errors="replace")
     return DeliverableResult(
         deliverable_id=d.deliverable_id,
@@ -488,6 +528,8 @@ def _run_deliverable(
         preview=preview[:600],
         fit_binding=fit_binding,
         render_binding=render_binding,
+        review_code=review.code,
+        review_verdict=review.verdict,
     )
 
 
@@ -573,6 +615,9 @@ def _run_artifact(
         claims=claims,
         advance=ssot.advance_hook("composed"),
         model=model,
+        # §19 Review 1: post-mint artifact review, advancing the row to `artifact-reviewed`.
+        review_advance=ssot.advance_hook("artifact-reviewed"),
+        review_model=model,
     )
     if cout.status != "ok" or cout.ir is None:
         raise DriverError(
@@ -592,6 +637,10 @@ def _run_artifact(
         f"  compose: OK ({cout.code}); binding digest {binding['digest'][:16]}… "
         f"reproduces {item.artifact_id} -> {'VERIFIED' if verified else 'MISMATCH'}"
     )
+    # §19 Review 1 rode inside compose_artifact (post-mint, advancing `artifact-reviewed`).
+    review = cout.review
+    if review is not None:
+        log(f"  review: artifact {review.code} verdict={review.verdict}")
 
     deliverables = tuple(
         _run_deliverable(
@@ -605,6 +654,7 @@ def _run_artifact(
             deliverable=d,
             canonical_ir=canonical_ir,
             source_commit_digest=digest_full(dict(plan.source_commit)),
+            model=model,
             log=log,
         )
         for d in item.deliverables
@@ -620,6 +670,8 @@ def _run_artifact(
         transport_cost_usd=cost,
         artifact_record_path=str(store.output_path(item.artifact_id).relative_to(store.root)),
         deliverables=deliverables,
+        review_code=review.code if review is not None else "",
+        review_verdict=review.verdict if review is not None else None,
     )
 
 
