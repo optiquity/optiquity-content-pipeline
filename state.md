@@ -9,17 +9,17 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 27 (serialize core, §17 + PA-12 CI pandoc) done.
-Reviewer caught a HIGH/blocking FAIL-OPEN in the provenance-strip filter (allowlist `{html5,epub3}` →
-any other public writer, e.g. a one-file-add `revealjs`/`s5`/bare-`epub` external target, would ship full
-provenance); fix-coder INVERTED it to fail-closed (strip UNLESS on `SAFE_WRITERS={markdown,json,docx,pptx,
-pdf,plain}` — every other writer, present or future, strips by default), + fixed a part-Div id over-strip
-+ added a twin-matcher cross-check. Shipped behavior unchanged (html5/epub3 strip identically);
-STRIP_FILTER_VERSION stays 1 (no producible writer's bytes change). Coordinator re-verified fail-closed
-under own hand (unknown/future/empty writers all strip; revealjs through real dispatch leaks nothing).
-Progress = 27/41 + R1 done · 21/33 step-scoped commits (+3 authorized extras). Baseline green: 1585 passed
-(6 deselected/zero-live), ruff + both guards + schema-lint + inv-correctness OK. CI pandoc pin verified vs
-gate-3 (sha256 matches). Next: ★★ step 28 — FIRST END-TO-END OUTPUT.
+**FRAMEWORK BUILD IN PROGRESS — Phase 3.** ★ Step 28 (FIRST END-TO-END OUTPUT) done, reviewer CLEAN.
+A real 11,910-byte grounded deliverable was produced from the real optiquity-site graph via ONE live
+subscription writer call ($0.48): ground → resolve/bind → compose (live) → reconcile (pass/no-op) →
+serialize (`plain` internal) → persisted artifact + deliverable + bindings + BOTH SSOT row kinds
+(artifact→composed, deliverable→rendered). Coordinator + reviewer both independently verified: client repo
+UNTOUCHED (rule 1 — graph.json mtime unchanged, client git clean), zero client/demo content committable
+(rule 4 — demo instance isolated under `workspaces/mvp-demo/` + `instance/defaults.yaml`, in local-only
+`.git/info/exclude` per PA-15), binding digest reproduces the artifact-id, identity never re-minted (§9.6).
+This is a BUILD MILESTONE (§25), explicitly NOT the MVP. Progress = 28/41 + R1 done · 22/33 step-scoped
+commits (+3 authorized extras). Baseline green: 1585 passed (6 deselected/zero-live). Next: step 29
+(serialize completion — presentation lowering, serialize revisions, layer-3 payload, pin bundle).
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
@@ -164,6 +164,16 @@ main without isolation). If a future coder still lands files in a worktree, reco
 - **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
   (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
   extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
+- **→ Step 32/33 invoke (from step-28 review CF-1):** `driver._pin_source_commit` reads only
+  `built_at_commit` from graph.json; the `GraphifyAdapter` additionally falls back to a read-only
+  `git rev-parse HEAD`. For a commitless-but-git-checkout source the artifact-id commit-map would OMIT a
+  commit the grounding ledger records (latent id/ledger provenance divergence). In the invoke core, reuse
+  the adapter's provenance read (or assert `outcome.commit_map == source_commit`). Zero impact on the
+  step-28 demo (single source with `built_at_commit` present; id reproduced).
+- **→ Step 32/33 invoke (from step-28 review CF-2, optional):** `driver.py:397` advances the fitted SSOT
+  row via a direct `ssot.advance()`, outside the spine's S5 contained-hook exception containment (unlike
+  composed/rendered). `advance()` never raises for business conditions so it errs toward surfacing (safe),
+  but route it through a contained hook for consistency with §22.7 "SSOT never gates control flow."
 - **→ Step 40 / next `ir.py`-touching step (from step-27 review F3, dedup):** `serialize._match_bracket`
   duplicates `ir._match_bracket` byte-for-byte — promote to ONE shared public helper (importing the private
   `ir._match_bracket` was left out of scope). Until then, `tests/test_serialize.py::

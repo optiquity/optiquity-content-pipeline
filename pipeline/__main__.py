@@ -14,6 +14,15 @@ Implemented:
                  the repo's own state.md. The SSOT is write-only w.r.t. control flow (§22.7):
                  there is no read-a-status verb here, only the whole-report projection.
 
+  demo-thread    (plan step 28, ★ FIRST END-TO-END OUTPUT) — drive ONE full thread end to
+                 end against a LOCAL demo instance (`instance/defaults.yaml` +
+                 `workspaces/<ws>/`): ground the client graph → resolve/bind → compose (a
+                 LIVE subscription writer call) → reconcile → serialize → persist the
+                 artifact + deliverable + bindings, advancing both SSOT row kinds (§2.1
+                 stages 1–5). A BUILD MILESTONE, not the MVP (§25). Spends subscription
+                 quota (the compose call is real). Writes only under the workspace store;
+                 the client graph is read-only (rule 1).
+
 (`migrate` is deliberately NOT a subcommand here: migration is a maintenance verb with its
 own entry point, `scripts/migrate.sh` → `python -m pipeline.migration` — §11.6/§21.9.)
 """
@@ -36,6 +45,11 @@ commands:
                                  Read-only; writes to a caller-supplied path or stdout,
                                  never the repo's own state.md. Options: --csv FILE
                                  (required) · --out FILE (default: stdout). Exit 0 ok; 2 usage.
+  demo-thread    drive one full end-to-end thread (design §2.1 stages 1–5, plan step 28).
+                 A LIVE writer call (subscription quota); a build milestone, not the MVP
+                 (§25). Options: --workspace NAME (required) · --root DIR (default .) ·
+                 --now YYYY-MM-DD (grounding clock; default today) · --model NAME (writer
+                 model; default: the CLI's own). Exit 0 ok; 1 thread failure; 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -154,9 +168,112 @@ def _cmd_ssot(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_demo_thread(argv: list[str]) -> int:
+    """Plan step 28: `scripts/pipeline demo-thread` — the FIRST END-TO-END OUTPUT.
+
+    Drives one full thread (ground → resolve/bind → compose LIVE → reconcile → serialize
+    → persist + SSOT advance, design §2.1 stages 1–5) against a local demo instance and
+    prints the transcript. A build milestone, NOT the MVP (§25). The compose call spends
+    subscription quota. Exit 0 on a real deliverable, 1 on a thread failure, 2 on usage.
+    """
+    import argparse
+    from datetime import date
+
+    from pipeline.driver import DriverError, run_thread
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline demo-thread",
+        description=(
+            "Drive ONE full thread end to end (design §2.1 stages 1–5): ground the client "
+            "graph, resolve/bind, compose via a LIVE subscription writer call, reconcile, "
+            "serialize to an internal target, and persist the artifact + deliverable + "
+            "bindings, advancing both SSOT row kinds. A build milestone (§25), not the MVP."
+        ),
+    )
+    parser.add_argument("--workspace", required=True, help="the demo workspace (e.g. mvp-demo)")
+    parser.add_argument("--root", default=".", help="the framework repo root (default: cwd)")
+    parser.add_argument(
+        "--now",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="grounding clock override (default: today; injected at the edge, never ambient)",
+    )
+    parser.add_argument(
+        "--model", default=None, help="writer model to pin (default: the CLI's own default)"
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        now = date.fromisoformat(args.now) if args.now else date.today()
+    except ValueError:
+        print(f"pipeline demo-thread: --now must be YYYY-MM-DD, got {args.now!r}", file=sys.stderr)
+        return 2
+
+    print(f"=== demo-thread: workspace={args.workspace} root={args.root} now={now} ===")
+    try:
+        result = run_thread(
+            root=args.root,
+            workspace=args.workspace,
+            now=now,
+            model=args.model,
+            log=lambda line: print(line),
+        )
+    except DriverError as exc:
+        print(f"\nBLOCKED: {exc}", file=sys.stderr)
+        return 1
+
+    _print_thread_report(result)
+    return 0
+
+
+def _print_thread_report(result: object) -> None:
+    """Render the completed thread's transcript summary (the report the maintainer reads)."""
+    from pipeline.driver import ThreadResult
+
+    assert isinstance(result, ThreadResult)
+    print("\n=== THREAD COMPLETE ===")
+    print(f"workspace       : {result.workspace}")
+    print(f"recipe          : {result.recipe}")
+    print(f"plan_hash       : {result.plan_hash}")
+    print(f"source_subset   : {list(result.source_subset)}")
+    print(f"source_commit   : {dict(result.source_commit)}")
+    print("nine axes:")
+    for axis, value in result.axes.items():
+        print(f"  {axis:<14}: {value}")
+    for art in result.artifacts:
+        print(f"\nartifact-id     : {art.artifact_id}")
+        print(f"  query         : {art.query!r}")
+        print(f"  facts         : {art.fact_count} grounded, {art.published_fact_count} published")
+        print(f"  record        : {art.artifact_record_path}")
+        print(
+            f"  binding       : digest {art.composition_digest[:16]}… "
+            f"verify={'VERIFIED' if art.composition_verified else 'MISMATCH'}"
+        )
+        print(f"  writer cost   : {art.transport_cost_usd}")
+        for dv in art.deliverables:
+            print(f"  deliverable-id: {dv.deliverable_id}")
+            print(f"    fitted-id   : {dv.fitted_id}")
+            print(
+                f"    reconcile   : {dv.reconcile_strategy} "
+                f"({'no-op' if dv.reconcile_is_noop else 'live'})"
+            )
+            print(f"    writer/side : {dv.writer}/{dv.side}")
+            print(f"    bytes       : {dv.bytes_path} ({dv.byte_count} bytes)")
+            print(f"    sha256      : {dv.sha256}")
+            print("    --- output preview (first 600 bytes) ---")
+            for pline in dv.preview.splitlines():
+                print(f"    | {pline}")
+            print("    --- end preview ---")
+    print(f"\nSSOT CSV        : {result.ssot_csv_path}")
+    print("SSOT rows (both kinds — the derived convenience, §24):")
+    for line in result.ssot_report.splitlines():
+        print(f"  {line}")
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
+    "demo-thread": _cmd_demo_thread,
 }
 
 
