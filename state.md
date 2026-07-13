@@ -9,12 +9,13 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 25 (reconcile pass core, §16) done, reviewer CLEAN.
-Content-addressing determinism + fidelity gate both airtight (no under-inclusion collision; minted_ts out
-of identity; no-op cannot misclassify; ledger machine-owned so the LLM can't hide a fact drop). Progress =
-25/41 + R1 done · 19/33 step-scoped commits (+3 authorized extras). Baseline green: 1517 passed
-(6 deselected/zero-live), ruff + both guards + schema-lint + inv-correctness OK. Next: step 26 (fit
-resolution — FR2 + force_reconcile matrix + split parts + claims, PA-7 second half).
+**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 26 (fit resolution — FR2 + force matrix + split parts +
+claims, §21.8) done, reviewer CLEAN. Idempotency + self-heal both hole-free (two identical forcers →
+one content-addressed claim key → one winner; config revert re-selects the retained-digest fit as a HIT,
+no re-mint; latest-minted pick order-invariant via (minted_ts, fitted_id) tiebreak). Progress =
+26/41 + R1 done · 20/33 step-scoped commits (+3 authorized extras). Baseline green: 1540 passed
+(6 deselected/zero-live), ruff + both guards + schema-lint + inv-correctness OK. Next: step 27 (serialize
+core, §17 — CI pandoc install lands here) → ★28 first end-to-end output.
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
@@ -166,11 +167,14 @@ main without isolation). If a future coder still lands files in a worktree, reco
 - **→ Step 26 (from step-25 review obs-1, cheap hardening):** a non-numeric `hard_limit` raises
   `ReconcileError` only at the terminal gate — for a non-`pass` strategy that fires AFTER one LLM call
   (wasted spend). Add a pre-LLM numeric-limit type check in request assembly/`_validate_request`.
-- **→ Step 36 or 40 (from step-25 review, INV-CORRECTNESS parity):** the import-lint `CORRECTNESS_ROOTS`
-  watches the persistence/idempotency/lock plane (store/claims/spine/sweep/parallel). `reconcile.py` and
-  `compose.py` are pure producers that persist nothing and are (correctly) NOT watched. If defense-in-depth
-  against a future `ssot` import in a pure producer is wanted, add `reconcile` AND `compose` TOGETHER — never
-  single out just one (inconsistent).
+- **→ Step 36 or 40 (from step-25 + step-26 reviews, INV-CORRECTNESS roots expansion — batch all THREE):**
+  the import-lint `CORRECTNESS_ROOTS` (`tests/test_inv_correctness.py:45`) watches store/claims/spine/sweep/
+  parallel. Add `fit_resolution` + `reconcile` + `compose` TOGETHER (one small expanded-scope pass; editing
+  that shared test file is out of a coder's per-step 2-file scope). Rationale: `fit_resolution` is the
+  strongest candidate (claim-adjacent resolution rule; §22.7 PC12 names "both resolution rules" SSOT-
+  independent); `reconcile`/`compose` are pure producers. The invariant HOLDS today (`ssot` doesn't exist
+  yet) and step 26's local AST no-ssot guard is a real-but-weaker substitute (own-imports only, not the
+  transitive closure the roots lint walks) — so this is owed-soon defense-in-depth, not a live defect.
 - **→ §26 localization GA (post-MVP, from step-25 review obs-2/obs-4):** (a) the reconciler prompt/parse are
   built from `request.canonical_ir` while assembly uses `localized_ir` — identical in v1 (localize no-op);
   once localization is real the prompt must read the LOCALIZED IR. (b) a `pass` with language≠source is
