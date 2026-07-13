@@ -29,6 +29,15 @@ Design authority: `docs/design.md`
            BRANCHES on an SSOT read; the SSOT advances ride the driver's write-only S5 hooks.
            Idempotency reads OUTPUT EXISTENCE (`store`/`is_done`), never the SSOT, never the
            token (the token is a cursor, not a correctness boundary).
+  §22.2/§22.4/§22.5 — `begin-session(want_parallel_plan=true)` hands back the WAVE PLAN
+           (`pipeline.parallel.build_wave_plan`): wave 0 compose (keyed by artifact-id), wave 1
+           render (keyed by deliverable-id), each unit carrying `prereqs`/`shard`, plus
+           `suggested_width` and the ADVISORY `recommended_width` from the content-free
+           telemetry window (`pipeline.telemetry`, never auto-applied). No new verb (PC6); the
+           token is UNCHANGED — an immutable plan-context under parallel mode (workers
+           coordinate via the store/claims, never by mutating it). `status` exposes the §22.3
+           completeness SWEEP (the wave barrier) read from MATERIALIZED ids only (store-only,
+           ssot-free) — `pipeline.parallel` is the ssot-free correctness root that computes it.
 
 **Isolation is enforced by the API gate (ONE authoritative path).** continue-session's ids
 are ACTION-nested (`render.item`, `add-to-folio` members/`folio_id`, `fetch.id`,
@@ -58,7 +67,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from pipeline import driver
+from pipeline import driver, parallel, telemetry
 from pipeline.adapters.base import AdapterError, SourceAdapter
 from pipeline.adapters.graphify import GraphifyAdapter
 from pipeline.api import discovery, fetch, folio_verbs, manifest, render, results
@@ -130,6 +139,33 @@ def _root_of(store: Any) -> Path:
     `root/workspaces/<ws>` (invoke §21.1), so the root is its grandparent — the dir the
     §5 registries + `instance/defaults.yaml` live under (`CascadeEnv` reads them there)."""
     return store.root.parent.parent
+
+
+def _telemetry_log(root: Path) -> telemetry.TelemetryLog:
+    """The instance-scoped telemetry log under `instance/ops/` (§22.5/§23) — content-free,
+    gitignored-in-public. Read here only for the advisory `recommended_width` (never a
+    correctness read)."""
+    return telemetry.TelemetryLog(root / "instance" / "ops" / "telemetry.jsonl")
+
+
+def _parallel_plan_context(root: Path, plan: Plan) -> dict[str, Any]:
+    """The §22.2 wave-plan block for `begin-session(want_parallel_plan=true)` (§22.4).
+
+    Returns the wave plan (waves × units with `prereqs`/`shard`), `suggested_width` (§22.5),
+    and the ADVISORY `recommended_width` from the recent telemetry window — never auto-applied
+    (§22.5); the user's cap stays authoritative. `parallel_mode` flags that the returned token
+    is an IMMUTABLE plan-context: parallel workers coordinate through the store/claims, NEVER by
+    mutating the token (§22.4)."""
+    wave_plan = parallel.build_wave_plan(plan)
+    advisory = telemetry.recommend_width(_telemetry_log(root), cap=wave_plan.instance_cap)
+    return {
+        "parallel_mode": True,
+        "parallel_plan": parallel.wave_plan_payload(wave_plan),
+        "suggested_width": wave_plan.suggested_width,
+        "recommended_width": advisory.recommended_width,
+        "recommended_width_below_cap": advisory.below_cap,
+        "recommended_width_basis": advisory.basis,
+    }
 
 
 def _default_adapters() -> dict[str, SourceAdapter]:
@@ -307,16 +343,17 @@ def _begin_session(
     }
     if folio_id is not None:
         ids["folio_id"] = folio_id
-    summary = results.ResultItem(
-        item="begin-session",
-        status="ok",
-        ids=ids,
-        context={
-            "plan_hash": plan.plan_hash,
-            "generate": "none",
-            "warnings": [w.message for w in plan.warnings],
-        },
-    )
+    context: dict[str, Any] = {
+        "plan_hash": plan.plan_hash,
+        "generate": "none",
+        "warnings": [w.message for w in plan.warnings],
+    }
+    if ctx.params.get("want_parallel_plan"):
+        # §22.2/§22.4: hand back the wave plan + width advice — no new verb (PC6). The token
+        # is unchanged (an immutable plan-context under parallel mode; workers coordinate via
+        # the store/claims, never by mutating it).
+        context.update(_parallel_plan_context(root, plan))
+    summary = results.ResultItem(item="begin-session", status="ok", ids=ids, context=context)
     return ([summary], token)
 
 
@@ -536,6 +573,11 @@ def _status(
     plan, _env, _pool, _repos = _resolve_from_inputs(root, ctx.workspace, token.inputs)
     consumed = list(token.cursor.get("consumed", []))
     drift = plan.plan_hash != token.plan_hash
+    # §22.3 completeness sweep exposed via `status` — the wave barrier read from MATERIALIZED
+    # ids (store existence, ssot-free), NEVER the cursor and NEVER the SSOT (§22.7). `missing`
+    # surfaces any expected unit neither materialized nor blocked (the anti-silent-gap view;
+    # status supplies no blocked set, so unmaterialized == pending/missing here).
+    sweep_result = parallel.sweep(parallel.build_wave_plan(plan), ctx.store)
     progress = {
         "consumed": len(consumed),
         "produced": len(token.produced_ids),
@@ -543,6 +585,24 @@ def _status(
         "plan_hash_token": token.plan_hash,
         "plan_hash_current": plan.plan_hash,
         "drift": drift,
+        "sweep": {
+            "expected": len(sweep_result.expected),
+            "materialized": len(sweep_result.materialized),
+            "blocked": len(sweep_result.blocked),
+            "missing": len(sweep_result.missing),
+            "complete": sweep_result.complete,
+            "waves": [
+                {
+                    "index": w.index,
+                    "kind": w.kind,
+                    "expected": len(w.expected),
+                    "materialized": len(w.materialized),
+                    "missing": len(w.missing),
+                    "complete": w.complete,
+                }
+                for w in sweep_result.waves
+            ],
+        },
     }
     if drift:
         item = results.make_result(

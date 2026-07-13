@@ -9,24 +9,26 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 4 COMPLETE (the entire external API is built).** Step 35 (emit-manifest
-+ closed-vocabulary completeness capstone) done; chain coder → reviewer(FIXES-NEEDED: HIGH serialize-level gap)
-→ fix-coder → reviewer2(**CLEAN**). `pipeline/api/manifest.py`: `emit-manifest` (§21.5) — a no-mint, ssot-free,
-point-in-time folio work order. Resolves each member through the fit AND serialize levels of the §21.8 rule
-with MINTING DISABLED (reuses the discovery `CurrencyResolver` no-mint digest machinery); rows = current /
-stale-fit (`render-input-mismatch` warn, not re-fitted) / render-needed (resolvable-but-unmaterialized —
-including fit-current-but-serialize-STALE, so serialize-stale bytes are NEVER referenced as current, FR7.3) /
-frozen-pin (verbatim, currency-annotated, never re-resolved) / unresolved-member (`needs-input`). Byte-identical
-regeneration (wall-clock only in the `<folio-id>-<ts>` filename); external→layer-3 ref, internal→path+pins; NO
-ordering/schedule columns + sortable facts columns (A4-4); persisted under output/manifests/ AND returned
-in-band; never writes SSOT. **PA-11/REC-6 CAPSTONE LANDED:** every API2 verb + continue-session action now
-dispatches to a REAL handler — `tests/test_action_completeness.py` proves ZERO `NotYetWired`/`HandlerNotWired`
-reachable after `register_api_handlers()` (non-vacuous: full-vocab enumeration + behavioral dispatch + bite-
-checks that the retired seams still fire when unwired). Progress = 35/41 + R1 done · 29/33 step-scoped commits
-(+3 authorized extras). Baseline green: 1870 passed (6 deselected/zero-live). Reviewer scorecard: step 35 caught
-a HIGH §21.5/FR7.3 gap (manifest labelled serialize-stale deliverables `current`, handing a publisher stale
-bytes) — fixed. Next: step 36 (Phase 5 — parallelism machinery: wave plan, presence leases, telemetry, width
-policy, sweep; + the CORRECTNESS_ROOTS batch expansion).
+**FRAMEWORK BUILD IN PROGRESS — Phase 5.** Step 36 (parallelism machinery, §22) done, reviewer **CLEAN** (no
+must-fix, no carry-forward fixes) — the most safety-critical step. `pipeline/parallel.py` (ssot-free CORRECTNESS
+ROOT): the wave plan (`begin-session(want_parallel_plan)` → wave 0 compose by artifact-id, wave 1 render by
+deliverable-id; prereqs+shard; `suggested_width=min(units,cap)`; token immutable plan-context); the completeness
+SWEEP (materialized ∪ blocked = expected, computed from the STORE only — an id marked composed/fitted in the
+SSOT CSV but absent from the store still reports MISSING; detects a deliberately-missed unit; `status` fail-safe
+over-reports missing, never falsely `complete`); the §22.6 parallel-path codes wired. `pipeline/telemetry.py`:
+content-free append-only JSONL + self-healing presence-lease registry + the never-auto-applied `recommended_
+width` advisory — content-free BY CONSTRUCTION (closed field set, finite-number-only writer refuses anything
+else) AND by grep (zero ids/workspace identifiers); carries the §24 `forced_reconciles` count-only counter
+(PC11c). `pipeline/opdefaults.py`: the conservative G2 seeds as a flat constants surface (max_parallel_sessions
+=3, per-workspace sub-limit=2, lease TTL=1800s, wrapper timeout=1200s < TTL) — step 38 micro-edits these with
+the G2 finals. **The FULL §22.7 conformance proof** (`tests/test_conformance_spine.py`): REAL spawned processes,
+`os._exit(17)` crash at EVERY S-point S0–S6 (each proven actually reached), 4 concurrent barrier-synced
+workers, the CSV single-writer under contention (incl. an 8-process distinct-row lost-update test through the
+real `fcntl.flock` funnel), and the slow-holder STEAL (A parked at S2 → B steals post-expiry, dies at S5 → A
+resumes S3–S6 and LOSES: already-materialized + claim-held) — proving exactly-once, no torn state, no
+double-write, no lost unit. Progress = 36/41 + R1 done · 30/33 step-scoped commits (+3 authorized extras).
+Baseline green: 1925 passed (6 deselected/zero-live). Next: step 37 (Gate G2 closure — telemetry-validated
+limits; ops-docs-researcher, REPORT-ONLY, no commit).
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
@@ -164,9 +166,14 @@ mechanic documented in the mitigation block. Follow the mitigation block, not th
   report); ratify the T10 defaults-template shapes incl. the dual `voice:` form.
 - **→ Step 17 (from step-15 review, validated):** score→tier/scope mapping as code constants; freshness-
   expression validation; the `+2`→int-2 note.
-- **→ Step 21/36 (from step-20 review RV-4):** holder-compare is cooperative trust — wire
-  COLLISION-RESISTANT holder identities (random token per worker) where the spine/parallelism constants
-  land; a duplicated holder string can currently release another's claim.
+- **✅ RESOLVED at step 36 — step-20 review RV-4 (collision-resistant holders).** Verified already discharged
+  at step 21: `spine.mint_holder()` = `h<pid>-<os.urandom(16).hex()>` (128 random bits) at EVERY production
+  claim-holder site (`registry_for(store)` is the sole constructor; no site derives a holder from a predictable
+  value), and `claims.release`/steal is holder-checked (a non-holder can neither release nor steal a LIVE claim
+  — only genuine lease EXPIRY yields `lease-expired-redrive`). The step-36 steal-interleaving + non-holder
+  conformance tests exercise it non-vacuously. The step-36 presence-lease identity (`mint_presence_token` = 128
+  random bits, distinct `p` namespace) is separate and gates only the never-auto-applied width advisory — off
+  the correctness/claim-release path. No `claims.py`/`store.py` edit was needed.
 - **→ Step 19/25 (from step-16 review RV-1):** configured `platform.*` values at L2/L3/L5 are silently
   inert on a no-platform item (falls to the L0 `adapt` floor with zero warnings) — decide warn-vs-inert
   where no-platform deliverable semantics are consumed.
