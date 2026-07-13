@@ -23,6 +23,18 @@ Implemented:
                  quota (the compose call is real). Writes only under the workspace store;
                  the client graph is read-only (rule 1).
 
+  mvp-demo       (plan step 39, ★ THE MVP DEMONSTRATION, §25) — drive the ONE scripted §25
+                 acceptance scenario against a LOCAL demo instance, exercising ALL NINE
+                 dimensions interacting end to end: grounding with the full selection grammar
+                 (§6), one run override (§12), compose→reconcile→serialize across an internal
+                 AND an external-side target (§14–§17), both review gates (§19), a typed folio
+                 with a typed + an untyped member (§9), emit-manifest (§21.5), the sequential
+                 AND parallel consumption modes (§21.6/§22), and the SSOT projection (§24). The
+                 SAME callable the hermetic `tests/test_mvp_scenario.py` drives — here with the
+                 REAL transport (LIVE compose + review calls; subscription quota) and the MVP
+                 fail-safe currency resolver (never the unsafe §21.9 default). Writes only under
+                 the workspace store; the client graph is read-only (rule 1).
+
 (`migrate` is deliberately NOT a subcommand here: migration is a maintenance verb with its
 own entry point, `scripts/migrate.sh` → `python -m pipeline.migration` — §11.6/§21.9.)
 """
@@ -50,6 +62,13 @@ commands:
                  (§25). Options: --workspace NAME (required) · --root DIR (default .) ·
                  --now YYYY-MM-DD (grounding clock; default today) · --model NAME (writer
                  model; default: the CLI's own). Exit 0 ok; 1 thread failure; 2 usage.
+  mvp-demo       drive THE §25 MVP scenario (all nine dimensions, interacting; plan step 39).
+                 LIVE compose + review calls (subscription quota). Options: --workspace NAME
+                 (required) · --root DIR (default .) · --now YYYY-MM-DD (grounding clock;
+                 default today) · --model NAME (writer model; default: the CLI's own).
+                 Prerequisites: the workspace must declare the source pool + the §25 topics +
+                 a styled `documentation` presentation (see docs/design.md §25 / the step-39
+                 report). Exit 0 ok; 1 scenario failure; 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -270,10 +289,142 @@ def _print_thread_report(result: object) -> None:
         print(f"  {line}")
 
 
+def _cmd_mvp_demo(argv: list[str]) -> int:
+    """Plan step 39: `scripts/pipeline mvp-demo` — ★ THE MVP DEMONSTRATION (§25).
+
+    Drives the ONE scripted §25 acceptance scenario (all nine dimensions, interacting) via the
+    shared `pipeline.mvpdemo.run_mvp_scenario` callable — the SAME callable the hermetic CI test
+    drives, but here with the LIVE transport (`runner=None`/`review_runner=None` → the real
+    subscription compose + review calls) and the real graphify source adapter.
+
+    GATE-2 (§21.9): the currency resolver is supplied EXPLICITLY as the MVP fail-safe resolver
+    (`MvpFailSafeCurrencyResolver`), NEVER left to default to `discovery.DefaultCurrencyResolver`
+    — the live path can never reach the unsafe `except → stored_digest` partial detector.
+
+    Exit 0 on a completed scenario, 1 on a scenario failure, 2 on usage. Spends subscription
+    quota (compose + review are real); writes only under the workspace store (the client graph
+    is read-only, rule 1).
+    """
+    import argparse
+    from datetime import date
+
+    from pipeline.api.render import DefaultRenderEngine
+    from pipeline.api.session import _default_adapters
+    from pipeline.driver import DriverError
+    from pipeline.mvpdemo import MvpFailSafeCurrencyResolver, run_mvp_scenario
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline mvp-demo",
+        description=(
+            "Drive THE §25 MVP scenario (all nine dimensions, interacting) against a local demo "
+            "instance: grounding with the full selection grammar, one run override, "
+            "compose→reconcile→serialize across an internal AND an external target, both review "
+            "gates, a typed folio (typed + untyped member), emit-manifest, the sequential AND "
+            "parallel consumption modes, and the SSOT projection. LIVE compose + review calls."
+        ),
+    )
+    parser.add_argument("--workspace", required=True, help="the demo workspace (e.g. mvp-demo)")
+    parser.add_argument("--root", default=".", help="the framework repo root (default: cwd)")
+    parser.add_argument(
+        "--now",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="grounding clock override (default: today; injected at the edge, never ambient)",
+    )
+    parser.add_argument(
+        "--model", default=None, help="writer model to pin (default: the CLI's own default)"
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        now = date.fromisoformat(args.now) if args.now else date.today()
+    except ValueError:
+        print(f"pipeline mvp-demo: --now must be YYYY-MM-DD, got {args.now!r}", file=sys.stderr)
+        return 2
+
+    print(f"=== mvp-demo (§25): workspace={args.workspace} root={args.root} now={now} ===")
+    try:
+        report = run_mvp_scenario(
+            root=args.root,
+            workspace=args.workspace,
+            adapters=_default_adapters(),  # the real graphify adapter (LIVE grounding + pin)
+            runner=None,  # None → the real subscription WRITER transport (LIVE compose)
+            review_runner=None,  # None → the real subscription REVIEW transport (LIVE §19)
+            render_engine=DefaultRenderEngine(),  # real reconcile/serialize legs
+            # GATE-2: explicit fail-safe resolver, NEVER the unsafe discovery default.
+            currency_resolver=MvpFailSafeCurrencyResolver(),
+            now=now,
+            model=args.model,
+            log=lambda line: print(line),
+        )
+    except DriverError as exc:
+        print(f"\nBLOCKED: {exc}", file=sys.stderr)
+        return 1
+
+    _print_mvp_report(report)
+    return 0
+
+
+def _print_mvp_report(report: object) -> None:
+    """Render the §25 clause→evidence checklist the maintainer reads (the acceptance transcript)."""
+    from pipeline.mvpdemo import MvpReport
+
+    assert isinstance(report, MvpReport)
+    print("\n=== ★ MVP SCENARIO COMPLETE (§25) ===")
+    print(f"workspace       : {report.workspace}")
+    print("nine axes (interacting):")
+    for axis, value in report.axes.items():
+        print(f"  {axis:<12}: {value}")
+    g = report.grounding
+    print("\n§6 grounding    :")
+    print(f"  selection     : {g['selection']}")
+    print(f"  survivors     : {g['survivor_instances']}")
+    print(f"  published     : {g['published_fact_count']} EXTRACTED fact(s)")
+    print(f"  conflict      : {g['conflict_subject']} → {g['conflict_claims']}")
+    print(f"  strategy      : {g['conflict_strategy']}")
+    o = report.override
+    print(f"\n§12 override    : {o['attribute']} {o['without_override']} → {o['with_override']}")
+    s = report.styled
+    print("\n§5.3 B1 styled  :")
+    print(f"  plain  did    : {s['plain_deliverable_id']} vars={s['plain_variables']}")
+    print(f"  styled did    : {s['styled_deliverable_id']} vars={s['styled_variables']}")
+    e = report.external
+    print("\n§17 external    :")
+    print(f"  {e['deliverable_id']}")
+    print(f"  side={e['side']} writer={e['writer']} stripped={e['provenance_stripped']}")
+    rv = report.reviews
+    print(
+        f"\n§19 reviews     : artifact={rv['artifact_verdict']} "
+        f"deliverable={rv['deliverable_verdict']}"
+    )
+    seq = report.sequential
+    print("\n§21.6 sequential:")
+    print(f"  artifacts     : {seq['artifact_ids']}")
+    print(f"  cursor        : {seq['cursor_progression']}")
+    par = report.parallel
+    print("\n§22 parallel    :")
+    print(f"  artifacts     : {par['artifact_ids']} (waves={par['wave_kinds']})")
+    print(
+        f"  sweep         : before={par['sweep_before']['complete']} "
+        f"partial={par['sweep_partial']['complete']} after={par['sweep_after']['complete']}"
+    )
+    fo = report.folio
+    print("\n§9 folio        :")
+    print(f"  {fo['folio_id']} ({fo['folio_type']})")
+    print(f"  typed member  : {fo['typed_member']} role={fo['typed_member_role']}")
+    print(f"  untyped member: {fo['untyped_member']} role={fo['untyped_member_role']}")
+    m = report.manifest
+    print(f"\n§21.5 manifest  : {m['path']} rows={m['row_count']} kinds={m['payload_kinds']}")
+    print(f"\n§24 SSOT        : {report.ssot['csv_path']}")
+    for line in report.ssot["derive_state"].splitlines():
+        print(f"  {line}")
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
     "demo-thread": _cmd_demo_thread,
+    "mvp-demo": _cmd_mvp_demo,
 }
 
 

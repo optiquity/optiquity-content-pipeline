@@ -49,8 +49,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from pipeline import presentation as _presentation
 from pipeline.adapters.base import SourceAdapter
 from pipeline.adapters.graphify import GraphifyAdapter
+from pipeline.api import results
 from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.cascade import (
     CascadeEnv,
@@ -63,7 +65,6 @@ from pipeline.cascade import (
 from pipeline.compose import ComposeRequest, compose_artifact
 from pipeline.dispatch import (
     dispatch,
-    lower_plain,
     render_target_from_entry,
     review_deliverable,
 )
@@ -80,6 +81,7 @@ from pipeline.serialize import (
 from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive, registry_for
 from pipeline.ssot import Ssot
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, write_new
+from pipeline.transport import Runner
 
 __all__ = [
     "DeliverableResult",
@@ -95,12 +97,51 @@ _DEMO_OUTPUT_EXTENSION = "md"
 Log = Callable[[str], None]
 
 
+def _deferred_asset_loader(path: str) -> bytes:
+    """The production-path Presentation asset loader (B1) — a DEFERRED, loud no-op.
+
+    `presentation.presentation_from_entry` invokes this ONLY for an entry declaring a
+    `css`/`template`/`reference_doc` asset lever. No framework entry declares any (only
+    `plain.md` ships), so it is NEVER called on any existing or MVP path; raising here (vs the
+    old `lower_plain` silent lever-drop) is strictly more honest (§3.1). Shipping a real
+    filesystem asset loader (the asset-path resolution convention) is §17/step-29 scope."""
+    raise _presentation.PresentationError(
+        "presentation-error: asset levers (css/template/reference_doc) are not yet lowerable on "
+        f"the production generate-next path — deferred to §17/step-29; an entry declares a "
+        f"file-backed asset lever referencing {path!r}"
+    )
+
+
 class DriverError(RuntimeError):
     """A driver-level WIRING defect the thread can never proceed past — loud, typed,
     never a silent skip (§3.1). A stage's own typed failure (compose contract, reconcile
-    block, transport error) is carried as a result, not raised as this."""
+    block, transport error) is carried as a result, not raised as this.
+
+    HARD GATE-1 (§21.7 code threading) — CLOSED at step 39. Two GENERATION-TIER raise sites
+    thread the stage's TRUE §21.7 taxonomy code so `session._generate_next` can surface it as
+    a coded `block` (`empty-pool` at the grounding gate, `hard-limit-exceeded` at the reconcile
+    terminal gate) instead of a bare code-less hint. `stage_code`/`remediation_action` are NEW
+    INSTANCE fields, `None` for every OTHER raise (a non-taxonomy failure stays code-less — the
+    §3.1 no-fabrication rule). The CLASS attribute `code = "driver-error"` is UNTOUCHED (it is
+    the exception's own kind, not a §21.7 result code)."""
 
     code = "driver-error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage_code: str | None = None,
+        remediation_action: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        #: The threaded §21.7 stage code (a taxonomy `block` code) or None. Never fabricated:
+        #: only a real `("block",)` generation code (`empty-pool`/`hard-limit-exceeded`) is
+        #: ever passed here; every other raise leaves it None (§3.1).
+        self.stage_code = stage_code
+        #: The optional machine remediation action; None lets the session default it from the
+        #: threaded code's CodeSpec (`results.make_result`), never a hardcoded guess.
+        self.remediation_action = remediation_action
 
 
 # --- Result records (the transcript the subcommand renders) --------------------------------
@@ -346,6 +387,7 @@ def _run_deliverable(
     source_commit_digest: str,
     model: str | None,
     log: Log,
+    review_runner: Runner | None = None,
 ) -> DeliverableResult:
     """Thread one deliverable coordinate: reconcile (fit) → serialize (pinned Pandoc) →
     persist the fitted IR + the render-binding + the layer-2 bytes; advance the
@@ -390,10 +432,16 @@ def _run_deliverable(
         )
     )
     if rout.status != "ok" or rout.fitted_ir is None or rout.fit_binding is None:
+        # HARD GATE-1 (§21.7): thread the reconcile stage's TRUE taxonomy code — GUARDED to
+        # a real §21.7 code (`hard-limit-exceeded` on the terminal-gate block; else the typed
+        # non-taxonomy `fit-fidelity-violation`/transport codes stay code-less, never
+        # fabricated, §3.1). `session._generate_next` derives the block STATUS from the code's
+        # CodeSpec (`("block",)`), never a hardcoded status.
         raise DriverError(
             f"driver-error: reconcile did not fit deliverable {d.deliverable_id} — "
             f"status={rout.status} code={rout.code} blocked_limits={rout.blocked_limits} "
-            f"violations={rout.violations}"
+            f"violations={rout.violations}",
+            stage_code=rout.code if rout.code in results.ALL_CODES else None,
         )
     fitted_ir = rout.fitted_ir
     fit_binding = rout.fit_binding
@@ -436,7 +484,21 @@ def _run_deliverable(
 
     target_values = _render_target_values(env, d.output_type)
     target = render_target_from_entry(target_values)
-    render_inputs = lower_plain(target)
+    # B1 (§5.3 PD3/PD5): lower the RESOLVED presentation on the production path. The bound
+    # presentation is already in scope as `render.presentation` (a BoundDimension whose
+    # `.values` is the total post-M2 view, so any L6 presentation override is honored); no
+    # re-resolve. For the `plain` floor this yields RenderInputs(flags=(), variables={},
+    # assets=(), engine=target.engine) — byte-identical to the retired `lower_plain(target)`,
+    # so every existing (all-`plain`) deliverable-id + bytes are UNCHANGED (PD5 zero-churn); a
+    # styled entry lowers to real `--variable`/`--highlight-style` flags + a variables snapshot.
+    pres = _presentation.presentation_from_entry(
+        {**render.presentation.values, "id": render.presentation.entry_id},
+        load_asset=_deferred_asset_loader,
+        defaults=render.presentation.entry.defaults(),
+    )
+    render_inputs = _presentation.lower(
+        pres, target.writer, d.output_type, target_engine=target.engine
+    )
     dout = dispatch(target, ast, render_inputs=render_inputs)
     if dout.output_bytes is None:
         raise DriverError(
@@ -522,6 +584,7 @@ def _run_deliverable(
         },
         review_advance=ssot.advance_hook("deliverable-reviewed"),
         review_model=model,
+        review_runner=review_runner,
     )
     log(f"    review: deliverable {review.code} verdict={review.verdict}")
 
@@ -561,8 +624,17 @@ def _run_artifact(
     now: date,
     model: str | None,
     log: Log,
+    runner: Runner | None = None,
+    review_runner: Runner | None = None,
 ) -> ArtifactResult:
-    """Thread one artifact: ground the topic, compose (LIVE LLM), then each deliverable."""
+    """Thread one artifact: ground the topic, compose (LIVE LLM), then each deliverable.
+
+    `runner`/`review_runner` are the generate-next TRANSPORT SEAMS (default `None` = the real
+    subscription transport): `runner` is the writer (compose), `review_runner` the §19 reviewer
+    (Review 1 rides `compose_artifact`; Review 2 rides each `_run_deliverable`). The hermetic
+    `run_mvp_scenario` injects fakes here (via a `functools.partial` wrapping this function as
+    the session's `run_artifact` seam) so NO live subscription call is reachable from the test;
+    the live `mvp-demo` subcommand leaves them `None`."""
     ssot.register(
         item.artifact_id,
         "artifact",
@@ -583,9 +655,19 @@ def _run_artifact(
         workspace=env.workspace,
     )
     if outcome.status == "block":
+        # HARD GATE-1 (§21.7): the grounding gate blocks with the real `empty-pool` code
+        # (§6.4, always `("block",)`); thread it so the session surfaces a coded block, not a
+        # bare hint. Guarded to a real §21.7 code (defensive — grounding only ever blocks with
+        # `empty-pool`); the remediation action rides through so the session need not guess it.
         raise DriverError(
             f"driver-error: grounding BLOCKED for {item.artifact_id} "
-            f"(code={outcome.code}): {dict(outcome.context)}"
+            f"(code={outcome.code}): {dict(outcome.context)}",
+            stage_code=outcome.code if outcome.code in results.ALL_CODES else None,
+            remediation_action=(
+                outcome.remediation.get("action")
+                if isinstance(outcome.remediation, Mapping)
+                else None
+            ),
         )
     published = outcome.publishable_facts
     log(
@@ -624,9 +706,11 @@ def _run_artifact(
         request,
         store=store,
         claims=claims,
+        runner=runner,  # the writer transport seam (None = real subscription)
         advance=ssot.advance_hook("composed"),
         model=model,
         # §19 Review 1: post-mint artifact review, advancing the row to `artifact-reviewed`.
+        review_runner=review_runner,  # the Review-1 transport seam (None = real subscription)
         review_advance=ssot.advance_hook("artifact-reviewed"),
         review_model=model,
     )
@@ -667,6 +751,7 @@ def _run_artifact(
             source_commit_digest=digest_full(dict(plan.source_commit)),
             model=model,
             log=log,
+            review_runner=review_runner,  # Review 2 transport seam (None = real subscription)
         )
         for d in item.deliverables
     )

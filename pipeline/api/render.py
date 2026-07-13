@@ -37,11 +37,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from pipeline import fit_resolution, reconcile, serialize
+from pipeline import fit_resolution, presentation, reconcile, serialize
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import results
 from pipeline.api import token as token_mod
 from pipeline.canonical import canonical_json_bytes
+from pipeline.dispatch import RenderInputs, RenderTarget
 from pipeline.fit_resolution import (
     DISPOSITION_FORCED_MATCH,
     DISPOSITION_FORCED_REVISION,
@@ -420,6 +421,39 @@ def _block(hint: str) -> results.ResultItem:
 
 
 # ---------------------------------------------------------------------------
+# B1 (§5.3 PD3/PD5) — presentation lowering on the render-verb minting path.
+# ---------------------------------------------------------------------------
+
+
+def _deferred_asset_loader(path: str) -> bytes:
+    """The render-verb Presentation asset loader (B1) — a DEFERRED, loud no-op. Invoked ONLY for
+    an entry declaring a `css`/`template`/`reference_doc` lever (no framework entry does — only
+    `plain.md` ships — and the MVP styled entry is asset-free), so it never fires on any existing
+    or MVP path; raising (vs the old silent lever-drop) is strictly more honest (§3.1). A real
+    filesystem asset loader is §17/step-29 scope, not this step."""
+    raise presentation.PresentationError(
+        "presentation-error: asset levers (css/template/reference_doc) are not yet lowerable on "
+        f"the render-verb path — deferred to §17/step-29; an entry references asset {path!r}"
+    )
+
+
+def _lower_for_leg(env: Any, leg: SerializeLeg, target: RenderTarget) -> RenderInputs:
+    """Lower the resolved presentation for one serialize leg (B1) — the ONE lowering both
+    `_serialize_inputs` (the preimage) and `mint_deliverable` (the dispatched flags) consume, so
+    the dispatched flags and the identity preimage can NEVER diverge (§17 FR7.1 watch-item). The
+    render engine resolves the presentation at M1 level (best-effort standalone path, no M2 fold —
+    consistent with its existing character); the `plain` floor lowers to the empty RenderInputs
+    (byte-identical to the retired `lower_plain(target)`, PD5 zero-churn)."""
+    entry = env.resolver.resolve("presentations", leg.presentation)
+    pres = presentation.presentation_from_entry(
+        {**entry.defaults(), **entry.effective, "id": entry.id},
+        load_asset=_deferred_asset_loader,
+        defaults=entry.defaults(),
+    )
+    return presentation.lower(pres, target.writer, leg.output_type, target_engine=target.engine)
+
+
+# ---------------------------------------------------------------------------
 # The default engine (best-effort real reconcile/serialize for the passthrough case).
 # ---------------------------------------------------------------------------
 
@@ -453,7 +487,7 @@ class DefaultRenderEngine:
         return outcome.fitted_ir, outcome.fit_binding
 
     def serialize_preimage(self, leg: SerializeLeg) -> Mapping[str, Any]:
-        target_values, render_inputs_view = self._serialize_inputs(leg)
+        target_values, render_inputs_view, _render_inputs = self._serialize_inputs(leg)
         return serialize.serialize_inputs_preimage(
             render_target=target_values, render_inputs=render_inputs_view
         )
@@ -461,16 +495,17 @@ class DefaultRenderEngine:
     def mint_deliverable(
         self, leg: SerializeLeg, *, preimage: Mapping[str, Any], serialize_revision: bool
     ) -> tuple[bytes, Mapping[str, Any], str]:
-        from pipeline.dispatch import dispatch, lower_plain, render_target_from_entry
+        from pipeline.dispatch import dispatch, render_target_from_entry
 
-        target_values, render_inputs_view = self._serialize_inputs(leg)
+        # B1: the SAME lowered `render_inputs` the preimage was built from (`_serialize_inputs`)
+        # drives the dispatch flags — one lowering, so flags and preimage cannot diverge.
+        target_values, _render_inputs_view, render_inputs = self._serialize_inputs(leg)
         units = serialize.serialize_fitted(leg.fitted_ir)
         if len(units) != 1:
             raise _EngineError(
                 f"standalone render expects one serialized document, got {len(units)}"
             )
         target = render_target_from_entry(target_values)
-        render_inputs = lower_plain(target)
         dout = dispatch(target, units[0].ast, render_inputs=render_inputs)
         if dout.output_bytes is None:
             raise _EngineError(f"render target {leg.output_type!r} produced no layer-2 bytes")
@@ -506,22 +541,21 @@ class DefaultRenderEngine:
             hard_limit_defaults=floor,
         )
 
-    def _serialize_inputs(self, leg: SerializeLeg) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _serialize_inputs(
+        self, leg: SerializeLeg
+    ) -> tuple[dict[str, Any], dict[str, Any], RenderInputs]:
+        """The render-target values + the lowered RenderInputs (B1) — the preimage view AND the
+        `RenderInputs` object, so `serialize_preimage` and `mint_deliverable` lower ONCE."""
         from pipeline.cascade import CascadeEnv
-        from pipeline.dispatch import lower_plain, render_target_from_entry
+        from pipeline.dispatch import render_target_from_entry
 
         env = CascadeEnv(leg.root, workspace=leg.workspace)
         entry = env.resolver.resolve("render-targets", leg.output_type)
         target_values = {**entry.defaults(), **entry.effective, "id": entry.id}
         target = render_target_from_entry(target_values)
-        render_inputs = lower_plain(target)
-        render_inputs_view = {
-            "flags": list(render_inputs.flags),
-            "variables": dict(render_inputs.variables),
-            "assets": [list(asset) for asset in render_inputs.assets],
-            "engine": render_inputs.engine,
-        }
-        return target_values, render_inputs_view
+        render_inputs = _lower_for_leg(env, leg, target)
+        render_inputs_view = presentation.render_inputs_to_mapping(render_inputs)
+        return target_values, render_inputs_view, render_inputs
 
 
 class _EngineError(RuntimeError):

@@ -9,30 +9,39 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 5.** Steps 37 (Gate G2 closure) + 38 (G2 finals applied) done.
+**FRAMEWORK BUILD IN PROGRESS — Phase 5.** Steps 37 (Gate G2 closure, report-only) + 38 (G2 finals) +
+**39 (★ MVP demonstration)** code committed. Gate G2 CLOSED (see gate record); the step-33 §21.7-code
+HARD GATE **now CLOSED at step 39**.
 
-- **Step 37 — Gate G2 (§27.2) CLOSED, PASS, report-only (no commit; PA-2).** Per the maintainer's
-  2026-07-13 "small bounded probe" ruling, a bounded LIVE telemetry probe (6 subscription calls, two
-  waves of 3 through a `ThreadPoolExecutor(max_workers=3)` at the width-3 seed ceiling; each child spawned
-  with `ANTHROPIC_API_KEY` stripped + `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`; 1200 s per-call timeout)
-  exercised the REAL subscription transport. Result: **peak_inflight=3 sustained with ZERO backpressure**,
-  latency ~8–12 s (~150× under the TTL), $0.81 total. Both G2 numbers are **CONFIRMED UNCHANGED** from the
-  step-4 conservative seeds — now telemetry-validated, not guessed: `MAX_PARALLEL_SESSIONS=3` (tested AT
-  the cap, so no evidence to raise and none to lower), `LEASE_TTL_SECONDS=1800`. Report:
-  `ops-handoff/build/step-37/report.md`; content-free telemetry residue under gitignored `instance/ops/`.
-- **Step 38 — micro-CODER applying the G2 finals, reviewer CLEAN.** `pipeline/opdefaults.py`:
-  **comment/docstring-only** rewrite relabeling the two numbers as G2-VALIDATED finals (citing step-37 /
-  §27.2) — **NO constant VALUE changed** (all six byte-identical: `MAX_PARALLEL_SESSIONS=3`, per-workspace
-  `=2`, `LEASE_TTL_SECONDS=1800`, `WRAPPER_HARD_TIMEOUT_SECONDS=1200 < TTL`, telemetry-on, width-window
-  `=3600`; `__all__` unchanged). NEW `tests/test_opdefaults.py`: the **G2-equality lock** — asserts the
-  loaded runtime defaults equal the step-37 numbers against HARD LITERALS (so any future drift genuinely
-  fails CI, not a vacuous module-vs-module check). Reviewer **CLEAN** — 5 crux items all PASS with literal
-  evidence (no value changed · test non-vacuous · comments faithful, no overclaim · no scope creep ·
-  green+lint). Main session reconciled the reviewed worktree → main **byte-identical** (`cmp` clean) and
-  **re-verified green under its own hand**. Review: `ops-handoff/build/step-38/review.md`.
-- Progress = **38/41 + R1 done · 31/33 step-scoped commits** (+3 authorized extras). Baseline green:
-  **1928 passed, 6 deselected** (zero live); ruff clean; INV-CORRECTNESS green (via `tests/test_inv_
-  correctness.py`, part of the suite). **Next: ★ step 39 — the MVP demonstration (all nine axes; ★ checkpoint).**
+- **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
+  `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
+  step 38 applied them comment-only + a CI equality-lock test). Reports: `ops-handoff/build/step-{37,38}/`.
+- **Step 39 — ★ MVP demonstration (§25), code committed; reviewer CLEAN.** Planned in 3 passes
+  (initial→adversarial→reconciliation; the adversarial pass caught a BLOCKER — the Presentation axis
+  would have been demonstrated OFF the real pipeline — and dropped an unneeded public-framework entry).
+  Deliverable: **ADD** `pipeline/mvpdemo.py` (the ONE shared scenario callable — injectable writer-runner +
+  adapter + currency_resolver + clock, driven via `invoke(handlers=…)` from injected seams, NO
+  register-handlers/global mutation; includes the MVP fail-safe currency resolver) + `tests/test_mvp_
+  scenario.py` (hermetic mock-transport CI variant, 4 tests, exercising EVERY §25 clause — all nine axes;
+  full selection grammar incl. a real ≥2-instance on_conflict; a real L6 override; internal AND external
+  targets; both review gates; typed+untyped folio members; emit-manifest w/ member_targets; sequential
+  batch+cursor AND a NON-VACUOUS parallel wave+sweep; both SSOT kinds + derive-state). **MODIFY**
+  `driver.py` + `api/session.py` (GATE-1: thread the real `("block",)` codes `empty-pool`/`hard-limit-
+  exceeded`, status derived from the CodeSpec, NO fabrication — all 9 raise-sites audited, 7 correctly
+  stay code-less), `api/render.py` + `driver.py` (**B1**: wire the real `presentation.lower` into BOTH
+  production minting paths — proven byte-identical to the retired `lower_plain` for the `plain` floor →
+  ZERO deliverable-id churn; a styled entry now genuinely lowers on the real pipeline), `__main__.py`
+  (the `mvp-demo` subcommand — AUTHORED, never run in the build). GATE-2 honored (the unsafe
+  `DefaultCurrencyResolver` is never constructed on the mvp path). Reviewer **CLEAN** — no must-fix; all
+  4 coder deviations ruled SOUND; the standalone §21.8 render-verb gap ruled a pre-existing carry-forward.
+  Hermetic + zero spend (in-process fakes). Reconciled byte-identical → main, re-verified green under my
+  own hand. Reports: `ops-handoff/build/step-39/{plan-final-step39,plan-adversarial,review}.md`.
+- Progress = **39/41 + R1 done · 32/33 step-scoped commits** (+3 authorized extras). Baseline green:
+  **1932 passed, 6 deselected** (zero live); ruff clean; content + schema + INV-CORRECTNESS guards green.
+- **★ CHECKPOINT — the LIVE MVP run (the actual subscription-transport transcript across the matrix) is
+  the remaining §25 evidence; maintainer APPROVED it 2026-07-13 (subscription-only; transport strips any
+  API key). Pending: stage the untracked `workspaces/mvp-demo/` prereqs, run `scripts/pipeline mvp-demo`,
+  capture the transcript + §25 clause→evidence table.** Next build step: 40 (cleanup sweep).
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
@@ -240,7 +249,14 @@ mechanic documented in the mitigation block. Follow the mitigation block, not th
 - **✅ RESOLVED at step 33 — CF-2 (contained-hook consistency).** The fitted deliverable-row advance now
   rides the spine's S5 contained hook (`_persist_record(advance=_advance_fitted_row)`), consistent with
   composed/rendered per §22.7; behavior preserved on both fresh and already-materialized re-drive paths.
-- **→ HARD GATE before `generate-next` is wired to the LIVE CLI (step-33 reviewer-ratified, BINDING):** a
+- **✅ RESOLVED at step 39 — the step-33 §21.7-code HARD GATE (BINDING).** Step 39 threaded the real
+  `("block",)` §21.7 codes (`empty-pool` from grounding, `hard-limit-exceeded` from reconcile) through
+  `DriverError.stage_code`/`remediation_action` → `session._generate_next` (block status derived from the
+  code's CodeSpec, class attr `code` untouched; NO fabrication — all 9 `_run_artifact`/`_run_deliverable`
+  raise-sites were audited, the other 7 correctly stay code-less because their codes aren't in `ALL_CODES`),
+  proven by a hermetic hard-limit block reaching generate-next with `code=="hard-limit-exceeded"`, zero
+  subscription spend. The reviewer confirmed the closure is total, not partial. Historical gap (retained):
+- **→ (historical, now resolved above) HARD GATE before `generate-next` is wired to the LIVE CLI (step-33 reviewer-ratified, BINDING):** a
   per-item GENERATION failure currently surfaces as a CODE-LESS block — `driver._run_artifact` collapses a
   stage block (empty-pool/hard-limit-exceeded/low-confidence-grounding/…) into an opaque `DriverError`, so
   `session._generate_next` emits `status=block` with a hint but NO §21.7 `code`/`remediation.action`. Accepted
@@ -268,6 +284,16 @@ mechanic documented in the mitigation block. Follow the mitigation block, not th
   (needs the recipe, which only §21.9 carries) OR flip the uncertainty direction to fail-safe (report
   NOT-current on any un-verifiable input / on error → over-force, safe because force/render is idempotent), and
   fail-safe the `except` branches. The docstring documents the limitation; §21.9 closes it.
+  (Step 39 HONORED this gate: it never constructs `DefaultCurrencyResolver` on the mvp path — it passes an
+  explicit fail-safe resolver at every edge — so the gate remains correctly OPEN, not crossed.)
+- **→ future step (from step-39 review #4, BINDING carry-forward):** the standalone §21.8 `render` verb
+  `not-found`s on any REAL composed artifact — `render.py::_render` (~L152) reads the canonical record as
+  `{"ir": …}` but `compose._persist` stores the RAW IR (re-read raw at `compose.py:461`). A PRE-EXISTING
+  step-34 integration gap (`_render`/`render_handler` untouched by step 39; step 39's render.py B1 change is
+  the lowering path only, validated by the byte-identity test). §25 does not enumerate this verb so it did
+  not block the MVP. Fix the artifact-record read (`{"ir":…}` vs raw IR) so standalone re-render/force works
+  end-to-end. Also fold the 4 step-39 review MINORs (parallel `sweep_partial` could assert `missing` strictly
+  shrinks; L6 evidence via stored effective view; live `ssot derive-state` CLI vs the library call).
 - **→ Step 36 CORRECTNESS_ROOTS batch (from step-34 review, LOW):** add `api.discovery` (and, IF design-
   confirmed ssot-free, `api.render`/`api.fetch`/`api.folio_verbs`) to `tests/test_inv_correctness.py`
   `CORRECTNESS_ROOTS` so their ssot-freedom is enforced TRANSITIVELY (today only discovery's `TestSsotFree`

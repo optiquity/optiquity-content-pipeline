@@ -364,16 +364,17 @@ def _begin_session(
 
 def _block(hint: str, *, item: str = "continue-session") -> results.ResultItem:
     """A per-item block with NO taxonomy code — for a condition the closed §21.7 vocabulary
-    does not name (a malformed call / a driver-level generation failure). Honest: the code
-    set is CLOSED, so no code is fabricated; the detail rides `remediation.hint`.
+    does not name (a malformed call / a non-taxonomy driver failure). Honest: the code set is
+    CLOSED, so no code is fabricated; the detail rides `remediation.hint`.
 
-    HARD GATE (step-33 carry-forward, reviewer-ratified): a code-LESS *generation* block is a
-    transitional gap, NOT the end state. Before `generate-next` is wired to the LIVE CLI, the
-    driver MUST thread the real §21.7 stage codes (`empty-pool`/`hard-limit-exceeded`/
-    `low-confidence-grounding`/…) up so a generation failure carries its true code instead of a
-    bare hint — see `_generate_next`'s `DriverError` branch. Malformed-CALL blocks (bad recipe,
-    unmapped folio, malformed source `connection:`) legitimately have no §21.7 code and stay
-    code-less."""
+    HARD GATE-1 (§21.7 code threading) — CLOSED at step 39. A code-bearing GENERATION block is
+    no longer a gap: the driver threads its true §21.7 stage code (`empty-pool` at grounding,
+    `hard-limit-exceeded` at the reconcile terminal gate) across the driver→session boundary, so
+    `_generate_next`'s `DriverError` branch surfaces `results.make_result(code, …)` for those.
+    A code-less `_block` now covers ONLY the conditions the taxonomy genuinely does not name —
+    malformed CALLS (bad recipe, unmapped folio, malformed source `connection:`) and non-taxonomy
+    generation failures (compose-contract, transport codes) — and stays code-less forever
+    (§3.1: no fabrication)."""
     return results.ResultItem(item=item, status="block", remediation={"hint": hint})
 
 
@@ -522,17 +523,29 @@ def _generate_next(
                     log=_nolog,
                 )
             except driver.DriverError as exc:
-                # SM1: a per-item block never fails the batch; siblings proceed. The driver
-                # collapses stage blocks into DriverError WITHOUT a taxonomy code, so this is a
-                # code-less block carrying only the detail — no code is fabricated (§21.7 closed).
-                # CARRY-FORWARD (step-33 reviewer, ratified) — KNOWN gap, HARD GATE: before
-                # `generate-next` is wired to the LIVE CLI, the driver MUST thread the real
-                # §21.7 stage codes (`empty-pool`/`hard-limit-exceeded`/`low-confidence-grounding`
-                # /…) up so this block carries its true code instead of a bare hint. Threading
-                # them is a driver-contract restructure that lands with the generation-tier/
-                # wiring steps (34-35); a code-less generation block MUST NOT reach a production
-                # caller.
-                out.append(_block(str(exc), item=aid))
+                # SM1: a per-item block never fails the batch; siblings proceed.
+                # HARD GATE-1 (§21.7 code threading) — CLOSED at step 39 (`mvp-demo` is the
+                # first real caller wiring generate-next to the LIVE transport). The driver now
+                # threads the TRUE §21.7 taxonomy code across the driver→session boundary on its
+                # two generation-tier gates (`empty-pool` at grounding, `hard-limit-exceeded` at
+                # the reconcile terminal gate); a coded block surfaces it with its taxonomy
+                # `category`. A NON-taxonomy driver failure (malformed call, compose-contract,
+                # transport code) carries NO code and stays a code-less `_block` FOREVER — the
+                # §3.1 no-fabrication rule. `make_result` DEFAULTS the status from the code's
+                # `CodeSpec.statuses[0]` (never hardcoded `status="block"`), so a future non-block
+                # code threaded here can never raise an uncaught `ResultContractError`, and the
+                # remediation `action` defaults from the CodeSpec when the driver supplies none.
+                code = exc.stage_code if exc.stage_code in results.ALL_CODES else None
+                if code is not None:
+                    out.append(results.make_result(
+                        code,
+                        item=aid,
+                        ids={"artifact_id": aid},
+                        action=exc.remediation_action,
+                        hint=str(exc),
+                    ))
+                else:
+                    out.append(_block(str(exc), item=aid))  # malformed-call blocks stay code-less
             else:
                 deliverable_ids = [d.deliverable_id for d in getattr(result, "deliverables", ())]
                 ids: dict[str, Any] = {"artifact_id": aid}
