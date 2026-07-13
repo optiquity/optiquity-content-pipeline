@@ -9,8 +9,11 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD — design complete, plan final, build NOT started.**
-Holding at the maintainer checkpoint (two authorizations pending, below).
+**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 22 (SSOT v1) done, reviewer CLEAN.
+Progress = 22/41 + R1 done · 16/33 step-scoped commits (+3 authorized extras: placement f6b5c19,
+R1 0f58d09, step-22 §24 design-amendment). Baseline green: 1392 passed, ruff + both guards + schema-lint OK.
+Next: step 23 (transport wrapper — MUST run under `env -u ANTHROPIC_API_KEY` + `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`
+per G5).
 
 ## Standing instructions to any session picking this up (read before acting)
 
@@ -40,9 +43,9 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
    session: pass the URL as `url` to the Artifact tool). Update on: step start (in-progress), step green
    (done + progress/commit counters), every ★ milestone/checkpoint (steps 6, 28, 39, 41), any gate
    failure or re-plan, and when the pending authorizations resolve. Timestamp every publish.
-4. **Working tree state:** the A4-2 placement changes are applied but UNCOMMITTED (docs/design.md added;
-   design-decisions.md tombstoned + archived; mission.md banner; operating-model.md amended;
-   docs/archive/design-record/ imported; this file). CLAUDE.md untouched.
+4. **Working tree state:** clean at each step boundary — every green step is committed by explicit
+   file list (never `git add -A`) before the next step starts; `state.md` rides on the step's primary
+   (code) commit. CLAUDE.md remains untouched (maintainer-only).
 
 ## Maintainer authorizations (checkpoint resolved 2026-07-12)
 
@@ -148,6 +151,13 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
 - **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
   (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
   extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
+- **→ Step 40 (from step-22 review OBS-1, optional):** `pipeline/ssot.py` `_read_rows` leaks a raw
+  `ValueError` from `zip(strict=True)` on a malformed DATA row vs the typed `SsotError` used for header
+  damage — near-unreachable (writes are atomic whole-table) and contained by the spine on S5; optional
+  symmetry hardening only.
+- **→ Step 40 (from step-22 review OBS-2, doc hygiene):** `docs/design.md` cross-refs now read slightly
+  stale after the §24 amendment — index line ~2608 ("future home §24") and §27.4 ~2497 ("lands at §24");
+  left untouched on purpose (plan mandated "§24 amendment ONLY"); reconcile in the sweep.
 - **→ Step 40 (maintainer, 2026-07-12, EXPANDED):** the swept docs must document ALL THREE entry-authoring
   modes the maintainer ratified: (1) FULLY MANUAL — the one-file contract walkthrough (template + schema +
   lint/CI verification); (2) INTERACTIVE/ASSISTED — how to have a Claude session author + review entries
