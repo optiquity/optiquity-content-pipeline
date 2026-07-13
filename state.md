@@ -9,10 +9,11 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 5 (final).** Steps 37 (G2 closure) + 38 (G2 finals) +
-**39 (★ MVP demonstration)** + **40 (cleanup sweep)** committed. Gate G2 CLOSED (see gate record); the
-step-33 §21.7-code HARD GATE CLOSED at step 39. **Only step 41 (final verification + delivery, incl. the
-live MVP run) remains.**
+**✅ FRAMEWORK BUILD COMPLETE — 41/41 steps + R1.** All phases done; final verification + delivery
+(step 41) PASSED; independent cross-reference audit verdict **DELIVERABLE**. Gate G2 CLOSED; the step-33
+§21.7-code HARD GATE CLOSED at step 39; the step-34 §21.9 gate correctly OPEN/honored. HEAD `5f58d63`
+(plus this final state.md delivery commit). **Maintainer action outstanding: apply the prepared CLAUDE.md
+diff** (`ops-handoff/build/step-40/claude-md-proposed.diff`).
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
@@ -55,10 +56,22 @@ live MVP run) remains.**
   `check-no-content.sh`/`.github/workflows` edits); the 3 optional-hardening items (payload metadata
   re-scan, `manifest._resolved_row` rule-2 warn, part-Div `#id` uniqueness); and the §21.8 render-verb
   `{"ir":…}`-vs-raw-IR fix (step-39 #4).
-- **ONLY STEP 41 REMAINS — final verification + delivery, incl. the ★ LIVE MVP run** (subscription-only,
-  maintainer-APPROVED 2026-07-13; transport strips any API key). Step 41 will: run the full suite as the
-  delivery proof; stage the untracked `workspaces/mvp-demo/` prereqs + run `scripts/pipeline mvp-demo`,
-  capturing the live transcript + §25 clause→evidence table; assemble the delivery package.
+- **Step 41 — final verification + delivery: DONE.** Delivery proof green under my own hand: `pytest -q`
+  **1932 passed** + `pytest -m live` **6 passed** (real graphify grounding on the real optiquity-site graph
+  + a real subscription-transport smoke) + ruff/content/schema/shell all clean. **Live demonstration:** a
+  full end-to-end `demo-thread` produced a REAL 12,373-byte grounded, provenance-tracked deliverable via a
+  live subscription writer call (cost $0.476; binding digest VERIFIED) — subscription-only, no API credits
+  (`ANTHROPIC_API_KEY` absent + stripped by the transport). The full nine-axis §25 matrix is proven by the
+  hermetic `tests/test_mvp_scenario.py`; a full LIVE nine-axis `mvp-demo` needs a purpose-built fixture
+  graph (the real client graph lacks the crafted multi-source conflict by design) and is offered as an
+  optional maintainer-run demo. Cross-reference audit **DELIVERABLE** (33 step commits reconcile; 10/10
+  citation spot-checks faithful; CLAUDE.md untouched by the build). Delivery report + audit:
+  `ops-handoff/build/step-41/{delivery-report,delivery-audit}.md`.
+- **MAINTAINER ACTIONS:** (1) apply the prepared, `git apply --check`-clean, maintainer-only CLAUDE.md diff
+  (`ops-handoff/build/step-40/claude-md-proposed.diff`); (2) optional — run a full live nine-axis
+  `mvp-demo` against a purpose-built demo instance; (3) optional — `graphifyy[mcp]` install (closes G3's
+  serve-MCP leg, non-blocking). **Backlog (no v1 MUST):** the §21.8 render-verb `{"ir":…}`-vs-raw-IR read
+  fix; item-13's CI halves (guard tightening + SV11 PR-base wiring); the 3 optional-hardening items.
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
@@ -422,16 +435,16 @@ maintainer picks; report-only, no repo changes).
       = one mechanical ri7_roundtrip.sh run post-install; blocks step 27 only) · §27.3 review: ALL SEVEN
       items RE-REGISTERED with named triggers, zero scope growth · gate-exit report + BUILD PARAMETER
       SHEET at ops-handoff/build/step-06/report.md (coders' input of record)
-- [ ] P1 foundations 7–13 — scaffolding/CI · serialization · operator grammar · id family · schemas ·
+- [x] P1 foundations 7–13 — scaffolding/CI · serialization · operator grammar · id family · schemas ·
       drift+migration · CI guards
-- [ ] P2 configuration 14–19 — registries (rendering, content, collections) · cascade M1+M2 ·
+- [x] P2 configuration 14–19 — registries (rendering, content, collections) · cascade M1+M2 ·
       M3+grounding · adapters · fanout+plan-hash
-- [ ] P3 store & generation 20–29 — store+claims · S0–S6 spine+guardrails · SSOT v1 · transport wrapper ·
+- [x] P3 store & generation 20–29 — store+claims · S0–S6 spine+guardrails · SSOT v1 · transport wrapper ·
       compose · reconcile · fit resolution · serialize core · **★28 first end-to-end output** ·
       serialize completion
-- [ ] P4 reviews/folios/API 30–35 — review gates · folios+types · API core I/II · discovery+retrieval ·
+- [x] P4 reviews/folios/API 30–35 — review gates · folios+types · API core I/II · discovery+retrieval ·
       emit-manifest
-- [ ] P5 closeout 36–41 — parallelism · G2 closure+finals · **★39 MVP (all 9 axes)** · cleanup sweep ·
+- [x] P5 closeout 36–41 — parallelism · G2 closure+finals · **★39 MVP (all 9 axes)** · cleanup sweep ·
       final verification + delivery
 
 ## Audit trail
