@@ -9,17 +9,30 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 31 (folios & folio types §9) done, reviewer CLEAN.
-Folios as PURE PURPOSEFUL SETS — A4-4 ZERO folio-level state proven (folio record is exactly
-{id,purpose,folio_type?,provenance}; member exactly {added_ts,pin?,role?}; reverse index DERIVED not stored;
-grep rendering_intent=0). Append-only membership (§27.3) with atomic replacing-rename updates reusing the
-step-21 S4 primitive (concurrent differing updates → one atomic winner, both get member-updated, added_ts
-preserved). Frozen-pin id-forms (B4-2/3), no auto-create/auto-add (F6), intra-workspace enforcement, unknown
-recorded role surfaced AS-IS after a folio-type rename. The BINDING step-15 folio-type skeleton whitelist
-lands (recipe-slots + topic_slot; singular `platform:` smuggler refused; plural recipe slots admitted = recipe
-template state, never folio state). Progress = 31/41 + R1 done · 25/33 step-scoped commits (+3 authorized
-extras). Baseline green: 1682 passed (6 deselected/zero-live). Next: step 32 (API core I — invoke, workspace
-isolation, token, result contract + code taxonomy).
+**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 32 (API core I — invoke/isolation/token/result taxonomy)
+done, reviewer CLEAN. The external `invoke(verb,workspace,params,[token],[pins])` contract (n8n JSON-on-stdout
+via `scripts/pipeline invoke`), workspace isolation on every id-bearing verb param (resolve by output-store
+existence, §22.7 — no ssot/token), the resumption token (integrity DIGEST not a MAC — detects corruption/
+version/wrong-workspace as invalid-token, NO stale-token; lost-token survivability = everything re-addressable
+by content-addressed id), and the CONSOLIDATED 26-code taxonomy (every §21.7+§22.6 code, no extras — reviewer
+independently enumerated the design to confirm; a non-vacuous no-omissions drift test cross-checks producer
+constants). Verb dispatch is an honest empty seam (unwired verb → internal HandlerNotWired, never a fake
+success); real handlers wire at step 33, completeness assertion at step 35. Progress = 32/41 + R1 done ·
+26/33 step-scoped commits (+3 authorized extras). Baseline green: 1750 passed (6 deselected/zero-live).
+Next: step 33 (API core II — sessions + generate-next + closed action vocabulary; folds the step-28 driver
+carry-forwards + the continue-session isolation obligation).
+
+**⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
+the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
+routes an agent onto the async-task channel (reports arrive in the task-notification, NO boilerplate);
+no-isolation uses the mailbox channel (boilerplate on every delivery incl. idle pings). **From step 33 on,
+spawn EVERY ops agent (coder/reviewer/fixer) with `isolation:"worktree"`.** The coder works in its own launch
+worktree; reviewers/fixers IGNORE their launch worktree and `cd` to the coder's worktree (pass its path from
+the coder's task-notification metadata); the main session RECONCILES the coder's worktree → main at commit
+time (copy changed files by explicit list, re-verify green, commit from main, then `git worktree remove
+--force`). No CLAUDE.md/config edits, no new branch/BD. Revert to no-isolation only when the maintainer says
+the bug is fixed. (Steps 24–32 used no-isolation and wrote main directly — both channels are correctness-
+equivalent; only the boilerplate and the reconcile step differ.)
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
@@ -179,6 +192,11 @@ main without isolation). If a future coder still lands files in a worktree, reco
   payload-side metadata re-scan in `payload.build_payload` would close the residual where a caller
   hand-builds a `fitted_ir` bypassing `ir.validate_ir`'s `_scan_no_secrets`. §11.3/§17 RI14 deliberately keep
   the metadata bag opaque/untouched, so this is defense-in-depth only.
+- **→ Step 33 (from step-32 review, BINDING obligation):** `continue-session` is the only known verb with
+  no `referenced_ids` id-extractor, so the step-32 invoke isolation gate passes its action-nested ids
+  (render.item, add-to-folio members, fetch.id, …) through UNCHECKED. Safe at step 32 (handler unwired →
+  HandlerNotWired before any id is seen). When step 33 wires the continue-session/generate-next handler, that
+  handler MUST enforce workspace isolation on those nested action ids itself.
 - **→ Step 32/33 invoke (from step-28 review CF-1):** `driver._pin_source_commit` reads only
   `built_at_commit` from graph.json; the `GraphifyAdapter` additionally falls back to a read-only
   `git rev-parse HEAD`. For a commitless-but-git-checkout source the artifact-id commit-map would OMIT a

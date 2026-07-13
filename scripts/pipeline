@@ -6,4 +6,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# `invoke` (plan step 32) — the external-actor API (§21): a single JSON object on stdout
+# (the n8n-facing shape). It routes straight to the api CLI module so the api layer's entry
+# stays self-contained; every other subcommand delegates to `python -m pipeline`
+# (pipeline/__main__.py) as before.
+if [ "${1:-}" = "invoke" ]; then
+  shift
+  exec uv run --project "$REPO_ROOT" python -m pipeline.api.invoke "$@"
+fi
+
 exec uv run --project "$REPO_ROOT" python -m pipeline "$@"
