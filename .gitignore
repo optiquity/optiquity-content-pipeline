@@ -21,3 +21,11 @@
 *.swp
 .idea/
 .vscode/
+
+# Python bytecode caches (plan step 21; step-7 carry-forward RV-2).
+__pycache__/
+
+# Claim/lease lock data: self-expiring runtime coordination records, never content
+# (design §13.3/§22.3/§23; plan step 21). Not tracked in any instance — a lease is
+# only meaningful on the machine and in the moment that wrote it.
+workspaces/*/claims/
