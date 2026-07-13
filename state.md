@@ -9,26 +9,30 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 5.** Step 36 (parallelism machinery, §22) done, reviewer **CLEAN** (no
-must-fix, no carry-forward fixes) — the most safety-critical step. `pipeline/parallel.py` (ssot-free CORRECTNESS
-ROOT): the wave plan (`begin-session(want_parallel_plan)` → wave 0 compose by artifact-id, wave 1 render by
-deliverable-id; prereqs+shard; `suggested_width=min(units,cap)`; token immutable plan-context); the completeness
-SWEEP (materialized ∪ blocked = expected, computed from the STORE only — an id marked composed/fitted in the
-SSOT CSV but absent from the store still reports MISSING; detects a deliberately-missed unit; `status` fail-safe
-over-reports missing, never falsely `complete`); the §22.6 parallel-path codes wired. `pipeline/telemetry.py`:
-content-free append-only JSONL + self-healing presence-lease registry + the never-auto-applied `recommended_
-width` advisory — content-free BY CONSTRUCTION (closed field set, finite-number-only writer refuses anything
-else) AND by grep (zero ids/workspace identifiers); carries the §24 `forced_reconciles` count-only counter
-(PC11c). `pipeline/opdefaults.py`: the conservative G2 seeds as a flat constants surface (max_parallel_sessions
-=3, per-workspace sub-limit=2, lease TTL=1800s, wrapper timeout=1200s < TTL) — step 38 micro-edits these with
-the G2 finals. **The FULL §22.7 conformance proof** (`tests/test_conformance_spine.py`): REAL spawned processes,
-`os._exit(17)` crash at EVERY S-point S0–S6 (each proven actually reached), 4 concurrent barrier-synced
-workers, the CSV single-writer under contention (incl. an 8-process distinct-row lost-update test through the
-real `fcntl.flock` funnel), and the slow-holder STEAL (A parked at S2 → B steals post-expiry, dies at S5 → A
-resumes S3–S6 and LOSES: already-materialized + claim-held) — proving exactly-once, no torn state, no
-double-write, no lost unit. Progress = 36/41 + R1 done · 30/33 step-scoped commits (+3 authorized extras).
-Baseline green: 1925 passed (6 deselected/zero-live). Next: step 37 (Gate G2 closure — telemetry-validated
-limits; ops-docs-researcher, REPORT-ONLY, no commit).
+**FRAMEWORK BUILD IN PROGRESS — Phase 5.** Steps 37 (Gate G2 closure) + 38 (G2 finals applied) done.
+
+- **Step 37 — Gate G2 (§27.2) CLOSED, PASS, report-only (no commit; PA-2).** Per the maintainer's
+  2026-07-13 "small bounded probe" ruling, a bounded LIVE telemetry probe (6 subscription calls, two
+  waves of 3 through a `ThreadPoolExecutor(max_workers=3)` at the width-3 seed ceiling; each child spawned
+  with `ANTHROPIC_API_KEY` stripped + `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`; 1200 s per-call timeout)
+  exercised the REAL subscription transport. Result: **peak_inflight=3 sustained with ZERO backpressure**,
+  latency ~8–12 s (~150× under the TTL), $0.81 total. Both G2 numbers are **CONFIRMED UNCHANGED** from the
+  step-4 conservative seeds — now telemetry-validated, not guessed: `MAX_PARALLEL_SESSIONS=3` (tested AT
+  the cap, so no evidence to raise and none to lower), `LEASE_TTL_SECONDS=1800`. Report:
+  `ops-handoff/build/step-37/report.md`; content-free telemetry residue under gitignored `instance/ops/`.
+- **Step 38 — micro-CODER applying the G2 finals, reviewer CLEAN.** `pipeline/opdefaults.py`:
+  **comment/docstring-only** rewrite relabeling the two numbers as G2-VALIDATED finals (citing step-37 /
+  §27.2) — **NO constant VALUE changed** (all six byte-identical: `MAX_PARALLEL_SESSIONS=3`, per-workspace
+  `=2`, `LEASE_TTL_SECONDS=1800`, `WRAPPER_HARD_TIMEOUT_SECONDS=1200 < TTL`, telemetry-on, width-window
+  `=3600`; `__all__` unchanged). NEW `tests/test_opdefaults.py`: the **G2-equality lock** — asserts the
+  loaded runtime defaults equal the step-37 numbers against HARD LITERALS (so any future drift genuinely
+  fails CI, not a vacuous module-vs-module check). Reviewer **CLEAN** — 5 crux items all PASS with literal
+  evidence (no value changed · test non-vacuous · comments faithful, no overclaim · no scope creep ·
+  green+lint). Main session reconciled the reviewed worktree → main **byte-identical** (`cmp` clean) and
+  **re-verified green under its own hand**. Review: `ops-handoff/build/step-38/review.md`.
+- Progress = **38/41 + R1 done · 31/33 step-scoped commits** (+3 authorized extras). Baseline green:
+  **1928 passed, 6 deselected** (zero live); ruff clean; INV-CORRECTNESS green (via `tests/test_inv_
+  correctness.py`, part of the suite). **Next: ★ step 39 — the MVP demonstration (all nine axes; ★ checkpoint).**
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
@@ -114,9 +118,15 @@ mechanic documented in the mitigation block. Follow the mitigation block, not th
   timeout flag); never key success off `subtype` (use `is_error`/`terminal_reason`); `--bare` forbidden.
   **⚠ F10 HAZARD FLAG for the maintainer: `ANTHROPIC_API_KEY` is present in the ambient environment** —
   probes never used it, the wrapper will always unset it, but consider removing it from the shell env.
-  **G2 preliminary defaults:** `max_parallel_sessions=3`, lease TTL 30 min, wrapper hard-timeout 20 min
-  (timeout < TTL ⇒ expired lease implies dead process); replaced by telemetry at steps 37–38. Usage-limit
-  JSON shape UNVERIFIED (unsafe to trigger). Probe residue in ~/.claude/projects cleaned by main session.
+  **G2 preliminary defaults (step 4):** `max_parallel_sessions=3`, lease TTL 30 min, wrapper hard-timeout
+  20 min (timeout < TTL ⇒ expired lease implies dead process). Usage-limit JSON shape UNVERIFIED (unsafe to
+  trigger). Probe residue in ~/.claude/projects cleaned by main session.
+- **G2 (§27.2; steps 37 report → 38 apply): CLOSED — PASS.** Bounded live telemetry probe validated the
+  step-4 seeds against real data (peak_inflight=3, ZERO backpressure): finals `MAX_PARALLEL_SESSIONS=3` +
+  `LEASE_TTL_SECONDS=1800`, both CONFIRMED UNCHANGED and now locked to CI by `tests/test_opdefaults.py`.
+  The error-envelope raw shape remained unobserved (all 6 calls ok) → the step-06 §5.8 "UNVERIFIED
+  backpressure JSON shape" note in `transport.py` stays open — nothing to tighten the classifier with; not
+  a G2 blocker. Details: `ops-handoff/build/step-37/report.md`.
 - **Designated demo graphs (read-only, never written):** e2e/MVP demo → `/Users/david/Developer/
   optiquity-site/graphify-out/graph.json` (3 weeks stale — fine for build verification; re-graph is a
   maintainer call, another session); tier-coverage tests → `/Users/david/Developer/
