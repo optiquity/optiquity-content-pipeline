@@ -9,12 +9,14 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 23 (headless transport wrapper) done, reviewer CLEAN.
-Progress = 23/41 + R1 done · 17/33 step-scoped commits (+3 authorized extras: placement f6b5c19,
-R1 0f58d09, step-22 §24 design-amendment). Baseline green: 1419 passed (6 deselected/zero-live),
-ruff + both guards + schema-lint OK. F10 boundary proven: wrapper strips `ANTHROPIC_API_KEY` (the
-ratified G5 surface), refuses if present, disables auto-memory; live smoke returned a real subscription
-response once (quota-run, not re-run). Next: step 24 (compose — IR + writer stage, §15).
+**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 24 (compose — IR + writer stage, §15) done.
+Reviewer caught a BLOCKING span-extraction tier-honesty hole (the `[^\]]*` regex missed grounded
+spans whose visible text nests brackets like `items[0]`/footnote `[1]`, so a tier-promotion inside one
+could persist unchecked) — fix-coder replaced it with a balanced-bracket scanner matching Pandoc's reader
++ a fail-closed cross-check, and added a ledger-build secret scan of fact claim/subject (§3.3 input
+boundary). Progress = 24/41 + R1 done · 18/33 step-scoped commits (+3 authorized extras). Baseline green:
+1487 passed (6 deselected/zero-live), ruff + both guards + schema-lint + inv-correctness OK.
+Next: step 25 (reconcile pass core, §16).
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
