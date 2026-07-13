@@ -9,11 +9,19 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 22 (SSOT v1) done, reviewer CLEAN.
-Progress = 22/41 + R1 done · 16/33 step-scoped commits (+3 authorized extras: placement f6b5c19,
-R1 0f58d09, step-22 §24 design-amendment). Baseline green: 1392 passed, ruff + both guards + schema-lint OK.
-Next: step 23 (transport wrapper — MUST run under `env -u ANTHROPIC_API_KEY` + `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`
-per G5).
+**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 23 (headless transport wrapper) done, reviewer CLEAN.
+Progress = 23/41 + R1 done · 17/33 step-scoped commits (+3 authorized extras: placement f6b5c19,
+R1 0f58d09, step-22 §24 design-amendment). Baseline green: 1419 passed (6 deselected/zero-live),
+ruff + both guards + schema-lint OK. F10 boundary proven: wrapper strips `ANTHROPIC_API_KEY` (the
+ratified G5 surface), refuses if present, disables auto-memory; live smoke returned a real subscription
+response once (quota-run, not re-run). Next: step 24 (compose — IR + writer stage, §15).
+
+**⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
+HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
+7–22. Main session reconciled by copying the coder's new files into the main checkout byte-identical,
+re-verifying green, and removing the stale worktree. **GOING FORWARD: spawn ops-coders WITHOUT
+`isolation:"worktree"`** so they write to the main checkout directly (the reviewer, read-only, ran fine in
+main without isolation). If a future coder still lands files in a worktree, reconcile the same way.
 
 ## Standing instructions to any session picking this up (read before acting)
 
@@ -151,6 +159,20 @@ per G5).
 - **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
   (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
   extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
+- **→ Steps 24+ (from step-23 review A2, BINDING on transport callers):** the transport module accepts an
+  optional `cwd=` but does NOT enforce a dedicated non-repo working dir or wire cwd/config-isolation flags
+  (`--setting-sources`/`--settings`/`--strict-mcp-config`/`--tools ""`) — INFERRED/UNTESTED per step-04 §4.7,
+  not a G5 mandate. Steps 24+ that invoke the wrapper should pass a dedicated non-repo `cwd` and, if they
+  wire the isolation flags, verify with live calls. Also guards against an `apiKeyHelper`-via-`--settings`
+  auth path.
+- **→ Steps 37–38 / maintainer (from step-23 review A1, optional hardening):** the wrapper strips only the
+  literal `ANTHROPIC_API_KEY` (the ratified G5 surface; no sibling auth var is present on the runner env, so
+  no live bypass). Maintainer/telemetry-era MAY ratify also stripping `ANTHROPIC_AUTH_TOKEN` /
+  `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_URL` / `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` as cheap
+  defense-in-depth (no-op when absent). No code change needed for correctness today.
+- **→ Step 40 (from step-23 review, wording nit):** `pipeline/transport.py:231` docstring says the seam
+  "mirrors" the graphify Runner — it adapts, not mirrors (5-field ProcessRequest vs 2 positional args);
+  reword in the doc sweep.
 - **→ Step 40 (from step-22 review OBS-1, optional):** `pipeline/ssot.py` `_read_rows` leaks a raw
   `ValueError` from `zip(strict=True)` on a malformed DATA row vs the typed `SsotError` used for header
   damage — near-unreachable (writes are atomic whole-table) and contained by the spine on S5; optional
