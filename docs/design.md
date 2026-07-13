@@ -2342,11 +2342,33 @@ entries carry the `x-` prefix (§11.4).
   fields (§21.3). One item's commit never writes another item's row (PC4); the SSOT gates none
   of it (§22.7). Telemetry: optionally one content-free interval-rollup counter,
   `forced_reconciles` (count only — no ids, no workspace identifiers; PC11c, §22.5).
-- **This section is the designated future primary home of the SSOT row/column schema and status
-  lifecycle** — a registered build item (§27.4): the concrete column set, the status-value
-  lifecycle, and the monotonic-advance semantics land here when designed. §13.5 fixes only the
-  encoding class (tabular). One obvious section to amend; nothing else in the doc will grow SSOT
-  schema content.
+- **The SSOT row/column schema & status lifecycle (this section's designated home —
+  DELIVERED, build step 22).** One row per fanout item, keyed by the item's id, in **two
+  row kinds** (PA-4; the two fanout levels, §8):
+  - **Columns** (tabular, §13.3/§13.5): `row_kind` · `id` · `coordinates` · `source_commit`
+    (source commit or commit-map digest) · `status` · `output_path` · `block_reason`. No
+    stored timestamp/currency field — currency is computed at read time, never stored (§21.3).
+  - **Two status lifecycles, one per kind** (a row carries ONLY its own kind's statuses; the
+    status namespace is kind-scoped, so a wrong-kind advance is a typed rejection, never a
+    silent cross-write, PC4):
+    - **artifact rows** — `planned → composed → artifact-reviewed`.
+    - **deliverable rows** — `planned → fitted → rendered → deliverable-reviewed → ready`.
+  - **Advanced only by its own item's S5** (§22.3/§22.7): an artifact row by its compose-unit's
+    S5, a deliverable row by its render-unit's S5, then each by its own review outcome (§19).
+    One item's advance never writes another item's row (PC4).
+  - **Monotonic-advance semantics** — `status` moves forward ONLY, by a status-rank compare
+    within the row's kind: a higher rank advances (a forward write); an equal rank is an
+    idempotent no-op; a lower rank (a stale/regressing write) is a typed rejection, logged, and
+    NEVER raised into control flow (§22.7) — a stale worker can never regress a row.
+  - **`blocked` is an annotation, not a status** (`block_reason`, §21.7 codes): recorded beside
+    the status, it never regresses the ladder and is terminal until a re-drive's forward advance
+    clears it. The wave-barrier's blocked set is the sweep's own (materialized ∪ blocked,
+    §22.3/PC5), never read back from the SSOT (§22.7).
+  - **Encoding & interface:** §13.5 fixes the encoding class (tabular); the local-CSV backend
+    serializes writes through a single-writer file-lock funnel (§22.3/PC4b). The interface is
+    write-only w.r.t. control flow — `advance()` + the block annotation + a derived `state.md`
+    projection, and NO per-id read predicate the pipeline can branch on (§22.7 guardrail 3).
+    This is the sole home of the schema; nothing else in the doc grows SSOT schema content.
 
 ## §25 MVP & build sequencing
 
