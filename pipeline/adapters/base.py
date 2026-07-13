@@ -218,3 +218,15 @@ class SourceAdapter(ABC):
         `query` is the item's grounding question. Failures raise `AdapterError`
         (loud, typed) — the resolver never guesses around a broken source.
         """
+
+    def pin_commit(self, connection: Mapping[str, Any]) -> str | None:
+        """The §7.2 identity commit-map value for a source bound to this adapter.
+
+        This MUST be the SAME commit `ground()` reports for the same connection
+        (`GroundingResult.built_at_commit`), read by the SAME provenance path — so the
+        artifact-id commit-map (identity, §7.2) and the §15 grounding ledger never
+        disagree about provenance. The default is `None` — the commitless folder-style
+        posture (`GroundingResult.built_at_commit=None`); a commit-bearing adapter
+        (graphify) overrides this to read exactly what its `ground()` reports. Read-only,
+        never a write (rule 1)."""
+        return None

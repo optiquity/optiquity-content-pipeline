@@ -499,6 +499,20 @@ class GraphifyAdapter(SourceAdapter):
         as_of = datetime.date.fromtimestamp(graph_path.stat().st_mtime)
         return commit, as_of
 
+    def pin_commit(self, connection: Mapping[str, Any]) -> str | None:
+        """The §7.2 identity commit-map value for a graphify source — read by the SAME
+        provenance path `ground()` uses (graph.json `built_at_commit`, then the read-only
+        `git rev-parse HEAD` fallback via `_graph_provenance`), so the artifact-id
+        commit-map and the §15 grounding ledger NEVER disagree about provenance (CF-1: a
+        commitless-but-git-checkout source must pin exactly the commit grounding records,
+        not omit it). `None` for an absent graph (grounding then fails loudly, so no
+        diverged id is ever persisted) or a commitless-and-non-git source. Read-only."""
+        conn = _validate_connection(connection)
+        if not conn.graph_path.is_file():
+            return None
+        commit, _as_of = self._graph_provenance(conn.graph_path, self._env())
+        return commit
+
     def _source_commit_fallback(
         self, graph_path: Path, env: Mapping[str, str]
     ) -> str | None:

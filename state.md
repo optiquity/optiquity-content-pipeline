@@ -9,37 +9,49 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 32 (API core I — invoke/isolation/token/result taxonomy)
-done, reviewer CLEAN. The external `invoke(verb,workspace,params,[token],[pins])` contract (n8n JSON-on-stdout
-via `scripts/pipeline invoke`), workspace isolation on every id-bearing verb param (resolve by output-store
-existence, §22.7 — no ssot/token), the resumption token (integrity DIGEST not a MAC — detects corruption/
-version/wrong-workspace as invalid-token, NO stale-token; lost-token survivability = everything re-addressable
-by content-addressed id), and the CONSOLIDATED 26-code taxonomy (every §21.7+§22.6 code, no extras — reviewer
-independently enumerated the design to confirm; a non-vacuous no-omissions drift test cross-checks producer
-constants). Verb dispatch is an honest empty seam (unwired verb → internal HandlerNotWired, never a fake
-success); real handlers wire at step 33, completeness assertion at step 35. Progress = 32/41 + R1 done ·
-26/33 step-scoped commits (+3 authorized extras). Baseline green: 1750 passed (6 deselected/zero-live).
-Next: step 33 (API core II — sessions + generate-next + closed action vocabulary; folds the step-28 driver
-carry-forwards + the continue-session isolation obligation).
+**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 33 (API core II — sessions + generate-next + closed action
+vocabulary) done; review chain coder → reviewer(FIXES-NEEDED) → fix-coder → reviewer2(**CLEAN**). `pipeline/
+api/session.py`: `begin-session` (plan-only default `generate=none`; pins/idempotency_key/target_folio fixed
+at begin only; mints the resumption token), `continue-session` with the CLOSED §21.2 action vocabulary
+(generate-next/render/add-to-folio/emit-manifest/fetch/status/list/get; anything else → `unknown-action`
+per-item block), `generate-next` (re-resolves the plan each call; `plan-stale` on plan_hash drift = nothing
+generated; idempotent by artifact-id existence via `store.is_done` → `already-materialized`; cursor keys on the
+artifact-id COORDINATE not an index; per-item block never fails the batch = SM1; token appends produced ids).
+`render`/`fetch`/`emit-manifest`/`add-to-folio`/`list`/`get` are typed not-yet-wired stubs (internal
+`NotYetWired`, tests-only, never a fake success — real handlers at 34–35). Isolation for continue-session's
+nested ids is enforced at the INVOKE GATE (single authoritative path, envelope-fatal, verb/action parity). The
+step-28 driver carry-forwards CF-1 (provenance divergence — collapsed to one `SourceAdapter.pin_commit` reader)
+and CF-2 (fitted advance via the contained S5 hook) both closed. Step-28 demo id byte-for-byte unchanged.
+Progress = 33/41 + R1 done · 27/33 step-scoped commits (+3 authorized extras). Baseline green: 1799 passed
+(6 deselected/zero-live). Reviewer scorecard: step 33 added two MEDIUM contract-fidelity catches (a test-double
+re-opening CF-1's divergence; verb/action isolation envelope-parity). Next: step 34 (API discovery + retrieval
+— list/get + currency fields, fetch, standalone render, folio verbs).
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
 routes an agent onto the async-task channel (reports arrive in the task-notification, NO boilerplate);
 no-isolation uses the mailbox channel (boilerplate on every delivery incl. idle pings). **From step 33 on,
 spawn EVERY ops agent (coder/reviewer/fixer) with `isolation:"worktree"`.** The coder works in its own launch
-worktree; reviewers/fixers IGNORE their launch worktree and `cd` to the coder's worktree (pass its path from
-the coder's task-notification metadata); the main session RECONCILES the coder's worktree → main at commit
-time (copy changed files by explicit list, re-verify green, commit from main, then `git worktree remove
---force`). No CLAUDE.md/config edits, no new branch/BD. Revert to no-isolation only when the maintainer says
-the bug is fixed. (Steps 24–32 used no-isolation and wrote main directly — both channels are correctness-
-equivalent; only the boilerplate and the reconcile step differ.)
+worktree; reviewers/fixers IGNORE their launch worktree and `cd` to the coder's worktree (pass its path — it is
+in the coder's task-notification `<worktree>` metadata, e.g. `.claude/worktrees/agent-<id>`); the main session
+RECONCILES the coder's worktree → main at commit time (copy the reviewer-confirmed changed files by explicit
+list, verify byte-identity, re-verify green under its own hand, commit from main, then `git worktree remove
+--force <path>`). **CONFIRMED MECHANICS (step 33, empirical):** an isolation agent's **Edit/Write tools are
+sandbox-confined to its OWN launch worktree** (cannot edit another worktree or main) — but **plain Bash writes
+to a SIBLING worktree ARE permitted** (no sandbox override). So a fix-coder edits the coder's worktree via a
+Bash-run exact-match replace helper (each replace asserted to match once), NOT Edit/Write; it then re-runs the
+suite IN the coder's worktree to prove the edits landed. The main session independently greps/diffs the coder's
+worktree before reconciling. Reviewers are read-only so they just `cd` + read. No CLAUDE.md/config edits, no
+new branch/BD. Revert to no-isolation only when the maintainer says the bug is fixed. (Steps 24–32 used
+no-isolation and wrote main directly — both channels are correctness-equivalent; only the boilerplate and the
+reconcile step differ. `.claude/worktrees/` is git-excluded locally so it never dirties `git status`.)
 
-**⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
-HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
-7–22. Main session reconciled by copying the coder's new files into the main checkout byte-identical,
-re-verifying green, and removing the stale worktree. **GOING FORWARD: spawn ops-coders WITHOUT
-`isolation:"worktree"`** so they write to the main checkout directly (the reviewer, read-only, ran fine in
-main without isolation). If a future coder still lands files in a worktree, reconcile the same way.
+**⚠ OPERATIONAL NOTE (spawn discipline) — SUPERSEDED 2026-07-13 by the ⚙ SPAWN-CHANNEL MITIGATION above.**
+Historical: at step 23 the ops-coder's Edit/Write were hard-confined to its isolated launch worktree; steps
+24–32 then ran WITHOUT isolation (writing main directly) but that put agents on the boilerplate mailbox
+channel. The maintainer's #73647 directive reverses this from step 33 on: isolation IS used (for the clean
+async channel) and the confinement is handled by the reconcile flow + the confirmed Bash-sibling-write
+mechanic documented in the mitigation block. Follow the mitigation block, not this note.
 
 ## Standing instructions to any session picking this up (read before acting)
 
@@ -192,21 +204,39 @@ main without isolation). If a future coder still lands files in a worktree, reco
   payload-side metadata re-scan in `payload.build_payload` would close the residual where a caller
   hand-builds a `fitted_ir` bypassing `ir.validate_ir`'s `_scan_no_secrets`. §11.3/§17 RI14 deliberately keep
   the metadata bag opaque/untouched, so this is defense-in-depth only.
-- **→ Step 33 (from step-32 review, BINDING obligation):** `continue-session` is the only known verb with
-  no `referenced_ids` id-extractor, so the step-32 invoke isolation gate passes its action-nested ids
-  (render.item, add-to-folio members, fetch.id, …) through UNCHECKED. Safe at step 32 (handler unwired →
-  HandlerNotWired before any id is seen). When step 33 wires the continue-session/generate-next handler, that
-  handler MUST enforce workspace isolation on those nested action ids itself.
-- **→ Step 32/33 invoke (from step-28 review CF-1):** `driver._pin_source_commit` reads only
-  `built_at_commit` from graph.json; the `GraphifyAdapter` additionally falls back to a read-only
-  `git rev-parse HEAD`. For a commitless-but-git-checkout source the artifact-id commit-map would OMIT a
-  commit the grounding ledger records (latent id/ledger provenance divergence). In the invoke core, reuse
-  the adapter's provenance read (or assert `outcome.commit_map == source_commit`). Zero impact on the
-  step-28 demo (single source with `built_at_commit` present; id reproduced).
-- **→ Step 32/33 invoke (from step-28 review CF-2, optional):** `driver.py:397` advances the fitted SSOT
-  row via a direct `ssot.advance()`, outside the spine's S5 contained-hook exception containment (unlike
-  composed/rendered). `advance()` never raises for business conditions so it errs toward surfacing (safe),
-  but route it through a contained hook for consistency with §22.7 "SSOT never gates control flow."
+- **✅ RESOLVED at step 33 — the step-32 continue-session isolation obligation.** FIX 2 (pass-1 review)
+  moved enforcement to the INVOKE GATE, the cleanest single-path design: `invoke._extract_continue_session`
+  maps each nested action to its mirror verb's id-extractor and registers `continue-session` in
+  `_ID_EXTRACTORS`, so its action-nested ids (render.item, fetch/get.id, add-to-folio folio_id+members+pins,
+  emit-manifest folio_id+member_targets) ride the SAME envelope-fatal Gate 3 as the standalone verbs. The
+  handler's own isolation branch was removed → exactly one authoritative enforcement path. Pass-2 reviewer's
+  id-position enumeration confirmed NO un-gated position. `unknown-action` (no mirror) stays a per-item block.
+- **✅ RESOLVED at step 33 — CF-1 (id/ledger provenance divergence).** Collapsed the two provenance readers
+  into ONE: new `SourceAdapter.pin_commit` (base default `None` = commitless posture); `GraphifyAdapter`/
+  `MockAdapter` share their `ground()` commit source (`_graph_provenance` / `_commit_for`), so the §7.2
+  commit-map and the §15 grounding ledger read byte-identical provenance — the commitless-but-git-checkout
+  case can no longer omit a commit the ledger records. Rejected the "assert commit_map==source_commit" variant
+  (it would false-fire in the legit §21.8 begin-session-frozen-pin vs generate-next-fresh-read case). Step-28
+  demo id byte-for-byte unchanged (its source carries `built_at_commit`). (The `MockAdapter.pin_commit`
+  override was FIX 1 — the pass-1 reviewer caught that the mock silently re-opened the divergence.)
+- **✅ RESOLVED at step 33 — CF-2 (contained-hook consistency).** The fitted deliverable-row advance now
+  rides the spine's S5 contained hook (`_persist_record(advance=_advance_fitted_row)`), consistent with
+  composed/rendered per §22.7; behavior preserved on both fresh and already-materialized re-drive paths.
+- **→ HARD GATE before `generate-next` is wired to the LIVE CLI (step-33 reviewer-ratified, BINDING):** a
+  per-item GENERATION failure currently surfaces as a CODE-LESS block — `driver._run_artifact` collapses a
+  stage block (empty-pool/hard-limit-exceeded/low-confidence-grounding/…) into an opaque `DriverError`, so
+  `session._generate_next` emits `status=block` with a hint but NO §21.7 `code`/`remediation.action`. Accepted
+  as a transitional gap for step 33 (no code FABRICATED — honest per §3.1; threading codes up is a driver-
+  contract restructure that lands with the generation-tier/wiring step; generate-next is not CLI-wired yet).
+  It is marked as a HARD GATE in `session.py` (the `_block` docstring + the `_generate_next` DriverError branch
+  comment). **Before generate-next reaches a production caller, the driver MUST thread the real §21.7 stage
+  codes up so the block carries its true code.** (NB: FIX 4's malformed-CALL block — bad recipe/folio/source
+  connection — is legitimately code-less FOREVER; only the GENERATION block is gated.)
+- **→ The API step that wires the production edge (from step-33 coder CF-1, BINDING):** `register_session_
+  handlers()` exists but is deliberately NOT called at import (calling it would register begin/continue-session
+  and break step-32's `test_every_known_verb_passes_the_verb_gate`, which asserts the verb registry is empty).
+  The production CLI edge MUST call it once at startup when begin/continue-session go live. Until then the CLI
+  hits `HandlerNotWired` for them (honest), exactly like the still-stubbed render/fetch/emit verbs.
 - **→ Step 40 / next `ir.py`-touching step (from step-27 review F3, dedup):** `serialize._match_bracket`
   duplicates `ir._match_bracket` byte-for-byte — promote to ONE shared public helper (importing the private
   `ir._match_bracket` was left out of scope). Until then, `tests/test_serialize.py::

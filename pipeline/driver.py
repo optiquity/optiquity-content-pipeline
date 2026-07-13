@@ -227,25 +227,22 @@ def _source_repo_for(instance_id: str, connection: Mapping[str, Any]) -> str:
     return instance_id
 
 
-def _pin_source_commit(adapter: str, connection: Mapping[str, Any]) -> str | None:
+def _pin_source_commit(
+    adapter: SourceAdapter | None, connection: Mapping[str, Any]
+) -> str | None:
     """Pin the source commit for the artifact-id commit-map (§7.2), read-only.
 
-    A graphify source's commit is `built_at_commit` in its graph.json — read by path
-    (rule 1: the graph is read-only, and reading it by path is exactly what the pipeline
-    does). This pins the SAME commit the grounding pass will report, so identity and the
-    grounded facts agree. `None` when the graph names no commit (a commitless source, the
+    CF-1: this delegates to `adapter.pin_commit`, the SAME provenance read the grounding
+    pass uses (`SourceAdapter.ground` → `GroundingResult.built_at_commit`), so the
+    commit-map that enters IDENTITY and the commit the §15 grounding LEDGER records can
+    never disagree. A graphify source reads graph.json's `built_at_commit` and, for a
+    commitless-but-git checkout, falls back to the read-only `git rev-parse HEAD` — the
+    exact value grounding will also report (previously this function read only
+    `built_at_commit` and OMITTED the git-fallback commit, so identity and the ledger
+    diverged for such a source; the step-28 demo did not trigger it, but generate-next
+    over real selections can). `None` for an unbound adapter or a commitless source (the
     designed folder-style posture)."""
-    if adapter != "graphify":
-        return None
-    raw_path = connection.get("path")
-    if not isinstance(raw_path, str) or not raw_path:
-        return None
-    try:
-        document = json.loads(Path(raw_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    commit = document.get("built_at_commit") if isinstance(document, Mapping) else None
-    return commit if isinstance(commit, str) and commit.strip() else None
+    return adapter.pin_commit(connection) if adapter is not None else None
 
 
 # --- Persistence (spine-driven records over the workspace store) ---------------------------
@@ -407,11 +404,25 @@ def _run_deliverable(
         f"({'no-op passthrough' if rout.is_noop else f'{rout.attempts} attempt(s)'})"
     )
 
-    # Persist the IR-fitted record (fitted-level key; no SSOT row — `fitted` is a
-    # deliverable-row STATUS, advanced below), then advance the row to `fitted`.
-    _persist_record(store, claims, fitted_id, {"ir": fitted_ir, "binding": fit_binding},
-                    preimage=fit_binding["preimage"])
-    ssot.advance(d.deliverable_id, "fitted")
+    # Persist the IR-fitted record (fitted-level key; keys no SSOT row of its own —
+    # `fitted` is a deliverable-row STATUS). CF-2: route the deliverable-row `fitted`
+    # advance through the spine's S5 CONTAINED-hook (§22.7 guardrail 3), exactly like
+    # `composed`/`rendered` — never a raw `ssot.advance` outside the S5 exception
+    # containment. The hook fires on both the fresh and the already-materialized re-drive
+    # (S4/S5 always run), reproducing the prior unconditional advance. The fitted record's
+    # own id keys no row, so the hook targets the DELIVERABLE id (a fixed capture),
+    # ignoring the persisted fitted-id the spine hands it.
+    def _advance_fitted_row(_fitted_id: str, _deliverable_id: str = d.deliverable_id) -> None:
+        ssot.advance(_deliverable_id, "fitted")  # outcome DISCARDED — write-only (§22.7)
+
+    _persist_record(
+        store,
+        claims,
+        fitted_id,
+        {"ir": fitted_ir, "binding": fit_binding},
+        preimage=fit_binding["preimage"],
+        advance=_advance_fitted_row,
+    )
 
     # -- serialize (§17): the fitted IR → the pinned Pandoc AST → dispatch to the internal
     #    writer for layer-2 bytes. `plain` presentation lowers to the empty RenderInputs.
@@ -711,14 +722,16 @@ def run_thread(
             "workspaces/<ws>/sources/ — grounding needs a source pool (§6.1)"
         )
     pool = build_pool(env.resolver, source_ids)
+    # Build the adapter set FIRST so the commit-map is pinned through the SAME provenance
+    # read grounding uses (CF-1): `_pin_source_commit` delegates to `adapter.pin_commit`.
+    adapters: dict[str, SourceAdapter] = {"graphify": GraphifyAdapter()}
     source_commit: dict[str, str] = {}
     source_repos: dict[str, str] = {}
     for inst in pool:
         source_repos[inst.id] = _source_repo_for(inst.id, inst.connection)
-        commit = _pin_source_commit(inst.adapter, inst.connection)
+        commit = _pin_source_commit(adapters.get(inst.adapter), inst.connection)
         if commit is not None:
             source_commit[inst.id] = commit
-    adapters: dict[str, SourceAdapter] = {"graphify": GraphifyAdapter()}
     log(
         f"pool: {source_ids}; commit-map {source_commit}; "
         f"repos {source_repos}"

@@ -192,9 +192,39 @@ def _extract_begin_session(params: Mapping[str, Any]) -> list[tuple[str, str]]:
     return []
 
 
+#: §21.1/§21.2: continue-session's nested ids MIRROR a standalone verb — each id-bearing
+#: action maps to the verb whose extractor already locates its ids, so the whole-invocation
+#: isolation gate treats the action path and the verb path identically (they never diverge).
+_ACTION_MIRROR_VERB = {
+    "render": "render",
+    "fetch": "fetch-by-id",
+    "get": "get",
+    "add-to-folio": "add-to-folio",
+    "emit-manifest": "emit-manifest",
+}
+
+
+def _extract_continue_session(params: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """continue-session ids are ACTION-nested (§21.2): map `action` to its mirror verb and
+    reuse that verb's extractor, so a cross-workspace nested id is refused by Gate 3 exactly
+    like the standalone verb path — WHOLE-INVOCATION-fatal (§21.1/§21.7). The location is
+    prefixed with the action (`render.item`) so the violation names where the id sat. An
+    action with no id-bearing mirror (`status`/`list`/`generate-next`/unknown) references
+    nothing here — that shape is the handler's concern (`unknown-action` stays a per-item
+    block, never an isolation refusal)."""
+    action = params.get("action")
+    verb = _ACTION_MIRROR_VERB.get(action) if isinstance(action, str) else None
+    if verb is None:
+        return []
+    extractor = _ID_EXTRACTORS.get(verb)
+    if extractor is None:  # pragma: no cover — every mirror verb has an extractor
+        return []
+    return [(f"{action}.{location}", id_str) for location, id_str in extractor(params)]
+
+
 #: Per-verb id-bearing param positions (§21.1) — the isolation surface. `list`/`create-folio`
-#: reference no incoming id; `continue-session` action ids are extracted by the step-33
-#: handler, not here (this step gates the id-addressed VERB params + the token's binding).
+#: reference no incoming id; `continue-session` maps each action to its mirror verb's extractor
+#: (`_extract_continue_session`) so its ACTION-nested ids ride the SAME envelope-fatal gate.
 _ID_EXTRACTORS: dict[str, Callable[[Mapping[str, Any]], list[tuple[str, str]]]] = {
     "render": _extract_render,
     "fetch-by-id": _extract_get,
@@ -202,6 +232,7 @@ _ID_EXTRACTORS: dict[str, Callable[[Mapping[str, Any]], list[tuple[str, str]]]] 
     "add-to-folio": _extract_add_to_folio,
     "emit-manifest": _extract_emit_manifest,
     "begin-session": _extract_begin_session,
+    "continue-session": _extract_continue_session,
 }
 
 

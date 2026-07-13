@@ -230,6 +230,20 @@ class TestReferencedIds:
         assert referenced_ids("list", {"type": "artifacts"}) == []
         assert referenced_ids("create-folio", {"purpose": "launch"}) == []
 
+    def test_continue_session_maps_action_to_its_mirror_verb(self):
+        # continue-session's ACTION-nested ids ride the mirror verb's extractor, with the
+        # location prefixed by the action, so Gate 3 isolates them uniformly (§21.1/§21.2).
+        assert referenced_ids("continue-session", {"action": "render", "item": ART_A}) == [
+            ("render.item", ART_A)
+        ]
+        assert referenced_ids("continue-session", {"action": "fetch", "id": ART_A}) == [
+            ("fetch.id", ART_A)
+        ]
+        # An action with no id-bearing mirror (or an unknown/absent action) references nothing.
+        assert referenced_ids("continue-session", {"action": "status"}) == []
+        assert referenced_ids("continue-session", {"action": "frobnicate", "item": ART_A}) == []
+        assert referenced_ids("continue-session", {}) == []
+
 
 class TestCli:
     def test_unknown_verb_prints_a_fatal_json_envelope(self, capsys):

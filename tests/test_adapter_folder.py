@@ -185,6 +185,14 @@ class TestExtraction:
         assert result.built_at_commit is None
         assert all(fact.refinements == {} for fact in result.facts)
 
+    def test_pin_commit_agrees_with_ground_commitless(self, tmp_path):
+        # CF-1: the folder adapter is THE commitless kind — `pin_commit` (the base default)
+        # returns None, matching `ground().built_at_commit`, so identity and the §15 ledger
+        # agree (both commitless). No override needed.
+        root = make_corpus(tmp_path / "corpus")
+        assert FolderAdapter().pin_commit({"path": str(root)}) is None
+        assert ground_all(root).built_at_commit is None
+
     def test_deterministic_order_and_repeatability(self, tmp_path):
         root = make_corpus(tmp_path / "corpus")
         first = ground_all(root)

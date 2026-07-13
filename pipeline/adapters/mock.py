@@ -94,11 +94,30 @@ class MockAdapter(SourceAdapter):
             facts = tuple(
                 fact for fact in facts if needle in f"{fact.subject} {fact.claim}".lower()
             )
+        return GroundingResult(facts=facts, built_at_commit=self._commit_for(dataset))
+
+    def _commit_for(self, dataset: str) -> str | None:
+        """The per-dataset commit `ground()` records — the synthetic content-derived digest,
+        or the `commits` override (an explicit `None` models a commitless adapter kind). The
+        SINGLE source of the commit value, so `ground` and `pin_commit` can never disagree."""
         if dataset in self._commits:
-            commit = self._commits[dataset]
-        else:
-            commit = synthetic_commit(dataset)
-        return GroundingResult(facts=facts, built_at_commit=commit)
+            return self._commits[dataset]
+        return synthetic_commit(dataset)
+
+    def pin_commit(self, connection: Mapping[str, Any]) -> str | None:
+        """The §7.2 identity commit-map value for a mock source — the SAME per-dataset commit
+        `ground()` reports (`_commit_for`), honoring the `commits` override incl. an explicit
+        `None`. CF-1: the artifact-id commit-map and the §15 grounding ledger must never
+        disagree; a test double that reports a commit from `ground()` yet inherited the base
+        `pin_commit → None` would silently re-introduce exactly the divergence CF-1 closed for
+        graphify/folder. An unknown or malformed connection pins nothing (`None`) — `ground()`
+        then fails loudly, so no diverged id is ever persisted. Read-only (rule 1)."""
+        if not isinstance(connection, Mapping):
+            return None
+        dataset = connection.get("dataset")
+        if not isinstance(dataset, str) or dataset not in self._datasets:
+            return None
+        return self._commit_for(dataset)
 
 
 def default_datasets() -> dict[str, tuple[Fact, ...]]:

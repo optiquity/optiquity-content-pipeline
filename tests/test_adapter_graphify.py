@@ -540,6 +540,33 @@ class TestCommitProvenance:
         result = adapter.ground(connection={"path": str(graph)}, query="w")
         assert result.built_at_commit is None
 
+    def test_pin_commit_agrees_with_ground_on_built_at_commit(self):
+        # CF-1: `pin_commit` (the §7.2 identity commit-map value) reads the SAME provenance
+        # `ground()` reports, so identity and the §15 ledger never disagree.
+        adapter, _ = adapter_with()
+        pinned = adapter.pin_commit(conn())
+        grounded = adapter.ground(connection=conn(), query="widget").built_at_commit
+        assert pinned == grounded == FIXTURE_COMMIT
+
+    def test_pin_commit_agrees_with_ground_via_git_fallback(self, tmp_path):
+        # CF-1's core case: a commitless-but-git checkout. `pin_commit` MUST also hit the
+        # read-only git fallback — otherwise identity would OMIT the commit the grounding
+        # ledger records (the latent divergence generate-next activates).
+        sha = "cd" * 20
+        graph = self.commitless_graph(tmp_path)
+        pin_fake = FakeRunner(git=RunOutcome(0, sha + "\n", ""))
+        pin_adapter, _ = adapter_with(pin_fake)
+        pinned = pin_adapter.pin_commit({"path": str(graph)})
+        ground_fake = FakeRunner(git=RunOutcome(0, sha + "\n", ""))
+        ground_adapter, _ = adapter_with(ground_fake)
+        grounded = ground_adapter.ground(connection={"path": str(graph)}, query="w").built_at_commit
+        assert pinned == sha == grounded  # no divergence
+
+    def test_pin_commit_absent_graph_is_none(self, tmp_path):
+        # An absent graph pins nothing (grounding then fails loudly — no diverged id persists).
+        adapter, _ = adapter_with()
+        assert adapter.pin_commit({"path": str(tmp_path / "missing.json")}) is None
+
 
 # --- typed error surface (never silent empties) -----------------------------------------------
 

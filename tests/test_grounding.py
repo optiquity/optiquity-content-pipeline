@@ -208,6 +208,33 @@ class TestMockAdapter:
         ]
         assert anchorless  # the SM9 seed
 
+    def test_pin_commit_agrees_with_ground(self):
+        # CF-1: `pin_commit` (the §7.2 identity commit-map value) MUST equal the commit
+        # `ground()` records — else the artifact-id commit-map would OMIT a commit the §15
+        # ledger keeps, exactly the divergence CF-1 closed for graphify/folder. Mirrors
+        # `test_adapter_graphify.py`'s `test_pin_commit_agrees_with_ground_*` and the
+        # folder-adapter agreement test.
+        adapter = MockAdapter()
+        pinned = adapter.pin_commit({"dataset": "alpha-docs"})
+        grounded = adapter.ground(connection={"dataset": "alpha-docs"}, query="").built_at_commit
+        assert pinned == grounded == synthetic_commit("alpha-docs")
+
+    def test_pin_commit_honors_commit_override_including_none(self):
+        # The `commits` override rides BOTH paths: an explicit None (a commitless kind) pins
+        # None matching ground(); a concrete override pins that same value on both.
+        none_adapter = MockAdapter({"d": (fact("s", "c"),)}, commits={"d": None})
+        assert none_adapter.pin_commit({"dataset": "d"}) is None
+        assert none_adapter.ground(connection={"dataset": "d"}, query="").built_at_commit is None
+        set_adapter = MockAdapter({"d": (fact("s", "c"),)}, commits={"d": "beef1234"})
+        assert set_adapter.pin_commit({"dataset": "d"}) == "beef1234"
+
+    def test_pin_commit_unknown_or_malformed_connection_is_none(self):
+        # An unknown/malformed connection pins nothing — ground() then fails loudly, so no
+        # diverged id is ever persisted (the graphify absent-graph → None posture).
+        adapter = MockAdapter()
+        assert adapter.pin_commit({"dataset": "nope"}) is None
+        assert adapter.pin_commit({}) is None
+
 
 # --- instance config (SourceInstance / build_instance) ---------------------------------------
 
