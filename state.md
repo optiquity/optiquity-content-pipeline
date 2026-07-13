@@ -122,6 +122,9 @@ Holding at the maintainer checkpoint (two authorizations pending, below).
   report); ratify the T10 defaults-template shapes incl. the dual `voice:` form.
 - **→ Step 17 (from step-15 review, validated):** score→tier/scope mapping as code constants; freshness-
   expression validation; the `+2`→int-2 note.
+- **→ Step 21/36 (from step-20 review RV-4):** holder-compare is cooperative trust — wire
+  COLLISION-RESISTANT holder identities (random token per worker) where the spine/parallelism constants
+  land; a duplicated holder string can currently release another's claim.
 - **→ Step 19/25 (from step-16 review RV-1):** configured `platform.*` values at L2/L3/L5 are silently
   inert on a no-platform item (falls to the L0 `adapt` floor with zero warnings) — decide warn-vs-inert
   where no-platform deliverable semantics are consumed.
