@@ -5,8 +5,13 @@
 # addopts. This workflow must NEVER pass the live-marker opt-in flag — CI has no
 # subscription auth and never touches the live transport.
 #
-# PA-12: pandoc is deliberately NOT installed here; the pinned-pandoc CI install block
-# lands at plan step 27 with the serialize core.
+# PA-12 (landed at plan step 27, serialize core): the pinned pandoc binary is installed
+# from the OFFICIAL VERSIONED RELEASE ASSET (checksum-verified) BEFORE pytest, so the
+# deterministic serialize pass RUNS in CI. The install channel is the gate-3 decision
+# (a versioned, immutable release URL — re-obtainable forever; brew tracks latest and
+# cannot pin a version). GitHub Actions sets CI=true, so if this install were ever to
+# fail, the serialize tests FAIL LOUDLY rather than skip (their pandoc guard turns an
+# absent binary + CI=true into a failure — a silent skip can never make CI green).
 name: ci
 on:
   push:
@@ -20,6 +25,14 @@ jobs:
         with:
           # Mirror the local toolchain (uv 0.11.16 verified on the dev machine, plan T1).
           version: "0.11.16"
+      - name: Install pinned pandoc 3.10 (official versioned release .deb, checksum-verified)
+        run: |
+          curl -fsSL -o /tmp/pandoc.deb \
+            https://github.com/jgm/pandoc/releases/download/3.10/pandoc-3.10-1-amd64.deb
+          echo "d502599878eb29af3ae5f0cb5d559134df96534125d452c7a0674a5bad2c5ecf  /tmp/pandoc.deb" \
+            | sha256sum -c -
+          sudo dpkg -i /tmp/pandoc.deb
+          pandoc --version | head -2
       - name: Sync project venv from the lockfile
         run: uv sync --locked
       - name: Run tests (live-marked tests deselected by pyproject addopts)

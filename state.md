@@ -9,13 +9,17 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 26 (fit resolution — FR2 + force matrix + split parts +
-claims, §21.8) done, reviewer CLEAN. Idempotency + self-heal both hole-free (two identical forcers →
-one content-addressed claim key → one winner; config revert re-selects the retained-digest fit as a HIT,
-no re-mint; latest-minted pick order-invariant via (minted_ts, fitted_id) tiebreak). Progress =
-26/41 + R1 done · 20/33 step-scoped commits (+3 authorized extras). Baseline green: 1540 passed
-(6 deselected/zero-live), ruff + both guards + schema-lint + inv-correctness OK. Next: step 27 (serialize
-core, §17 — CI pandoc install lands here) → ★28 first end-to-end output.
+**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 27 (serialize core, §17 + PA-12 CI pandoc) done.
+Reviewer caught a HIGH/blocking FAIL-OPEN in the provenance-strip filter (allowlist `{html5,epub3}` →
+any other public writer, e.g. a one-file-add `revealjs`/`s5`/bare-`epub` external target, would ship full
+provenance); fix-coder INVERTED it to fail-closed (strip UNLESS on `SAFE_WRITERS={markdown,json,docx,pptx,
+pdf,plain}` — every other writer, present or future, strips by default), + fixed a part-Div id over-strip
++ added a twin-matcher cross-check. Shipped behavior unchanged (html5/epub3 strip identically);
+STRIP_FILTER_VERSION stays 1 (no producible writer's bytes change). Coordinator re-verified fail-closed
+under own hand (unknown/future/empty writers all strip; revealjs through real dispatch leaks nothing).
+Progress = 27/41 + R1 done · 21/33 step-scoped commits (+3 authorized extras). Baseline green: 1585 passed
+(6 deselected/zero-live), ruff + both guards + schema-lint + inv-correctness OK. CI pandoc pin verified vs
+gate-3 (sha256 matches). Next: ★★ step 28 — FIRST END-TO-END OUTPUT.
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
@@ -160,6 +164,19 @@ main without isolation). If a future coder still lands files in a worktree, reco
 - **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
   (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
   extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
+- **→ Step 40 / next `ir.py`-touching step (from step-27 review F3, dedup):** `serialize._match_bracket`
+  duplicates `ir._match_bracket` byte-for-byte — promote to ONE shared public helper (importing the private
+  `ir._match_bracket` was left out of scope). Until then, `tests/test_serialize.py::
+  test_match_bracket_twins_agree_byte_for_byte` guards against drift.
+- **→ Step 40 (from step-27 fix, §17 R-4 doc alignment):** `docs/design.md` §17 R-4 enumerates the strip
+  targets as "html5/epub3"; the IMPLEMENTATION is now fail-CLOSED (strip UNLESS on `SAFE_WRITERS`), a
+  strengthening beyond the literal enumeration that closes the one-file-add extensibility hole while
+  preserving the §3.3 no-provenance-in-public intent. Align the §17 R-4 prose to document the fail-closed
+  safe-set policy so the design doc stays the SSOT.
+- **→ Step 31/folio or step 40 (from step-27 review, minor nit):** a part Div's `#id` = `part["role"]` slug
+  is asserted doc-unique in the docstring but NOT enforced — duplicate roles in one combined multi-part doc
+  would emit duplicate `#id` (HTML-validity nit only; addressing still rides `data-part-id`). Enforce or
+  document when multi-part/folio assembly is exercised.
 - **→ Step 26 (from step-25 review obs-3, BINDING):** `advisory`/`render_dims` must be "scoped to the
   attributes reconcile consumes" — a CALLER obligation. `reconcile.reconcile_inputs_preimage` puts ALL of
   `request.advisory`/`request.render_dims` (delta-vs-floor) into the fit preimage, so step 26 MUST pass only
