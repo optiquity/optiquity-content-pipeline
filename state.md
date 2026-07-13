@@ -9,14 +9,12 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 24 (compose — IR + writer stage, §15) done.
-Reviewer caught a BLOCKING span-extraction tier-honesty hole (the `[^\]]*` regex missed grounded
-spans whose visible text nests brackets like `items[0]`/footnote `[1]`, so a tier-promotion inside one
-could persist unchecked) — fix-coder replaced it with a balanced-bracket scanner matching Pandoc's reader
-+ a fail-closed cross-check, and added a ledger-build secret scan of fact claim/subject (§3.3 input
-boundary). Progress = 24/41 + R1 done · 18/33 step-scoped commits (+3 authorized extras). Baseline green:
-1487 passed (6 deselected/zero-live), ruff + both guards + schema-lint + inv-correctness OK.
-Next: step 25 (reconcile pass core, §16).
+**FRAMEWORK BUILD IN PROGRESS — Phase 3.** Step 25 (reconcile pass core, §16) done, reviewer CLEAN.
+Content-addressing determinism + fidelity gate both airtight (no under-inclusion collision; minted_ts out
+of identity; no-op cannot misclassify; ledger machine-owned so the LLM can't hide a fact drop). Progress =
+25/41 + R1 done · 19/33 step-scoped commits (+3 authorized extras). Baseline green: 1517 passed
+(6 deselected/zero-live), ruff + both guards + schema-lint + inv-correctness OK. Next: step 26 (fit
+resolution — FR2 + force_reconcile matrix + split parts + claims, PA-7 second half).
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
@@ -161,6 +159,26 @@ main without isolation). If a future coder still lands files in a worktree, reco
 - **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
   (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
   extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
+- **→ Step 26 (from step-25 review obs-3, BINDING):** `advisory`/`render_dims` must be "scoped to the
+  attributes reconcile consumes" — a CALLER obligation. `reconcile.reconcile_inputs_preimage` puts ALL of
+  `request.advisory`/`request.render_dims` (delta-vs-floor) into the fit preimage, so step 26 MUST pass only
+  the consumed attributes or the fit-revision `_hex12` churns spuriously (spurious identity change).
+- **→ Step 26 (from step-25 review obs-1, cheap hardening):** a non-numeric `hard_limit` raises
+  `ReconcileError` only at the terminal gate — for a non-`pass` strategy that fires AFTER one LLM call
+  (wasted spend). Add a pre-LLM numeric-limit type check in request assembly/`_validate_request`.
+- **→ Step 36 or 40 (from step-25 review, INV-CORRECTNESS parity):** the import-lint `CORRECTNESS_ROOTS`
+  watches the persistence/idempotency/lock plane (store/claims/spine/sweep/parallel). `reconcile.py` and
+  `compose.py` are pure producers that persist nothing and are (correctly) NOT watched. If defense-in-depth
+  against a future `ssot` import in a pure producer is wanted, add `reconcile` AND `compose` TOGETHER — never
+  single out just one (inconsistent).
+- **→ §26 localization GA (post-MVP, from step-25 review obs-2/obs-4):** (a) the reconciler prompt/parse are
+  built from `request.canonical_ir` while assembly uses `localized_ir` — identical in v1 (localize no-op);
+  once localization is real the prompt must read the LOCALIZED IR. (b) a `pass` with language≠source is
+  zero-LLM and would ship UNLOCALIZED content as an `ok` fit (unreachable under the v1 language==source
+  contract; designed deferral).
+- **→ Step 40 (from step-25 review obs-5, cosmetic):** `pipeline/prompts/__init__.py` `STUB_TEMPLATE_NAMES`
+  still lists `reconciler` and `writer` even though both stubs are now filled — cosmetically stale; reconcile
+  in the sweep.
 - **→ Steps 24+ (from step-23 review A2, BINDING on transport callers):** the transport module accepts an
   optional `cwd=` but does NOT enforce a dedicated non-repo working dir or wire cwd/config-isolation flags
   (`--setting-sources`/`--settings`/`--strict-mcp-config`/`--tools ""`) — INFERRED/UNTESTED per step-04 §4.7,
