@@ -9,23 +9,24 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 34 (API discovery + retrieval) done, reviewer **CLEAN** (no
-must-fix-now). `pipeline/api/{discovery,fetch,render,folio_verbs}.py`: `list <type>`/`get <type> <id>` over the
-closed types + the SELF-DESCRIBING meta-types (`codes`→`results.CODES`, `verbs`→`invoke.KNOWN_VERBS`,
-`types`→`discovery.TYPES`, `actions`→injected `session.CONTINUE_ACTIONS` — no hardcoded vocab, add/remove flows
-through with no second edit); §13.2 `Pred` filters AND-combined (+ reserved provenance/lineage/`created`-range);
-the FIVE currency fields (`fit_revision fit_current serialize_revision serialize_current minted_ts`) COMPUTED
-AT READ from the content-addressed store, never stored, never SSOT (discovery is ssot-free). `fetch-by-id` is
-the dumb hot path (path|bytes, ZERO currency/mint/resolution; old id → byte-identical bytes). Standalone
-token-free `render` orchestrates fit_resolution + serialize resolution + `force_reconcile` (§21.8 precedence
-`render-input-mismatch`→`re-reconciled`→`re-serialized`→`already-materialized`→`ok`; force mints a NEW revision,
-baseline byte-identical; a session-context render is a side-output that does NOT advance the token — ruled
-design-correct). Standalone `create-folio`/`add-to-folio` reuse step-31 folios verbatim. Three step-33 stubs
-re-wired to real handlers; **`emit-manifest` is now the SOLE remaining stub** (step 35). `register_api_handlers`
-is the single production wiring point, still NOT called at import (verb-gate contract intact). Progress = 34/41
-+ R1 done · 28/33 step-scoped commits (+3 authorized extras). Baseline green: 1839 passed (6 deselected/zero-
-live). Next: step 35 (emit-manifest §21.5 + the closed-vocabulary completeness assertion — every API2 action
-dispatches to a REAL handler, zero `NotYetWired` remains).
+**FRAMEWORK BUILD IN PROGRESS — Phase 4 COMPLETE (the entire external API is built).** Step 35 (emit-manifest
++ closed-vocabulary completeness capstone) done; chain coder → reviewer(FIXES-NEEDED: HIGH serialize-level gap)
+→ fix-coder → reviewer2(**CLEAN**). `pipeline/api/manifest.py`: `emit-manifest` (§21.5) — a no-mint, ssot-free,
+point-in-time folio work order. Resolves each member through the fit AND serialize levels of the §21.8 rule
+with MINTING DISABLED (reuses the discovery `CurrencyResolver` no-mint digest machinery); rows = current /
+stale-fit (`render-input-mismatch` warn, not re-fitted) / render-needed (resolvable-but-unmaterialized —
+including fit-current-but-serialize-STALE, so serialize-stale bytes are NEVER referenced as current, FR7.3) /
+frozen-pin (verbatim, currency-annotated, never re-resolved) / unresolved-member (`needs-input`). Byte-identical
+regeneration (wall-clock only in the `<folio-id>-<ts>` filename); external→layer-3 ref, internal→path+pins; NO
+ordering/schedule columns + sortable facts columns (A4-4); persisted under output/manifests/ AND returned
+in-band; never writes SSOT. **PA-11/REC-6 CAPSTONE LANDED:** every API2 verb + continue-session action now
+dispatches to a REAL handler — `tests/test_action_completeness.py` proves ZERO `NotYetWired`/`HandlerNotWired`
+reachable after `register_api_handlers()` (non-vacuous: full-vocab enumeration + behavioral dispatch + bite-
+checks that the retired seams still fire when unwired). Progress = 35/41 + R1 done · 29/33 step-scoped commits
+(+3 authorized extras). Baseline green: 1870 passed (6 deselected/zero-live). Reviewer scorecard: step 35 caught
+a HIGH §21.5/FR7.3 gap (manifest labelled serialize-stale deliverables `current`, handing a publisher stale
+bytes) — fixed. Next: step 36 (Phase 5 — parallelism machinery: wave plan, presence leases, telemetry, width
+policy, sweep; + the CORRECTNESS_ROOTS batch expansion).
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
@@ -261,6 +262,13 @@ mechanic documented in the mitigation block. Follow the mitigation block, not th
   when `action_vocab` is unwired (default `frozenset()` at the `list`/handler seams); no end-to-end test ties
   `list actions` to `session.CONTINUE_ACTIONS` through the real `register_api_handlers`. Give it a loud
   "unwired" sentinel default and/or add the round-trip assertion. Low: both shipped wirings inject the vocab.
+- **→ Step 40 / manifest polish (from step-35 review2, LOW, design-underspecified):** `manifest._resolved_row`
+  (~`:446-451`) — when a STALE-FIT choice (§21.8 rule 2) has NO serialize-current deliverable, the
+  `render-needed` branch drops the rule-2 `render-input-mismatch` warn (sets `warn=None`). NET-SAFE and a strict
+  improvement over pre-fix (serialize-stale bytes are no longer referenced), and the warn resurfaces at render
+  time + on the next emit — but the manifest under-reports fit-staleness for one cycle in this compound corner.
+  §21.5 (~L1906-1908) does not explicitly specify the warn on a render-needed-from-stale-fit row. Optional
+  one-line follow-up: carry the rule-2 `warn` onto that branch (rule-1 keeps `warn=None`).
 - **→ Step 40 / next `ir.py`-touching step (from step-27 review F3, dedup):** `serialize._match_bracket`
   duplicates `ir._match_bracket` byte-for-byte — promote to ONE shared public helper (importing the private
   `ir._match_bracket` was left out of scope). Until then, `tests/test_serialize.py::

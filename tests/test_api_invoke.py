@@ -87,19 +87,16 @@ class TestVerbGate:
             with pytest.raises(HandlerNotWired):
                 invoke(verb, "wsA", {}, store=store)
 
-    def test_only_emit_manifest_is_unwired_after_registration(self, store):
-        # The honest step-34 wiring state: after registering the whole API surface, EVERY known
-        # verb dispatches to a REAL handler EXCEPT `emit-manifest` (step 35), which alone still
-        # raises the internal `HandlerNotWired` seam — never a fabricated success.
+    def test_every_known_verb_is_wired_after_registration(self, store):
+        # The step-35 capstone: after registering the whole API surface, EVERY known verb
+        # dispatches to a REAL handler — nothing is unwired now (`emit-manifest` is no longer the
+        # exception). No `HandlerNotWired` is reachable; the honest empty seam step 32 opened is
+        # closed. (The full completeness assertion lives in `tests/test_action_completeness.py`.)
         from pipeline.api.session import register_api_handlers
 
         register_api_handlers()  # the _clean_registry fixture restores the registry after
         for verb in KNOWN_VERBS:
-            if verb == "emit-manifest":
-                with pytest.raises(HandlerNotWired):
-                    invoke(verb, "wsA", {}, store=store)
-            else:
-                assert verb in invoke_mod._VERB_HANDLERS  # wired: a real handler dispatches
+            assert verb in invoke_mod._VERB_HANDLERS  # wired: a real handler dispatches
 
 
 class TestTokenGate:

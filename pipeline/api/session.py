@@ -39,16 +39,16 @@ cross-workspace nested id is refused `isolation-violation` WHOLE-INVOCATION-fata
 reaches a stage. This handler holds NO isolation branch of its own: exactly ONE enforcement
 path, no dead or contradictory code.
 
-**Wired vs. not-yet-wired actions (step 34).** `render`/`fetch`/`add-to-folio`/`list`/`get`
-are now WIRED — each delegates to its step-34 standalone verb handler (`pipeline.api.render`
-/`fetch`/`folio_verbs`/`discovery`), which owns the real logic; the continue-session action
-path and the standalone verb path share ONE implementation (contract parity, §21.1). The
-delegated handler receives the SAME already-gated `HandlerContext` (its ids sit flat alongside
-`action`), and the session ECHOES the token unchanged (these actions are read/side-outputs, not
-cursor advances — like `status`). `emit-manifest` ALONE remains a typed not-yet-wired stub
-(step 35): it is in the CLOSED vocabulary (so `unknown-action` stays honest) but dispatching it
-raises the INTERNAL `NotYetWired` — never a fabricated success, never a design result code
-presented as implemented. Step 35 retires the last stub.
+**The closed vocabulary is FULLY wired (step 35 — the capstone).**
+`render`/`fetch`/`add-to-folio`/`list`/`get`/`emit-manifest` each delegate to their standalone
+verb handler (`pipeline.api.render`/`fetch`/`folio_verbs`/`discovery`/`manifest`), which owns the
+real logic; the continue-session action path and the standalone verb path share ONE implementation
+(contract parity, §21.1). The delegated handler receives the SAME already-gated `HandlerContext`
+(its ids sit flat alongside `action`), and the session ECHOES the token unchanged (these actions
+are read/side-outputs, not cursor advances — like `status`; `emit-manifest` is a READ/PLAN that
+mints nothing, §21.5). No action is a `NotYetWired` stub anymore — step 35 retired the last one and
+closed the honest empty seam step 32 opened; `tests/test_action_completeness.py` asserts every
+`CONTINUE_ACTIONS` member dispatches to a REAL handler.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ from typing import Any
 from pipeline import driver
 from pipeline.adapters.base import AdapterError, SourceAdapter
 from pipeline.adapters.graphify import GraphifyAdapter
-from pipeline.api import discovery, fetch, folio_verbs, render, results
+from pipeline.api import discovery, fetch, folio_verbs, manifest, render, results
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import token as token_mod
 from pipeline.cascade import CascadeEnv
@@ -104,12 +104,13 @@ def _nolog(_message: str) -> None:
 
 
 class NotYetWired(RuntimeError):
-    """INTERNAL: a KNOWN continue-session action reached dispatch but its real handler lands at
-    a later step. After step 34 the ONLY such action is `emit-manifest` (step 35); every other
-    action is wired (generate-next/status here; render/fetch/add-to-folio/list/get delegate to
-    their step-34 verb handlers). Never a wire result code, never a fabricated success — the
-    honest action-level sibling of `invoke.HandlerNotWired`, surfaced only to tests and the CLI.
-    The step-35 assertion that every action dispatches to a REAL handler will retire this stub."""
+    """INTERNAL, DEFENSIVE seam: a KNOWN continue-session action reached dispatch with no wired
+    handler. After step 35 the closed vocabulary is FULLY wired — `generate-next`/`status` inline,
+    the rest (`render`/`fetch`/`add-to-folio`/`list`/`get`/`emit-manifest`) delegate — so NO current
+    action raises this (`tests/test_action_completeness.py` proves it). It survives only to trip an
+    honest, loud failure if a FUTURE action is added to `CONTINUE_ACTIONS` without a handler, rather
+    than misdispatch or fabricate a success — the action-level sibling of `invoke.HandlerNotWired`.
+    """
 
     def __init__(self, action: str) -> None:
         super().__init__(
@@ -350,10 +351,12 @@ def _continue_session(
 ) -> tuple[Sequence[results.ResultItem], token_mod.Token | None]:
     """Dispatch one continue-session action over the CLOSED vocabulary (§21.2).
 
-    `generate-next`/`status` are handled inline; `render`/`fetch`/`add-to-folio`/`list`/`get`
-    DELEGATE to their step-34 verb handlers (`delegates`) over the SAME `HandlerContext` and
-    ECHO the token unchanged (a read/side-output, not a cursor advance — §21.1 contract parity).
-    `emit-manifest` alone raises the typed `NotYetWired` stub (step 35)."""
+    `generate-next`/`status` are handled inline; every other action
+    (`render`/`fetch`/`add-to-folio`/`list`/`get`/`emit-manifest`) DELEGATES to its standalone
+    verb handler (`delegates`) over the SAME `HandlerContext` and ECHOES the token unchanged (a
+    read/side-output, not a cursor advance — §21.1 contract parity). After step 35 the closed
+    vocabulary is FULLY wired — no action is a `NotYetWired` stub (the `NotYetWired` raise below is
+    a defensive guard proven UNREACHABLE by `tests/test_action_completeness.py`)."""
     action = ctx.params.get("action")
     if not isinstance(action, str) or action not in CONTINUE_ACTIONS:
         return ([results.make_result(
@@ -373,11 +376,14 @@ def _continue_session(
         return _status(ctx)
     if action in delegates:
         # The action path and the standalone verb path share ONE handler (§21.1). The delegate
-        # mints no token; the session echoes the incoming cursor unchanged (like `status`).
+        # mints no token (emit-manifest included — it is a READ/PLAN, §21.5); the session echoes
+        # the incoming cursor unchanged (like `status`).
         items, _next = delegates[action](ctx)
         return (items, ctx.token)
-    # `emit-manifest` alone — in the closed vocabulary, honestly not wired until step 35.
-    raise NotYetWired(action)
+    # DEFENSIVE (unreachable given the closed vocabulary is fully wired): a future action added to
+    # `CONTINUE_ACTIONS` without a handler trips this honest seam rather than misdispatching —
+    # `tests/test_action_completeness.py` asserts NO current action reaches it.
+    raise NotYetWired(action)  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
@@ -573,16 +579,18 @@ def begin_session_handler(
 def _continue_session_delegates(
     *, render_engine: Any, currency_resolver: Any
 ) -> dict[str, invoke_mod.Handler]:
-    """Build the step-34 verb handlers the wired continue-session actions delegate to (§21.1
-    contract parity). `render`/`get`/`list` carry their injectable seams (the render engine, the
-    currency resolver); `discovery`'s `actions` meta-type is fed the single-source
-    `CONTINUE_ACTIONS`."""
+    """Build the verb handlers the wired continue-session actions delegate to (§21.1 contract
+    parity). `render`/`get`/`list`/`emit-manifest` carry their injectable seams (the render engine,
+    the currency resolver); `discovery`'s `actions` meta-type is fed the single-source
+    `CONTINUE_ACTIONS`. After step 35 EVERY id-bearing/side-output action delegates — no stub
+    remains (the completeness assertion, `tests/test_action_completeness.py`)."""
     return {
         "render": render.render_handler(engine=render_engine),
         "fetch": fetch.fetch_handler(),
         "add-to-folio": folio_verbs.add_to_folio_handler(),
         "list": discovery.list_handler(resolver=currency_resolver, action_vocab=CONTINUE_ACTIONS),
         "get": discovery.get_handler(resolver=currency_resolver),
+        "emit-manifest": manifest.emit_manifest_handler(resolver=currency_resolver),
     }
 
 
@@ -653,13 +661,14 @@ def register_api_handlers(
     render_engine: Any = None,
     currency_resolver: Any = None,
 ) -> None:
-    """Wire the WHOLE step-34 API surface into the invoke dispatch registry (§21.1) — the single
-    production startup call. Wires `begin-session`/`continue-session` (with the delegation seams),
-    the standalone `render`/`fetch-by-id`/`create-folio`/`add-to-folio`, and discovery `list`/`get`
-    (fed the single-source `CONTINUE_ACTIONS` for the `actions` meta-type). `emit-manifest` is the
-    ONLY known verb left unwired (step 35) — invoking it honestly raises `HandlerNotWired`.
+    """Wire the WHOLE API surface into the invoke dispatch registry (§21.1) — the single production
+    startup call. Wires `begin-session`/`continue-session` (with the delegation seams), the
+    standalone `render`/`fetch-by-id`/`create-folio`/`add-to-folio`, discovery `list`/`get` (fed the
+    single-source `CONTINUE_ACTIONS` for the `actions` meta-type), and `emit-manifest` (§21.5).
+    After step 35 EVERY known verb dispatches to a REAL handler — ZERO `HandlerNotWired` reachable
+    (`tests/test_action_completeness.py` asserts it over the full `invoke.KNOWN_VERBS` set).
 
-    EXPLICIT — never at import (keeps the unwired-registry tests valid). Seams pass through so a
+    EXPLICIT — never at import (keeps the empty-registry gate tests valid). Seams pass through so a
     test/edge can inject the render engine + currency resolver (no live call)."""
     register_session_handlers(
         adapters=adapters,
@@ -675,3 +684,4 @@ def register_api_handlers(
     discovery.register_discovery_handlers(
         resolver=currency_resolver, action_vocab=CONTINUE_ACTIONS
     )
+    manifest.register_emit_manifest_handler(resolver=currency_resolver)
