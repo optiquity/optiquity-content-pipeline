@@ -9,17 +9,15 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 3.** ★ Step 28 (FIRST END-TO-END OUTPUT) done, reviewer CLEAN.
-A real 11,910-byte grounded deliverable was produced from the real optiquity-site graph via ONE live
-subscription writer call ($0.48): ground → resolve/bind → compose (live) → reconcile (pass/no-op) →
-serialize (`plain` internal) → persisted artifact + deliverable + bindings + BOTH SSOT row kinds
-(artifact→composed, deliverable→rendered). Coordinator + reviewer both independently verified: client repo
-UNTOUCHED (rule 1 — graph.json mtime unchanged, client git clean), zero client/demo content committable
-(rule 4 — demo instance isolated under `workspaces/mvp-demo/` + `instance/defaults.yaml`, in local-only
-`.git/info/exclude` per PA-15), binding digest reproduces the artifact-id, identity never re-minted (§9.6).
-This is a BUILD MILESTONE (§25), explicitly NOT the MVP. Progress = 28/41 + R1 done · 22/33 step-scoped
-commits (+3 authorized extras). Baseline green: 1585 passed (6 deselected/zero-live). Next: step 29
-(serialize completion — presentation lowering, serialize revisions, layer-3 payload, pin bundle).
+**FRAMEWORK BUILD IN PROGRESS — Phase 3 → 4.** Step 29 (serialize completion, §17) done, reviewer CLEAN.
+Full PD3 presentation lowering, the FR7.3 serialize-revision auto-mint (deliverable-level analog of step-26
+FR2, same self-heal-on-revert; auto-mints instead of serve-latest because re-serialize is free+deterministic;
+mint-in-render-only), the RI13 pin bundle (record-only, moves no id), and the RI14 external layer-3 payload
+(all 5 components; provenance stripped UNCONDITIONALLY + a has_provenance fail-closed re-check; secret-in-
+metadata resolved — upstream _scan_no_secrets covers everything reaching the payload). Content-addressing
+airtight both directions (asset edit churns; side/minted_ts/schema_version excluded). Progress = 29/41 +
+R1 done · 23/33 step-scoped commits (+3 authorized extras). Baseline green: 1626 passed (6 deselected/
+zero-live). Next: step 30 (review gates §19 — enters Phase 4).
 
 **⚠ OPERATIONAL NOTE (spawn discipline, 2026-07-13):** at step 23 the ops-coder's Write/Bash tools were
 HARD-ENFORCED into its isolated launch worktree (could not write the main checkout) — a change from steps
@@ -164,6 +162,17 @@ main without isolation). If a future coder still lands files in a worktree, reco
 - **→ Step 19 (from step-17 review, validated):** recipe-layer M3 arrives via `resolve_selection(recipe=…)`
   (the shipped recipes schema carries no `source_selection` — ratified step-15 scope). Step 19 must either
   extend the recipe schema ADDITIVELY (§11.5 discipline) or confirm run-side supply as the mechanism.
+- **→ Step 40 (from step-29 review obs-1, cosmetic):** `pipeline/serialize.py:668` `except IdError` is dead
+  code — `delta_vs_floor` raises `PreimageError`, not `IdError`, so the wrap-to-`SerializeError` never fires
+  (a `PreimageError` propagates loudly regardless). Catch `PreimageError` or drop the try in the sweep
+  (already annotated `# pragma: no cover`).
+- **→ Step 40 (from step-29 review obs-3, doc trivia):** `docs/design.md` labels the serialize-resolution
+  rule "FR7.4" at §21.8 (~line 2051) but "FR7.3" at ~line 1620 — code/plan use FR7.3 consistently; reconcile
+  the pre-existing doc label in the sweep.
+- **→ optional hardening (from step-29 review obs-2, defense-in-depth, NOT required by design):** an optional
+  payload-side metadata re-scan in `payload.build_payload` would close the residual where a caller
+  hand-builds a `fitted_ir` bypassing `ir.validate_ir`'s `_scan_no_secrets`. §11.3/§17 RI14 deliberately keep
+  the metadata bag opaque/untouched, so this is defense-in-depth only.
 - **→ Step 32/33 invoke (from step-28 review CF-1):** `driver._pin_source_commit` reads only
   `built_at_commit` from graph.json; the `GraphifyAdapter` additionally falls back to a read-only
   `git rev-parse HEAD`. For a commitless-but-git-checkout source the artifact-id commit-map would OMIT a

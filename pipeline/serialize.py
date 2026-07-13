@@ -49,13 +49,15 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from pipeline import ids
 from pipeline.canonical import canonical_json_str, digest_hex12
+from pipeline.claims import AcquireOutcome, ClaimRegistry
 from pipeline.filters.provenance_strip import STRIP_FILTER_VERSION
-from pipeline.ids import IdError, deliverable_id
+from pipeline.ids import IdError, deliverable_id, delta_vs_floor
 from pipeline.ir import PANDOC_API_VERSION
 
 __all__ = [
@@ -63,16 +65,25 @@ __all__ = [
     "PANDOC_BINARY_DEFAULT",
     "PANDOC_VERSION_PIN",
     "READER_PIN",
+    "CODE_ALREADY_MATERIALIZED",
+    "CODE_RE_SERIALIZED",
+    "DISPOSITION_HIT",
+    "DISPOSITION_MISS",
+    "DISPOSITION_REVISION",
+    "DeliverableCoordinate",
     "DocumentPlan",
     "PandocBytesOutcome",
     "PandocOutcome",
     "PandocParseError",
     "PandocUnavailableError",
+    "RenderBindingRecord",
+    "SerializeResolution",
     "run_pandoc",
     "run_pandoc_bytes",
     "SerializeError",
     "SerializedUnit",
     "build_render_binding",
+    "claim_deliverable",
     "emit_claim_span",
     "emit_document_markdown",
     "emit_fitted_markdown",
@@ -83,8 +94,12 @@ __all__ = [
     "pandoc_available",
     "pandoc_gate",
     "pandoc_version",
+    "parse_render_binding",
     "parse_to_ast",
+    "pin_bundle",
     "plan_documents",
+    "resolve_deliverable",
+    "resolved_deliverable_id",
     "serialize_digest",
     "serialize_fitted",
     "serialize_inputs_preimage",
@@ -603,21 +618,55 @@ _TARGET_PREIMAGE_EXCLUDED = frozenset(
 
 
 def serialize_inputs_preimage(
-    *, render_target: Mapping[str, Any], render_inputs: Mapping[str, Any]
+    *,
+    render_target: Mapping[str, Any],
+    render_inputs: Mapping[str, Any],
+    render_target_defaults: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the canonical serialize-inputs preimage SKELETON (FR7.1; full form is step 29).
+    """Build the COMPLETE canonical serialize-inputs preimage (§17 FR7.1).
 
-    Everything that determines the output bytes given the fitted AST + coordinates: (1) the
-    pinned tool bundle — config-pure LITERAL pins, never ambient; (2) the render-target's
-    byte-determining effective values (`writer`, `engine`, `reference_doc`) — `side` and the
-    coordinate slugs EXCLUDED (`_TARGET_PREIMAGE_EXCLUDED`); (3) the lowered `RenderInputs`.
+    Everything that determines the output bytes given the fitted AST + coordinates:
+
+    1. **the pinned tool bundle** — config-pure LITERAL pins, never ambient: pandoc version +
+       AST api-version + reader extension set + the provenance-strip filter's pinned version
+       (it deterministically alters html5/epub3 bytes, so it belongs in the preimage, §17 R-4).
+       Read LITERALLY (they have no schema floor and are always present — they churn only when
+       they actually change, which is exactly when bytes change, §17 FR7.1).
+    2. **the render-target's byte-determining effective values, DELTA-VS-FLOOR** (`writer`,
+       `engine`, `reference_doc`, writer options — the output-type *slug* is a coordinate and
+       excluded via `_TARGET_PREIMAGE_EXCLUDED`; `side` is dispatch routing and excluded). The
+       delta is taken against `render_target_defaults` (the registry schema floor); a value at
+       its floor is ABSENT, preserving zero-churn (the same coordinate-vs-content line §16 drew).
+       With no floor supplied every effective value enters literally (the step-27 skeleton form).
+    3. **the lowered Presentation `RenderInputs`** (`presentation.render_inputs_to_mapping`): the
+       flags, the delta-vs-floor variables snapshot, `engine`, and **every asset by CONTENT
+       hash** — an edited css file churns the digest even when no schema version moved (§17).
+
+    The `render-inputs` **exclusion set** — the inputs that are deliberately NOT part of the
+    serialize-inputs IDENTITY (§17 FR7.1) — is:
+      - everything fitted-level (reconcile inputs live in the fit-binding and are covered by the
+        deliverable-id's fitted PREFIX, including any fit-revision qualifier);
+      - the four coordinate slugs themselves (platform/language/output-type/presentation);
+      - **`side: internal | external`** (dispatch routing — flipping it neither invalidates
+        existing bytes nor changes what identical inputs would produce), enumerated in
+        `_TARGET_PREIMAGE_EXCLUDED`;
+      - `schema_version` and the `metadata` bag (§7.3), also in `_TARGET_PREIMAGE_EXCLUDED`;
+      - **`minted_ts` and ALL wall-clock** — structurally absent here, so identity is
+        byte-reproducible across runs regardless of the clock (the same rule as the fit-binding).
+
     Wall-clock and `minted_ts` are structurally absent — identity is byte-reproducible.
     """
-    target_values = {
-        key: value
-        for key, value in render_target.items()
-        if key not in _TARGET_PREIMAGE_EXCLUDED
+    excluded_effective = {
+        key: value for key, value in render_target.items() if key not in _TARGET_PREIMAGE_EXCLUDED
     }
+    floor = render_target_defaults or {}
+    excluded_floor = {
+        key: value for key, value in floor.items() if key not in _TARGET_PREIMAGE_EXCLUDED
+    }
+    try:
+        target_values = delta_vs_floor(excluded_effective, excluded_floor, where="render_target")
+    except IdError as exc:  # pragma: no cover — delta_vs_floor raises PreimageError, not IdError
+        raise SerializeError(f"serialize-error: render-target preimage: {exc}") from exc
     preimage = {
         "tool_bundle": {
             "pandoc_version": PANDOC_VERSION_PIN,
@@ -647,6 +696,41 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
 
 
+def pin_bundle(
+    preimage: Mapping[str, Any], *, ast_reader_pin_digest: str | None = None
+) -> dict[str, Any]:
+    """Assemble the RI13 pin bundle from a serialize-inputs preimage (§17 RI13).
+
+    The §17 RI13 pin set — Pandoc binary version · AST api-version · reader extension set · the
+    provenance-strip filter's pinned version · the PDF engine · `reference_doc` · Presentation
+    asset content hashes + the variable snapshot — is EXACTLY what the serialize-inputs preimage
+    already carries (its `tool_bundle` + `render_target` + `render_inputs`), so the bundle is a
+    faithful MANIFEST projection of the preimage, not a second source of pins (one record the
+    identity digest, the S0 check, and the reproducibility sidecar all read, §17). Optionally
+    cites the consumed AST by its §18 reader-pin digest (`ast_reader_pin_digest`) — the caller
+    computes it via `pipeline.ast_store` (serialize cannot import ast_store without a cycle).
+
+    A record-only manifest: it is NOT hashed into the deliverable-id (its byte-determining
+    components already ride the preimage), so assembling it never moves an id.
+    """
+    tool = dict(preimage.get("tool_bundle", {}))
+    target = dict(preimage.get("render_target", {}))
+    inputs = dict(preimage.get("render_inputs", {}))
+    bundle = {
+        "pandoc_version": tool.get("pandoc_version"),
+        "pandoc_api_version": tool.get("pandoc_api_version"),
+        "reader": tool.get("reader"),
+        "strip_filter_version": tool.get("strip_filter_version"),
+        "engine": inputs.get("engine", "") or target.get("engine", ""),
+        "reference_doc": target.get("reference_doc", ""),
+        "assets": [list(pair) for pair in inputs.get("assets", [])],
+        "variables": dict(inputs.get("variables", {})),
+    }
+    if ast_reader_pin_digest is not None:
+        bundle["ast_reader_pin_digest"] = ast_reader_pin_digest
+    return bundle
+
+
 def build_render_binding(
     *,
     fitted_id: str,
@@ -656,17 +740,19 @@ def build_render_binding(
     fit_binding_ref: Mapping[str, Any],
     minted_ts: str | None = None,
     serialize_revision: bool = False,
+    ast_reader_pin_digest: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the per-deliverable render-binding (RI13/FR7.1): the serialize-inputs preimage,
     its `hex12` digest, the full deliverable-id (minted via `ids.deliverable_id`), `minted_ts`,
-    and the fit-binding reference.
+    the RI13 **pin bundle**, and the fit-binding reference.
 
     CRITICAL (the byte-reproducible-identity rule, mirroring `reconcile.build_fit_binding`):
     `minted_ts` is a RECORD field ONLY — NOT in the preimage, NOT in the digest — so
     preimage → digest → deliverable-id is byte-reproducible across runs regardless of wall
-    clock (§17). A `serialize_revision` fit carries the `_hex12` qualifier on the presentation
-    segment (§7.4); the resolution rule that DECIDES baseline-vs-revision is step 29 (FR7.3) —
-    this only mints and records.
+    clock (§17). The `pin_bundle` is a record-only manifest, likewise never hashed into the id.
+    A `serialize_revision` fit carries the `_hex12` qualifier on the presentation segment (§7.4);
+    the resolution rule that DECIDES baseline-vs-revision is `resolve_deliverable` (FR7.3) — this
+    only mints and records.
     """
     if not isinstance(fit_binding_ref, Mapping) or "fitted_id" not in fit_binding_ref:
         raise SerializeError(
@@ -686,8 +772,282 @@ def build_render_binding(
         "preimage": dict(preimage),
         "digest": digest,
         "minted_ts": minted_ts if minted_ts is not None else _now_iso(),
+        "pin_bundle": pin_bundle(preimage, ast_reader_pin_digest=ast_reader_pin_digest),
         "fit_binding_ref": {
             "fitted_id": fit_binding_ref["fitted_id"],
             "digest": fit_binding_ref.get("digest"),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# The serialize-resolution rule (§17 FR7.3 / §21.8) — the DELIVERABLE-level analogue of the
+# FR2 fit-resolution rule (`pipeline.fit_resolution`), with the stale-serve branch replaced by
+# AUTO-MINT. Free + deterministic ⇒ no consent needed (the asymmetry principle, §17): matching
+# inputs mean the byte-identical output already exists; differing inputs auto-mint a revision.
+# Same three-row shape, same content-addressed identity, same rule-1 self-heal as FR2.
+# ---------------------------------------------------------------------------
+
+#: §21.7/§22.6 stable codes (REUSED, not new): a serialize-resolution HIT is `already-materialized`
+#: (§21.7 REUSES it for "serialize-resolution hits" — an idempotent re-issue: the byte-identical
+#: deliverable already exists); an auto-minted revision is `re-serialized` (§17/§21.8). There is
+#: deliberately NO serialize-level mismatch warn — an unqualified render never returns
+#: serialize-stale bytes (FR7.3), so `render-input-mismatch` stays reconcile-scoped only (§21.8).
+CODE_ALREADY_MATERIALIZED = "already-materialized"
+CODE_RE_SERIALIZED = "re-serialized"
+
+#: The FR7.3 dispositions (§21.8): a true cache hit (self-heal), a none-match auto-mint revision,
+#: or a no-binding first baseline mint. There is no latest-minted stale branch at this level.
+DISPOSITION_HIT = "hit"
+DISPOSITION_REVISION = "revision"
+DISPOSITION_MISS = "miss"
+
+#: The §7.4 serialize-revision qualifier shape (first 12 hex of SHA-256 over the preimage).
+_HEX12_RE = re.compile(r"\A[0-9a-f]{12}\Z")
+
+
+@dataclass(frozen=True)
+class DeliverableCoordinate:
+    """The `(fitted-id, output-type, presentation)` triple a deliverable resolves under (§21.8).
+
+    `fitted_id` is a FITTED-level id (carrying any fit-revision qualifier — the fitted prefix
+    covers reconcile inputs, §17); `output_type`/`presentation` are the BASE coordinate slugs the
+    deliverable-id extends (§7.4). Validated so a resolution can mint the baseline / revision
+    deliverable-id from it without a second parse."""
+
+    fitted_id: str
+    output_type: str
+    presentation: str
+
+    def __post_init__(self) -> None:
+        try:
+            parsed = ids.parse_id(self.fitted_id)
+        except IdError as exc:
+            raise SerializeError(
+                f"serialize-error: fitted_id {self.fitted_id!r} is not a valid id ({exc})"
+            ) from exc
+        if parsed.family != "artifact" or parsed.level != "fitted" or parsed.part is not None:
+            raise SerializeError(
+                f"serialize-error: a deliverable coordinate needs a FITTED-level id (§7.1), got "
+                f"level {parsed.level!r}"
+            )
+        # Validate the two extending slugs eagerly (a bad slug is a wiring defect, not a decision).
+        try:
+            ids.deliverable_id(self.fitted_id, self.output_type, self.presentation)
+        except IdError as exc:
+            raise SerializeError(
+                f"serialize-error: {self.output_type!r}.{self.presentation!r} are not valid "
+                f"deliverable coordinates ({exc})"
+            ) from exc
+
+
+@dataclass(frozen=True)
+class RenderBindingRecord:
+    """A parsed render-binding view (`build_render_binding` output): the deliverable-id, its
+    `hex12` serialize-inputs digest, `minted_ts` (a record field — order lives here, never in the
+    id, §21.8), and the canonical serialize-inputs preimage. The matcher reads `digest`."""
+
+    deliverable_id: str
+    digest: str
+    minted_ts: str
+    preimage: Mapping[str, Any]
+
+
+def parse_render_binding(binding: Mapping[str, Any]) -> RenderBindingRecord:
+    """Validate one render-binding dict into a `RenderBindingRecord` (loud on a malformed record,
+    §3.1). Mirrors `fit_resolution.parse_fit_binding`.
+
+    The deliverable-id must parse to the deliverable level (§7.4); the digest must be a `hex12`
+    string; `minted_ts` must be a non-empty string; the preimage must be a mapping. The recorded
+    `digest` is TRUSTED as the match key (§21.8 reads `binding.digest`), not recomputed here."""
+    if not isinstance(binding, Mapping):
+        raise SerializeError(
+            f"serialize-error: a render-binding must be a mapping, got {type(binding).__name__}"
+        )
+    del_id = binding.get("deliverable_id")
+    if not isinstance(del_id, str) or not del_id:
+        raise SerializeError("serialize-error: render-binding is missing a `deliverable_id`")
+    try:
+        parsed = ids.parse_id(del_id)
+    except IdError as exc:
+        raise SerializeError(
+            f"serialize-error: render-binding deliverable_id {del_id!r} is not a valid id ({exc})"
+        ) from exc
+    if parsed.level != "deliverable":
+        raise SerializeError(
+            f"serialize-error: a render-binding names a deliverable-level id (§7.1), got level "
+            f"{parsed.level!r} in {del_id!r}"
+        )
+    digest = binding.get("digest")
+    if not isinstance(digest, str) or not _HEX12_RE.match(digest):
+        raise SerializeError(
+            f"serialize-error: render-binding digest must be 12 lowercase hex chars (§7.4), "
+            f"got {digest!r}"
+        )
+    minted_ts = binding.get("minted_ts")
+    if not isinstance(minted_ts, str) or not minted_ts:
+        raise SerializeError(
+            f"serialize-error: render-binding {del_id!r} is missing a `minted_ts` record field"
+        )
+    preimage = binding.get("preimage")
+    if not isinstance(preimage, Mapping):
+        raise SerializeError(
+            f"serialize-error: render-binding {del_id!r} is missing its serialize-inputs preimage"
+        )
+    return RenderBindingRecord(
+        deliverable_id=del_id, digest=digest, minted_ts=minted_ts, preimage=preimage
+    )
+
+
+def _parse_binding_records(
+    coordinate: DeliverableCoordinate, records: Sequence[Mapping[str, Any]]
+) -> tuple[RenderBindingRecord, ...]:
+    """Parse every render-binding and CONFIRM each belongs to `coordinate` (§21.8: the bindings
+    under prefix `fitted-id.output-type.presentation`). Mirrors `fit_resolution._parse_records`.
+
+    The comparison is on the BASE coordinate (the serialize-revision qualifier is what DISTINGUISHES
+    revisions under the same prefix, so it is intentionally excluded from the match). A
+    wrong-coordinate record is a caller wiring defect — refused loudly, never silently resolved
+    against the wrong triple."""
+    want = ids.parse_id(coordinate.fitted_id)
+    parsed: list[RenderBindingRecord] = []
+    for raw in records:
+        record = parse_render_binding(raw)
+        got = ids.parse_id(record.deliverable_id)
+        same = (
+            got.root_hex == want.root_hex
+            and got.platform == want.platform
+            and got.language == want.language
+            and got.fit_revision == want.fit_revision
+            and got.output_type == coordinate.output_type
+            and got.presentation == coordinate.presentation
+        )
+        if not same:
+            raise SerializeError(
+                f"serialize-error: render-binding {record.deliverable_id!r} is not under the "
+                f"resolution coordinate {coordinate.fitted_id}.{coordinate.output_type}."
+                f"{coordinate.presentation} (§21.8 resolves within one prefix)"
+            )
+        parsed.append(record)
+    return tuple(parsed)
+
+
+@dataclass(frozen=True)
+class SerializeResolution:
+    """One serialize-resolution decision (§21.8 FR7.3) — a typed value, never an exception.
+
+    `disposition` is the `DISPOSITION_*` row; `should_mint` + `revision` tell the caller HOW to
+    materialize (mint nothing / mint the baseline `revision=False` / auto-mint the revision
+    `revision=True`); `selected` is the binding to SERVE on a hit (None otherwise);
+    `current_inputs_digest` is `s` (§21.8). The claim key (§22.3) is `resolved_deliverable_id(...)`.
+    There is no `warning` field — this level has no mismatch warn (FR7.3)."""
+
+    disposition: str
+    status: Literal["ok"]
+    code: str
+    should_mint: bool
+    revision: bool
+    selected: RenderBindingRecord | None
+    current_inputs_digest: str
+
+
+def _match_binding(
+    records: Sequence[RenderBindingRecord], digest: str
+) -> RenderBindingRecord | None:
+    """The binding whose recorded digest equals `digest`, or None (§21.8 rule 1). Distinct bindings
+    for one coordinate carry DISTINCT digests by construction (a revision is minted only when its
+    digest is new, §21.8), so there is at most one match; a deterministic deliverable-id sort makes
+    the pick total even against a degenerate store. Mirrors `fit_resolution._match`."""
+    matches = sorted(
+        (r for r in records if r.digest == digest), key=lambda r: r.deliverable_id
+    )
+    return matches[0] if matches else None
+
+
+def resolve_deliverable(
+    coordinate: DeliverableCoordinate,
+    records: Sequence[Mapping[str, Any]],
+    current_preimage: Mapping[str, Any],
+) -> SerializeResolution:
+    """The FR7.3 serialize-resolution rule for an unqualified render (§17/§21.8).
+
+    `records` are the render-bindings under the coordinate's prefix (an output-store read, §22.7);
+    `current_preimage` is the CURRENT effective serialize-inputs preimage
+    (`serialize_inputs_preimage`). Never reads the SSOT (§22.7 — plan/coordinate resolution).
+    The DELIVERABLE-level analogue of `fit_resolution.resolve_fit`, with rule 2 AUTO-MINTING
+    instead of serving stale bytes + a warn (free + deterministic ⇒ no consent, §17):
+      - **hit** (rule 1): some binding matches `s` → serve it (`should_mint=False`), `ok` /
+        `already-materialized` — this is what makes a tool-pin or asset revert SELF-HEALING (the
+        reverted baseline's digest matches again → a hit, no re-mint), exactly like fit rule 1;
+      - **miss** (rule 3): no bindings → first baseline mint (`should_mint=True, revision=False`);
+      - **revision** (rule 2): bindings exist, none match → AUTO-MINT the serialize revision
+        `…_<hex12>` (`should_mint=True, revision=True`), `ok` / `re-serialized`.
+    Same inputs → same `s` → same revision deliverable-id → same claim key: PC3 disjointness
+    (§22.3) follows by construction. Minting happens in the `render` verb ONLY — never in
+    `fetch-by-id`, never at `emit-manifest` (§21.5/§21.8); this function only DECIDES."""
+    bindings = _parse_binding_records(coordinate, records)
+    current_digest = serialize_digest(current_preimage)
+
+    match = _match_binding(bindings, current_digest)
+    if match is not None:
+        return SerializeResolution(
+            disposition=DISPOSITION_HIT,
+            status="ok",
+            code=CODE_ALREADY_MATERIALIZED,
+            should_mint=False,
+            revision=False,
+            selected=match,
+            current_inputs_digest=current_digest,
+        )
+    if not bindings:
+        return SerializeResolution(
+            disposition=DISPOSITION_MISS,
+            status="ok",
+            code="ok",
+            should_mint=True,
+            revision=False,
+            selected=None,
+            current_inputs_digest=current_digest,
+        )
+    return SerializeResolution(
+        disposition=DISPOSITION_REVISION,
+        status="ok",
+        code=CODE_RE_SERIALIZED,
+        should_mint=True,
+        revision=True,
+        selected=None,
+        current_inputs_digest=current_digest,
+    )
+
+
+def resolved_deliverable_id(
+    resolution: SerializeResolution, coordinate: DeliverableCoordinate
+) -> str:
+    """The deliverable-id this resolution SERVES or MINTS — the §22.3 claim key.
+
+    A hit serves the `selected` record's id. A baseline mint (miss) is the UNQUALIFIED
+    deliverable-id; a revision mint carries the current-inputs `_hex12` on the presentation
+    segment (§7.4). Minted via `ids.deliverable_id`, never hand-rolled — so two renders with
+    identical inputs compute the IDENTICAL id (§22.3). Mirrors `resolved_fitted_id`."""
+    if resolution.selected is not None and not resolution.should_mint:
+        return resolution.selected.deliverable_id
+    serialize_revision = resolution.current_inputs_digest if resolution.revision else None
+    return deliverable_id(
+        coordinate.fitted_id,
+        coordinate.output_type,
+        coordinate.presentation,
+        serialize_revision=serialize_revision,
+    )
+
+
+def claim_deliverable(
+    registry: ClaimRegistry,
+    resolution: SerializeResolution,
+    coordinate: DeliverableCoordinate,
+) -> AcquireOutcome:
+    """Acquire the claim on the resolution's deliverable-id before the mint (§22.3). Thin over the
+    step-20 `ClaimRegistry.acquire` — no new lock logic; mirrors `fit_resolution.claim_fit`. The
+    deliverable-id is content-addressed, so two renders with identical inputs pass the SAME key to
+    `acquire`; the no-replace create-if-absent admits EXACTLY one winner (B4-4). Meaningful only
+    when `resolution.should_mint` (a serve is read-only, needs no claim)."""
+    return registry.acquire(resolved_deliverable_id(resolution, coordinate))
