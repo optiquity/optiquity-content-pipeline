@@ -94,6 +94,7 @@ __all__ = [
     "build_ir",
     "extract_fact_refs",
     "looks_secret_shaped",
+    "match_bracket",
     "validate_grounding_ledger",
     "validate_ir",
 ]
@@ -287,7 +288,7 @@ class FactRef:
     where: str
 
 
-def _match_bracket(text: str, start: int) -> int | None:
+def match_bracket(text: str, start: int) -> int | None:
     """Given `text[start] == '['`, return the index of the BALANCED matching `]`, or None if
     the brackets never balance.
 
@@ -295,7 +296,12 @@ def _match_bracket(text: str, start: int) -> int | None:
     delimiter), and a nested `[...]` must close before the outer one does. This mirrors
     Pandoc's inline reader, which parses a span's visible text as balanced-bracket inlines —
     so `items[0]`, a footnote `[1]`, or any nested `[...]` inside the visible text is spanned,
-    not truncated (the blind spot of a `[^\\]]*` regex, §17 RI7 pin)."""
+    not truncated (the blind spot of a `[^\\]]*` regex, §17 RI7 pin).
+
+    This is the ONE shared balanced-bracket scanner: the serialize emit path imports it as
+    `pipeline.serialize.match_bracket` so the reader (extract) and rewriter (emit) can never
+    drift (the step-27 F3 dedup; `tests/test_serialize.py::test_match_bracket_twins_agree_
+    byte_for_byte` still guards the two module attributes)."""
     depth = 0
     i = start
     n = len(text)
@@ -312,6 +318,11 @@ def _match_bracket(text: str, start: int) -> int | None:
                 return i
         i += 1
     return None
+
+
+#: Backward-compatible private alias — internal callers and the twins-agree guard test
+#: (`from pipeline.ir import _match_bracket`) keep working after the step-27 F3 dedup.
+_match_bracket = match_bracket
 
 
 def _iter_span_attrs(markdown: str):
@@ -333,7 +344,7 @@ def _iter_span_attrs(markdown: str):
             i += 2
             continue
         if ch == "[":
-            close = _match_bracket(markdown, i)
+            close = match_bracket(markdown, i)
             if close is not None and close + 1 < n and markdown[close + 1] == "{":
                 attr_end = markdown.find("}", close + 2)
                 if attr_end != -1:

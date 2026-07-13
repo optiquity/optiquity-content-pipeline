@@ -1561,10 +1561,15 @@ survive. The old never-block text must not re-enter from any archived source.
   tier, kv = source instance, commit, traceability). Office/PDF writers drop unknown attributes —
   desirable — with the hard consequence that **provenance is consumed at the IR/AST layers only,
   never recovered from output bytes** (§19 reads IR/AST).
-- **The provenance-strip filter (serialize-owned):** the html5 and epub3 writers WOULD emit
-  provenance attributes into published bytes (`data-*`, tier classes). A **pinned, deterministic
-  pre-serialize filter strips the provenance Attr when the writer is html5/epub3** (R-4). It is
-  owned by serialize, is not a Presentation lever, and cannot be disabled by any style
+- **The provenance-strip filter (serialize-owned):** publish-facing writers — the html5/epub3
+  and the whole HTML/EPUB/slide family — WOULD emit provenance attributes into published bytes
+  (`data-*`, tier classes). A **pinned, deterministic pre-serialize filter strips the provenance
+  Attr for EVERY writer UNLESS it is on an explicit safe-set** (`SAFE_WRITERS` — the
+  internal-record writers that intentionally BEAR provenance: markdown/json/docx/pptx/pdf/plain)
+  (R-4). The policy is **fail-CLOSED**: a new or unknown writer strips by DEFAULT, so a future
+  publish target can never silently leak provenance — closing the one-file-add extensibility hole
+  an html5/epub3-only *allowlist* would leave open (add a writer, forget the enumeration, leak).
+  It is owned by serialize, is not a Presentation lever, and cannot be disabled by any style
   configuration (PD3) — it protects the grounding + no-secrets guarantee (§3.3).
 - **One AST per physical output document; the pipeline orchestrates N** (RI9): the per-part
   `packaging_hint` decides — `in-document` parts co-render into one file/one AST (slides + notes →
@@ -2048,7 +2053,7 @@ registered, §27.3). Revision ids do not encode order — order lives in `minted
 expose-facts philosophy); a same-inputs re-roll is deliberately inexpressible under digest
 identity (§26, §27.3).
 
-**The serialize-resolution rule (FR7.4)** — mirrors the fit rule with the stale branch replaced
+**The serialize-resolution rule (FR7.3)** — mirrors the fit rule with the stale branch replaced
 by AUTO-MINT (free + deterministic ⇒ no consent needed; the asymmetry principle, §17):
 
 ```
@@ -2494,7 +2499,7 @@ RI11-tier-2 × no-replace contradiction — designed and ratified as FR7 (§17, 
 **Registered build items (design fixed here; implementation artifacts to produce):**
 
 - The §13.2 string parser (bounded grammar spec + tests).
-- The SSOT row/column schema + status lifecycle (lands at §24).
+- The SSOT row/column schema + status lifecycle (delivered at §24; build step 22).
 - The local-CSV single-writer SSOT serializer (§22.3).
 - Lease-TTL + `max_parallel_sessions` conservative defaults (§22.8).
 - The render pin-bundle assembly (§17).
@@ -2605,7 +2610,7 @@ these tags is imported at `docs/archive/design-record/`.
 | PC9 | §22.6 | parallel-path codes |
 | PC10 | §22.8 | preconditions (gate G1) |
 | PC12 | §22.7 | INV-CORRECTNESS (T3 reconciliation written there) |
-| D1.0–D1.4 | §13.1–§13.5 | serialization (SSOT row schema future home §24) |
+| D1.0–D1.4 | §13.1–§13.5 | serialization (SSOT row schema homed at §24) |
 | D2 | §7.4 | id string encoding — closed by B1, ratified B4-1; revision-qualifier grammar per FR2/FR7.2 |
 | Capstone-1 (identity) | §7 | section-wide |
 | Capstone-2 (spine + M3) | §12.2 / §12.1 | |

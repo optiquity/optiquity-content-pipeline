@@ -8,13 +8,13 @@ templates satisfy the contracts without inventing the open packaging design.");
 `docs/design.md` §21.9 ("No LLM/correctness logic here — transport only" — this loader is
 equally CONTENT-BLIND: locate a named template's text and return it, nothing more).
 
-**This step ships four STUBS, not filled contracts:** `writer.md` (contract lands at plan
-step 24, §15 compose), `reconciler.md` (step 25, §16 fit/fidelity), `artifact_reviewer.md`
-and `deliverable_reviewer.md` (both step 30, §19 review gates). Each stub file is a
-placeholder marked as such in its own header comment — this loader must never assume,
-validate, or interpret a template's interior shape (that would be inventing the very
-packaging design T9 defers to `§27.4`); a consuming step edits ITS OWN template file's
-body in place when it lands its contract, so this loader never changes at that point.
+**All four contracts are now filled** (each landed in its own step, replacing the step-23
+stub in place): `writer.md` (§15 compose, step 24), `reconciler.md` (§16 fit/fidelity, step
+25), `artifact_reviewer.md` and `deliverable_reviewer.md` (§19 review gates, step 30). The
+loader never assumed, validated, or interpreted a template's interior shape while they were
+stubs, and does not now that they are filled (that would be inventing the very packaging
+design T9 defers to `§27.4`) — each consuming step edited ITS OWN template file's body in
+place when it landed its contract, and this loader never changed at those points.
 
 The loader takes template NAMES only, never caller-supplied paths — there is no path-
 traversal surface to defend because there is no path input at all.
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
-    "STUB_TEMPLATE_NAMES",
+    "TEMPLATE_NAMES",
     "TEMPLATES_DIR",
     "PromptTemplate",
     "PromptTemplateError",
@@ -40,10 +40,11 @@ __all__ = [
 #: in v1; product-plane prompts are framework mechanism, §10).
 TEMPLATES_DIR = Path(__file__).resolve().parent
 
-#: The step-23 stub set (plan Files list across steps 23/24/25/30). Consuming steps ADD
-#: their real contract text to these SAME files in place — this constant, and the loader
-#: itself, do not change when that happens.
-STUB_TEMPLATE_NAMES = ("writer", "reconciler", "artifact_reviewer", "deliverable_reviewer")
+#: The four framework product-plane prompt-template names (plan Files list across steps
+#: 23/24/25/30). Originally shipped as stubs at step 23 and filled in place by their owning
+#: steps; all four are now filled contracts. `list_templates()` discovers them dynamically —
+#: this constant records the expected framework set.
+TEMPLATE_NAMES = ("writer", "reconciler", "artifact_reviewer", "deliverable_reviewer")
 
 #: Template names are a closed, simple identifier shape — lowercase ascii + digits +
 #: underscore, starting with a letter. This is a NAME, never a path: no `/`, no `..`,

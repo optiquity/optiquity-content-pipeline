@@ -4,6 +4,8 @@
 # Safe because framework and instance content never share a file (see docs/operating-model.md).
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-main}"
 
@@ -35,4 +37,17 @@ esac
 git merge --no-ff "${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}" \
   -m "chore: merge framework updates from ${UPSTREAM_REMOTE}/${UPSTREAM_BRANCH}"
 
-echo ">> Done. Review the merge, run your smoke tests, then push to your private origin."
+echo
+echo ">> Running the update-time drift report (SV7/MIG-6, design §11.5) over the config tree ..."
+# PA-9c: surface any schema drift the merge introduced. drift-report is READ-ONLY; exit 1 = blocking
+# drift found (remediate with scripts/migrate.sh — never auto-run), 0 = clean, 2 = usage. It must NOT
+# abort this script (set -e): the merge already landed, so the report is informational only.
+drift_rc=0
+"$SCRIPT_DIR/pipeline" drift-report --root "$SCRIPT_DIR/.." || drift_rc=$?
+if [ "$drift_rc" -eq 1 ]; then
+  echo "!! Blocking schema drift detected above — review it and run scripts/migrate.sh before generating."
+elif [ "$drift_rc" -ne 0 ]; then
+  echo "!! drift-report did not run cleanly (exit $drift_rc) — run 'scripts/pipeline drift-report' manually."
+fi
+
+echo ">> Done. Review the merge + drift report, run your smoke tests, then push to your private origin."

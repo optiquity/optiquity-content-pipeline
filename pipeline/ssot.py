@@ -235,7 +235,17 @@ def _read_rows(csv_path: Path) -> dict[str, Row]:
     for record in reader:
         if not record:
             continue
-        fields = dict(zip(COLUMNS, record, strict=True))
+        try:
+            fields = dict(zip(COLUMNS, record, strict=True))
+        except ValueError as exc:
+            # A data row whose field count != the §24 column set. Near-unreachable (writes are
+            # atomic whole-table), but surface it as the typed SsotError like header damage —
+            # never a raw zip ValueError leaking through the spine's S5.
+            raise SsotError(
+                f"ssot-error: {csv_path} data row {record!r} has {len(record)} field(s), not the "
+                f"§24 column count {len(COLUMNS)} — the CSV is written atomically, so this is "
+                "damage, not a race; refusing to guess"
+            ) from exc
         rows[fields["id"]] = Row(**fields)
     return rows
 

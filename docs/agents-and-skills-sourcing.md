@@ -1,6 +1,6 @@
 # Agents & Skills — Sourcing & Build Manifest
 
-> **Status:** Living document · **Last updated:** 2026-07-05
+> **Status:** Living document · **Last updated:** 2026-07-13
 > Framework-owned. This is the actionable build sheet for the pipeline's agents and skills:
 > what each is, why it exists, exactly where it comes from, and what action produces it.
 > Companion to `docs/mission.md` §7 (which vets the sources) — this doc turns that vetting into
@@ -77,7 +77,8 @@ read-only guarantee enforceable).
 
 ### ideation — `.claude/agents/ideation.md`
 - **Why:** Stage 1 of the two-stage pipeline. Turns a repo's god-nodes/communities/questions +
-  your personas into ranked, compatibility-filtered content ideas → the queue.
+  your personas into ranked content ideas → the queue. Pairing is user-driven — no filter vetoes a
+  combination; the effective allow-list is emergent from configuration (design §8).
 - **ACTION: DOWNLOAD-ADAPT** from S3 `content-strategy` (pillars/topic-clusters, impact-fit scoring)
   and S4 `content-idea-generator` (positioning gate + 3-test filter). Retarget scoring to your five
   personas; strip SEO/keyword bias.
@@ -121,7 +122,7 @@ Each skill is `.claude/skills/<name>/SKILL.md`. Some double as `/slash` commands
 | Skill | Why it exists | ACTION + source | Used by |
 |---|---|---|---|
 | **ground-repo** | Read-only Graphify query discipline (access pattern, token budget, confidence-tier handling) + grounding-brief output schema. | **AUTHOR** (glue over S1). | researcher |
-| **select-and-fanout** | The resolver: selection → compatibility filter → concrete idempotent item list. Core matrix mechanism + one-off/scheduled entry point (mission §4). | **AUTHOR** (original). | ideation, orchestration, you (slash) |
+| **select-and-fanout** | The resolver: selection → fanout → concrete idempotent item list (no pairing veto — the allow-list is emergent from configuration, design §8). Core matrix mechanism + one-off/scheduled entry point. | **AUTHOR** (original). | ideation, orchestration, you (slash) |
 | **idea-generate** | Ideation procedure + quality filter (specific / hook-angle / persona-fit) so ideas aren't generic. | **DOWNLOAD-ADAPT** from S4 (filter) + S3 (strategy). | ideation |
 | **persona-voice** | Loads a persona file and applies tone / knowledge level / objections. "One skill per audience" so the writer never blends audiences. | **AUTHOR** from your persona registry; pattern from S3 customer-persona + Voice-DNA idea. | writer, docs-writer, reviewer, ideation |
 | **format-spec** | Applies a format's constraints — word limit, structure, visual needs, hook requirement. | **AUTHOR** from your format registry. | writer, docs-writer, reviewer |

@@ -2,7 +2,8 @@
 
 Get running fast. Two audiences: **A) anyone trying the framework on their own repos**, and
 **B) the maintainer running the public/private model** (see `docs/operating-model.md` for the full
-model). Commands are reference — verify current flags against each tool's docs.
+model). The design SSOT is `docs/design.md`. Commands are reference — verify current flags against
+each tool's docs (`--help`).
 
 ---
 
@@ -22,8 +23,8 @@ brew install node python pipx
 pipx ensurepath
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install graphifyy      # PyPI name has two y's; CLI stays `graphify`
-graphify install
-graphify --help | head -20     # confirm current subcommands/flags
+graphify install               # registers the skill/hooks for your assistant
+graphify --help                # confirm current subcommands/flags
 ```
 
 **3. Create a workspace** (your own repo is a client too)
@@ -36,7 +37,8 @@ cp -R workspaces/workspace.template workspaces/self
 
 ```bash
 cd /path/to/your-checked-out-client-repo
-graphify . --wiki                 # produces graphify-out/ here; gitignored in that repo
+graphify extract .                # builds graphify-out/ here; gitignored in that repo
+graphify export wiki              # optional agent-crawlable wiki snapshot (needs the extract first)
 ```
 
 Record the checkout path + its `graphify-out/graph.json` path in `workspaces/self/source.md`.
@@ -46,22 +48,56 @@ The pipeline reads the graph by that path; it stores no graphs itself.
 
 ```bash
 graphify query "high-level architecture and main components" \
-  --graph /path/to/your-checked-out-client-repo/graphify-out/graph.json --budget 3000
+  --graph /path/to/your-checked-out-client-repo/graphify-out/graph.json --budget 2000
 ```
 
-**6. Define your matrix** — copy the templates and fill them in. This is authoring work: do it in
-a normal Claude chat or Claude Code session (no pipeline agents needed — those are for generation).
+(`--budget` defaults to 2000 tokens; raise it for broader context. A cross-machine MCP server is
+`graphify-mcp` — see `docs/claude-code-usage.md`.)
+
+**6. Fill the matrix — the nine axes**
+
+The pipeline resolves over **nine axes** (design §5.4): five content dimensions (**Topic, Persona,
+Format, Voice, Goal**) × four rendering dimensions (**Platform, Language, Output-type,
+Presentation**). Each axis is a registry directory with a co-located `_schema.yaml`. Pairing is
+user-driven — no filter vetoes a combination you select; the effective allow-list is emergent from
+your configuration (design §8), and a strange pairing only draws a one-time advisory lint, never a
+block.
+
+**Adding a value is a one-file change** (design §5.4 / §3.2): create one file in the right registry
+directory, conforming to that directory's `_schema.yaml`. The framework already ships real default
+entries (`provenance: framework`) for most axes — you extend by **adding** files, never by editing a
+shipped entry. Start from the templates for the axes you customize most:
 
 ```bash
-cp personas/persona.template.md   personas/users.md          # repeat per audience
-cp platforms/platform.template.md platforms/linkedin.md      # repeat per platform
-cp formats/format.template.md     formats/how-to-doc.md      # repeat per format
-cp topics/topic.template.md       workspaces/self/topics/<id>.md   # seed from GRAPH_REPORT.md
+cp personas/persona.template.md   personas/x-hiring-manager.md      # per audience
+cp platforms/platform.template.md platforms/x-company-blog.md       # per platform
+cp formats/format.template.md     formats/x-launch-note.md          # per format
+cp topics/topic.template.md       workspaces/self/topics/<id>.md    # per topic (client-scoped)
 ```
+
+Private, instance-only entries take the reserved `x-` filename prefix and `provenance: instance`
+(design §11.4, §10); to tweak a shipped framework entry, add an `extends:` partial rather than
+editing it (design §10 rule 2). The remaining axes (Voice, Goal, Language, Output-type,
+Presentation) ship framework defaults and schemas — add a new entry by writing one file that
+conforms to the axis's `_schema.yaml`.
+
+**Three ways to author an entry:**
+
+1. **Fully manual (the one-file contract).** Copy the template (or write a bare entry), fill the
+   YAML frontmatter to match the co-located `_schema.yaml`, and validate with
+   `bash scripts/schema-lint.sh` (and, for the public repo, `bash scripts/check-no-content.sh`).
+   The schema is the authority for the field set.
+2. **Interactive / assisted.** Have a Claude Code session author the entry and a second pass review
+   it (an author → reviewer chain) against the schema + the dimension's design section — good for a
+   handful of entries where you want the wording checked.
+3. **Researcher-assisted batch.** For many candidate entries, run a researcher → author → reviewer
+   chain: a research pass proposes candidate entries (grounded in your goals/graph), an author pass
+   writes the files, a reviewer pass validates them. You pick which to keep; nothing lands
+   unreviewed. (Process only — no new machinery; it is the same one-file entries either way.)
 
 **7. Open Claude Code in the repo** and say:
 
-> Read state.md and docs/mission.md, then propose a plan to prove one thread: one topic × one
+> Read state.md and docs/design.md, then propose a plan to prove one thread: one topic × one
 > persona × one format for `workspaces/self`, grounded via the graph.
 
 Approve the plan; review the draft in `workspaces/self/output/`.
@@ -84,8 +120,12 @@ Do all client work here (workspaces, populated registries, PROFILE). Pull framew
 non-destructively anytime:
 
 ```bash
-scripts/update-from-upstream.sh
+scripts/update-from-upstream.sh            # merges upstream, then runs `pipeline drift-report`
 ```
+
+The update script runs `scripts/pipeline drift-report` after merging so any schema drift the
+framework introduced surfaces immediately (read-only; remediation is `scripts/migrate.sh`, never
+auto-run — design §11.5/§11.6).
 
 Improve the framework in the **public** repo, then pull into private. Never edit framework files
 in the private repo (extend by adding files instead). Full rationale: `docs/operating-model.md`.
@@ -95,6 +135,7 @@ in the private repo (extend by adding files instead). Full rationale: `docs/oper
 ## Next steps
 
 1. Populate `instance/profile.md` (your goals/audiences) from `instance/profile.template.md`.
-2. Finish the four registries with real values.
-3. Wire `.claude/agents/` (researcher + writer), then run first ideation.
+2. Fill the registries with real values — one file per entry, conforming to each `_schema.yaml`.
+3. Wire the product-plane agents/skills (researcher + writer + reviewer) when they ship, then run
+   first ideation (their packaging is an open area — design §27.4).
 4. Track everything in the **spreadsheet (SSOT)**; `state.md` mirrors it.

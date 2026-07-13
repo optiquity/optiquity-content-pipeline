@@ -228,8 +228,9 @@ def build_child_env(
 
 
 # ---------------------------------------------------------------------------
-# The subprocess seam (injectable for tests; mirrors `pipeline.adapters.graphify`'s
-# Runner pattern, extended with the fields a timed, stdin-fed invocation needs).
+# The subprocess seam (injectable for tests; adapts `pipeline.adapters.graphify`'s
+# Runner pattern — a 5-field ProcessRequest, not the graphify seam's 2 positional args —
+# extended with the fields a timed, stdin-fed invocation needs).
 # ---------------------------------------------------------------------------
 
 

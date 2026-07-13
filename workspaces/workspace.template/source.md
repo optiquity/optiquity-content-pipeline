@@ -13,5 +13,6 @@ these paths — it only **reads the graph by path**. No graphs are stored in thi
 
 ## Notes
 
-- Prefer graph queries over reading raw source files.
-- Rebuild a graph in the client-repo checkout when its source changes; record the commit here.
+- Prefer graph queries over reading raw source files (design §6).
+- Rebuild a graph in the client-repo checkout when its source changes (`graphify extract .`, run in
+  that checkout); record the commit here.

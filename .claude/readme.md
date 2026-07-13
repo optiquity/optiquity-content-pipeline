@@ -1,7 +1,8 @@
 # .claude/ — project-scoped agents & skills (framework)
 
 Agents and skills live here (version-controlled, portable), **not** in your global `~/.claude/`.
-There are **two planes** (see `docs/design-decisions.md` §6).
+There are **two planes** (framework-ops orchestration: `docs/ops-workflow.md`; product-plane
+packaging is an open area: `docs/design.md` §27.4).
 
 ## Framework-ops plane (present) — builds and maintains THIS repo
 
@@ -20,8 +21,8 @@ per `docs/ops-workflow.md`; agent-common rules are in `CLAUDE.md`.
 
 The content-generation agents/skills clients run: `researcher`, `writer` (emits the IR),
 `editor/reviewer`, a `render` stage, and skills (`ground-repo`, `persona-voice`, `format-spec`,
-`select-and-fanout`, `voice-from-examples`, …). **Designed but not yet built** — see
-`docs/design-decisions.md` §6. These will be visibly separated from the `ops-*` plane.
+`select-and-fanout`, `voice-from-examples`, …). **Designed but not yet built** — its packaging is
+an open area, `docs/design.md` §27.4. These will be visibly separated from the `ops-*` plane.
 
 These are framework files: improve them in the public repo and pull downstream. Instances extend
 behavior via registries and PROFILE, not by editing these.

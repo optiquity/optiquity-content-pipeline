@@ -324,18 +324,14 @@ def validate_value(spec: AttrTypeSpec, value: Any, *, path: str = "") -> None:
         # matching discipline. NOTE: datetime.datetime subclasses datetime.date, so the
         # refusal must be checked first.
         if isinstance(value, datetime.datetime):
-            raise _refuse(
-                spec, value, path, "date-window is date-granular; timestamps are refused"
-            )
+            raise _refuse(spec, value, path, "date-window is date-granular; timestamps are refused")
         if isinstance(value, datetime.date):
             return
         if isinstance(value, list) and len(value) == 2:
             start, end = value
             for edge in (start, end):
                 if isinstance(edge, datetime.datetime) or not isinstance(edge, datetime.date):
-                    raise _refuse(
-                        spec, value, path, "date-window pair edges must be bare dates"
-                    )
+                    raise _refuse(spec, value, path, "date-window pair edges must be bare dates")
             if start > end:
                 raise _refuse(spec, value, path, "date-window pair must satisfy start <= end")
             return
@@ -390,8 +386,11 @@ def validate_value(spec: AttrTypeSpec, value: Any, *, path: str = "") -> None:
         for k, v in value.items():
             if not isinstance(k, str):
                 raise _refuse(
-                    spec, k, path, "map keys must be strings (a coerced YAML 1.1 key would "
-                    "surface here as non-str and is refused)"
+                    spec,
+                    k,
+                    path,
+                    "map keys must be strings (a coerced YAML 1.1 key would "
+                    "surface here as non-str and is refused)",
                 )
             if spec.element is not None:
                 validate_value(spec.element, v, path=f"{path}.{k}" if path else k)

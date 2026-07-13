@@ -236,32 +236,41 @@ def test_escape_span_text_escapes_brackets_and_backslash():
 
 
 def test_match_bracket_twins_agree_byte_for_byte():
-    # `serialize._match_bracket` is a hand-maintained twin of `ir._match_bracket` (emit/extract
-    # symmetry). Only end-to-end fixtures cross-check them today, so a future edit to one could
-    # silently break the symmetry for inputs OUTSIDE those fixtures. This asserts the two return
-    # IDENTICAL results directly, over nested / escaped / unbalanced / empty / no-bracket inputs.
-    from pipeline.ir import _match_bracket as ir_match
-    from pipeline.serialize import _match_bracket as ser_match
+    # After the step-27 F3 dedup the emit path (serialize) and the extract path (ir) share ONE
+    # balanced-bracket scanner: `ir.match_bracket`. This test guards that invariant two ways so
+    # a future re-divergence (someone re-adds a separate hand-maintained copy) fails LOUDLY.
+    from pipeline import ir, serialize
 
-    cases = [
-        ("[]", 0),  # empty pair
-        ("[abc]", 0),  # simple
-        ("[a[b]c]", 0),  # nested
-        ("[[nested]]", 0),  # nested at the head
-        ("[a\\]b]", 0),  # escaped close bracket inside
-        ("[a\\[b]", 0),  # escaped open bracket inside
-        ("[esc\\\\]", 0),  # escaped backslash, then a real close
-        ("[unbalanced", 0),  # never closes
-        ("[a[b]", 0),  # unbalanced nested
-        ("[a]b]c", 0),  # closes early, trailing junk
-        ("prefix[x]y", 6),  # the bracket is not at index 0
-        ("no brackets here", 0),  # text[start] != '['
-        ("", 0),  # empty string
-        ("[\\[\\]]", 0),  # both inner brackets escaped
-        ("[\\]", 0),  # a lone escaped close → never balances
+    # (1) IDENTITY — the "twins" are literally the SAME object. If a separate copy is ever
+    #     reintroduced these break, catching the drift the old self-comparison could not.
+    assert serialize.match_bracket is ir.match_bracket
+    assert serialize._match_bracket is ir.match_bracket
+    assert ir._match_bracket is ir.match_bracket
+
+    # (2) BEHAVIOR — pin the shared scanner against EXPECTED-LITERAL outputs (never against
+    #     itself), over nested / escaped / unbalanced / offset / empty / no-bracket inputs, so a
+    #     change to the shared helper's contract is also caught here.
+    expected = [
+        ("[]", 0, 1),  # empty pair
+        ("[abc]", 0, 4),  # simple
+        ("[a[b]c]", 0, 6),  # nested
+        ("[[nested]]", 0, 9),  # nested at the head
+        ("[a\\]b]", 0, 5),  # escaped close bracket inside → real close is later
+        ("[a\\[b]", 0, 5),  # escaped open bracket inside
+        ("[esc\\\\]", 0, 6),  # escaped backslash, then a real close
+        ("[unbalanced", 0, None),  # never closes
+        ("[a[b]", 0, None),  # unbalanced nested
+        ("[a]b]c", 0, 2),  # closes early, trailing junk ignored
+        ("prefix[x]y", 6, 8),  # the bracket is not at index 0
+        ("no brackets here", 0, None),  # text[start] != '['
+        ("", 0, None),  # empty string
+        ("[\\[\\]]", 0, 5),  # both inner brackets escaped → outer closes at 5
+        ("[\\]", 0, None),  # a lone escaped close → never balances
     ]
-    for text, start in cases:
-        assert ser_match(text, start) == ir_match(text, start), (text, start)
+    for text, start, want in expected:
+        assert ir.match_bracket(text, start) == want, (text, start)
+        # the emit-side attribute is that same pinned behavior (belt-and-suspenders on identity)
+        assert serialize._match_bracket(text, start) == want, (text, start)
 
 
 def test_enrich_leaf_is_idempotent():

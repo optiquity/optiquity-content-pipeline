@@ -9,9 +9,10 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 5.** Steps 37 (Gate G2 closure, report-only) + 38 (G2 finals) +
-**39 (★ MVP demonstration)** code committed. Gate G2 CLOSED (see gate record); the step-33 §21.7-code
-HARD GATE **now CLOSED at step 39**.
+**FRAMEWORK BUILD IN PROGRESS — Phase 5 (final).** Steps 37 (G2 closure) + 38 (G2 finals) +
+**39 (★ MVP demonstration)** + **40 (cleanup sweep)** committed. Gate G2 CLOSED (see gate record); the
+step-33 §21.7-code HARD GATE CLOSED at step 39. **Only step 41 (final verification + delivery, incl. the
+live MVP run) remains.**
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
@@ -36,12 +37,28 @@ HARD GATE **now CLOSED at step 39**.
   4 coder deviations ruled SOUND; the standalone §21.8 render-verb gap ruled a pre-existing carry-forward.
   Hermetic + zero spend (in-process fakes). Reconciled byte-identical → main, re-verified green under my
   own hand. Reports: `ops-handoff/build/step-39/{plan-final-step39,plan-adversarial,review}.md`.
-- Progress = **39/41 + R1 done · 32/33 step-scoped commits** (+3 authorized extras). Baseline green:
-  **1932 passed, 6 deselected** (zero live); ruff clean; content + schema + INV-CORRECTNESS guards green.
-- **★ CHECKPOINT — the LIVE MVP run (the actual subscription-transport transcript across the matrix) is
-  the remaining §25 evidence; maintainer APPROVED it 2026-07-13 (subscription-only; transport strips any
-  API key). Pending: stage the untracked `workspaces/mvp-demo/` prereqs, run `scripts/pipeline mvp-demo`,
-  capture the transcript + §25 clause→evidence table.** Next build step: 40 (cleanup sweep).
+- **Step 40 — post-approval cleanup sweep (§27.4/B.6); reviewer FIXES-NEEDED → fix-coder → CLEAN.** A
+  25-file sweep to the ratified 9-axis model: docs (quickstart/README/.claude-readme/bootstrap/agents-
+  sourcing/claude-code-usage), the 5 registry `*.template.*` + `state.template.md` + `workspace.template/*`
+  (aligned to the real `_schema.yaml`, dead fields dropped), the `update-from-upstream.sh`→drift-report
+  hook (PA-9c), and the ~14 `→ Step 40` cosmetic carry-forwards (review.py rename, serialize.py dead-except
+  fix + the `_match_bracket`→public `ir.match_bracket` dedup, prompts list, transport/ssot/attrtypes,
+  design.md FR7.3/§24/§17-R4). The maintainer-only **CLAUDE.md diff is PREPARED (`git apply --check`-clean)
+  and DELIVERED, NEVER applied** (`ops-handoff/build/step-40/claude-md-proposed.diff`); `CLAUDE.md` +
+  `docs/mission.md` untouched (PA-3 verified). Reviewer caught 2 (a stray `quickstart.md` fence; a
+  tautological `_match_bracket` twins test) → fix-coder fixed both (identity + expected-literal asserts) →
+  re-verified. Reconciled byte-identical → main, re-verified green under my own hand.
+- Progress = **40/41 + R1 done · 33/33 step-scoped commits** (+3 authorized extras). Baseline green:
+  **1932 passed, 6 deselected** (zero live); ruff (whole repo) + content + schema + INV-CORRECTNESS green.
+- **Deferred past step 40 (backlog for step 41 / post-delivery, re-tagged out of "→ Step 40"):** item-13's
+  functional halves (a new-registry-root guard tightening + the SV11 PR-base CI wiring, both needing
+  `check-no-content.sh`/`.github/workflows` edits); the 3 optional-hardening items (payload metadata
+  re-scan, `manifest._resolved_row` rule-2 warn, part-Div `#id` uniqueness); and the §21.8 render-verb
+  `{"ir":…}`-vs-raw-IR fix (step-39 #4).
+- **ONLY STEP 41 REMAINS — final verification + delivery, incl. the ★ LIVE MVP run** (subscription-only,
+  maintainer-APPROVED 2026-07-13; transport strips any API key). Step 41 will: run the full suite as the
+  delivery proof; stage the untracked `workspaces/mvp-demo/` prereqs + run `scripts/pipeline mvp-demo`,
+  capturing the live transcript + §25 clause→evidence table; assemble the delivery package.
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`

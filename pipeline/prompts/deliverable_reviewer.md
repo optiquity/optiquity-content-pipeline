@@ -31,7 +31,7 @@ pipeline; you record a verdict and per-check notes.
 - **`grounding_ledger`** — every grounded fact keyed by `fact-id`, with its `tier`. Every
   ledger fact should be re-anchored in `content` (or was an explicit drop-as-lead upstream).
 - **`hard_limits`** — the platform's inviolable ceilings the deliverable must respect.
-- **`ast_provenance`** — a machine fingerprint of the serialized AST: `provenance_span_count`,
+- **`ast_provenance`** — a machine fingerprint of the serialized AST: `provenance_fact_count`,
   `provenance_fact_ids`, `provenance_tiers`, and `top_level_block_types`. Use it to confirm the
   provenance bindings survived into the AST layer and that the tiers were not promoted.
 - **`render`** — the render coordinates and format info (platform, language, output-type,

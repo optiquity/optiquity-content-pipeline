@@ -32,10 +32,11 @@ Verify: `node --version`, `python3 --version`, and Claude Code CLI launches. Rec
 ```bash
 uv tool install graphifyy        # PyPI name has two y's; CLI stays `graphify`
 graphify install                 # registers skill/hooks for the assistant
-graphify --help | head -20       # verify + learn current subcommands/flags
+graphify --help                  # verify + learn current subcommands/flags
 ```
 
-Confirm the actual query, `--wiki`, and serve/MCP flags from `--help` output; note any
+Confirm the actual `extract` (build the graph), `export wiki` (wiki snapshot), `query`, and the
+MCP entry point (`graphify-mcp`, not a `serve` subcommand) from `--help` output; note any
 deviations from mission §6.2 in `state.md` (feeds decision D4). (P0.3)
 
 ---
@@ -54,7 +55,8 @@ no graphs; it just reads the graph by path.
 
 ```bash
 cd /path/to/client-repo-checkout
-graphify . --wiki                 # produces graphify-out/ here (gitignored in the client repo)
+graphify extract .                # produces graphify-out/ here (gitignored in the client repo)
+graphify export wiki              # optional agent-crawlable wiki snapshot (needs the extract first)
 # add 'graphify-out/' to that repo's .gitignore if it isn't already
 ```
 
@@ -74,12 +76,12 @@ graphify query "high-level architecture and main components" \
 
 Pass criterion: returns grounded nodes/edges with source locations and confidence tags. (P0.6)
 
-Optional cross-machine check (workstation → host over Tailscale) once the serve flags are
+Optional cross-machine check (workstation → host over Tailscale) once the `graphify-mcp` flags are
 confirmed from B2:
 
 ```bash
 # On the always-on host (bind to Tailscale/private interface only — see mission §9):
-python -m graphify.serve /path/to/first-client-repo/graphify-out/graph.json
+graphify-mcp /path/to/first-client-repo/graphify-out/graph.json   # MCP entry point (needs graphifyy[mcp])
 # Then point the workstation's Claude Code MCP config at it. Verify exact flags first.
 ```
 

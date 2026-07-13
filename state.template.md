@@ -16,21 +16,33 @@
 
 Run `docs/bootstrap.md` step B1 (install prerequisites), plan-gated, on the target machine.
 
-## Phase checklist (mirror of spreadsheet)
+## Onboarding checklist (mirror of spreadsheet)
 
 - [ ] **P0.1** Prereqs installed + Claude Code verified — always-on host
 - [ ] **P0.2** Prereqs installed — workstation
-- [ ] **P0.3** Graphify installed + `graphify --help` verified
+- [ ] **P0.3** Graphify installed + `graphify --help` verified (`extract` / `export wiki` / `query` / `graphify-mcp`)
 - [ ] **P0.4** First workspace created: `workspaces/________`
-- [ ] **P0.5** Client repo graphed in its checkout (graphify-out/, gitignored); path recorded in source.md
+- [ ] **P0.5** Client repo graphed in its checkout (`graphify extract .` → graphify-out/, gitignored); path in source.md
 - [ ] **P0.6** Read-only query smoke test passes
 - [ ] **P0.7** Instance repo initialized (upstream remote set), chezmoi-managed
 - [ ] **P1.0** Prove-one-thread: 1 topic × 1 persona × 1 format → 1 grounded draft
-- [ ] **P1.1–1.4** Registries populated (personas/platforms/formats) + topics seeded
-- [ ] **P1.5** Selection resolver + fanout
-- [ ] **P1.6** researcher + writer agents wired
-- [ ] **P1.7** First ideation run → curated queue
-- [ ] **P1b** reviewer/editor stage added
+- [ ] **P1.1** Content axes populated: personas / formats / voices / goals (+ topics per client)
+- [ ] **P1.2** Rendering axes populated: platforms / languages / output-types / presentations
+- [ ] **P1.3** Recipes + selection → fanout producing concrete items
+- [ ] **P1.4** researcher + writer product-plane agents wired
+- [ ] **P1.5** First ideation run → curated queue
+- [ ] **P1.6** Review gates (artifact + deliverable) exercised end to end
+
+## Per-item status lifecycle (SSOT checkpoints, design §24)
+
+The SSOT tracks one row per fanout item in two kinds, each advancing forward-only by its own item's
+render/review (never cross-written):
+
+- **artifact rows:** `planned → composed → artifact-reviewed`
+- **deliverable rows:** `planned → fitted → rendered → deliverable-reviewed → ready`
+
+`blocked` is an annotation (a `block_reason` §21.7 code), never a status; currency is computed at
+read time, never stored. See design §24 for the row/column schema.
 
 ## Session log
 

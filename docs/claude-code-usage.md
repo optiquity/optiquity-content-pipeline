@@ -21,8 +21,8 @@ How to drive Claude Code against this repo. Keep sessions disposable; keep durab
 The pipeline reads client repos three ways; all read-only:
 
 - **Targeted query:** `graphify query "…" --graph <repo>/graphify-out/graph.json --budget N`
-- **MCP server** (agent traverses the graph itself): serve on the always-on host, point Claude Code's MCP
-  config at it over Tailscale (verify flags first).
+- **MCP server** (agent traverses the graph itself): run `graphify-mcp <graph.json>` on the always-on
+  host, point Claude Code's MCP config at it over Tailscale (verify flags first).
 - **Wiki snapshot:** read `<repo>/graphify-out/wiki/` files — no running process.
 
 Prefer graph queries over reading raw source files (cheaper, and keeps client repos untouched).

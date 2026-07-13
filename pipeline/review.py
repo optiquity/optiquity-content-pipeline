@@ -493,8 +493,9 @@ def build_artifact_review_prompt(
 
 
 def _ast_provenance_summary(ast: Mapping[str, Any]) -> dict[str, Any]:
-    """A bounded AST-layer fingerprint (§17 RI8): the count of provenance Spans (`data-fact`
-    kv) surviving into the AST and the tier classes they carry, plus the top-level block types.
+    """A bounded AST-layer fingerprint (§17 RI8): the count of DISTINCT provenance facts
+    (`data-fact` kv) surviving into the AST and the tier classes they carry, plus the top-level
+    block types (two Spans citing one fact count as one — this is the distinct-fact count).
     Lets the deliverable review cross-check that provenance bindings survived to the AST layer
     WITHOUT shipping the whole (potentially large) AST into the prompt (§19 reads IR/AST)."""
     fact_ids: set[str] = set()
@@ -520,7 +521,7 @@ def _ast_provenance_summary(ast: Mapping[str, Any]) -> dict[str, Any]:
     blocks = ast.get("blocks", []) if isinstance(ast, Mapping) else []
     block_types = [b.get("t") for b in blocks if isinstance(b, Mapping)]
     return {
-        "provenance_span_count": len(fact_ids),
+        "provenance_fact_count": len(fact_ids),
         "provenance_fact_ids": sorted(fact_ids),
         "provenance_tiers": sorted(tiers),
         "top_level_block_types": block_types,

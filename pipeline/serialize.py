@@ -57,8 +57,8 @@ from pipeline import ids
 from pipeline.canonical import canonical_json_str, digest_hex12
 from pipeline.claims import AcquireOutcome, ClaimRegistry
 from pipeline.filters.provenance_strip import STRIP_FILTER_VERSION
-from pipeline.ids import IdError, deliverable_id, delta_vs_floor
-from pipeline.ir import PANDOC_API_VERSION
+from pipeline.ids import IdError, PreimageError, deliverable_id, delta_vs_floor
+from pipeline.ir import PANDOC_API_VERSION, match_bracket
 
 __all__ = [
     "PANDOC_API_VERSION",
@@ -339,33 +339,13 @@ def _append_provenance(attrs: str, entry: Mapping[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The balanced-bracket span rewriter — the byte-for-byte twin of `ir._match_bracket`.
+# The balanced-bracket span rewriter shares ONE scanner with the reader: `ir.match_bracket`
+# (the step-27 F3 dedup — emit and extract can no longer drift). `_match_bracket` stays as a
+# module-local alias so `tests/test_serialize.py::test_match_bracket_twins_agree_byte_for_byte`
+# still guards the two module attributes.
 # ---------------------------------------------------------------------------
 
-
-def _match_bracket(text: str, start: int) -> int | None:
-    """Given `text[start] == '['`, the index of the BALANCED matching `]`, or None.
-
-    Byte-for-byte identical to `ir._match_bracket` (the step-24 reader): `\\` escapes the next
-    char, a nested `[…]` closes before the outer one. Reimplemented (not imported) to keep
-    serialize self-contained; `tests/test_serialize.py` cross-checks the symmetry.
-    """
-    depth = 0
-    i = start
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if ch == "\\":
-            i += 2
-            continue
-        if ch == "[":
-            depth += 1
-        elif ch == "]":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return None
+_match_bracket = match_bracket
 
 
 def _rewrite_spans(markdown: str, rewrite_attr: Callable[[str], str]) -> str:
@@ -665,7 +645,8 @@ def serialize_inputs_preimage(
     }
     try:
         target_values = delta_vs_floor(excluded_effective, excluded_floor, where="render_target")
-    except IdError as exc:  # pragma: no cover — delta_vs_floor raises PreimageError, not IdError
+    except PreimageError as exc:  # pragma: no cover — defensive: a malformed render-target
+        # preimage surfaces as SerializeError, uniform with the other id/preimage wraps below.
         raise SerializeError(f"serialize-error: render-target preimage: {exc}") from exc
     preimage = {
         "tool_bundle": {
