@@ -9,23 +9,23 @@
 
 ## Current phase
 
-**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 33 (API core II — sessions + generate-next + closed action
-vocabulary) done; review chain coder → reviewer(FIXES-NEEDED) → fix-coder → reviewer2(**CLEAN**). `pipeline/
-api/session.py`: `begin-session` (plan-only default `generate=none`; pins/idempotency_key/target_folio fixed
-at begin only; mints the resumption token), `continue-session` with the CLOSED §21.2 action vocabulary
-(generate-next/render/add-to-folio/emit-manifest/fetch/status/list/get; anything else → `unknown-action`
-per-item block), `generate-next` (re-resolves the plan each call; `plan-stale` on plan_hash drift = nothing
-generated; idempotent by artifact-id existence via `store.is_done` → `already-materialized`; cursor keys on the
-artifact-id COORDINATE not an index; per-item block never fails the batch = SM1; token appends produced ids).
-`render`/`fetch`/`emit-manifest`/`add-to-folio`/`list`/`get` are typed not-yet-wired stubs (internal
-`NotYetWired`, tests-only, never a fake success — real handlers at 34–35). Isolation for continue-session's
-nested ids is enforced at the INVOKE GATE (single authoritative path, envelope-fatal, verb/action parity). The
-step-28 driver carry-forwards CF-1 (provenance divergence — collapsed to one `SourceAdapter.pin_commit` reader)
-and CF-2 (fitted advance via the contained S5 hook) both closed. Step-28 demo id byte-for-byte unchanged.
-Progress = 33/41 + R1 done · 27/33 step-scoped commits (+3 authorized extras). Baseline green: 1799 passed
-(6 deselected/zero-live). Reviewer scorecard: step 33 added two MEDIUM contract-fidelity catches (a test-double
-re-opening CF-1's divergence; verb/action isolation envelope-parity). Next: step 34 (API discovery + retrieval
-— list/get + currency fields, fetch, standalone render, folio verbs).
+**FRAMEWORK BUILD IN PROGRESS — Phase 4.** Step 34 (API discovery + retrieval) done, reviewer **CLEAN** (no
+must-fix-now). `pipeline/api/{discovery,fetch,render,folio_verbs}.py`: `list <type>`/`get <type> <id>` over the
+closed types + the SELF-DESCRIBING meta-types (`codes`→`results.CODES`, `verbs`→`invoke.KNOWN_VERBS`,
+`types`→`discovery.TYPES`, `actions`→injected `session.CONTINUE_ACTIONS` — no hardcoded vocab, add/remove flows
+through with no second edit); §13.2 `Pred` filters AND-combined (+ reserved provenance/lineage/`created`-range);
+the FIVE currency fields (`fit_revision fit_current serialize_revision serialize_current minted_ts`) COMPUTED
+AT READ from the content-addressed store, never stored, never SSOT (discovery is ssot-free). `fetch-by-id` is
+the dumb hot path (path|bytes, ZERO currency/mint/resolution; old id → byte-identical bytes). Standalone
+token-free `render` orchestrates fit_resolution + serialize resolution + `force_reconcile` (§21.8 precedence
+`render-input-mismatch`→`re-reconciled`→`re-serialized`→`already-materialized`→`ok`; force mints a NEW revision,
+baseline byte-identical; a session-context render is a side-output that does NOT advance the token — ruled
+design-correct). Standalone `create-folio`/`add-to-folio` reuse step-31 folios verbatim. Three step-33 stubs
+re-wired to real handlers; **`emit-manifest` is now the SOLE remaining stub** (step 35). `register_api_handlers`
+is the single production wiring point, still NOT called at import (verb-gate contract intact). Progress = 34/41
++ R1 done · 28/33 step-scoped commits (+3 authorized extras). Baseline green: 1839 passed (6 deselected/zero-
+live). Next: step 35 (emit-manifest §21.5 + the closed-vocabulary completeness assertion — every API2 action
+dispatches to a REAL handler, zero `NotYetWired` remains).
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
@@ -232,11 +232,35 @@ mechanic documented in the mitigation block. Follow the mitigation block, not th
   comment). **Before generate-next reaches a production caller, the driver MUST thread the real §21.7 stage
   codes up so the block carries its true code.** (NB: FIX 4's malformed-CALL block — bad recipe/folio/source
   connection — is legitimately code-less FOREVER; only the GENERATION block is gated.)
-- **→ The API step that wires the production edge (from step-33 coder CF-1, BINDING):** `register_session_
-  handlers()` exists but is deliberately NOT called at import (calling it would register begin/continue-session
-  and break step-32's `test_every_known_verb_passes_the_verb_gate`, which asserts the verb registry is empty).
-  The production CLI edge MUST call it once at startup when begin/continue-session go live. Until then the CLI
-  hits `HandlerNotWired` for them (honest), exactly like the still-stubbed render/fetch/emit verbs.
+- **→ The API step that wires the production edge (from step-33 coder CF-1 + step-34, BINDING):**
+  `register_api_handlers()` (step 34 renamed/extended the step-33 `register_session_handlers`) exists but is
+  deliberately NOT called at import (calling it would wire the verbs and break step-32's
+  `test_every_known_verb_passes_the_verb_gate`, which asserts the verb registry is empty). The production CLI
+  edge MUST call it once at startup. Until then the CLI hits `HandlerNotWired` (honest).
+- **⛔ HARD GATE before §21.9 wires ANY production currency resolver (from step-34 review, HIGH — BINDING):**
+  `discovery.DefaultCurrencyResolver` is a PARTIAL detector — it recomputes the current fit/serialize digest by
+  substituting only the current platform HARD-LIMITS (+ tool-pin bundle) into the stored preimage, keeping the
+  stored `strategy`/`advisory`/`render-dims`. So it computes the NAMED blast radius (hard-limit tightening,
+  the §21.3 example) CORRECTLY, but if any OTHER reconcile/serialize input changed it reports `fit_current=true`
+  for an actually-STALE deliverable → `list deliverables {fit_current:false}` OMITS it → the force loop misses
+  it. Its `except Exception → return stored_digest` fallbacks are the same unsafe direction (a config-read error
+  reads as "no drift"). SAFE TODAY: dead code — never on a tested path (every test injects a precise fake
+  resolver) and never reached in production (`register_api_handlers` uncalled; the transport edge is §21.9,
+  gated). **§21.9 MUST NOT wire this default as-is** — first complete the reconcile-/serialize-input re-read
+  (needs the recipe, which only §21.9 carries) OR flip the uncertainty direction to fail-safe (report
+  NOT-current on any un-verifiable input / on error → over-force, safe because force/render is idempotent), and
+  fail-safe the `except` branches. The docstring documents the limitation; §21.9 closes it.
+- **→ Step 36 CORRECTNESS_ROOTS batch (from step-34 review, LOW):** add `api.discovery` (and, IF design-
+  confirmed ssot-free, `api.render`/`api.fetch`/`api.folio_verbs`) to `tests/test_inv_correctness.py`
+  `CORRECTNESS_ROOTS` so their ssot-freedom is enforced TRANSITIVELY (today only discovery's `TestSsotFree`
+  shallow direct-import check guards it; these modules aren't in the roots so the transitive walker skips them).
+  Determine per-module whether ssot-free is a DESIGN REQUIREMENT (discovery: yes §21.3/§22.7; render/fetch/
+  folio_verbs: confirm — a standalone render may legitimately need to touch the derived SSOT). Batch with the
+  already-scheduled fit_resolution/reconcile/compose/folios roots expansion.
+- **→ Step 34 hardening (from step-34 review, LOW):** `discovery` `list actions` returns an EMPTY set silently
+  when `action_vocab` is unwired (default `frozenset()` at the `list`/handler seams); no end-to-end test ties
+  `list actions` to `session.CONTINUE_ACTIONS` through the real `register_api_handlers`. Give it a loud
+  "unwired" sentinel default and/or add the round-trip assertion. Low: both shipped wirings inject the vocab.
 - **→ Step 40 / next `ir.py`-touching step (from step-27 review F3, dedup):** `serialize._match_bracket`
   duplicates `ir._match_bracket` byte-for-byte — promote to ONE shared public helper (importing the private
   `ir._match_bracket` was left out of scope). Until then, `tests/test_serialize.py::

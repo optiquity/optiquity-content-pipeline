@@ -9,9 +9,10 @@ toward this suite) plus tmp instance/workspace surfaces:
   inputs (fixed for the whole plan); the `target_folio = none|auto|<folio-id>` cases +
   `idempotency_key` reproducing an auto folio; supplied `[pins]` win over capture; an
   `invalid-override` and an unknown selection are typed blocks.
-- **continue-session closed vocabulary** (§21.2, API2): each real action (`generate-next`,
-  `status`) + an `unknown-action`; the not-yet-wired actions (`render`/`fetch`/`emit-manifest`/
-  `add-to-folio`/`list`/`get`) raise the INTERNAL `NotYetWired` — never a fabricated success.
+- **continue-session closed vocabulary** (§21.2, API2): the inline actions (`generate-next`,
+  `status`) + an `unknown-action`; the step-34-WIRED actions (`render`/`fetch`/`add-to-folio`/
+  `list`/`get`) DELEGATE to their verb handlers (return results, never raise); `emit-manifest`
+  ALONE remains the typed `NotYetWired` stub (step 35) — never a fabricated success.
 - **generate-next** (§21.6/§21.8): batch + cursor advance by coordinate; idempotent by
   artifact-id existence (a re-run is an `already-materialized` no-op, no second writer call);
   `plan-stale` on a mid-session config edit (never a silent skip/dup); SM1 — a per-item block
@@ -19,7 +20,7 @@ toward this suite) plus tmp instance/workspace surfaces:
 - **BINDING nested-id isolation**: every action-nested id is workspace-isolated by the invoke
   GATE (each action mapped to its mirror verb) — a cross-workspace `render.item`/`add-to-folio`
   id is refused `isolation-violation` WHOLE-INVOCATION-fatally (envelope ok=False), exactly like
-  the standalone verb path; the not-yet-wired stub is never reached.
+  the standalone verb path; the delegate/stub is never reached.
 - **CF-1 wiring**: the source commit-map is pinned through `adapter.pin_commit` (supplied pins
   win), the SAME provenance read grounding uses.
 - the explicit `register_session_handlers` wiring point.
@@ -329,29 +330,40 @@ class TestClosedVocabulary:
         ctx = out["results"][0]["context"]
         assert ctx["planned"] >= 1 and ctx["consumed"] == 0 and ctx["drift"] is False
 
-    @pytest.mark.parametrize(
-        "action", ["render", "fetch", "emit-manifest", "add-to-folio", "list", "get"]
-    )
-    def test_not_yet_wired_actions_raise_the_typed_stub(self, tmp_path, action):
+    def test_emit_manifest_is_the_sole_not_yet_wired_stub(self, tmp_path):
+        # After step 34, `emit-manifest` ALONE raises the typed `NotYetWired` stub (step 35). A
+        # WORKSPACE-LOCAL folio_id clears isolation so dispatch reaches the stub — proving it is
+        # the ACTION handler, not a masked isolation refusal.
         root = build_root(tmp_path)
         store = store_for(root)
         token = self._token(root, store)
-        # Give each id-bearing action a WORKSPACE-LOCAL id so it clears isolation and reaches
-        # dispatch — proving the stub is the ACTION handler, not a masked isolation refusal.
+        folio = create_folio(store, purpose="p", nonce="n").folio_id
+        params = {"action": "emit-manifest", "folio_id": folio}
+        with pytest.raises(session.NotYetWired) as exc:
+            cont(root, store, params, token, hs=handlers())
+        assert exc.value.action == "emit-manifest"
+
+    @pytest.mark.parametrize("action", ["render", "fetch", "add-to-folio", "list", "get"])
+    def test_wired_actions_delegate_and_never_raise_the_stub(self, tmp_path, action):
+        # The step-34-wired actions delegate to their verb handlers and RETURN results (an ok
+        # envelope) — never the `NotYetWired` stub, and never a live subscription call (default
+        # engines are pure store/config reads for these shapes).
+        root = build_root(tmp_path)
+        store = store_for(root)
+        token = self._token(root, store)
         art = "a-9f3c07d21b44e8aa"
         store.output_path(art).write_bytes(b"{}\n")
         folio = create_folio(store, purpose="p", nonce="n").folio_id
         params = {
-            "render": {"action": "render", "item": art},
-            "fetch": {"action": "fetch", "id": art},
-            "get": {"action": "get", "id": art},
+            "render": {"action": "render", "item": art},  # missing coords → a block, not a stub
+            "fetch": {"action": "fetch", "id": art, "return": "path"},
+            "get": {"action": "get", "id": art, "type": "artifacts"},
             "list": {"action": "list", "type": "artifacts"},
             "add-to-folio": {"action": "add-to-folio", "folio_id": folio, "artifact_ids": [art]},
-            "emit-manifest": {"action": "emit-manifest", "folio_id": folio},
         }[action]
-        with pytest.raises(session.NotYetWired) as exc:
-            cont(root, store, params, token, hs=handlers())
-        assert exc.value.action == action
+        out = cont(root, store, params, token, hs=handlers())  # must NOT raise NotYetWired
+        assert out["envelope"]["ok"] is True
+        assert "token" in out  # the cursor is echoed unchanged (a read/side-output action)
 
 
 # --- BINDING: continue-session nested-id workspace isolation ----------------------------------
@@ -392,13 +404,27 @@ class TestNestedIdIsolation:
         assert len(out["results"]) == 2  # the folio ref AND the member are both refused
 
     def test_local_nested_id_passes_isolation_and_reaches_the_stub(self, tmp_path):
+        # A WORKSPACE-LOCAL nested id clears the isolation gate and reaches dispatch. Using the
+        # one remaining stub (`emit-manifest`, step 35) proves the gate passed the id through —
+        # the refusal/stub is the ACTION handler's, not a masked isolation error.
+        root = build_root(tmp_path)
+        store = store_for(root)
+        folio = create_folio(store, purpose="p", nonce="n").folio_id  # local → resolves
+        params = {"action": "emit-manifest", "folio_id": folio}
+        with pytest.raises(session.NotYetWired):
+            cont(root, store, params, self._token(root, store), hs=handlers())
+
+    def test_local_nested_render_id_passes_isolation_and_reaches_the_delegate(self, tmp_path):
+        # A WORKSPACE-LOCAL `render.item` clears isolation and reaches the WIRED render delegate
+        # (a typed result, not the stub) — the wired counterpart of the emit-manifest case above.
         root = build_root(tmp_path)
         store = store_for(root)
         art = "a-9f3c07d21b44e8aa"
         store.output_path(art).write_bytes(b"{}\n")  # local → resolves
         params = {"action": "render", "item": art}
-        with pytest.raises(session.NotYetWired):
-            cont(root, store, params, self._token(root, store), hs=handlers())
+        out = cont(root, store, params, self._token(root, store), hs=handlers())
+        assert out["envelope"]["ok"] is True  # reached the delegate; missing coords → a block item
+        assert out["results"][0]["status"] == "block"
 
     def test_action_path_mirrors_the_verb_path(self, tmp_path):
         # §21.1: the SAME cross-workspace id is refused envelope-fatally through BOTH the
