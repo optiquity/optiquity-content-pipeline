@@ -78,6 +78,14 @@ commands:
                  3 = a known verb not wired. n8n CAVEAT: Execute Command is off-by-default in
                  n8n v2.0 and unavailable on n8n Cloud (self-hosted only; a cloud orchestrator
                  needs the deferred HTTP shim, docs/known-issues.md DR-1).
+  render         the FRIENDLY form of `invoke render` (design §21.8, GAP-2): the SAME external-
+                 actor render door with flags instead of raw --params-json. Usage: render <item>
+                 --workspace W --output-type TYPE [--platform P] [--language L] [--presentation
+                 NAME (default plain)] [--root DIR] [--force-reconcile]. Builds the render params
+                 and dispatches the SAME handler as `invoke render`, printing the SAME one-line
+                 JSON envelope on stdout. render is token-free + deterministic (no live call); only
+                 render is reachable here (§21.9 operator-verb exclusion unchanged). Exit 0 =
+                 envelope ok; 1 = whole-invocation failure (JSON still emitted); 2 = usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -445,12 +453,91 @@ def _cmd_invoke(argv: list[str]) -> int:
     return main_cli(argv)
 
 
+def _cmd_render(argv: list[str]) -> int:
+    """render-output-fix (GAP-2): `pipeline render <item> …` — the ERGONOMIC render door.
+
+    The friendly form of `pipeline invoke render`: friendly flags in (a positional artifact-id +
+    the render coordinates as options) instead of raw `--params-json`, the SAME behavior out. It
+    builds the §21.2 render params dict and hands them to the SAME door
+    (`pipeline.api.invoke.main_cli` → `register_render_handler()` + `invoke()`), so it prints the
+    SAME one-line JSON envelope on stdout and returns the SAME exit codes: 0 ok · 1 whole-invocation
+    failure (JSON still emitted) · 2 usage · 3 a known verb not wired. A THIN ergonomic wrapper — no
+    handler logic is duplicated. render is token-free and the default engine is `pass`-strategy, so
+    no live subscription/LLM call runs. Only `render` is reachable through this subcommand (the verb
+    is HARDCODED); the §21.9 operator-verb exclusion is unchanged — an operator verb is not in
+    KNOWN_VERBS and cannot be named here."""
+    import argparse
+    import json
+
+    from pipeline.api.invoke import main_cli
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline render",
+        description=(
+            "The ergonomic render door (design §21.8, GAP-2): the friendly form of `pipeline "
+            "invoke render` — a positional artifact-id + the render coordinates as flags, the SAME "
+            "JSON envelope out. render is token-free and deterministic (strategy=pass, no live "
+            "call): it mints/serves the deliverable for `item` at the given "
+            "platform/language/output-type/presentation and prints one JSON object on stdout."
+        ),
+    )
+    parser.add_argument("item", help="the artifact-id to render (§7.4; the render `item`)")
+    parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
+    parser.add_argument("--platform", default=None, help="the target platform slug (§5)")
+    parser.add_argument("--language", default=None, help="the target language slug (§5)")
+    parser.add_argument(
+        "--output-type", required=True, help="the render output-type slug (§17; required)"
+    )
+    parser.add_argument(
+        "--presentation", default="plain", help="the presentation slug (§5.3; default: plain)"
+    )
+    parser.add_argument(
+        "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
+    )
+    parser.add_argument(
+        "--force-reconcile",
+        action="store_true",
+        help="force a re-reconcile → a NEW revision fit, never mutating the old (§21.8)",
+    )
+    args = parser.parse_args(argv)
+
+    # Build the §21.2 render params from the friendly flags, then hand them to the SAME door as
+    # `pipeline invoke render`. Delegating to `main_cli` (rather than re-implementing the
+    # register→invoke→print→exit tail) is what guarantees the byte-identical envelope + exit codes
+    # 0/1/3 — this stays a thin wrapper, never a second render path. Absent platform/language rides
+    # as-omitted (the handler treats absent and null identically → its own per-item block).
+    params: dict[str, object] = {
+        "item": args.item,
+        "output_type": args.output_type,
+        "presentation": args.presentation,
+    }
+    if args.platform is not None:
+        params["platform"] = args.platform
+    if args.language is not None:
+        params["language"] = args.language
+    if args.force_reconcile:
+        params["force_reconcile"] = True
+
+    return main_cli(
+        [
+            "render",
+            "--workspace",
+            args.workspace,
+            "--root",
+            args.root,
+            "--params-json",
+            json.dumps(params),
+        ]
+    )
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
     "demo-thread": _cmd_demo_thread,
     "mvp-demo": _cmd_mvp_demo,
     "invoke": _cmd_invoke,
+    "render": _cmd_render,
 }
 
 

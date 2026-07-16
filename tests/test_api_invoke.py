@@ -345,3 +345,90 @@ class TestCliDoor:
         out = json.loads(capsys.readouterr().out)
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "unknown-verb"
+class TestErgonomicRenderSubcommand:
+    """render-output-fix (GAP-2): `pipeline render <item> …` — the ergonomic alias for
+    `pipeline invoke render`. Friendly flags in (a positional artifact-id + the render coordinates
+    as options), the SAME JSON envelope + exit codes out. These prove (1) the friendly command
+    DISPATCHES into the render handler and returns the byte-identical envelope of the equivalent raw
+    `pipeline invoke render --params-json …` call, (2) a missing required arg is a usage error
+    (exit 2, never a fabricated envelope), and (3) the §21.9 operator-verb exclusion is intact — the
+    subcommand HARDCODES the `render` verb, so nothing else is reachable through it. Hermetic: the
+    item is materialized so isolation passes but its bytes are unreadable, so the handler runs and
+    returns a deterministic `not-found` (no config read, no mint, no live call)."""
+
+    def test_render_subcommand_matches_invoke_render(self, tmp_path, capsys):
+        from pipeline.__main__ import main
+
+        # Materialize `item` so workspace isolation (Gate 3) passes; its bytes are unreadable, so
+        # the render handler RUNS and returns a deterministic `not-found` (no config, no mint) —
+        # the SAME outcome for both the ergonomic and the raw-JSON form. Reaching `not-found`
+        # proves the ergonomic command dispatches INTO the render handler, not just the gate.
+        store = WorkspaceStore(tmp_path / "workspaces" / "wsA")
+        store.output_path(ART_A).write_bytes(b"not a render record\n")
+
+        rc_render = main(
+            [
+                "render", ART_A, "--workspace", "wsA", "--root", str(tmp_path),
+                "--output-type", "html", "--platform", "github", "--language", "en",
+            ]
+        )
+        render_out = json.loads(capsys.readouterr().out)
+
+        # The equivalent raw `invoke render` form — the SAME workspace/root, the SAME coordinates.
+        params = {
+            "item": ART_A, "platform": "github", "language": "en",
+            "output_type": "html", "presentation": "plain",
+        }
+        rc_invoke = main_cli(
+            [
+                "render", "--workspace", "wsA", "--root", str(tmp_path),
+                "--params-json", json.dumps(params),
+            ]
+        )
+        invoke_out = json.loads(capsys.readouterr().out)
+
+        # Equivalence: the SAME exit code AND the byte-identical JSON envelope + results.
+        assert rc_render == rc_invoke == 0
+        assert render_out == invoke_out
+        # Dispatched THROUGH the render verb INTO the render handler (not another verb, not a gate).
+        assert render_out["envelope"]["verb"] == "render"
+        assert render_out["envelope"]["ok"] is True
+        assert render_out["results"][0]["code"] == "not-found"
+
+    def test_render_subcommand_missing_required_output_type_is_usage_error(self):
+        from pipeline.__main__ import main
+
+        # --output-type is required; argparse refuses the call with exit 2 (usage), never a
+        # fabricated envelope.
+        with pytest.raises(SystemExit) as exc:
+            main(["render", ART_A, "--workspace", "wsA"])
+        assert exc.value.code == 2
+
+    def test_render_subcommand_missing_item_is_usage_error(self):
+        from pipeline.__main__ import main
+
+        # The positional `item` is required too — its absence is the SAME usage error (exit 2).
+        with pytest.raises(SystemExit) as exc:
+            main(["render", "--workspace", "wsA", "--output-type", "html"])
+        assert exc.value.code == 2
+
+    def test_render_subcommand_reaches_only_the_render_verb(self, tmp_path, capsys):
+        from pipeline.__main__ import main
+
+        # §21.9: the subcommand HARDCODES the `render` verb — no operator verb can be named through
+        # it (the positional is the render `item`, never a verb selector). Even a coordinate-less
+        # call (no --platform/--language) routes to `render` and rides the handler's own per-item
+        # block at envelope ok=True — proving the only door this subcommand opens is `render`.
+        store = WorkspaceStore(tmp_path / "workspaces" / "wsA")
+        store.output_path(ART_A).write_bytes(b"not a render record\n")
+        rc = main(
+            [
+                "render", ART_A, "--workspace", "wsA", "--root", str(tmp_path),
+                "--output-type", "html",
+            ]
+        )
+        out = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert out["envelope"]["verb"] == "render"
+        assert out["results"][0]["status"] == "block"  # the render handler ran (coords missing)
+
