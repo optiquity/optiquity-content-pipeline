@@ -23,7 +23,7 @@ the coder can execute.
 
 ## Required reads
 
-The architect's reconciled design, `docs/design-decisions.md`, `CLAUDE.md`, and files named in your
+The architect's reconciled design, `docs/design.md`, `CLAUDE.md`, and files named in your
 prompt.
 
 ## Discipline

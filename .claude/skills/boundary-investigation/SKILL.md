@@ -17,7 +17,7 @@ Two boundaries an edit in this repo can violate. Investigate both **before** edi
 - Downstream **extends by adding files** and **never edits framework files.** If a change wants to
   alter framework behavior, that's framework work (here), not an instance edit.
 
-## 2. Provenance vs. scope (design-decisions.md §3.9)
+## 2. Provenance vs. scope (design.md §10)
 
 - **Provenance** = `provenance: framework | instance` (metadata). Framework ships **generic default
   entries/recipes** marked `provenance: framework` — those are welcome in the public repo (rule 4,
@@ -35,4 +35,4 @@ Two boundaries an edit in this repo can violate. Investigate both **before** edi
 
 ## Reference
 
-CLAUDE.md durable rules 1/2/4/5 · `docs/design-decisions.md` §3.9.
+CLAUDE.md durable rules 1/2/4/5 · `docs/design.md` §10.

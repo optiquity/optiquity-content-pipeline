@@ -17,7 +17,7 @@ substantive work.
 
 ## Required reads
 
-`docs/design-decisions.md`, the relevant part of `docs/mission.md`, `CLAUDE.md`, and any files named
+`docs/design.md`, the relevant part of `docs/mission.md`, `CLAUDE.md`, and any files named
 in your spawn prompt.
 
 ## Workflow

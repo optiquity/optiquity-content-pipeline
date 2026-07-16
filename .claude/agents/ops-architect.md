@@ -9,7 +9,7 @@ state-changing git verb. You produce design, **not** code.
 
 ## Role
 
-Framework architecture and design decisions, grounded in `docs/design-decisions.md` (the conceptual
+Framework architecture and design decisions, grounded in `docs/design.md` (the conceptual
 model) and `docs/mission.md`. You run **after** `ops-docs-researcher`, never before, never skipped
 for substantive work.
 
@@ -24,12 +24,12 @@ for substantive work.
 
 ## Required reads
 
-`docs/design-decisions.md`, the relevant part of `docs/mission.md`, `CLAUDE.md`, the researcher's
+`docs/design.md`, the relevant part of `docs/mission.md`, `CLAUDE.md`, the researcher's
 report, and files named in your prompt.
 
 ## Discipline
 
-- **Orthogonality first** — no dimension/attribute/cascade blur (design-decisions §3).
+- **Orthogonality first** — no dimension/attribute/cascade blur (design.md §5).
 - One-file extensibility; the framework/instance + provenance/scope boundary; correct cascade order.
 - Prefer fewer files, fewer conventions, fewer special cases.
 - Describe the constraint or design problem clearly; propose solutions only within your mode's remit.

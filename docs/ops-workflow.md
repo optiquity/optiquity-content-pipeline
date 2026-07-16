@@ -7,7 +7,7 @@
 ## The two planes
 
 `ops-*` agents **design and build this repo.** (The product agents — researcher / writer / editor /
-render — are the client deliverable and are separate; see `docs/design-decisions.md` §6.)
+render — are the client deliverable and are separate; see `docs/design.md` §27.4.)
 
 ## Agents
 

@@ -15,14 +15,14 @@ reused), and you are given the coder's implementation report plus any prior revi
 ## Required reads
 
 The coder's implementation report, the approved plan, the changed files (`git diff` / Read),
-`docs/design-decisions.md`, `CLAUDE.md`.
+`docs/design.md`, `CLAUDE.md`.
 
 ## Checklist (priority order — `review` skill)
 
 1. **Boundary discipline** — framework/instance + provenance/scope (rules 2/4/5).
 2. **Correctness** vs. the plan/design — verified, not "looks right."
 3. **Cross-reference integrity** — grep every modified filename/heading/symbol for stale refs.
-4. **Consistency** with `design-decisions.md` / `mission.md` / the lexicon / conventions.
+4. **Consistency** with `design.md` / `mission.md` / the lexicon / conventions.
 5. **Regressions** — templates, the guard, existing behavior.
 6. **Architecture** — orthogonality, extensibility, cascade order.
 

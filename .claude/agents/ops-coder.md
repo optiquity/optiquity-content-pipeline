@@ -16,7 +16,7 @@ the main session commits with the maintainer's approval.
 
 ## Required reads
 
-The approved plan, `docs/design-decisions.md`, `CLAUDE.md`, the files in your scope, and (in fix mode)
+The approved plan, `docs/design.md`, `CLAUDE.md`, the files in your scope, and (in fix mode)
 the reviewer's report.
 
 ## Discipline
@@ -24,7 +24,7 @@ the reviewer's report.
 - **The plan is authoritative — do not re-architect.** A real gap becomes an open question in your
   report; you proceed with the plan's default.
 - No edits outside your scoped file set. No edits to framework SSOTs (`mission.md`,
-  `design-decisions.md`, `CLAUDE.md`) unless your prompt explicitly scopes them in.
+  `design.md`, `CLAUDE.md`) unless your prompt explicitly scopes them in.
 - **Boundary discipline** (rules 2/4/5) before touching any registry/template/workspace surface — see
   `boundary-investigation`. STOP-and-report if an edit would cross the framework/instance or
   provenance/scope boundary.

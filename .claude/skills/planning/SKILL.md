@@ -8,7 +8,7 @@ allowed-tools: Read, Grep, Glob, Bash
 
 Turn an approved design into an ordered, verifiable plan.
 
-- **Scope** from the approved design (`docs/design-decisions.md` and/or the architect's report).
+- **Scope** from the approved design (`docs/design.md` and/or the architect's report).
   Address **every** in-scope item.
 - **Ordered steps** with explicit file dependencies.
 - **Complete affected-files list**, including cross-reference updates — grep for every filename,

@@ -13,7 +13,7 @@ Review in **priority order** — stop-ship issues first:
 2. **Correctness** — does the change do what the plan/design specified? Verified, not "looks right."
 3. **Cross-reference integrity** — grep every modified filename, heading, and symbol across the repo
    for stale references.
-4. **Consistency** — with `docs/design-decisions.md`, `mission.md`, the lexicon, and existing
+4. **Consistency** — with `docs/design.md`, `mission.md`, the lexicon, and existing
    conventions.
 5. **Regressions** — templates, the guard, existing behavior.
 6. **Architecture** — orthogonality, extensibility, cascade order.
