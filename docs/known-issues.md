@@ -149,6 +149,41 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
   (standard + platform + corporate), with the explicit instruction to first check whether existing
   dimensions (or better templating) already cover it before inventing a new construct.
 
+### DR-3 — Optional artifact outline (pre-generation; dual output + input; outline-driven precedence) — design question
+- **Status:** Deferred (not in v1) — **requirement + open design questions recorded; to be designed
+  *jointly* with DR-2 by an architect (dimensions × style guide × outline seen together).**
+- **Need:** let the user optionally generate a document/artifact **outline first**, review / **edit**
+  it, and then generate the final artifact. The outline is **dual-natured**:
+  - an **OUTPUT** — a first-class final artifact format in its own right (you can render just the
+    outline); and
+  - an **INPUT** — it directs the **content and/or structure** of the final prose artifact.
+- **User control:** the user specifies whether the outline's **content**, its **structure**, or
+  **both** drive the final artifact.
+- **Precedence (the load-bearing architectural point):** when an outline drives generation it must have
+  **far more influence than any other content- or dimension-related input** — it **outranks the
+  dimensions** for what / how the artifact is written. The architect must place the outline in the M2
+  cascade / precedence so it can dominate content + structure **without breaking orthogonality**.
+- **Integration:** the outline must compose **elegantly with the nine dimensions AND the rendering
+  system, as both an output and an input**, and coexist with DR-2 (style guide). How it enters as an
+  input, how it is produced / edited as an output, and how it is fed back are all part of the design.
+- **The core design question (answer FIRST, like DR-2):** is an outline **even necessary** if an
+  artifact's **GOALS** are specified with the appropriate level of detail and precision? The architect
+  must determine — (1) **is an outline needed at all?** (2) if **yes**: its **scope and design** (what
+  it contains, how it is edited, how it is fed back as an input, its precedence, and its output-vs-input
+  modes); (3) if **no**: what mechanism instead keeps an artifact's **focus / structure correct per
+  artifact type** (e.g. more precise / structured **goals**, or a Format structure attribute — cf.
+  DR-2 (d)).
+- **Relationship:** **separate** from DR-2 (style guide) but **must be designed together** with it and
+  the dimensions — the maintainer's instruction is that one architect sees **dimensions + style guide +
+  outline** interacting, especially the precedence model (outline > dimensions when driving; style
+  guide *nudges* a dimension).
+- **Leads (not decisions — for the architect):** outline-as-output may resemble a new **output-type /
+  format**; outline-as-input may resemble a new **pre-generation stage / input channel** that seeds
+  compose; both must be tested against the one-file-add + orthogonality rules.
+- **Source:** maintainer requirement, 2026-07-16 — optional editable outline that can be a final
+  artifact and/or a high-influence input driving content and/or structure, to be assessed for
+  necessity vs. sufficiently-precise goals.
+
 ---
 
 ## Resolved
