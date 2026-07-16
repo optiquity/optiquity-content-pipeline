@@ -14,53 +14,6 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
 
 ## Open
 
-### GAP-1 — Cannot re-render an already-generated document into another format without re-running the whole pipeline
-- **Status:** Open
-- **Severity:** High (maintainer-flagged, 2026-07-13)
-- **Symptom:** A document already composed and stored in the internal format cannot, on its own, be
-  rendered into another supported external format (e.g. take the stored `markdown` deliverable and
-  produce `html` or `plain-text`). Getting a new format requires re-running generation from compose —
-  a fresh LLM call — even though the content already exists.
-- **Expected behavior:** rendering a stored internal-format document into any supported external
-  format should be a cheap, deterministic, **serialize-only** operation — no re-grounding, no
-  re-compose, no LLM/subscription call.
-- **Root cause (two independent blockers):**
-  1. The standalone §21.8 `render` verb reads the stored artifact record as `{"ir": …}`, but
-     `compose._persist` stores the **raw IR** (no `ir` wrapper). So `render.py::_render` (~line 152)
-     returns `not-found` for any real composed artifact (compose re-reads it raw at `compose.py:461`).
-     The re-render verb is therefore non-functional on real data.
-  2. `driver.run_thread` / the `demo-thread` CLI **hard-block** when the artifact is
-     already-materialized (they raise `DriverError`), so they cannot be used to render an existing
-     artifact to additional formats either.
-- **Impact / workaround:** You *can* get several formats by naming all desired `output_types` up front
-  in ONE generation run (the fanout §8 renders one compose to many formats — this works). But you
-  cannot come back later and render a stored doc to a new format cheaply; you must regenerate (extra
-  subscription usage + a non-deterministic fresh compose).
-- **Proposed fix:** Align `render.py::_render` to read the **raw** stored IR (matching compose's
-  storage shape), and/or add a re-render path that loads the stored artifact IR and drives ONLY the
-  serialize/dispatch stage for the requested `output_type(s)`. Add a test that renders a stored
-  artifact to a new format and asserts **no transport/LLM call** is made.
-- **Source:** flagged at step-39 review (#4), confirmed by the step-41 delivery audit; maintainer
-  asked it be tracked here (2026-07-13).
-
-### GAP-2 — No user-facing CLI for arbitrary generate / render / discovery requests
-- **Status:** Open
-- **Severity:** Medium
-- **Symptom:** The CLI exposes only fixed demos — `demo-thread` (one hardcoded coordinate, one output
-  format) and `mvp-demo` (the fixed §25 scenario over synthetic fixtures). There is no command to run
-  an arbitrary selection (chosen topic × persona × platform × format × output-types) against a real
-  workspace; doing so requires calling engine functions directly (e.g. `driver.run_thread(...)`).
-- **Root cause:** `api.register_api_handlers()` exists but is deliberately not called at import
-  (calling it would break the step-32 empty-verb-registry test); only the `mvp-demo` subcommand wires
-  it, and it runs the fixed scenario. No production CLI edge calls it for arbitrary input.
-- **Impact / workaround:** the full external API (`invoke` / begin-session / generate-next / render /
-  discovery) is built and tested but not reachable from a clean CLI verb; arbitrary runs go through
-  the engine functions.
-- **Proposed fix:** add a production CLI edge (e.g. `pipeline invoke …`) that calls
-  `register_api_handlers()` once at startup and forwards arbitrary requests, supplying a fail-safe
-  currency resolver (see GAP-3).
-- **Source:** step-33 / step-34 carry-forwards.
-
 ### GAP-3 — §21.9 currency resolver is a partial detector (not production-safe)
 - **Status:** Open (intentionally unwired / dead code today)
 - **Severity:** Medium (latent hazard — must not be wired as-is)
@@ -98,29 +51,6 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
   part-Div `#id` uniqueness check for multi-part/folio assembly (HTML-validity nit).
 - **Source:** step-25/27/29/35 review observations, each marked optional.
 
-### GAP-6 — A degenerate / near-empty writer body passes the contract check and ships as an "ok" artifact
-- **Status:** Open
-- **Severity:** Medium–High (produces unusable output silently)
-- **Symptom:** When the writer (LLM) returns a trivially-degenerate document — observed:
-  `{"body": "..."}` (three dots) — the pipeline accepts it as a valid artifact and renders it to
-  every requested format, yielding empty deliverables (`...` → `…` → `<p>…</p>`). The artifact is
-  marked composed/reviewed/rendered with a VERIFIED binding, so nothing fails loudly.
-- **Root cause:** the IR body contract uses `_nonempty_str(...)` (`pipeline/ir.py:632` for the flat
-  body, `:533` for a part body), which returns `True` for ANY non-empty string — including `"..."`,
-  a lone `…`, or punctuation/whitespace-only content. There is no "substance" floor. The §19
-  deliverable review *does* flag it (`verdict=concerns`), but §19 gates are advisory (non-gating), so
-  the content still ships.
-- **Impact:** a bad/degenerate generation becomes a persisted "ok" artifact with empty deliverables;
-  wasted subscription usage; no loud failure or re-ask. (The identity binding is content-addressed on
-  the preimage, not the prose, so a degenerate body still VERIFIES.)
-- **Proposed fix:** add a substance floor to the body contract (e.g. reject a body that is
-  ellipsis-/punctuation-/whitespace-only or below a minimal alphabetic-character count) and raise it
-  as a `compose-contract-violation` so the bounded re-ask fires and, failing that, the artifact fails
-  LOUDLY (§3.1) rather than shipping empty. Optionally promote the §19 "empty content" concern to a
-  gating condition for this specific case.
-- **Source:** found 2026-07-13 during the maintainer's three-format render test (the compose returned
-  a `"..."` body; all three formats rendered empty).
-
 ### GAP-7 — The ideation phase (mission stage 1) is not built — topics must be hand-authored
 - **Status:** Open (deliberate v1 scope boundary, tracked here as a missing capability)
 - **Severity:** Medium–High (a whole missing pipeline stage — half of the mission's two-stage design)
@@ -144,77 +74,6 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
   ideation contract first. Post-v1.
 - **Source:** `docs/mission.md` (the two-stage pipeline; §Role 2 "Ideation engine") + `docs/design.md:84`
   + the "Not in this build" register; maintainer asked it be tracked (2026-07-13).
-
-### GAP-8 — Compose reproducibly returns a degenerate `"..."` document body (empty deliverables in every format)
-- **Status:** Open — needs diagnosis (root cause not yet isolated)
-- **Severity:** High (reproducibly produces unusable, empty output)
-- **Related:** GAP-6 is the *downstream* half (the `"..."` body is not caught and ships anyway). GAP-8 is
-  the *upstream* symptom (why the body is `"..."` at all).
-- **Symptom:** For one specific run path, the writer/compose stage produces a document whose IR `body`
-  field is literally `"..."` (three ASCII dots). The pipeline reports `compose: OK`, the binding digest
-  VERIFIES, both `§19` reviews return `verdict=concerns` (advisory, non-gating), and the three rendered
-  deliverables are empty:
-  - `…github.en.html.plain.md` → `<p>…</p>` (11 bytes), sha256 `231f8183c54a749d…`
-  - `…github.en.md.plain.md` → `...` (4 bytes), sha256 `a00c3b59d5e9e2d8…`
-  - `…github.en.plain-text.plain.md` → `…` (4 bytes), sha256 `8479db376196d74b…`
-  (pandoc renders the source `...` to a unicode ellipsis `…` in the plain/html writers.)
-- **Key evidence it is systematic, not random LLM noise:** two independent `run_thread` invocations
-  produced **byte-identical** outputs (identical sha256s above). The artifact-id
-  `a-5dc2cbd9676240e9` and its binding are identical to a *good* run (see contrast below), because the
-  id is content-addressed on the **preimage**, not the prose — so a degenerate body still "VERIFIES."
-- **The contrast that should drive diagnosis:** the SAME coordinates
-  (`recipe=explainer-post`, `topic=x-architecture-overview`, `persona=technical-evaluator`,
-  `format=short-opinion-post`, `platform=github`, `presentation=plain`, `language=en` → artifact
-  `a-5dc2cbd9676240e9`) produced a **full 12,373-byte grounded document** earlier in the same session
-  when driven through `scripts/pipeline demo-thread` (which uses `demo_selection()`, a SINGLE
-  `output_types=("md",)`). The failing path differs only in the `SelectionRequest` — it requests THREE
-  output types `("plain-text","md","html")`. **Trigger not yet confirmed:** it is either (a) something
-  in the multi-output `SelectionRequest` / plan-build corrupting the compose prompt/inputs, or (b) a
-  session-wide / usage-related compose degradation that would also affect `demo-thread` if re-run now.
-  Isolating (a) vs (b) is the first diagnostic step.
-- **Ruled out (read-only checks, 2026-07-13):** no content-addressed cache outside the workspace store
-  (only `.pytest_cache` / `.ruff_cache` exist; the store reset clears the artifact record); no explicit
-  temperature/determinism pin found in `pipeline/transport.py` or `pipeline/compose.py` (so the
-  byte-identical repeat is unexplained — worth confirming what sampling the headless CLI uses).
-
-- **Reproduction:**
-  1. Prereq: `workspaces/mvp-demo/` has `topics/x-architecture-overview.md` and
-     `sources/x-optiquity-site.md` pointing at the optiquity-site Graphify graph (read-only).
-  2. Reset the (disposable) demo store:
-     ```
-     for d in artifacts deliverables reviews output folios claims; do rm -rf "workspaces/mvp-demo/$d"/* 2>/dev/null; done
-     printf 'row_kind,id,coordinates,source_commit,status,output_path,block_reason\n' > workspaces/mvp-demo/ssot.csv
-     ```
-  3. Drive the multi-output render (fails):
-     ```python
-     from datetime import date
-     from pipeline.driver import run_thread
-     from pipeline.fanout import SelectionRequest
-     req = SelectionRequest(
-         recipe="explainer-post", topics=("x-architecture-overview",),
-         platforms=("github",), languages=("en",),
-         output_types=("plain-text", "md", "html"), presentations=("plain",),
-     )
-     run_thread(root=".", workspace="mvp-demo", request=req, now=date.today(), log=print)
-     ```
-  4. Observe the degenerate body:
-     ```
-     python -c "import json; print(repr(json.load(open('workspaces/mvp-demo/artifacts/a-5dc2cbd9676240e9'))['body']))"
-     # -> '...'
-     ```
-  5. Control (single-output `demo-thread`) to isolate trigger (a) vs (b) — reset the store again, then:
-     ```
-     uv run python -m pipeline demo-thread --workspace mvp-demo
-     ```
-     If this yields a full multi-KB body, the multi-output path (trigger a) is implicated; if it also
-     yields `"..."`, it is a session-wide/compose degradation (trigger b).
-- **Diagnostic leads for later:** log/compare the exact writer PROMPT built for the multi-output request
-  vs `demo_selection()` (instrument `compose.build_writer_prompt`); capture the RAW transport response
-  (`TransportResult.text` / `.raw`) to see whether the model literally returned `{"body":"..."}` or
-  whether `parse_writer_output` reduced a larger response to `"..."`; confirm the headless CLI's
-  sampling settings. Fixing GAP-6 (a substance floor on the body) would make this fail LOUDLY instead of
-  shipping empty, even before the root cause is found.
-- **Source:** observed 2026-07-13 during the maintainer's three-format render test.
 
 ---
 
@@ -245,9 +104,104 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
 - **Source:** maintainer requirement, 2026-07-13 — "needed eventually for other users who use any
   cloud based workflow orchestrator (Make, Zapier, n8n, Google, and others)."
 
+### DR-2 — Selectable style guides (writing-rule presets) — design question, not yet a settled feature
+- **Status:** Deferred (not in v1) — **requirement + open design questions recorded; to be designed by
+  an architect before anything is built.**
+- **Need:** a way to select, per request, a named **style guide** that nudges the *writing* of an
+  output — prose rules, house conventions, structural preferences — without re-touching the existing
+  axes one at a time. There should be **standard** framework guides (e.g. a generic tech-website blog
+  post) and **platform-fitted** ones (e.g. LinkedIn, Medium), and instances should be able to add
+  **corporate** guides (a company's PR / website / documentation / communications style). A guide could
+  be applied anywhere at any time (even where it would be odd), but standard/specific ones exist so the
+  common cases are one selection.
+- **Hard constraint (orthogonality):** a style guide must **not overlap or duplicate any existing
+  dimension**, and must **not absorb Format or Platform attributes**. It nudges a dimension's
+  direction; it does not replace it. Where a dimension value genuinely needs to change, the guide may
+  carry an explicit **per-dimension override** entry (voice, format, platform, …) *plus* its prose
+  rules — overrides, not redefinitions.
+- **The core design question the maintainer raised (answer FIRST, before inventing anything):** a
+  style guide is *already* mostly a bundle of existing-dimension choices (voice + format + platform +
+  others) plus prose rules — so **maybe no new axis is needed**. It could be:
+  1. a named **preset / bundle** of existing dimension selections (+ a prose overlay), reusable in any
+     workspace — composition, not a new construct; or
+  2. a genuine new **style-guide construct** — only if (1) provably cannot express it cleanly; or
+  3. actually a **templating feature** — the maintainer noted the *structural/formatting* need
+     ("more easily and directly specify a desired structure") may be a separate, missing **template**
+     capability rather than a style guide at all.
+- **Open questions for the architect:** (a) can existing dimensions — or a **one-file additive
+  extension** of one (per the matrix rule) — cover this, and is that better than a new thing? (b) if a
+  guide *is* warranted, what structure lets it apply *wherever appropriate without conflicting*
+  (overrides + prose, with a clear precedence vs the cascade)? (c) overlap specifically with the
+  **VOICES** axis, which already carries tone/knowledge level — where is the line? (d) is the real gap
+  a **template** feature (structure) distinct from a style guide (prose / house rules)? (e) provenance &
+  scope: framework-**standard** guides (`provenance: framework`) vs instance/**corporate** guides
+  (`provenance: instance`), and where they live (workspace-scoped, per the isolation rule); (f) how
+  prose "writing rules" coexist with the **ground-in-EXTRACTED-facts** rule (style shapes *how* it
+  reads, never *what* is claimed).
+- **Recommended process (not yet run):** an **ops-architect**-led design pass (initial → adversarial →
+  reconciliation, maintainer-gated) that answers (a)–(f) and recommends *bundle vs new construct vs
+  templating* — optionally seeded by a light research pass on how real corporate/platform style guides
+  are structured. This is design work; it is **not** to be improvised during a fix.
+- **Depends on / relates to:** the nine-axis matrix + cascade (§3–§4); the VOICES axis; a possible
+  **template feature** (may be split into its own item if the architect finds the structural need is
+  separable).
+- **Source:** maintainer requirement, 2026-07-16 — selectable, non-overlapping style guides
+  (standard + platform + corporate), with the explicit instruction to first check whether existing
+  dimensions (or better templating) already cover it before inventing a new construct.
+
 ---
 
 ## Resolved
 
-_(none yet — the build's HARD GATES were closed inline: gate G2 at steps 37–38, the §21.7
-generation-code gate at step 39; those are recorded in `state.md` and the commit history.)_
+The build's HARD GATES were closed inline during the build (gate G2 at steps 37–38, the §21.7
+generation-code gate at step 39); those are recorded in `state.md` and the commit history. The
+entries below are post-build defects closed by the **`render-output-fix`** series (2026-07-16).
+
+### GAP-1 — Cannot re-render a stored document into another format without re-running the pipeline — RESOLVED
+- **Closed by:** `558846c` (driver + `render.py::_render` read the **raw** stored IR via `unwrap_ir`;
+  a re-render loads the stored artifact IR and drives serialize-only, no LLM) + `1f40f87`
+  (external-side routing via a side-tagged `MintOutcome` → `payload.build_payload`).
+- **What closed it:** `render`/`driver` now load the raw stored IR instead of expecting an
+  `{"ir": …}` wrapper, and branch on `target.side`: **internal** targets serialize-only through the
+  pinned pandoc writer (no re-grounding, no re-compose), **external** targets emit a zero-provenance
+  RI14 contract payload (`{binding, side, payload, stripped}`, no bytes) for the external actor.
+- **Verified (live):** stored artifact `a-5dc2cbd9676240e9` (real 13,208-byte body) re-rendered to
+  `plain-text`/`html` (internal, clean readable prose) + `epub` (external payload, `side: external`,
+  `stripped: true`, no bytes) with the transport tripwire NEVER firing — a hard-failing engine proved
+  no recompose/LLM call. Deterministic. Confirms internal ≠ external.
+
+### GAP-2 — No user-facing entry point for arbitrary render/generate requests — RESOLVED
+- **Closed by:** `3a92f24` (the `pipeline invoke <verb>` machine door — registers render + fetch-by-id,
+  JSON envelope on stdout, exit codes 0/1/2/3, §21.9 operator verbs structurally excluded via the
+  `KNOWN_VERBS` gate) + `7ab9663` (the ergonomic `pipeline render` subcommand delegating to the same
+  door).
+- **Two doors, one seam:** a human runs `pipeline render --workspace W --item <id> --output-type <t>`;
+  an external actor (v1: self-hosted n8n via its Execute Command node) runs
+  `pipeline invoke render --workspace W --params-json '{…}'`. Cloud orchestrators still need the HTTP
+  shim — see **DR-1**.
+- **Verified:** both doors exercised by `tests/test_api_invoke.py` (`TestCliDoor`,
+  `TestErgonomicRenderSubcommand`); the live re-render above went through the door.
+
+### GAP-6 — A degenerate / near-empty writer body passed the contract and shipped as "ok" — RESOLVED
+- **Closed by:** `558846c` (a **visible-text substance floor** on the body contract).
+- **What closed it:** `ir._has_substance()` requires ≥1 Unicode letter/number over the NFC-normalized
+  **visible** text (markup/attributes stripped); a body that is ellipsis-/punctuation-/whitespace-only
+  now raises `ir-empty-substance`, which flows into the existing bounded re-ask and, on exhaustion,
+  fails **LOUDLY** (§3.1) instead of shipping empty. Recovered re-asks are surfaced/logged, not silent.
+  This is the *guardrail* behind GAP-8's *cure*.
+- **Verified:** `tests/test_ir.py` + `tests/test_compose.py` (the floor rejects `"..."` / markup-wrapped
+  placeholders, accepts real prose; the re-ask fires and is recorded in `violations`).
+
+### GAP-8 — Compose returned a degenerate `"..."` body (empty deliverables in every format) — RESOLVED (fix landed; ablation directional)
+- **Root cause (diagnosed, VERIFIED):** `pipeline/prompts/writer.md` opened with a
+  `<!-- … STATIC contract … -->` developer-comment header; the writer model read it as *pasted file
+  content* and, instead of composing, returned a meta-commentary refusal (or a `{"body":"..."}`
+  placeholder). The valid-JSON placeholder passed the parse → no re-ask → shipped empty (the GAP-6
+  hole); the non-JSON refusal tripped the bounded re-ask and recovered.
+- **Closed by:** `a6d101b` (removed the leading dev-comment header from `writer.md`; the note moved to
+  the loader docstring). GAP-6's floor backstops any residual case.
+- **Verified (directional):** EXP-10 header ablation — V0 (header present) **3/8** runs derailed (each
+  the exact diagnosed non-JSON refusal signature); V1 (shipped, header stripped) **0/8**. **Caveat:
+  n=8, Fisher exact two-tailed p = 0.20 — not significant at α=0.05.** Directional evidence the fix
+  removed the diagnosed trigger, not a significance-tested proof; the GAP-6 floor guarantees loud
+  failure regardless.
