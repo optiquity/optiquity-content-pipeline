@@ -225,7 +225,7 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
 
 ### DR-1 — HTTP/webhook interface for cloud-hosted workflow orchestrators
 - **Status:** Deferred (not in v1) — requirement recorded for a later build.
-- **Need:** The v1 external-actor door (GAP-2) is the local `invoke` / `pipeline render` CLI, invoked
+- **Need:** The v1 external-actor door (GAP-2) is the local `pipeline invoke render` CLI, invoked
   by an orchestrator that can shell out to the **same machine** (v1's named consumer: self-hosted n8n
   via its Execute Command node). **Cloud-hosted** orchestrators — Make, Zapier, n8n Cloud, Google
   (Workflows / Apps Script), and others — cannot execute a local CLI; they can only call an **HTTP
