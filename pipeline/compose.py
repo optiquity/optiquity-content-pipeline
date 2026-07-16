@@ -646,6 +646,12 @@ def compose_artifact(
                 writer_out = parse_writer_output(transport.text, request)
                 doc = _assemble_ir(writer_out, request, ledger)
             except ir.IRError as exc:
+                # A CONTRACT violation rides this ONE catch → `violations` → the bounded re-ask:
+                # unparseable/mis-shaped JSON, unknown fact-id, tier mismatch, AND the §15 substance
+                # floor `ir.EmptySubstanceError` (`ir-empty-substance`, GAP-6 — a `"..."` or a
+                # markup-wrapped placeholder that PARSES yet ships empty). On exhaustion it is
+                # caught and NEVER persisted (`compose-contract-violation`); the substance-specific
+                # message surfaces to the model via `_reask_note` (`violations[-1]`).
                 violations.append(f"[{exc.code}] {exc}")
                 continue  # bounded re-ask (§21.9)
             result = _persist(

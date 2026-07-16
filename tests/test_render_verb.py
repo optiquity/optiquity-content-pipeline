@@ -38,8 +38,11 @@ FIXED_TS = "2024-01-01T00:00:00+00:00"
 def store(tmp_path):
     s = WorkspaceStore(tmp_path / WS)
     s.ensure_layout()
+    # GAP-1a: the RAW compose envelope shape (top-level `body`/`binding`, NO `ir` wrapper) — exactly
+    # what `compose.py` persists. The read now unwraps this via `ir.unwrap_ir`; the old wrapped
+    # `{"ir": …}` fixture masked the bug where `render` 404'd every real composed artifact.
     s.output_path(ART).write_bytes(
-        b'{"ir": {"body": "canonical"}, "binding": {"artifact_id": "x"}}\n'
+        b'{"body": "canonical", "binding": {"artifact_id": "x"}}\n'
     )
     return s
 
@@ -188,3 +191,16 @@ class TestSerializeRevision:
         assert parse_id(item["ids"]["deliverable_id"]).serialize_revision is not None
         assert engine.fit_mints == 0  # the fit was a HIT — only the serialize revision minted
         assert engine.deliverable_mints == 1
+
+
+class TestRawEnvelopeBaselineRead:
+    """GAP-1a: a RAW compose envelope baseline (no `ir` wrapper — the real persisted shape) is READ,
+    not 404'd. Before the fix the `"ir" not in record` gate rejected every real composed
+    artifact."""
+
+    def test_raw_envelope_baseline_is_read_not_not_found(self, store):
+        out = _render(store, FakeRenderEngine(RP_A, SP_A))
+        item = out["results"][0]
+        assert item["status"] != "block"
+        assert item.get("code") != "not-found"
+        assert item["ids"]["fitted_id"] and item["ids"]["deliverable_id"]

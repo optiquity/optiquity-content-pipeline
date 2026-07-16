@@ -473,3 +473,58 @@ class TestGroundingLedgerBuilder:
             build_grounding_ledger(
                 (make_fact(**{field: value}),), source_repos={"acme-graph": "github.com/acme/x"}
             )
+
+
+# --- The §15 substance floor (GAP-6): substance-free bodies re-ask, fail loud, never persist ------
+
+
+class TestSubstanceFloor:
+    """A substance-free body (`"..."`) PARSES the writer contract (`"...".strip()` is truthy) but
+    fails `validate_ir`'s §15 substance floor into the EXISTING bounded re-ask → fail-loud
+    `compose-contract-violation`, NEVER persisted, with the `ir-empty-substance` marker recorded in
+    `violations` (the derail is observable at the object level, F1)."""
+
+    def test_flat_substanceless_body_is_reasked_and_never_persisted(self, store, claims):
+        request = make_request()
+        runner = ScriptedRunner([writer_ok({"body": "..."})])  # parses, yet ships empty
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=runner, max_attempts=2
+        )
+        assert outcome.status == "error"
+        assert outcome.code == CODE_CONTRACT_VIOLATION
+        assert outcome.ir is None
+        assert not store.output_path(request.artifact_id).exists()
+        assert runner.calls == 2  # the floor re-asked up to the bound
+        assert len(outcome.violations) == 2
+        assert all("ir-empty-substance" in v for v in outcome.violations)
+
+    def test_parts_substanceless_body_is_reasked_and_never_persisted(self, store, claims):
+        request = make_request(format_parts=("slides", "presenter-notes"))
+        runner = ScriptedRunner(
+            [writer_ok({"parts": {"slides": "...", "presenter-notes": "..."}})]
+        )
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=runner, max_attempts=2
+        )
+        assert outcome.status == "error"
+        assert outcome.code == CODE_CONTRACT_VIOLATION
+        assert outcome.ir is None
+        assert not store.output_path(request.artifact_id).exists()
+        assert any("ir-empty-substance" in v for v in outcome.violations)
+
+    def test_substanceless_then_valid_recovers_within_the_bound(self, store, claims):
+        # A RECOVERED derail: attempt-1 `"..."` (substance floor) → attempt-2 valid prose. The
+        # outcome carries the recovered `ir-empty-substance` marker (object-level rate evidence
+        # the driver F1 emit surfaces in production).
+        request = make_request()
+        runner = ScriptedRunner(
+            [
+                writer_ok({"body": "..."}),  # attempt 1 — substance floor
+                writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"}.'}),  # attempt 2 — valid
+            ]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert (outcome.status, outcome.attempts) == ("ok", 2)
+        assert len(outcome.violations) == 1
+        assert "ir-empty-substance" in outcome.violations[0]
+        assert store.output_path(request.artifact_id).exists()

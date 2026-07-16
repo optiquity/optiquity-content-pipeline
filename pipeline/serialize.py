@@ -90,6 +90,7 @@ __all__ = [
     "emit_part_div",
     "enrich_leaf",
     "escape_span_text",
+    "extension_for",
     "is_ci",
     "pandoc_available",
     "pandoc_gate",
@@ -285,6 +286,43 @@ def pandoc_gate(*, available: bool, ci: bool) -> Literal["run", "skip", "fail"]:
     if available:
         return "run"
     return "fail" if ci else "skip"
+
+
+# ---------------------------------------------------------------------------
+# The layer-2 file extension per output-type (§7.4 — a filename/record convenience, NEVER identity).
+# ---------------------------------------------------------------------------
+
+#: Explicit extensions for the writer families whose file extension differs from the output-type
+#: slug (`plain-text` → `txt`) or where an explicit pin is clearer. An unmapped output-type defaults
+#: to its own slug when that slug is a valid single-run extension (`ids._EXTENSION_RE`).
+_EXTENSION_BY_OUTPUT_TYPE = {
+    "md": "md",
+    "html": "html",
+    "docx": "docx",
+    "plain-text": "txt",
+    "epub": "epub",
+    "pptx": "pptx",
+    "pdf": "pdf",
+}
+
+
+def extension_for(output_type: str) -> str:
+    """The conventional layer-2 file extension for one output-type (§7.4: a filename/record
+    convenience, NEVER part of the content-addressed id). Known writer families map explicitly
+    (`plain-text` → `txt`); an unmapped output-type defaults to its OWN slug when that slug is a
+    valid single-run extension (`ids._EXTENSION_RE`, ``\\A[a-z0-9]+\\Z``) — so a newly reachable
+    internal html/docx re-render labels its bytes `.html`/`.docx`, not a mislabeled `.md`, without a
+    second edit. A dotted/hyphenated slug with no explicit mapping fails loud (§3.1), never mints an
+    illegal extension. `extension_for("md") == "md"`, so every existing md path is a no-op."""
+    mapped = _EXTENSION_BY_OUTPUT_TYPE.get(output_type)
+    if mapped is not None:
+        return mapped
+    if isinstance(output_type, str) and ids._EXTENSION_RE.match(output_type):
+        return output_type
+    raise SerializeError(
+        f"serialize-error: no conventional file extension for output-type {output_type!r} — add it "
+        "to extension_for's map (§7.4: an extension is one [a-z0-9] run)"
+    )
 
 
 # ---------------------------------------------------------------------------

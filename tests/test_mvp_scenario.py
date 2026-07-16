@@ -555,3 +555,125 @@ def test_gate2_failsafe_resolver_is_conservative_never_current(tmp_path):
     # a real recorded digest is 12 lowercase hex; the sentinel can never equal one → not-current.
     assert not re.fullmatch(r"[0-9a-f]{12}", sentinel_fit)
     assert sentinel_fit == sentinel_ser  # a single conservative sentinel for both edges
+
+
+# ---------------------------------------------------------------------------
+# Driver-seam tests (F1 + C5): drive `driver._run_artifact` DIRECTLY over the hermetic mock
+# transport. The LIVE `run_thread` has NO runner seam, and the generate-next path passes
+# `log=_nolog` (discarding the F1 emit) — so these target `_run_artifact` directly (the plan's
+# state-verified seam refinement). They ride the module's autouse pandoc gate.
+# ---------------------------------------------------------------------------
+
+
+class _FailThenSucceedWriter:
+    """attempt 1 → a substance-free `"..."` body (fails the §15 substance floor → bounded re-ask);
+    attempt 2 → a valid, fully-cited body. Proves the driver SURFACES a RECOVERED derail (F1)."""
+
+    def __init__(self) -> None:
+        self.requests: list = []
+
+    def __call__(self, request) -> ProcessOutcome:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return _ok(json.dumps({"body": "..."}))  # substance floor → re-ask
+        return _ok(json.dumps(_writer_content(request.stdin_text)))  # recovered
+
+
+class _NeverWriter:
+    """A writer that must NOT be invoked — the idempotent re-drive path skips compose (C5)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, request) -> ProcessOutcome:  # pragma: no cover
+        self.calls += 1
+        raise AssertionError("the writer must not be invoked on the idempotent re-drive (§21.8)")
+
+
+def _drive_widget_artifact(root, *, runner, review, log, now=NOW):
+    """Drive `driver._run_artifact` for the sequential-widget artifact hermetically (real grounding
+    / resolution / compose→reconcile→serialize / reviews over the mock transport; NO subscription
+    spend). Returns the ArtifactResult (raises DriverError on a genuine stage failure)."""
+    from pipeline.spine import registry_for
+    from pipeline.ssot import Ssot
+
+    store = WorkspaceStore(root / "workspaces" / WS)
+    store.ensure_layout()
+    begin = invoke_mod.invoke(
+        "begin-session",
+        WS,
+        {
+            "recipe": "explainer-post",
+            "topics": ["x-widget-service"],
+            "platforms": ["github"],
+            "languages": ["en"],
+            "output_types": ["md"],
+            "presentations": ["plain"],
+            "run_selection": M3_RUN_SELECTION,
+        },
+        store=store,
+        root=str(root),
+        handlers={"begin-session": session.begin_session_handler(adapters=_adapters())},
+    )
+    token = invoke_mod.token_mod.decode(begin["token"], expected_workspace=WS)
+    plan, env, pool, source_repos = session._resolve_from_inputs(root, WS, token.inputs)
+    item = next(i for i in plan.items if i.topic == "x-widget-service")
+    return driver._run_artifact(
+        env=env,
+        store=store,
+        claims=registry_for(store),
+        ssot=Ssot(store.root / "ssot.csv"),
+        plan=plan,
+        item=item,
+        pool=pool,
+        adapters=_adapters(),
+        source_repos=source_repos,
+        now=now,
+        model="mvp-fake-model",
+        log=log,
+        runner=runner,
+        review_runner=review,
+    )
+
+
+def test_driver_surfaces_recovered_reask_on_success_path(tmp_path):
+    """F1 (GAP-6 observability): a fail-then-succeed writer (`"..."` → valid) drives a RECOVERED
+    derail through `driver._run_artifact`; the driver SURFACES it on the SUCCESS path (a captured
+    `RE-ASK` log line), not merely carrying it on `cout`."""
+    root = build_world(tmp_path)
+    writer = _FailThenSucceedWriter()
+    lines: list[str] = []
+    result = _drive_widget_artifact(root, runner=writer, review=ReviewRunner(), log=lines.append)
+    assert len(writer.requests) == 2  # attempt-1 re-asked, attempt-2 recovered
+    assert any("RE-ASK" in line for line in lines), lines  # the driver SURFACED the recovery
+    assert result.artifact_id  # the artifact still materialized (the derail recovered)
+
+
+def test_driver_idempotent_redrive_reserializes_without_recomposing(tmp_path):
+    """C5 (GAP-1d): a second `driver._run_artifact` over an already-materialized artifact re-drives
+    serialize-only — compose short-circuits (`status="ok", ir=None`), the driver LOADS the stored IR
+    via `ir.unwrap_ir` and continues to the serialize legs; the writer is NEVER re-invoked and no
+    DriverError is raised (the old guard hard-blocked this idempotent no-op)."""
+    root = build_world(tmp_path)
+    first = _drive_widget_artifact(
+        root, runner=WriterRunner(), review=ReviewRunner(), log=lambda _m: None
+    )
+    never = _NeverWriter()
+    second = _drive_widget_artifact(root, runner=never, review=ReviewRunner(), log=lambda _m: None)
+    assert never.calls == 0  # compose short-circuited — the writer was not invoked
+    assert second.artifact_id == first.artifact_id
+    assert second.deliverables  # the serialize legs re-drove over the stored IR, no raise
+
+
+def test_driver_idempotent_redrive_raises_on_vanished_record(tmp_path, monkeypatch):
+    """C5 NEW-F: the idempotent re-drive guards its load — if the stored record vanished/corrupted
+    between compose's `is_done` check and the load, the driver raises a clear DriverError, NEVER
+    `ir.unwrap_ir(None)`. Modeled by forcing the load to return None on the re-drive (the real
+    race); compose still short-circuits on the intact record."""
+    root = build_world(tmp_path)
+    _drive_widget_artifact(root, runner=WriterRunner(), review=ReviewRunner(), log=lambda _m: None)
+    monkeypatch.setattr(driver, "_read_stored_record", lambda store, id_str: None)
+    with pytest.raises(driver.DriverError):
+        _drive_widget_artifact(
+            root, runner=_NeverWriter(), review=ReviewRunner(), log=lambda _m: None
+        )

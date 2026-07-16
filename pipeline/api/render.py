@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from pipeline import fit_resolution, presentation, reconcile, serialize
+from pipeline import fit_resolution, ir, presentation, reconcile, serialize
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import results
 from pipeline.api import token as token_mod
@@ -144,12 +144,16 @@ def _render(
     force = bool(params.get("force_reconcile", False))
 
     canonical_record = _read_record(ctx.store, item)
-    if canonical_record is None or "ir" not in canonical_record:
+    if canonical_record is None:
         return ([results.make_result(
             results.CODE_NOT_FOUND, item=item, ids={"id": item},
             hint=f"no artifact record for {item!r} in this workspace (§21.8)",
         )], None)
-    canonical_ir = canonical_record["ir"]
+    # GAP-1a: read via `ir.unwrap_ir`, tolerating BOTH persisted shapes — a FITTED/render record
+    # wraps the IR under `["ir"]`; a fresh COMPOSE record IS the raw envelope. The old
+    # `"ir" not in record` gate 404'd EVERY real composed artifact (compose persists raw); this
+    # gates on a REAL absence (`record is None`) and unwraps whichever shape is stored (§15 RI4).
+    canonical_ir = ir.unwrap_ir(canonical_record)
 
     root = ctx.store.root.parent.parent
     fit_leg = FitLeg(
@@ -519,7 +523,7 @@ class DefaultRenderEngine:
             fit_binding_ref=fit_binding,
             serialize_revision=serialize_revision,
         )
-        return dout.output_bytes, render_binding, "md"
+        return dout.output_bytes, render_binding, serialize.extension_for(leg.output_type)
 
     def _reconcile_request(self, leg: FitLeg) -> reconcile.ReconcileRequest:
         from pipeline.cascade import CascadeEnv

@@ -49,6 +49,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from pipeline import ir
 from pipeline import presentation as _presentation
 from pipeline.adapters.base import SourceAdapter
 from pipeline.adapters.graphify import GraphifyAdapter
@@ -75,6 +76,7 @@ from pipeline.plan import DeliverableItem, Plan, PlanItem, resolve_plan
 from pipeline.reconcile import ReconcileRequest, reconcile
 from pipeline.serialize import (
     build_render_binding,
+    extension_for,
     serialize_fitted,
     serialize_inputs_preimage,
 )
@@ -90,9 +92,6 @@ __all__ = [
     "demo_selection",
     "run_thread",
 ]
-
-#: The demo output layer-2 extension for the `md` output-type (§7.4: never part of the id).
-_DEMO_OUTPUT_EXTENSION = "md"
 
 Log = Callable[[str], None]
 
@@ -304,6 +303,22 @@ def _recorded_preimage_lookup(store: WorkspaceStore) -> Callable[[str], Any]:
         return doc.get("binding", {}).get("preimage") if isinstance(doc, dict) else None
 
     return lookup
+
+
+def _read_stored_record(store: WorkspaceStore, id_str: str) -> Mapping[str, Any] | None:
+    """Read one id-keyed output record as a JSON mapping (§22.3), or None when the record is absent
+    or corrupt. The GAP-1d idempotent re-drive uses this to LOAD the stored canonical IR when
+    compose short-circuits (`status="ok", ir=None`); NEW-F: it returns None (never raises) on a
+    vanished/corrupt record so the caller raises a clear `DriverError`, not `ir.unwrap_ir(None)`."""
+    try:
+        raw = store.output_path(id_str).read_bytes()
+    except (FileNotFoundError, IsADirectoryError):
+        return None
+    try:
+        doc = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return doc if isinstance(doc, Mapping) else None
 
 
 def _persist_record(
@@ -532,7 +547,7 @@ def _run_deliverable(
 
     # The layer-2 bytes: the real deliverable, keyed by deliverable-id + a conventional
     # extension (§7.4). Atomic no-replace; an already-materialized re-run keeps the bytes.
-    bytes_path = store.bytes_path(d.deliverable_id, _DEMO_OUTPUT_EXTENSION)
+    bytes_path = store.bytes_path(d.deliverable_id, extension_for(d.output_type))
     try:
         write_new(bytes_path, output_bytes)
     except AlreadyMaterializedError:
@@ -714,13 +729,30 @@ def _run_artifact(
         review_advance=ssot.advance_hook("artifact-reviewed"),
         review_model=model,
     )
-    if cout.status != "ok" or cout.ir is None:
+    if cout.status != "ok":
         raise DriverError(
             f"driver-error: compose did not persist artifact {item.artifact_id} — "
             f"status={cout.status} code={cout.code} attempts={cout.attempts} "
             f"violations={cout.violations}"
         )
-    canonical_ir = cout.ir
+    if cout.ir is None:
+        # GAP-1d idempotent re-drive (§21.8): compose short-circuited on an already-materialized
+        # artifact (`status="ok", ir=None`, the TOTAL discriminator — a fresh success returns
+        # `ir=doc`, transport/exhaustion carry `status="error"`, and this branch fires only under
+        # `is_done`), so LOAD the stored canonical IR and continue to the serialize legs — a
+        # re-drive re-serializes, it NEVER re-composes. The old guard hard-blocked this no-op (it
+        # raised on `ir is None`). NEW-F: guard the load — a record that vanished/corrupted between
+        # compose's `is_done` check and here is a clear DriverError, never `ir.unwrap_ir(None)`.
+        stored = _read_stored_record(store, item.artifact_id)
+        if stored is None:
+            raise DriverError(
+                f"driver-error: artifact {item.artifact_id} reported already-materialized "
+                f"({cout.code}) but its stored record is missing or corrupt — cannot re-drive the "
+                "serialize legs (§21.8/§22.3)"
+            )
+        canonical_ir = ir.unwrap_ir(stored)
+    else:
+        canonical_ir = cout.ir
     binding = canonical_ir["binding"]
     verified = (
         mint_artifact_id(binding["preimage"]) == item.artifact_id
@@ -732,6 +764,16 @@ def _run_artifact(
         f"  compose: OK ({cout.code}); binding digest {binding['digest'][:16]}… "
         f"reproduces {item.artifact_id} -> {'VERIFIED' if verified else 'MISMATCH'}"
     )
+    # F1 (§21.9 observability, GAP-6): SURFACE a RECOVERED derail on the SUCCESS path — attempt-1
+    # failed the contract (a refusal, or the §15 substance floor) and the bounded re-ask recovered
+    # it (`status="ok", attempts>1, violations=(…)`). Today this signal is discarded here; the
+    # maintainer's "log every re-ask" requirement covers the RECOVERED case, so the derail RATE
+    # (recovered included) is observable, not silently swallowed. The idempotent no-op
+    # (`attempts=0, violations=()`) correctly does NOT emit.
+    if cout.attempts > 1 or cout.violations:
+        log(
+            f"  compose: RE-ASK ×{cout.attempts} recovered — violations={list(cout.violations)}"
+        )
     # §19 Review 1 rode inside compose_artifact (post-mint, advancing `artifact-reviewed`).
     review = cout.review
     if review is not None:

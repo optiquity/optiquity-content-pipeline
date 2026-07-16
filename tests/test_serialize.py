@@ -32,11 +32,13 @@ from pipeline.serialize import (
     PandocOutcome,
     PandocParseError,
     PandocUnavailableError,
+    SerializeError,
     build_render_binding,
     emit_claim_span,
     emit_fitted_markdown,
     enrich_leaf,
     escape_span_text,
+    extension_for,
     is_ci,
     pandoc_available,
     pandoc_gate,
@@ -490,3 +492,35 @@ def test_serialize_plane_imports_no_ssot():
                 assert all("ssot" not in a.name for a in node.names), path.name
             elif isinstance(node, ast_mod.ImportFrom):
                 assert node.module is None or "ssot" not in node.module, path.name
+
+
+# --- extension_for (§7.4, GAP-1c): the layer-2 file extension per output-type ---------------------
+
+
+class TestExtensionFor:
+    """`extension_for` maps an output-type to its conventional layer-2 file extension (NEVER part of
+    the id). `md → md` is a no-op for every existing path; an internal html/docx re-render — now
+    reachable after GAP-1a — labels its bytes correctly instead of a mislabeled `.md`."""
+
+    @pytest.mark.parametrize(
+        "output_type,expected",
+        [
+            ("md", "md"),
+            ("html", "html"),
+            ("docx", "docx"),
+            ("plain-text", "txt"),
+            ("epub", "epub"),
+            ("pptx", "pptx"),
+            ("pdf", "pdf"),
+        ],
+    )
+    def test_known_output_types_map_to_their_extension(self, output_type, expected):
+        assert extension_for(output_type) == expected
+
+    def test_unmapped_valid_slug_defaults_to_itself(self):
+        # A new single-run output-type slug labels its bytes with the slug — no second edit.
+        assert extension_for("rtf") == "rtf"
+
+    def test_dotted_or_hyphenated_unmapped_slug_fails_loud(self):
+        with pytest.raises(SerializeError):
+            extension_for("no-such-type")

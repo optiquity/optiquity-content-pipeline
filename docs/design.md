@@ -1486,6 +1486,22 @@ LAYER 3  Pandoc AST JSON (persisted, ALWAYS produced)         — the standard i
   interpreted, never routed into AST content — carried as a side channel to the layer-3 contract.
 - **Version stamps** (RI4): `ir_version` + the `pandoc-api-version` pin — render-reproducibility
   pins, not migration targets (the IR is immutable and never schema-migrated; §11.6).
+- **The substance floor** (RI1; the GAP-6 guardrail). Every leaf `body` (flat) and every part
+  `body` must carry ≥1 Unicode letter or digit in its VISIBLE text — the reader-visible characters
+  after Pandoc bracketed-span attr blocks (`[…]{.CLASS data-…}`) are stripped. A substance-free
+  body — `"..."`, `"…"`, `"###"`, whitespace-only, or a markup-wrapped placeholder
+  `[...]{.EXTRACTED data-fact="f0"}` whose visible text is just `...` — PARSES and validates as
+  non-empty under bare truthiness yet ships an EMPTY artifact; this floor (`validate_ir`, one
+  chokepoint for every IR-building path) makes it fail loud (`EmptySubstanceError` /
+  `ir-empty-substance`) into the §21.9 bounded re-ask, NEVER persisted. It is a pure, content-blind
+  SHAPE gate (no Markdown parse, no §21.9 boundary crossing) and a MONOTONE strengthening of the
+  old non-empty check (zero regression). **FIX vs GUARDRAIL (GAP-8 / GAP-6).** Stripping the
+  leading `<!-- … -->` developer comment from `writer.md` (the model quoted it when it refused, so
+  it produced no artifact at all) is the FIX for the pre-parse refusal derail; this substance floor
+  is the loud-fail GUARDRAIL that closes the post-parse valid-JSON-empty hole. They sit on opposite
+  sides of the parser gate and converge into the SAME bounded re-ask. Scope-honest: a placeholder
+  whose visible text carries a stray letter/digit still passes the floor and is Review-1's domain
+  (§19) — the floor is a hard shape gate, never a quality judgment.
 - **IR-canonical is platform-agnostic:** no platform, language, output-type, or presentation
   appears in it. Those enter at reconcile (IR-fitted) and serialize.
 
@@ -1716,6 +1732,17 @@ both levels.
 Hard drift and hard limits never reach review — they block earlier (§11.5, §16). The reviews
 handle residual soft advisories (warn-level results, INFERRED-lead checks) and full-content
 quality.
+
+**The §15 substance floor vs Review 1 (GAP-6 reconciliation).** Read the "early substance gate"
+above as two complementary mechanisms, not one: the §15 substance floor is a HARD, content-blind
+SHAPE gate (≥1 visible letter/digit) enforced PRE-PERSIST at `validate_ir`, so a bare
+substance-free body (`"..."`, a markup-wrapped placeholder) is rejected into the §21.9 bounded
+re-ask and NEVER mints; Review 1 is the SOFT, advisory content/quality review of a body that DID
+compose (goal/persona fit, citability, INFERRED-lead honesty, a thin-but-letter-bearing
+placeholder). The floor is the loud-fail GUARDRAIL closing the valid-JSON-empty hole — GAP-8's
+`writer.md` header strip is the FIX for the refusal derail that produced such bodies. The floor
+sits in `validate_ir` (one chokepoint), NOT in post-mint Review 1, which would fight the
+immutable-id / no-replace model (§22.3).
 
 ---
 

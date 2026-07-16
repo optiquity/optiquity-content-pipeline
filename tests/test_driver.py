@@ -20,6 +20,7 @@ import ast
 from pathlib import Path
 
 from pipeline import driver
+from pipeline.store import WorkspaceStore
 
 
 class _PinStub:
@@ -84,3 +85,29 @@ class TestFittedAdvanceIsContained:
         }
         for call in advance_calls:
             assert id(call) in contained, "an `ssot.advance` escapes the contained S5 hook (§22.7)"
+
+
+class TestReadStoredRecord:
+    """C5 NEW-F (GAP-1d): the idempotent re-drive's record loader returns None (never raises) on a
+    missing or corrupt record, so `_run_artifact` raises a clear `DriverError` instead of
+    `ir.unwrap_ir(None)` → TypeError. A pure unit — no grounding, no compose, no pandoc."""
+
+    AID = "a-0000000000000000"
+
+    def _store(self, tmp_path) -> WorkspaceStore:
+        store = WorkspaceStore(tmp_path / "ws")
+        store.ensure_layout()
+        return store
+
+    def test_missing_record_returns_none(self, tmp_path):
+        assert driver._read_stored_record(self._store(tmp_path), self.AID) is None
+
+    def test_corrupt_record_returns_none(self, tmp_path):
+        store = self._store(tmp_path)
+        store.output_path(self.AID).write_bytes(b"{ not valid json")
+        assert driver._read_stored_record(store, self.AID) is None
+
+    def test_valid_record_returns_the_mapping(self, tmp_path):
+        store = self._store(tmp_path)
+        store.output_path(self.AID).write_bytes(b'{"body": "x", "binding": {}}')
+        assert driver._read_stored_record(store, self.AID) == {"body": "x", "binding": {}}

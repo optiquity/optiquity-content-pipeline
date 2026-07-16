@@ -26,7 +26,9 @@ from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id
 from pipeline.ir import (
     IR_VERSION,
     PANDOC_API_VERSION,
+    TOP_LEVEL_KEYS,
     BindingMismatchError,
+    EmptySubstanceError,
     SchemaViolation,
     SecretShapedValueError,
     TierViolation,
@@ -34,6 +36,7 @@ from pipeline.ir import (
     build_ir,
     extract_fact_refs,
     looks_secret_shaped,
+    unwrap_ir,
     validate_grounding_ledger,
     validate_ir,
 )
@@ -484,3 +487,100 @@ class TestTopLevelSchema:
         doc["ir_version"] = 999
         with pytest.raises(SchemaViolation):
             validate_ir(doc)
+
+
+# --- The §15 substance floor (GAP-6): a body whose VISIBLE text has no letter/digit is refused ---
+
+
+class TestSubstanceFloor:
+    @pytest.mark.parametrize("body", ["...", "…", "   ", "###", "---", "* * *"])
+    def test_flat_substanceless_body_is_refused_with_the_substance_code(
+        self, preimage, artifact_id, body
+    ):
+        # Every one of these PARSES/validates as non-empty under bare truthiness yet ships empty.
+        with pytest.raises(EmptySubstanceError) as exc:
+            build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body=body)
+        assert exc.value.code == "ir-empty-substance"
+
+    def test_markup_wrapped_placeholder_is_refused_by_the_substance_floor(
+        self, preimage, artifact_id
+    ):
+        # F4: seed f0 EXTRACTED so the floor (:632) is the ONLY rejection path — it PRECEDES the
+        # ref-check (:633). A broken stripper that kept the attrs' letters ("EXTRACTED"/"data"/
+        # "fact") would PASS the floor and then BUILD (f0 known, tier matches) → this test fails; a
+        # correct stripper yields visible text `...` → EmptySubstanceError. Asserting the SUBSTANCE
+        # code rules out a wrong-reason pass (e.g. UnknownFactError had f0 not been seeded).
+        with pytest.raises(EmptySubstanceError) as exc:
+            build_ir(
+                artifact_id=artifact_id,
+                preimage=preimage,
+                grounding=one_fact_ledger(),  # f0 EXTRACTED
+                body='[...]{.EXTRACTED data-fact="f0"}',
+            )
+        assert exc.value.code == "ir-empty-substance"
+
+    def test_part_substanceless_body_is_refused(self, preimage, artifact_id):
+        parts = [
+            {
+                "part-id": part_id(artifact_id, "slides"),
+                "role": "slides",
+                "packaging_hint": "in-document",
+                "body": '# [a point]{.EXTRACTED data-fact="f0"}',
+            },
+            {
+                "part-id": part_id(artifact_id, "notes"),
+                "role": "notes",
+                "packaging_hint": "in-document",
+                "body": "...",  # substance-free — refused
+            },
+        ]
+        with pytest.raises(EmptySubstanceError) as exc:
+            build_ir(
+                artifact_id=artifact_id, preimage=preimage, grounding=one_fact_ledger(), parts=parts
+            )
+        assert exc.value.code == "ir-empty-substance"
+
+    @pytest.mark.parametrize("body", ["x", "5", "文", "hi there"])
+    def test_letter_or_digit_bearing_body_is_accepted(self, preimage, artifact_id, body):
+        # A single letter/digit (incl. CJK) passes: a hard SHAPE gate, not a quality judgment.
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body=body)
+        assert doc["body"] == body
+
+    def test_grounded_span_body_is_accepted(self, preimage, artifact_id):
+        doc = build_ir(
+            artifact_id=artifact_id,
+            preimage=preimage,
+            grounding=one_fact_ledger(),
+            body='The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.',
+        )
+        assert "body" in doc
+
+
+class TestVisibleTextStripper:
+    """Pin the visible-text stripper DIRECTLY (F4): a broken stripper is caught here independently
+    of build_ir. It reuses only `match_bracket`, keeps visible text, drops `{attrs}` blocks."""
+
+    def test_strips_span_attrs_and_keeps_visible_text(self):
+        from pipeline.ir import _visible_text  # a private helper — imported locally, not at top
+
+        assert _visible_text('[...]{.EXTRACTED data-fact="f0"}') == "..."
+        assert _visible_text('X [claim]{.EXTRACTED data-fact="f0"} Y') == "X claim Y"
+        assert _visible_text("[a]{.A}[b]{.B}") == "ab"
+        assert _visible_text("[[in]{.X}]{.Y}") == "in"  # recurses into nested span visible text
+        assert _visible_text("see [x](http://u)") == "see [x](http://u)"  # a link, not a span
+
+
+# --- unwrap_ir (GAP-1a): tolerate both persisted record shapes; the coupling is guarded ----------
+
+
+class TestUnwrapIr:
+    def test_wrapped_record_unwraps_to_the_inner_ir(self):
+        assert unwrap_ir({"ir": {"body": "x"}, "binding": {"z": 1}}) == {"body": "x"}
+
+    def test_raw_envelope_returns_itself(self):
+        raw = {"body": "x", "binding": {"z": 1}, "grounding": {}}
+        assert unwrap_ir(raw) == raw
+
+    def test_ir_is_not_a_top_level_key(self):
+        # NEW-E: the discriminator's totality guard — a raw IR can never carry a top-level `"ir"`.
+        assert "ir" not in TOP_LEVEL_KEYS

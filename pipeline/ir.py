@@ -69,6 +69,7 @@ In-latitude decisions (step-24 coder; grounded in the report):
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -85,6 +86,7 @@ __all__ = [
     "PANDOC_API_VERSION",
     "TOP_LEVEL_KEYS",
     "BindingMismatchError",
+    "EmptySubstanceError",
     "FactRef",
     "IRError",
     "SchemaViolation",
@@ -95,6 +97,7 @@ __all__ = [
     "extract_fact_refs",
     "looks_secret_shaped",
     "match_bracket",
+    "unwrap_ir",
     "validate_grounding_ledger",
     "validate_ir",
 ]
@@ -163,6 +166,22 @@ class SchemaViolation(IRError):
     """The envelope violates the §15 structural schema (shape, keys, types, XOR, stamps)."""
 
     code = "ir-schema-invalid"
+
+
+class EmptySubstanceError(SchemaViolation):
+    """A §15 body/part-body has no substantive content — its VISIBLE text (Pandoc bracketed-span
+    attr blocks `[…]{.CLASS data-…}` stripped) carries ZERO Unicode letters or digits: `"..."`,
+    `"…"`, `"###"`, whitespace-only, or a markup-wrapped placeholder `[...]{.EXTRACTED
+    data-fact="f0"}` whose visible text is just `...`. Such a body PARSES and validates as
+    non-empty under bare truthiness yet ships an EMPTY artifact (GAP-6, VERIFIED by execution).
+
+    This is the loud-fail GUARDRAIL that closes the valid-JSON-empty hole: the floor makes a
+    substance-free body fail into the §21.9 bounded re-ask, NEVER persisted. It complements
+    GAP-8's `writer.md` header strip (the FIX for the pre-parse refusal that produced such
+    bodies) — the two sit on opposite sides of the parser gate. Distinct code so the derail is
+    OBSERVABLE (F1), not swallowed as a generic schema fault."""
+
+    code = "ir-empty-substance"
 
 
 class UnknownFactError(IRError):
@@ -407,6 +426,68 @@ def _nonempty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _visible_text(value: str) -> str:
+    """The reader-VISIBLE text of one Markdown leaf, with Pandoc bracketed-span attr blocks
+    (`[visible]{attrs}`) stripped to their visible text (§15 substance floor).
+
+    A NEW sibling scanner that reuses ONLY `match_bracket` (NOT `_iter_span_attrs`, which yields
+    the ATTRS and DISCARDS the visible text — the exact inverse of what a substance measure needs).
+    It KEEPS a span's visible text, DROPS each `{attrs}` block, and recurses into the visible text
+    so a nested span's text survives: `[a]{.X}[b]{.Y}` → `ab`, `[[in]{.X}]{.Y}` → `in`, an
+    all-markup placeholder `[...]{.EXTRACTED data-fact="f0"}` → `...`. A backslash escapes the next
+    char (mirroring the reader's literal `\\[` / `\\]`); a `[x](url)` link (its `]` followed by `(`,
+    not `{`) is left verbatim. Pure and content-blind — no Markdown parse, no §21.9 boundary
+    crossing."""
+    out: list[str] = []
+    i = 0
+    n = len(value)
+    while i < n:
+        ch = value[i]
+        if ch == "\\":  # escaped char — the next char is literal visible text
+            out.append(value[i : i + 2])
+            i += 2
+            continue
+        if ch == "[":
+            close = match_bracket(value, i)
+            if close is not None and close + 1 < n and value[close + 1] == "{":
+                attr_end = value.find("}", close + 2)
+                if attr_end != -1:
+                    out.append(_visible_text(value[i + 1 : close]))  # keep visible, drop {attrs}
+                    i = attr_end + 1
+                    continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _has_substance(value: Any) -> bool:
+    """§15 substance floor: True iff the VISIBLE text (span attrs stripped) carries ≥1 Unicode
+    letter or digit (category `L*`/`N*`), NFC-normalized. `_has_substance ⊂ _nonempty_str` (any
+    letter/digit survives `.strip()`), so swapping it in at the two BODY sites is a MONOTONE
+    strengthening — it rejects everything the old check did PLUS punctuation/symbol/whitespace-only
+    and markup-wrapped placeholders, with ZERO regression on `body="x"`/`"文"`/`"5"` fixtures. A
+    hard SHAPE gate, not a quality judgment: a letter-bearing placeholder is Review-1's domain
+    (§19)."""
+    if not isinstance(value, str):
+        return False
+    return any(
+        unicodedata.category(ch)[0] in ("L", "N")
+        for ch in unicodedata.normalize("NFC", _visible_text(value))
+    )
+
+
+def _require_substance(value: Any, where: str) -> None:
+    """The §15 substance floor as a `_require`-style guard, raising the REQUIRED typed
+    `EmptySubstanceError` (`ir-empty-substance`) — NOT the generic `SchemaViolation` — so the
+    GAP-6 guardrail is observable. Its MESSAGE is substance-specific ("non-empty" is a lie for a
+    `"..."` placeholder, which IS non-empty and would produce a useless re-ask)."""
+    if not _has_substance(value):
+        raise EmptySubstanceError(
+            f"ir-empty-substance: {where} has no substantive content (letters/digits) — write the "
+            "full artifact, not a placeholder like '...' (§15 RI1)"
+        )
+
+
 def validate_grounding_ledger(ledger: Any, *, where: str = "grounding") -> None:
     """Validate one §15 grounding ledger: closed entry schema + the §3.3 no-secrets scan.
 
@@ -530,7 +611,7 @@ def _validate_part(part: Any, artifact_id: str, index: int, ledger: Mapping[str,
         f"{loc}.packaging_hint must be one of {PACKAGING_HINTS} (§17 RI9), "
         f"got {part['packaging_hint']!r}",
     )
-    _require(_nonempty_str(part["body"]), f"{loc}.body must be non-empty Markdown")
+    _require_substance(part["body"], f"{loc}.body")  # §15 substance floor (GAP-6) — precedes refs
     if "constraints" in part:
         _require(
             isinstance(part["constraints"], Mapping),
@@ -629,7 +710,7 @@ def validate_ir(doc: Any) -> None:
         "single-part formats collapse to a flat body (§15)",
     )
     if has_body:
-        _require(_nonempty_str(doc["body"]), "flat body must be non-empty Markdown (§15 RI1)")
+        _require_substance(doc["body"], "flat body")  # §15 substance floor (GAP-6) — precedes refs
         _validate_refs(extract_fact_refs(doc["body"], where="body"), ledger)
         return
     parts = doc["parts"]
@@ -646,6 +727,29 @@ def validate_ir(doc: Any) -> None:
         len(set(roles)) == len(roles),
         f"part roles must be unique within one artifact (§15 RI2), got {roles}",
     )
+
+
+# ---------------------------------------------------------------------------
+# The stored-record read shape (§15 RI4 / §21.8): unwrap either persisted envelope shape.
+# ---------------------------------------------------------------------------
+
+#: NEW-E (§15, GAP-1a): `unwrap_ir`'s discriminator is coupled to `TOP_LEVEL_KEYS` — a raw compose
+#: IR envelope must NEVER carry a top-level `"ir"` key (else it would be misread as a wrapper). Make
+#: the hidden coupling EXPLICIT and fail LOUD at import if a future schema adds `"ir"` — a silent
+#: misread otherwise (R7). `validate_ir` already refuses a top-level `"ir"` (closed key set), so
+#: this assert is a totality guard, not a runtime check.
+assert "ir" not in TOP_LEVEL_KEYS, "unwrap_ir would misread a raw IR carrying a top-level 'ir' key"
+
+
+def unwrap_ir(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the canonical IR envelope from a stored output record, tolerating BOTH persisted
+    shapes (GAP-1a): a FITTED / render-binding record WRAPS the IR under `record["ir"]`
+    (`driver.py`/`render.py`), while a fresh COMPOSE record IS the raw IR envelope, no wrapper
+    (`compose.py` persists `canonical_json_bytes(doc)` with `doc` the full envelope). The
+    discriminator is TOTAL and backward-compatible: `"ir"` is not in the closed `TOP_LEVEL_KEYS`
+    (asserted above), so a raw compose envelope can never carry a spurious top-level `"ir"` and a
+    fitted record always does — this never misreads either shape (§15 RI4)."""
+    return record["ir"] if "ir" in record else record
 
 
 # ---------------------------------------------------------------------------
