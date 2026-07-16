@@ -515,12 +515,13 @@ def run_mvp_scenario(
     report.external = _mint_external(store, env, fitted_id=seq_widget.deliverables[0].fitted_id)
 
     # -- §21.3 discovery reads: get (one artifact) + list (deliverables, with currency computed
-    #    through the injected resolver — GATE-2). NOTE: the §21.8 standalone `render` verb is NOT
-    #    exercised here — render.py `_render` reads the canonical artifact record as `{"ir": …}`,
-    #    but `compose` persists that record as the RAW IR (no `ir` wrapper), so the verb
-    #    `not-found`s on any REAL composed artifact (a PRE-EXISTING step-34 gap, unrelated to B1;
-    #    see the coder report). B1 in render.py is proven by the green suite (zero id/byte churn) +
-    #    the driver path's styled-variables evidence above. --------------------------------------
+    #    through the injected resolver — GATE-2). NOTE: the §21.8 standalone `render` verb is not
+    #    exercised by THIS scenario; it has its own hermetic suite (tests/test_render_verb.py). The
+    #    GAP-1a read-shape bug this note used to flag — `render._render` 404'd every REAL composed
+    #    artifact because it read `record["ir"]` while `compose` persists the RAW IR envelope (no
+    #    `ir` wrapper) — is now FIXED: `_render` reads through `ir.unwrap_ir`, tolerating BOTH the
+    #    wrapped fitted record and the raw compose envelope (GAP-1a). B1 in render.py is proven by
+    #    the green suite (zero id/byte churn) + the driver path's styled-variables evidence above. -
     get_out = do("get", {"type": "artifacts", "id": seq_widget.artifact_id})
     list_out = do("list", {"type": "deliverables"})
     report.discovery = {

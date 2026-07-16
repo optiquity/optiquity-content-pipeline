@@ -275,9 +275,14 @@ class TestCli:
         assert rc == 2
         assert "must be a JSON object" in capsys.readouterr().err
 
-    def test_known_but_unwired_verb_exits_three(self, tmp_path, capsys):
-        # render with no referenced ids clears both gates, then hits the empty registry.
-        argv = ["render", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"]
+    def test_session_verb_stays_honestly_unwired_exits_three(self, tmp_path, capsys):
+        # C7 wires render + fetch-by-id in the door, but the live-quota SESSION verbs stay
+        # honestly unwired: begin-session (no referenced ids) clears both gates, then hits the
+        # empty seam → HandlerNotWired → exit 3 (§21.9 — never a fabricated success on a
+        # quota-spending verb). (Pre-C7 this used `render`, now a wired verb — see TestCliDoor.)
+        argv = [
+            "begin-session", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"
+        ]
         rc = main_cli(argv)
         assert rc == 3
         assert "not wired yet" in capsys.readouterr().err
@@ -298,3 +303,45 @@ class TestCli:
         assert rc == 1
         out = json.loads(capsys.readouterr().out)
         assert out["envelope"]["code"] == "isolation-violation"
+
+
+class TestCliDoor:
+    """C7 (GAP-2): the CLI door (`main_cli`) wires the SAFE, STATELESS verbs — `render` (mint) +
+    `fetch-by-id` (retrieve) — and NOTHING else. These prove the door is reachable for the two
+    safe verbs and that an operator-only verb stays structurally out (the §21.9 separation the
+    door must never widen). The autouse `_clean_registry` fixture restores the module registry
+    `main_cli` mutates, so the wiring never leaks across tests."""
+
+    def test_render_is_wired_through_the_door(self, tmp_path, capsys):
+        # `render` DISPATCHES to the real handler through the door: a malformed render (no
+        # coordinates) is a per-item block at envelope ok=True → exit 0, NOT the honest-unwired
+        # exit 3. Reaching the handler at all is the proof the door registered `render`.
+        argv = ["render", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"]
+        rc = main_cli(argv)
+        assert rc == 0  # wired: exit 3 would mean not-wired
+        out = json.loads(capsys.readouterr().out)
+        assert out["envelope"]["ok"] is True
+        assert out["results"][0]["status"] == "block"  # the render handler ran
+
+    def test_fetch_by_id_is_wired_through_the_door(self, tmp_path, capsys):
+        # `fetch-by-id` is wired too: an id-less fetch DISPATCHES to the dumb path (a `not-found`
+        # result at envelope ok=True → exit 0), proving the retrieve half of the loop is reachable.
+        argv = ["fetch-by-id", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"]
+        rc = main_cli(argv)
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["envelope"]["ok"] is True
+        assert out["results"][0]["code"] == "not-found"  # the fetch handler ran
+
+    def test_operator_verb_is_not_reachable_through_the_door(self, tmp_path, capsys):
+        # SECURITY (§21.9): an operator-only verb (`drift-report`) is NOT in KNOWN_VERBS, so the
+        # door refuses it at Gate 1 (`unknown-verb`, exit 1) — wiring render/fetch NEVER widens the
+        # external surface to the operator CLI. (A live-quota session verb would answer exit 3.)
+        argv = [
+            "drift-report", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"
+        ]
+        rc = main_cli(argv)
+        assert rc == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out["envelope"]["ok"] is False
+        assert out["envelope"]["code"] == "unknown-verb"

@@ -217,6 +217,67 @@ class TestRawEnvelopeBaselineRead:
         assert item["ids"]["fitted_id"] and item["ids"]["deliverable_id"]
 
 
+class FakeExternalRenderEngine(FakeRenderEngine):
+    """A fake seam whose deliverable mint is EXTERNAL — it returns a 5-key contract `payload` and
+    NO layer-2 bytes, so `_render`'s external glue (`_persist_external_payload`, `output=None`) is
+    driven END TO END (Cleanup #1). It routes on the OUTCOME's `side`, not the output-type, so the
+    default `md` coordinate still exercises the external branch — this locks the ROUTING/persist
+    glue, while the C6 real-engine tests below lock the real `payload.build_payload`."""
+
+    _PAYLOAD = {
+        "ast": {"pandoc-api-version": [1, 23, 1, 2], "blocks": [], "meta": {}},
+        "reproducibility": {"pins": {}},
+        "parts": [],
+        "metadata": {},
+        "language": "en",
+    }
+
+    def mint_deliverable(self, leg, *, preimage, serialize_revision):
+        self.deliverable_mints += 1
+        rb = serialize.build_render_binding(
+            fitted_id=leg.fitted_id,
+            output_type=leg.output_type,
+            presentation=leg.presentation,
+            preimage=preimage,
+            fit_binding_ref={"fitted_id": leg.fitted_id, "digest": "0" * 12},
+            serialize_revision=serialize_revision,
+            minted_ts=FIXED_TS,
+        )
+        return render.MintOutcome(
+            binding=rb, side="external", payload=dict(self._PAYLOAD), stripped=True
+        )
+
+
+class TestExternalGlueEndToEnd:
+    """Cleanup #1 (reviewB coverage gap): drive `_render`'s EXTERNAL branch END TO END through
+    `invoke` → the render handler, closing the ~3-line external glue (render.py:252-253) the C6
+    unit tests exercised only by calling `mint_deliverable`/`_persist_external_payload` directly."""
+
+    def test_external_mint_persists_contract_record_and_emits_no_output(self, store):
+        engine = FakeExternalRenderEngine(RP_A, SP_A)
+        out = _render(store, engine)
+
+        assert out["envelope"]["ok"] is True
+        item = out["results"][0]
+        assert item["status"] != "block"
+        assert item.get("output") is None  # external → NO layer-2 bytes path in the result
+        assert engine.deliverable_mints == 1
+        deliverable_id = item["ids"]["deliverable_id"]
+
+        # The `_persist_external_payload` glue ran: the persisted record is EXACTLY the
+        # {binding, side, payload, stripped} shape (mvpdemo._mint_external's hard invariant).
+        record = render._read_record(store, deliverable_id)
+        assert record is not None
+        assert set(record) == {"binding", "side", "payload", "stripped"}
+        assert record["side"] == "external"
+        assert record["stripped"] is True
+        assert record["binding"]["deliverable_id"] == deliverable_id
+        assert set(record["payload"]) == {"ast", "reproducibility", "parts", "metadata", "language"}
+        # No layer-2 bytes sibling was written — an external deliverable is retrieved via
+        # fetch-by-id (the record), never a bytes file (§21.5/§21.8).
+        assert not list(store.deliverables_dir.glob(f"{deliverable_id}.*"))
+
+
 # ---------------------------------------------------------------------------
 # C6 (GAP-1b): REAL-engine external routing + `MintOutcome` — the highest-blast edit.
 #

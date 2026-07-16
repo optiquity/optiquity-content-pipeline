@@ -69,6 +69,15 @@ commands:
                  Prerequisites: the workspace must declare the source pool + the §25 topics +
                  a styled `documentation` presentation (see docs/design.md §25 / the step-39
                  report). Exit 0 ok; 1 scenario failure; 2 usage.
+  invoke         the external-actor API door (design §21, GAP-2): one verb invocation → one
+                 JSON envelope {envelope, results, [token]} on stdout — the n8n Execute Command
+                 door AND the human door. Usage: invoke <verb> --workspace W --params-json JSON
+                 [--token-json JSON] [--pins-json JSON] [--root DIR]. Safe verbs wired: render
+                 (mint) + fetch-by-id (retrieve); operator verbs stay unreachable (§21.9). Exit
+                 0 = envelope ok; 1 = whole-invocation failure (JSON still emitted); 2 = usage;
+                 3 = a known verb not wired. n8n CAVEAT: Execute Command is off-by-default in
+                 n8n v2.0 and unavailable on n8n Cloud (self-hosted only; a cloud orchestrator
+                 needs the deferred HTTP shim, docs/known-issues.md DR-1).
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -420,11 +429,28 @@ def _print_mvp_report(report: object) -> None:
         print(f"  {line}")
 
 
+def _cmd_invoke(argv: list[str]) -> int:
+    """Plan step 32 / GAP-2: `pipeline invoke <verb> …` — the external-actor API door (§21).
+
+    Routes straight to the api-layer CLI (`pipeline.api.invoke.main_cli`) so the `python -m
+    pipeline invoke …` module form works identically to the `scripts/pipeline invoke …` shim
+    path (the shim already `exec`s `python -m pipeline.api.invoke`; both share the SAME wired
+    verbs and exit codes). This is BOTH the n8n Execute Command door and the human door: one
+    verb invocation → one JSON envelope on stdout. Only the safe stateless verbs are wired
+    (`render` + `fetch-by-id`); operator verbs are structurally unreachable (§21.9). Exit codes
+    are `main_cli`'s: 0 ok · 1 whole-invocation failure (JSON still emitted) · 2 usage · 3 a
+    known verb not wired."""
+    from pipeline.api.invoke import main_cli
+
+    return main_cli(argv)
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
     "demo-thread": _cmd_demo_thread,
     "mvp-demo": _cmd_mvp_demo,
+    "invoke": _cmd_invoke,
 }
 
 
