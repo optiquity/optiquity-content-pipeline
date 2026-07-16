@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from pipeline import fit_resolution, ir, presentation, reconcile, serialize
+from pipeline import fit_resolution, ir, payload, presentation, reconcile, serialize
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import results
 from pipeline.api import token as token_mod
@@ -62,6 +62,7 @@ from pipeline.store import AlreadyMaterializedError, WorkspaceStore, is_done, wr
 
 __all__ = [
     "FitLeg",
+    "MintOutcome",
     "RenderEngine",
     "SerializeLeg",
     "DefaultRenderEngine",
@@ -101,13 +102,40 @@ class SerializeLeg:
     presentation: str
 
 
+@dataclass(frozen=True)
+class MintOutcome:
+    """The side-tagged result of `RenderEngine.mint_deliverable` (GAP-1b, §17 RI12/§14.2).
+
+    An INTERNAL mint carries the layer-2 `output_bytes` + their conventional `extension` (C4); an
+    EXTERNAL mint carries the zero-provenance layer-3 contract `payload` (`payload.build_payload`)
+    + the dispatch-level `stripped` flag. Both carry the deliverable-level render `binding`. The
+    CALLER owns persistence and routes on `side`: internal → layer-2 bytes + render-binding record
+    (`_persist_deliverable`); external → the `{binding, side, payload, stripped}` contract record
+    (`_persist_external_payload`) — the SAME shape `mvpdemo._mint_external` writes, so the ONE
+    `fetch-by-id`/`emit-manifest` reader handles BOTH producers identically (the hard invariant).
+
+    `stripped` reflects the DISPATCH-level provenance strip (`should_strip(writer)` — True for
+    epub3/html5, False for pptx/pdf), NOT the contract-level guarantee: the persisted external
+    `payload` is ALWAYS zero-provenance because `payload.build_payload` strips unconditionally and
+    fail-closed re-checks `has_provenance()` (§17 RI14). It rides here only to match the record
+    shape — never present it as the zero-provenance guarantee."""
+
+    binding: Mapping[str, Any]
+    side: str  # "internal" | "external"
+    output_bytes: bytes | None = None  # internal only (layer-2 bytes)
+    extension: str | None = None  # internal only (the §7.4 conventional extension)
+    payload: Mapping[str, Any] | None = None  # external only (the RI14 contract payload)
+    stripped: bool = False
+
+
 class RenderEngine(Protocol):
     """The reconcile/serialize seam (§16/§17). `reconcile_preimage`/`serialize_preimage` compute
     the CURRENT effective inputs preimages the resolution rules compare against;
     `mint_fit`/`mint_deliverable` perform the actual (expensive) mints, returning the reshaped IR
-    + the fit-binding, and the bytes + the render-binding + the layer-2 extension. Injected in
-    tests so no live subscription call ever runs (the same seam the reconcile/serialize/compose
-    tests use)."""
+    + the fit-binding, and (GAP-1b) a side-tagged `MintOutcome` — internal layer-2 bytes + the
+    render-binding + the layer-2 extension, OR the external zero-provenance contract payload + the
+    render-binding + the strip flag. Injected in tests so no live subscription call ever runs (the
+    same seam the reconcile/serialize/compose tests use)."""
 
     def reconcile_preimage(self, leg: FitLeg) -> Mapping[str, Any]: ...
 
@@ -119,7 +147,7 @@ class RenderEngine(Protocol):
 
     def mint_deliverable(
         self, leg: SerializeLeg, *, preimage: Mapping[str, Any], serialize_revision: bool
-    ) -> tuple[bytes, Mapping[str, Any], str]: ...
+    ) -> MintOutcome: ...
 
 
 # ---------------------------------------------------------------------------
@@ -206,17 +234,28 @@ def _render(
 
     output_path: str | None = None
     if ser_res.should_mint and not is_done(ctx.store, deliverable_id):
-        output_bytes, render_binding, extension = engine.mint_deliverable(
+        mint = engine.mint_deliverable(
             ser_leg, preimage=ser_preimage, serialize_revision=ser_res.revision
         )
+        render_binding = mint.binding
         if render_binding.get("deliverable_id") != deliverable_id:
             return ([_block(
                 f"render: engine minted deliverable {render_binding.get('deliverable_id')!r} "
                 f"but the resolution fixed {deliverable_id!r} (§7.4)"
             )], None)
-        output_path = _persist_deliverable(
-            ctx.store, deliverable_id, render_binding, output_bytes, extension
-        )
+        # GAP-1b: persist by side. INTERNAL → the layer-2 bytes + render-binding record (the
+        # existing path); EXTERNAL → the zero-provenance contract payload as the
+        # `{binding, side, payload, stripped}` record (`mvpdemo._mint_external`'s exact shape).
+        # An external deliverable has NO layer-2 bytes: the id rides `ids` and retrieval is the
+        # existing `fetch-by-id` (§21.5/§21.8), so `output_path` stays None → `_result` emits
+        # `output=None` for the external side.
+        if mint.side == "external":
+            _persist_external_payload(ctx.store, deliverable_id, mint)
+        else:
+            output_path = _persist_deliverable(
+                ctx.store, deliverable_id, render_binding,
+                mint.output_bytes, mint.extension,
+            )
     else:
         output_path = _existing_deliverable_path(ctx.store, deliverable_id)
 
@@ -411,6 +450,30 @@ def _persist_deliverable(
     return rel
 
 
+def _persist_external_payload(
+    store: WorkspaceStore, deliverable_id: str, mint: MintOutcome
+) -> None:
+    """Persist the layer-3 EXTERNAL contract record (deliverable-level, §17 RI14/§21.5/§14.2).
+
+    HARD INVARIANT (GAP-1b): writes EXACTLY the `{binding, side, payload, stripped}` shape
+    `mvpdemo._mint_external` persists, so the ONE `fetch-by-id`/`emit-manifest` reader handles
+    BOTH producers identically (a divergent shape is a silent two-reader defect). No layer-2
+    bytes: an external deliverable is handed off as the zero-provenance contract payload for an
+    external actor to render layer-4 — the id rides `ids` and retrieval is the existing
+    `fetch-by-id` (§21.8), never a bytes sibling. The atomic no-replace commit rides `_persist`
+    (the §22.3 existence authority; a same-id re-mint is a benign no-op)."""
+    _persist(
+        store,
+        deliverable_id,
+        {
+            "binding": mint.binding,
+            "side": mint.side,
+            "payload": mint.payload,
+            "stripped": mint.stripped,
+        },
+    )
+
+
 def _existing_deliverable_path(store: WorkspaceStore, deliverable_id: str) -> str | None:
     record = _read_record(store, deliverable_id)
     if isinstance(record, Mapping) and isinstance(record.get("layer2"), Mapping):
@@ -498,7 +561,7 @@ class DefaultRenderEngine:
 
     def mint_deliverable(
         self, leg: SerializeLeg, *, preimage: Mapping[str, Any], serialize_revision: bool
-    ) -> tuple[bytes, Mapping[str, Any], str]:
+    ) -> MintOutcome:
         from pipeline.dispatch import dispatch, render_target_from_entry
 
         # B1: the SAME lowered `render_inputs` the preimage was built from (`_serialize_inputs`)
@@ -510,9 +573,10 @@ class DefaultRenderEngine:
                 f"standalone render expects one serialized document, got {len(units)}"
             )
         target = render_target_from_entry(target_values)
+        # `serialize_fitted` shells the pinned pandoc READER (§17 RI7) both sides; the external
+        # dispatch itself is pure-Python (persist AST + hand off, dispatch.py) — the pandoc
+        # dependency is the reader, not an epub/pptx binary (why the C6 tests ride the pandoc gate).
         dout = dispatch(target, units[0].ast, render_inputs=render_inputs)
-        if dout.output_bytes is None:
-            raise _EngineError(f"render target {leg.output_type!r} produced no layer-2 bytes")
         fit_record = _read_record(leg.store, leg.fitted_id)
         fit_binding = fit_record.get("binding", {}) if isinstance(fit_record, Mapping) else {}
         render_binding = serialize.build_render_binding(
@@ -523,7 +587,41 @@ class DefaultRenderEngine:
             fit_binding_ref=fit_binding,
             serialize_revision=serialize_revision,
         )
-        return dout.output_bytes, render_binding, serialize.extension_for(leg.output_type)
+
+        # GAP-1b: route on `target.side` (surfaced by `render_target_from_entry`). EXTERNAL is now
+        # a FIRST-CLASS path — the old pre-branch `dout.output_bytes is None` guard (F2) fired on
+        # EVERY external target (external `output_bytes` is always None) and is deleted; the side
+        # branch replaces it. EXTERNAL → the fitted AST is routed through the zero-provenance
+        # layer-3 contract payload builder (`payload.build_payload`, unconditional fail-closed
+        # strip, §17 RI14). INTERNAL → the pinned-pandoc layer-2 bytes path (unchanged).
+        if target.side == "external":
+            contract = payload.build_payload(
+                ast=units[0].ast,
+                deliverable_id=render_binding["deliverable_id"],
+                render_target=target,
+                pin_bundle=render_binding["pin_bundle"],
+                fitted_ir=leg.fitted_ir,
+                requested_output_types=[leg.output_type],
+                extension=serialize.extension_for(leg.output_type),
+            )
+            return MintOutcome(
+                binding=render_binding,
+                side="external",
+                payload=contract,
+                stripped=dout.stripped,
+            )
+
+        # INTERNAL: dispatch guarantees layer-2 bytes for an internal target (`capability_check`
+        # admits only in-system writers → the passthrough/pandoc path always sets `output_bytes`),
+        # so no pre-branch None-guard is needed — the deleted F2 guard was dead for internal and
+        # wrong for external.
+        return MintOutcome(
+            binding=render_binding,
+            side="internal",
+            output_bytes=dout.output_bytes,
+            extension=serialize.extension_for(leg.output_type),
+            stripped=dout.stripped,
+        )
 
     def _reconcile_request(self, leg: FitLeg) -> reconcile.ReconcileRequest:
         from pipeline.cascade import CascadeEnv

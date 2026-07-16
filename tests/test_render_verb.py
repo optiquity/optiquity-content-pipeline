@@ -19,12 +19,20 @@ engine — NEVER a live subscription call, no `live` marker):
 
 from __future__ import annotations
 
+import ast as ast_mod
+import json
+import shutil
+from pathlib import Path
+
 import pytest
 
-from pipeline import reconcile, serialize
+from pipeline import ids, mvpdemo, reconcile, serialize
 from pipeline.api import render
 from pipeline.api.invoke import invoke
+from pipeline.filters.provenance_strip import has_provenance
 from pipeline.ids import parse_id
+from pipeline.lint import REGISTRY_ROOTS
+from pipeline.serialize import is_ci, pandoc_available, pandoc_gate
 from pipeline.store import WorkspaceStore
 
 WS = "wsA"
@@ -92,7 +100,10 @@ class FakeRenderEngine:
             serialize_revision=serialize_revision,
             minted_ts=FIXED_TS,
         )
-        return self._body, rb, "md"
+        # C6: the seam returns a side-tagged `MintOutcome` (the fake is INTERNAL — layer-2 bytes).
+        return render.MintOutcome(
+            binding=rb, side="internal", output_bytes=self._body, extension="md"
+        )
 
 
 def _render(store, engine, *, force=False):
@@ -204,3 +215,185 @@ class TestRawEnvelopeBaselineRead:
         assert item["status"] != "block"
         assert item.get("code") != "not-found"
         assert item["ids"]["fitted_id"] and item["ids"]["deliverable_id"]
+
+
+# ---------------------------------------------------------------------------
+# C6 (GAP-1b): REAL-engine external routing + `MintOutcome` — the highest-blast edit.
+#
+# The three tests below drive the REAL `DefaultRenderEngine` (NOT the fake), exercising the
+# external branch (`dispatch` → `payload.build_payload`) and the internal branch that every
+# fake-injected test above BYPASSES. All ride the repo pandoc skip-guard (F2): `serialize_fitted`
+# shells the pinned pandoc READER both sides, so absent pandoc ⇒ skip locally / FAIL in CI. The
+# external dispatch itself is pure-Python (persist AST + hand off) — the pandoc dependency is the
+# reader, not an epub/pptx binary.
+# ---------------------------------------------------------------------------
+
+_PANDOC_AVAILABLE = pandoc_available()
+
+#: A flat single-body fitted IR → exactly ONE serialized document (the standalone-render
+#: contract), carrying provenance on its one claim so the zero-provenance guarantee is a REAL
+#: strip, never vacuous.
+_C6_LEDGER = {
+    "f0": {
+        "tier": "EXTRACTED",
+        "source_instance_id": "repo-a",
+        "source_commit": "abc123def456",
+        "traceability_anchor": ["src/limits.py:42"],
+    }
+}
+_C6_FITTED_IR = {
+    "grounding": _C6_LEDGER,
+    "metadata": {"campaign": "q3", "client": "acme"},
+    "body": 'Rate [100 req/s]{.EXTRACTED data-fact="f0"} holds.',
+}
+_C6_PLATFORM, _C6_LANGUAGE, _C6_PRESENTATION = "github", "en", "plain"
+#: A §7.4-valid workspace slug ([a-z0-9-]) — the REAL `CascadeEnv`/`Resolver` validate it (the
+#: fake-engine tests reuse the uppercase `WS` only because they never build a `CascadeEnv`).
+_C6_WS = "ws-a"
+
+
+@pytest.fixture
+def require_pandoc():
+    """PA-12 guard (only the real-engine C6 tests request it — the fake-engine tests above run
+    pandoc-free): absent + CI ⇒ FAIL loudly; absent locally ⇒ skip; present ⇒ run."""
+    decision = pandoc_gate(available=_PANDOC_AVAILABLE, ci=is_ci())
+    if decision == "fail":
+        pytest.fail(
+            "pandoc absent under CI=true — the real-engine render tests serialize real bytes and "
+            "MUST run in CI (PA-12); a silent skip cannot make CI green",
+            pytrace=False,
+        )
+    if decision == "skip":
+        pytest.skip("pandoc not installed; the real-engine render tests require the pinned binary")
+
+
+def _mvpdemo_external_record_keys() -> set[str]:
+    """The top-level key set `mvpdemo._mint_external` persists to disk (via `_persist_record`,
+    which writes the record dict verbatim), extracted from its SOURCE by AST so the shape-equality
+    test is genuinely coupled to the OTHER external-record producer — a mvpdemo drift fails it (the
+    GAP-1b hard invariant), never a hand-copied literal that silently rots."""
+    src = Path(mvpdemo.__file__).read_text()
+    tree = ast_mod.parse(src)
+    fn = next(
+        node
+        for node in ast_mod.walk(tree)
+        if isinstance(node, ast_mod.FunctionDef) and node.name == "_mint_external"
+    )
+    wanted = {"binding", "side", "payload", "stripped"}
+    matches = [
+        {k.value for k in node.keys if isinstance(k, ast_mod.Constant)}
+        for node in ast_mod.walk(fn)
+        if isinstance(node, ast_mod.Dict)
+        and wanted <= {k.value for k in node.keys if isinstance(k, ast_mod.Constant)}
+    ]
+    assert len(matches) == 1, (
+        "mvpdemo._mint_external must persist exactly one {binding,side,payload,stripped} record"
+    )
+    return matches[0]
+
+
+def _c6_world(tmp_path):
+    """R-C6-SCAFFOLD: a framework root (real registries) + a tmp workspace store + a stored fitted
+    IR + its fit-record binding — the minimum the REAL `DefaultRenderEngine` reads to mint one
+    deliverable. Mirrors `mvpdemo`/`test_mvp_scenario.build_world` (REC-3: all under tmp_path)."""
+    repo_root = Path(__file__).resolve().parents[1]
+    root = tmp_path / "root"
+    root.mkdir(parents=True)
+    for reg in REGISTRY_ROOTS:
+        src = repo_root / reg
+        if src.is_dir():
+            shutil.copytree(src, root / reg)
+    (root / "instance").mkdir()
+    (root / "instance" / "defaults.yaml").write_text(
+        "voice: clear-explainer\nlanguage: en\noutput_type: md\n", encoding="utf-8"
+    )
+    store = WorkspaceStore(root / "workspaces" / _C6_WS)
+    store.ensure_layout()
+    fitted_id = ids.fitted_id(ART, _C6_PLATFORM, _C6_LANGUAGE)
+    # The fit record the engine reads for the fit-binding ref (`_read_record(store, fitted_id)`).
+    store.output_path(fitted_id).write_bytes(
+        json.dumps(
+            {"ir": _C6_FITTED_IR, "binding": {"fitted_id": fitted_id, "digest": "0" * 12}}
+        ).encode()
+        + b"\n"
+    )
+    return root, store, fitted_id
+
+
+def _c6_leg(root, store, fitted_id, output_type):
+    return render.SerializeLeg(
+        root=root,
+        workspace=_C6_WS,
+        store=store,
+        fitted_id=fitted_id,
+        fitted_ir=_C6_FITTED_IR,
+        output_type=output_type,
+        presentation=_C6_PRESENTATION,
+    )
+
+
+class TestC6ExternalRoutingAndMintOutcome:
+    """C6: the REAL engine routes an external output-type to a zero-provenance contract payload
+    and an internal one to layer-2 bytes; the persisted external record matches
+    `mvpdemo._mint_external`. These lock the one Protocol change others implement (R-SEQ)."""
+
+    def test_real_external_branch_produces_zero_provenance_payload(self, tmp_path, require_pandoc):
+        root, store, fitted_id = _c6_world(tmp_path)
+        engine = render.DefaultRenderEngine()
+        leg = _c6_leg(root, store, fitted_id, "epub")  # the epub render-target is side: external
+        preimage = engine.serialize_preimage(leg)
+        mint = engine.mint_deliverable(leg, preimage=preimage, serialize_revision=False)
+
+        assert isinstance(mint, render.MintOutcome)
+        assert mint.side == "external"
+        assert mint.output_bytes is None and mint.extension is None  # external has NO layer-2 bytes
+        assert mint.payload is not None
+        # The zero-provenance layer-3 contract payload (§17 RI14) with all five components.
+        assert set(mint.payload) == {"ast", "reproducibility", "parts", "metadata", "language"}
+        assert has_provenance(mint.payload["ast"]) is False
+        blob = json.dumps(mint.payload)
+        for token in ("data-fact", "data-source", "EXTRACTED", "data-"):
+            assert token not in blob, f"provenance token {token!r} leaked into the external payload"
+        # The binding fixes the resolved deliverable-id for this coordinate.
+        assert mint.binding["deliverable_id"] == ids.deliverable_id(
+            fitted_id, "epub", _C6_PRESENTATION
+        )
+
+    def test_real_internal_branch_produces_layer2_bytes(self, tmp_path, require_pandoc):
+        root, store, fitted_id = _c6_world(tmp_path)
+        engine = render.DefaultRenderEngine()
+        leg = _c6_leg(root, store, fitted_id, "md")  # the md render-target is side: internal
+        preimage = engine.serialize_preimage(leg)
+        mint = engine.mint_deliverable(leg, preimage=preimage, serialize_revision=False)
+
+        assert mint.side == "internal"
+        assert mint.payload is None
+        assert isinstance(mint.output_bytes, bytes) and mint.output_bytes  # real pandoc bytes
+        assert mint.extension == "md"  # locks the C4 extension_for on the internal path
+        assert mint.binding["deliverable_id"] == ids.deliverable_id(
+            fitted_id, "md", _C6_PRESENTATION
+        )
+
+    def test_persist_external_payload_matches_mvpdemo_shape(self, tmp_path, require_pandoc):
+        root, store, fitted_id = _c6_world(tmp_path)
+        engine = render.DefaultRenderEngine()
+        leg = _c6_leg(root, store, fitted_id, "epub")
+        preimage = engine.serialize_preimage(leg)
+        mint = engine.mint_deliverable(leg, preimage=preimage, serialize_revision=False)
+        deliverable_id = mint.binding["deliverable_id"]
+
+        render._persist_external_payload(store, deliverable_id, mint)
+        record = render._read_record(store, deliverable_id)
+        assert record is not None
+        # HARD INVARIANT: the persisted external record's top-level shape EQUALS the shape
+        # `mvpdemo._mint_external` writes — so the ONE fetch-by-id/emit-manifest reader handles
+        # both producers identically.
+        assert (
+            set(record)
+            == _mvpdemo_external_record_keys()
+            == {"binding", "side", "payload", "stripped"}
+        )
+        assert record["side"] == "external"
+        assert isinstance(record["stripped"], bool)
+        assert record["binding"]["deliverable_id"] == deliverable_id
+        assert set(record["payload"]) == {"ast", "reproducibility", "parts", "metadata", "language"}
