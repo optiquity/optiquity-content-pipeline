@@ -18,6 +18,18 @@ place when it landed its contract, and this loader never changed at those points
 
 The loader takes template NAMES only, never caller-supplied paths — there is no path-
 traversal surface to defend because there is no path input at all.
+
+**`writer.md` opens with its imperative instruction, not a developer comment (GAP-8).** Like the
+other stage templates, `writer.md` is the STATIC §15 writer contract; `compose.build_writer_prompt`
+appends one JSON "Compose context" block (the grounded facts + effective values + Format part
+structure + roster) beneath it at invocation time, plus a "Correction required" block on a bounded
+re-ask (§21.9). This loader is content-blind — it returns the template text VERBATIM, so any leading
+developer comment is read by the model FIRST (`writer.md` previously led with a `<!-- … -->` note
+explaining this contract, and the captured refusal quoted it near-verbatim). That maintainer note
+therefore lives HERE, never at the top of `writer.md`: the writer template now opens directly with
+its imperative heading so the first model-visible text is the task, not a meta-comment about the
+contract. (The other stage templates keep their headers — GAP-8 strips only `writer.md`, so the
+EXP-10 ablation measures a single variable.)
 """
 
 from __future__ import annotations

@@ -1,13 +1,3 @@
-<!--
-pipeline/prompts/writer.md — the WRITER-stage prompt contract (design §15, the IR + the
-writer stage). Filled at plan step 24, replacing the step-23 stub in place.
-
-This file is the STATIC contract. `pipeline.compose.build_writer_prompt` appends one JSON
-"Compose context" block (the grounded facts + effective values + Format part structure +
-roster) beneath it at invocation time; on a bounded re-ask it also appends a "Correction
-required" block. The loader is content-blind (§21.9) — it never interprets this text.
--->
-
 # Writer stage — compose one platform-neutral artifact
 
 You are the WRITER stage of a content pipeline. You compose ONE platform-neutral artifact
