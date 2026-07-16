@@ -218,6 +218,35 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
 
 ---
 
+## Deferred requirements
+
+Intentional future scope — **recorded, not yet built**. Distinct from the bugs above: these are
+capabilities we have deliberately deferred, kept here so the requirement is not lost.
+
+### DR-1 — HTTP/webhook interface for cloud-hosted workflow orchestrators
+- **Status:** Deferred (not in v1) — requirement recorded for a later build.
+- **Need:** The v1 external-actor door (GAP-2) is the local `invoke` / `pipeline render` CLI, invoked
+  by an orchestrator that can shell out to the **same machine** (v1's named consumer: self-hosted n8n
+  via its Execute Command node). **Cloud-hosted** orchestrators — Make, Zapier, n8n Cloud, Google
+  (Workflows / Apps Script), and others — cannot execute a local CLI; they can only call an **HTTP
+  endpoint** (typically a webhook). To serve those users the pipeline needs an HTTP interface.
+- **Shape (design intent):** a thin, **transport-agnostic HTTP shim over the existing `invoke()` API**
+  — one endpoint taking `{verb, workspace, params}` (or one per verb), returning the **same JSON
+  envelope** the CLI emits (`ok`, `results[]`, a status mapping to the CLI exit codes 0/1/2/3). It adds
+  **no business logic** — it reuses the exact handlers the CLI door wires. Because it is
+  network-exposed, **authentication (token / API key) and rate limiting are part of this item**, as is
+  restricting it to the safe external verb set (never the operator-only verbs, §21.9).
+- **Why deferred:** v1's only named consumer is self-hosted n8n on the same host (maintainer,
+  2026-07-13), for which the CLI door suffices. The HTTP shim was designed (see the `render-output-fix`
+  GAP-2 design) as an **additive** component so it drops in later without disturbing the CLI/`invoke`
+  door.
+- **Depends on:** GAP-2 (the CLI/`invoke` door + `register_*_handler` wiring) lands first; the shim
+  sits on top of the same `invoke()`.
+- **Source:** maintainer requirement, 2026-07-13 — "needed eventually for other users who use any
+  cloud based workflow orchestrator (Make, Zapier, n8n, Google, and others)."
+
+---
+
 ## Resolved
 
 _(none yet — the build's HARD GATES were closed inline: gate G2 at steps 37–38, the §21.7
