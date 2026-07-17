@@ -231,6 +231,21 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
 - **Source:** maintainer requirement, 2026-07-16 — a template adding structure + non-text details +
   constraints, scoped not to encroach on the dimensions, flexible to content/outline length and element
   changes.
+- **Design status (2026-07-17) — RATIFIED (design; build paused):** designed via research → architect
+  initial → **whole-picture adversarial** → reconciliation. The initial's "enrich `format.parts`" home
+  was **overturned** (parts are packaging sub-outputs, not rhetorical sections; it reversed the DR-3 B2
+  rule and hit the IR `parts` XOR `body`). **Ratified shape:** a content template is a **typed-section
+  conformance envelope over the outline's sections** — DR-3 and DR-4 **unify** (the outline IS the
+  section skeleton; DR-4 is the typed constraint contract over it), on the **body-skeleton surface**,
+  NOT `format.parts`, NOT the T7-reserved IR `constraints?` field (DR-4 gets its OWN conformance field).
+  Vocabulary: `type` enum + `?`/`*`/`{n,m}` cardinality + a constraint menu + error/warning/info
+  severity. **Maintainer chose the HARD structural guarantee** (2026-07-17): per-venue required/forbidden
+  sections **BLOCK** — which **un-defers DR-3's machine-section-parse** (the F1 sentinel grammar + F5
+  hard gate). Venue tightening = a new **hard structural class** on Platform's per-format projection + a
+  **reconcile structural gate**; plus a base structural gate at compose/Review-1. A **journal = Platform
+  + Presentation coordinates, NOT a recipe** (dissolves the DR-2 recipe-bundle collision; house style =
+  an L3 baseline). **v1 = whole-section conformance; nested-in-prose slots deferred.** ZERO new
+  `artifact-id` preimage component. Full design pass: `ops-handoff/dr4-dr5-templates-style/`.
 
 ### DR-5 — Compose-vs-render placement of style; per-output style variation from one IR (reopens DR-2) — design problem
 - **Status:** Deferred (not in v1) — **open design problem; reopens part of the reconciled DR-2 design.**
@@ -262,6 +277,44 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
 - **Source:** maintainer requirement, 2026-07-16 — the three-journals-one-paper case: same IR, different
   output per journal; fonts = design, footnotes/Oxford comma = style; the reduced style guide
   (lexicon-at-compose) cannot produce per-venue style.
+- **Design status (2026-07-17) — RATIFIED (design; build paused):** same architect pass as DR-4. Look →
+  **Presentation @ serialize** (kept, no work). Citations = a Pandoc-native **`references` (CSL-JSON)
+  block + `[@key]` in the IR** (compose; real machinery — extends the closed IR envelope, threads into
+  AST-`meta`, adds a §16 fidelity obligation) + **content-driven citeproc enablement** (fixes the broken
+  default `plain` render) + a per-venue **`csl` Presentation lever** (style only). Inline mechanics →
+  **compose-baked lexicon, labeled compose-only** (confirmed: no deterministic render path exists;
+  per-venue ⇒ re-compose). The overridable style-file reference (`css`/`reference_doc`/`template`)
+  **already exists** on Presentation — not reinvented. Output-type↔style **compatibility check** moves to
+  the **dispatch layer** with a sound skin-lever signal → **WARN + fall-to-writer-default** (maintainer
+  chose warn over error, 2026-07-17). ZERO new identity component. **The citation *grounding* concern is
+  NOT citation-specific — generalized to DR-6**; only the citation *formatting* per venue is DR-5 (the
+  `csl` / Presentation path above).
+
+### DR-6 — General grounding enforcement: all published content grounded in source (not just citations) — design problem
+- **Status:** Deferred (not in v1) — **open design problem; generalizes and ABSORBS three per-feature
+  grounding flags** each deferred separately: the DR-2 reconciliation's "no compose-time hard gate that
+  every fact-claim cites an EXTRACTED source," the DR-3 outline reconciliation's B1 (same, for
+  outline-demanded claims), and the DR-4/DR-5 SF-3 (same, for the `references` / citation channel).
+- **The invariant (already stated in §6.5, to be enforced GENERALLY):** **ALL published content must be
+  grounded in the source material — not just citations.** The per-feature framings (especially "couple
+  *citations* to the ledger") were **over-specific**; grounding is one general rule and every published
+  channel (prose claims, outline-demanded points, the `references` block) is subject to it identically.
+- **Acceptable grounding — TWO scenarios (maintainer, 2026-07-17), neither a hallucination:**
+  1. **Direct / primary** — the claim's **primary source is IN the scanned source material** (the pool).
+  2. **Secondary attestation** — the primary source is **NOT in the pool, but is referenced or quoted by
+     a pool source**, which makes that pool source a **secondary source** for the claim.
+  Either is acceptable **as long as it works within the constraints of the output artifact.** A claim
+  that is neither (primary absent AND no pool source attests to it) is a **hallucination — rejected.**
+  (This resolves the DR-4/DR-5 SF-3 pool-membership tension: an academic paper MAY cite the broader
+  literature — but only via a pool source's secondary attestation; anything beyond that is hallucination.)
+- **The open design question:** should compose **HARD-gate** this at compose time (every published-as-fact
+  claim must trace to scenario 1 or 2), or keep the current **advisory §19-review** posture? And how does
+  the primary/secondary distinction map onto the existing grounding ledger + EXTRACTED / INFERRED /
+  AMBIGUOUS tiers?
+- **Relationship:** a general invariant beneath DR-2 / DR-3 / DR-4 / DR-5 and all compose; the citation
+  *formatting* per venue stays in DR-5 (`csl` / Presentation) — DR-6 owns only *correctness / grounding*.
+- **Source:** maintainer, 2026-07-17 — grounding is general, not citation-specific ("over-specific and
+  must be generalized"), with the two-scenario acceptance model above.
 
 ---
 
