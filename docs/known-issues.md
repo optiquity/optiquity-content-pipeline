@@ -315,6 +315,30 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
   *formatting* per venue stays in DR-5 (`csl` / Presentation) — DR-6 owns only *correctness / grounding*.
 - **Source:** maintainer, 2026-07-17 — grounding is general, not citation-specific ("over-specific and
   must be generalized"), with the two-scenario acceptance model above.
+- **Design status (2026-07-17) — RATIFIED (design; build paused):** designed via research → architect
+  initial → **whole-picture adversarial** → reconciliation. **Enforcement posture (maintainer chose the
+  Combination):** writer **self-demarcation** = a HARD, deterministic **structural coverage gate** at
+  compose (the writer marks every prose unit as a grounding span or an explicit `.framing` span;
+  compose rejects bare unmarked declarative prose into the existing bounded re-ask) **+** a semantic
+  **framing-honesty + faithfulness audit at Review-1** (advisory, free — Review 1 is already an LLM
+  call; the NLI reliability numbers do NOT transfer to a `claude -p` self-check, so it cannot be a hard
+  per-claim reject) **+** an opt-in **item-level abstain**, framework default **warn-and-ship** (an
+  instance may override to `block` via a recipe/workspace `grounding_posture` policy on the M3 cascade).
+  **Honest ceiling:** self-demarcation gates *form, not grounding-honesty* — a gaming writer could dress
+  a hallucination as `.framing`; the semantic half stays noisy. **Cost:** a `writer.md` contract change
+  (+ an exemption tail for headings/lists/code/tables/math), a new block-level parse at compose, and a
+  §17 `.framing` strip decision. **Scenario 2:** ONE optional PROV-O `attestation? {primary, anchor,
+  relation}` ledger field — a third **pool-relation** axis (distinct from the tier / `traceability` /
+  the `primariness` score), modeled `LEDGER_REQUIRED` + `LEDGER_OPTIONAL` (scenario-1 byte-unchanged),
+  per-(fact, instance); it publishes as **attributability + survivability** (an attribution to pool
+  source S must exist and survive the §17 external strip; the *surface form* is DR-5's — in v1 = prose
+  by necessity); an in-pool primary wins for publish-as-fact. **Absorbs** the DR-2/DR-3/DR-4-5 grounding
+  flags (grounding = one channel-agnostic property of every compose leaf, one chokepoint); the DR-5
+  `[@key]` binding is **deferred to DR-5's resumption** with a named constraint. The DR-4×DR-6
+  "deadlock" is false (both → block-and-report; the §6.5 framework floor outranks a venue's
+  grounded-content demand). **`ir_version` evolves** by bump + generation-tolerant validation
+  (additive-optional) so old IRs still re-reconcile. Utilization floor dropped. **ZERO new identity
+  surface.** Full design pass: `ops-handoff/dr6-grounding/`.
 
 ---
 
