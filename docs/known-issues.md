@@ -148,6 +148,12 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
 - **Source:** maintainer requirement, 2026-07-16 — selectable, non-overlapping style guides
   (standard + platform + corporate), with the explicit instruction to first check whether existing
   dimensions (or better templating) already cover it before inventing a new construct.
+- **Design status (2026-07-16):** designed via an architect pass and reconciled to **`lexicons/`
+  (compose-time) + a topic-less recipe** (the standalone `style-guides/` overlay + a new cascade rung
+  were dropped as redundant). **Partially reopened by DR-5:** that design places all house-mechanical
+  style at **compose** (baked into the IR), but per-venue style variation from a single shared IR needs
+  some style applied at **render** — so the compose-only placement is now an open question. **Build
+  paused** pending DR-4 / DR-5 scoping.
 
 ### DR-3 — Optional artifact outline (pre-generation; dual output + input; outline-driven precedence) — design question
 - **Status:** Deferred (not in v1) — **requirement + open design questions recorded; to be designed
@@ -183,6 +189,68 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
 - **Source:** maintainer requirement, 2026-07-16 — optional editable outline that can be a final
   artifact and/or a high-influence input driving content and/or structure, to be assessed for
   necessity vs. sufficiently-precise goals.
+
+### DR-4 — Content templates: typed non-text slots + structure + constraints (Format-adjacent) — design problem
+- **Status:** Deferred (not in v1) — **open design problem; to be specifically scoped by an architect
+  before anything is built** (the line and the vocabulary are not yet known).
+- **Need:** a Format-related construct providing a reusable **skeleton with typed slots** — including
+  **non-text elements** (a table with specified columns, a figure/image with a caption, a chart, a
+  callout/aside, form-like fields) — plus **per-slot constraints** (required/optional, length limits,
+  element counts, ordering). This is beyond Format's prose rhetorical body and beyond the text-only
+  outline (DR-3): it adds **structure and design *details*** the current axes have no home for.
+- **Flexibility requirement:** a template must **flex with the content and the outline** — length
+  differences, and added/removed elements — rather than being a rigid mold. A scaffold, not a fixed form.
+- **Driving example:** the same academic paper published in **three journals**, each with different
+  **template requirements** (abstract ≤N words, a structured methods section, figure/caption rules,
+  required/forbidden sections) — all from **one recipe / one IR**.
+- **Hard constraint (orthogonality — maintainer's):** scope it so it **does not encroach on the
+  established dimensions** — Format (genre), Platform (venue/limits), Presentations (visual/design),
+  Outline (per-artifact text plan), Voice/lexicon (style). It adds structure + design *details*; it does
+  not re-own those axes.
+- **Open questions for the architect:** (a) **where is the line** between a template and Format /
+  Platform / Presentations / Outline? (some journal template requirements may legitimately BE Format or
+  Platform fields — decide which). (b) **what vocabulary** (slot types, element kinds, constraint kinds)?
+  (c) how does it stay **flexible** for length/element differences? (d) relation to the **deferred outline
+  `constraint?`** field (DR-3) and to `format.parts`. (e) **naming collision:** Presentations already has
+  a Pandoc `template`/`reference_doc` field for *visual rendering* — a *content* template is a different
+  thing; disambiguate. (f) is **"a journal" a Platform**, and are template requirements per-Platform /
+  per-Format?
+- **Relationship:** Format-adjacent; linked to DR-5 (per-venue variation) and DR-3 (outline); shares the
+  academic-paper driving example.
+- **Source:** maintainer requirement, 2026-07-16 — a template adding structure + non-text details +
+  constraints, scoped not to encroach on the dimensions, flexible to content/outline length and element
+  changes.
+
+### DR-5 — Compose-vs-render placement of style; per-output style variation from one IR (reopens DR-2) — design problem
+- **Status:** Deferred (not in v1) — **open design problem; reopens part of the reconciled DR-2 design.**
+- **The gap:** the reconciled DR-2 design homes house-mechanical style (Oxford comma, spelling variant,
+  number/date style, and style-guide-adjacent rules like footnote format) in the **`lexicons/`** registry
+  applied at **compose** — i.e. **baked into the IR**, one choice per artifact. But some style must
+  **vary per output from a single shared IR**: the same paper → different journals differing in footnote
+  format, Oxford comma, etc. The pipeline varies things per-output only at **render** (Presentations);
+  compose-baked style is **frozen** across every output of one IR.
+- **The principle discovered (the line):** per-venue variation at **render** works when the style's input
+  is **structured** in the IR — citations → **CSL** → per-journal footnote/citation format; fonts/colors
+  → **Presentation** variables. It **fails** when the style is baked as **inline prose** — the Oxford
+  comma is literally `a, b, and c` vs `a, b and c` in the text, with no render-time knob short of
+  re-composing per venue or adding a text-style-transform capability the pipeline does not have.
+- **Where the journal example lands today:** font/color (design) → **Presentations, render-time, varies
+  per journal — works**; footnote/citation format (style) → **should be render-time via CSL** (structured
+  citations + per-venue style) — natural home, **not yet designed**; Oxford comma (inline style) →
+  **lexicon `mechanical`, compose-time, cannot vary per journal** — the genuine gap.
+- **Design questions for the architect:** (a) classify each style rule by its home on the
+  **compose→render** axis. (b) design the **render-time footnote/citation path** (CSL / structured
+  citations + per-venue style) so it varies per journal from one IR — likely in/near Presentations.
+  (c) decide the **inline-prose case** (Oxford comma): accept compose-baked (per-venue ⇒ re-compose), OR
+  add a **render-time text-style-transform**, OR compose style-neutral + apply at render (hard for inline
+  text). (d) does the **lexicon split** into compose-applied vs render-applied rules? (e) reconcile with
+  the reduced style-guide model (footnotes are traditionally style-guide territory). (f) enumerate the
+  **full set of per-venue-variable style/design** and place each.
+- **Relationship:** reopens DR-2 (the lexicon's compose-only placement); linked to DR-4 (templates) and
+  the Presentations axis; shares the academic-paper driving example. DR-2 build is paused pending this.
+- **Source:** maintainer requirement, 2026-07-16 — the three-journals-one-paper case: same IR, different
+  output per journal; fonts = design, footnotes/Oxford comma = style; the reduced style guide
+  (lexicon-at-compose) cannot produce per-venue style.
 
 ---
 
