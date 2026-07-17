@@ -189,6 +189,17 @@ capabilities we have deliberately deferred, kept here so the requirement is not 
 - **Source:** maintainer requirement, 2026-07-16 — optional editable outline that can be a final
   artifact and/or a high-influence input driving content and/or structure, to be assessed for
   necessity vs. sufficiently-precise goals.
+- **Design status (2026-07-17) — RATIFIED (representation):** designed via an architect pass
+  (initial→adversarial→reconciliation) plus a focused representation sub-pass; **necessity confirmed**
+  (the editable dual output+input intermediate no reusable axis can provide). **Representation ratified:
+  C3 — the canonical outline is plain Markdown** (no new internal format), content-addressed by an
+  `outline-digest`; it becomes an IR **only at emit**, via a thin bridge realizing it as an ordinary
+  **`Format=outline` artifact** (so it renders to any output type — md/plain/pdf/epub — through the
+  existing serialize/payload machinery, and is fetchable). Compose ingests the same normalized Markdown.
+  **Ratified v1 scope cuts:** holistic Markdown (no machine section-parse), `constraint?` deferred,
+  multi-part formats deferred; the `outline-digest`-in-own-preimage exception ratified. **Open:** the
+  compose-input-brief quality **ablation** (build-time). **Build paused** behind DR-4 / DR-5 (templates
+  and per-output style interact with the outline).
 
 ### DR-4 — Content templates: typed non-text slots + structure + constraints (Format-adjacent) — design problem
 - **Status:** Deferred (not in v1) — **open design problem; to be specifically scoped by an architect
