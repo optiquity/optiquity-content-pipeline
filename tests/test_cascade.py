@@ -43,9 +43,12 @@ from pipeline.cascade import (
     resolve_compose,
     resolve_render,
 )
+from pipeline.drift import iter_entry_files
+from pipeline.entries import load_entry
 from pipeline.lint import REGISTRY_ROOTS
-from pipeline.m1 import DanglingRefError, StaleEntryError, UnknownEntryError
+from pipeline.m1 import DanglingRefError, Resolver, StaleEntryError, UnknownEntryError
 from pipeline.overrides import OverrideError, collect_overrides
+from pipeline.schema import SCHEMA_FILENAME, load_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
@@ -899,3 +902,50 @@ def test_artifact_preimage_threads_the_outline_digest(tmp_path: Path) -> None:
     )
     assert driven["outline-digest"] == digest
     assert ids.mint_artifact_id(driven) != ids.mint_artifact_id(base)
+
+
+# ------------------------------------------------------------------------------------
+# DR-3 build COMMIT 3: the framework `outline` Format entry - a pure §5.4 one-file add
+# ------------------------------------------------------------------------------------
+
+FORMATS_DIR = REPO_ROOT / "formats"
+
+
+def test_outline_format_resolves_via_the_cascade(tmp_path: Path) -> None:
+    """The shipped `formats/outline.md` resolves through the standard resolver against
+    the real (copied) registries: `id == 'outline'`, single-part / non-parametric."""
+    root = build_root(tmp_path)
+    env = make_env(root)
+    resolved = env.resolver.resolve("formats", "outline")
+    assert resolved.id == "outline"
+    assert resolved.collection == "formats"
+    # Single-part, non-parametric (Q14): no attribute is SET, so `parts` rides the L0
+    # floor `[]` - the same flat shape as the shipped `readme` genre.
+    assert resolved.effective == {}
+    assert resolved.defaults() == {"parts": []}
+
+
+def test_outline_format_is_framework_and_schema_valid() -> None:
+    """The shipped file loads + schema-validates through the standard entry machinery
+    (§11.7): `provenance: framework` (public-repo-welcome, CLAUDE.md rule 4) and the
+    non-parametric single-part shape (nothing set -> `parts` floors to [])."""
+    schema = load_schema(FORMATS_DIR / SCHEMA_FILENAME)
+    entry = load_entry(FORMATS_DIR / "outline.md", schema)
+    assert entry.id == "outline"
+    assert entry.provenance == "framework"
+    assert not entry.is_instance
+    assert entry.attributes == {}
+    assert entry.set_attributes == frozenset()
+
+
+def test_outline_is_a_pure_one_file_add() -> None:
+    """§5.4: adding `outline` is exactly one file in `formats/`. It is DISCOVERED and
+    SELECTABLE by the same directory-walk machinery every consumer wires
+    (`iter_entry_files` + `load_entry`) and RESOLVES against the real repo - with no
+    enum, index, or schema edit. (`Resolver` needs no `instance/defaults.yaml`, so this
+    stays CI-green where the instance surface is never shipped.)"""
+    schema = load_schema(FORMATS_DIR / SCHEMA_FILENAME)
+    discovered = {load_entry(p, schema).id for p in iter_entry_files(FORMATS_DIR)}
+    assert "outline" in discovered
+    resolved = Resolver(REPO_ROOT, workspace="self").resolve("formats", "outline")
+    assert resolved.id == "outline"
