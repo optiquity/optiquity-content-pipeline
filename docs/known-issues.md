@@ -263,11 +263,16 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     content/structure/both" requirement.
   - **Decision B — B1 (usable product).** Build the full dual output+input feature end-to-end (emit bridge +
     pre-compose store + drive path + a minimal ingest/emit/drive trigger) so it is invokable with
-    **hand-authored** outlines; **defer only the LLM drafter** (a named DR-3 backlog, GAP-7 mirror). Verb
-    surface: reuse the existing session/render verbs (no new `KNOWN_VERBS` verb).
-  - **Plan:** the reconciled 7-commit plan (`03-planner-reconciliation`) — Commits 1-3 identity-safe
-    foundation, 4-7 + trigger the usable feature at horn (a). Building now under the standing coder/reviewer/
-    fix cadence.
+    **hand-authored** outlines; **defer only the LLM drafter** (a named DR-3 backlog, GAP-7 mirror).
+  - **Verb surface — REVISED at the C6 gate (2026-07-18):** ingest + drive ride the existing session verbs,
+    but the maintainer chose an **explicit new `emit-outline` `KNOWN_VERBS` verb** for the outline-as-OUTPUT
+    trigger (over the no-new-verb driver-branch or deferral) — so a user can realize a hand-edited outline as
+    a byte-faithful `Format=outline` artifact (renderable/fetchable). This supersedes the reconciliation
+    plan's provisional "no new verb" assumption; the emit verb wires the already-built `build_outline_ir`
+    (Commit 4) through the dispatch, completing B1's dual output+input capability.
+  - **Plan:** the reconciled foundation+feature plan (`03-planner-reconciliation`) — Commits 1-3 identity-safe
+    foundation (landed), 4-6 the emit bridge / store / drive path (landed), the **emit verb** (this decision),
+    then the R1 ablation + design-authority doc-sync. Built under the standing coder/reviewer/fix cadence.
 
 ### DR-4 — Content templates: typed non-text slots + structure + constraints (Format-adjacent) — design problem
 - **Status:** Deferred (not in v1) — **open design problem; to be specifically scoped by an architect
