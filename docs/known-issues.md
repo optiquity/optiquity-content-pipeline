@@ -273,6 +273,58 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   - **Plan:** the reconciled foundation+feature plan (`03-planner-reconciliation`) — Commits 1-3 identity-safe
     foundation (landed), 4-6 the emit bridge / store / drive path (landed), the **emit verb** (this decision),
     then the R1 ablation + design-authority doc-sync. Built under the standing coder/reviewer/fix cadence.
+- **Build status (2026-07-18) — DR-3 BUILT (horn (a) / B1); usable product, gate green.** The full
+  dual output+input feature shipped as **seven** gated commits (each: coder → reviewer →, where
+  needed, fix-coder → re-review to CLEAN), invokable with **hand-authored** outlines:
+  - `48393f8` **outline foundation** — `pipeline/outline.py`: the identity-safe normalizer `N`
+    (`normalize_outline`, idempotent) + `outline_digest` = `sha256_hex(N(md))` (a bare 64-hex
+    content address, never a §7.4 id root) + `accept_outline` (substance floor + secret scan);
+    reserves the #3a F1-sentinel N-invariance forward-contract. Touches no identity/preimage/
+    registry surface.
+  - `f81d7a4` **`outline-digest` preimage extension** — an OPTIONAL top-level `outline-digest` key
+    on the §7.2 artifact preimage, **omit-when-absent** so every existing `artifact-id` re-mints
+    byte-identical (the zero-churn guarantee); a 64-hex whitelist (stronger than the §7.3/secret
+    blacklists, and sidesteps the `ir`→`ids` import cycle); the R4 two-home docstring separates
+    the emit own-body digest from the drive-path content-address input. Horn (a): no `drive-config`
+    key.
+  - `6d7273d` **`formats/outline.md`** — the one-file framework `Format=outline` entry: provenance
+    framework, single-part / non-parametric (`parts` rides the `[]` floor, like `readme`), a
+    platform-agnostic planning scaffold. Pure one-file add (no second edit; guard green).
+  - `6f327c6` **emit bridge `build_outline_ir`** — wraps `N(md)` as an ORDINARY `Format=outline` IR
+    (empty ledger, no `data-fact` spans) via the real `build_ir`, persisted through the existing
+    no-replace `write_new` (idempotent). No new IR type / schema / registry root; `api/render.py`
+    untouched, so the outline renders to any output-type through the existing path.
+  - `c562ec1` **pre-compose outline store** — `pipeline/outline_store.py`: `put_outline`/
+    `get_outline` keyed by the BARE `outline-digest` (a dedicated `outlines/` dir, created
+    on-demand, NOT in `STORE_SUBDIRS`); **retain-all** in v1 (byte-compared idempotency; a
+    same-key/different-bytes collision raises loudly). Zero `pipeline.ids`/`parse_id` coupling
+    (import-lint enforced).
+  - `90e5f1a` **outline drive path** (horn (a), fixed posture) — `plan.py`/`compose.py`/
+    `driver.py`/`fanout.py`/`api/session.py`/`writer.md`: the outline enters the writer prompt as
+    a **high-salience FIXED-posture brief** (drives content AND structure, outranking the
+    dimensions for skeleton/emphasis/order); a **digest-fidelity guard** raises `ComposeError` on
+    any brief↔pinned-digest mismatch before any LLM/persist (never silent). The driven id rides
+    `outline-digest` only (no new preimage key); the B2/grounding total rules hold — the brief is
+    prompt-only, sets no cascade attribute, adds no ledger fact. Rides the existing session verbs
+    (no new `KNOWN_VERBS` verb).
+  - `db7979a` **`emit-outline` verb** — the maintainer-chosen explicit output trigger: a
+    hand-authored outline + a target coordinate → a byte-faithful `Format=outline` artifact (via
+    `resolve_compose` + `artifact_preimage(outline_digest=)` + `build_outline_ir`); the id rides
+    the `outline-digest` only; re-emit is an `already-materialized` no-op; empty/secret → a typed
+    block, nothing persisted. Reachable via programmatic `invoke()`, deliberately NOT CLI-wired
+    (render + fetch only) and NOT a `continue-session` action. Completes B1's dual output+input
+    capability. (The C6-gate ruling behind this verb was recorded at `3936fc6`.)
+- **Identity guarantee:** non-outline `artifact-id`s are **byte-unchanged** (the omit-when-absent
+  preimage); the driven/emitted id rides the SINGLE `outline-digest` component — horn (a) adds no
+  `drive-config`/facet key, so no §7 re-ratification.
+- **DEFERRED (not built):** the **LLM outline drafter** (a named DR-3 backlog, GAP-7 mirror) and
+  the **R1 compose-input-brief live ablation** — an offered **maintainer-run** measurement (à la
+  the MVP-demo live run / GAP-8 EXP-10), not built; the design is safe regardless (input ==
+  identity, the §6.5 tier floor binds every span, so the precedence *degree* is empirical, not a
+  correctness gate).
+- **Gate:** final `uv run pytest -q` = **2135 passed, 6 deselected**; `ruff check .` clean;
+  `scripts/check-no-content.sh` OK. The design-authority doc-sync (design §5.2/§7.2/§12.1/§15/
+  §21.1/§27.3) landed alongside. Coder/reviewer reports under `ops-handoff/dr3-build/`.
 
 ### DR-4 — Content templates: typed non-text slots + structure + constraints (Format-adjacent) — design problem
 - **Status:** Deferred (not in v1) — **open design problem; to be specifically scoped by an architect

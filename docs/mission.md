@@ -23,7 +23,7 @@
 > model (render-side additions live in design §15–§17) · §10 risks (minus the D1/D2 rows above) ·
 > the appendices.
 
-> **Status:** Living document · **Version:** 0.2.1 · **Last updated:** 2026-07-18
+> **Status:** Living document · **Version:** 0.2.2 · **Last updated:** 2026-07-18
 > **Owner:** David · **Methodology:** Waterfall / ad-hoc, spreadsheet-tracked
 > **Nature:** This is a living document. Sections, tooling picks, personas, formats, and pipeline
 > stages will change. Every axis and every pipeline stage is designed to be **additive** — new
@@ -469,6 +469,7 @@ git clone https://github.com/wshobson/agents.git
 
 | Version | Date | Change |
 |---|---|---|
+| 0.2.2 | 2026-07-18 | DR-3 (optional editable outline) BUILT — the identity-safe foundation (outline normalizer `N` + `outline_digest`) + the `outline-digest` preimage extension + the `Format=outline` emit bridge (`build_outline_ir`) + the pre-compose outline store (content-addressed, retain-all) + the outline drive path (horn (a) fixed posture, digest-fidelity guard) + the `emit-outline` verb; commits `48393f8`..`db7979a`. Design homes: design §5.2, §7.2, §12.1, §15, §21.1, §27.3. The LLM outline drafter + the R1 compose-input-brief live ablation are deferred (`docs/known-issues.md` DR-3). |
 | 0.2.1 | 2026-07-18 | DR-6 increment 1 BUILT (Option A, advisory) — F-a (`ir_version`->2 + generation-tolerant validation `∈ {1,2}`) + the optional `attestation` ledger carrier + the Review-1 two-dimension advisory grounding audit (coverage + faithfulness) + the `grounding_posture` cascading policy & the opt-in fail-open item-level abstain (`grounding-uncovered`); commits `0f6d401`/`aeed34d`/`b92b443`/`7e935a1`. Design homes: design §15, §11.2, §6.3/§12.1, §6.5/§19, §21.7. The hard self-demarcation coverage gate / `.framing` / corpus migration are deferred (`docs/known-issues.md` DR-6). |
 | 0.2.0 | 2026-07-05 | Abstraction pass: lifted over-specified minutiae to directional principles — config serialization (§4.6) and item-identity scheme (§4.4) changed from decisions-made to deferred; runtime version pins softened (§6.1); registry/config file extensions de-specified (§8); Appendix A marked non-binding reference; added §10.4 "Open decisions deferred to technical requirements" register. |
 | 0.1.0 | 2026-07-05 | Initial draft: architecture, extensible matrix, selection/fanout, phased plan, §7 vetted components by role (incl. editor layer), install requirements. |

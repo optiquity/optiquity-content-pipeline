@@ -244,7 +244,10 @@ placement is §12.3.
 entry** (Q4 — pairing is user-driven, §8). A format may declare **`parts`** — an ordered list of
 named **intra-genre** sub-outputs (`slide-deck → [slides, presenter-notes]`), defined entirely
 inside the one governing Format entry (Q14). One format selected → one artifact with named parts.
-Composing two genres = **two artifacts**, grouped by a folio — never a composite.
+Composing two genres = **two artifacts**, grouped by a folio — never a composite. The framework
+ships an **`outline`** Format (DR-3) — a single-part, non-parametric, platform-agnostic planning
+scaffold (`parts` rides the `[]` floor, like `readme`) — the genre an editable outline realizes as
+when emitted (§15).
 
 **Voice — how it sounds.** Owns all register/affect/manner: formality, humor, warmth, energy,
 narrator-persona, plus free-text guidelines. Parametric: a named voice is a saved slider
@@ -576,6 +579,20 @@ components are defined once, here:
   clauses differ, §6.3) and is grounding-ledger data (§15), never an identity input: identity
   carries the pool and its pinned commit-map; per-fact survivorship and per-fact commits live in
   the ledger.
+
+**The optional `outline-digest` component (DR-3).** The preimage carries a **fifth, OPTIONAL**
+top-level key — the 64-char lowercase-hex SHA-256 of a normalized outline
+(`pipeline.outline.outline_digest`; a bare content hash, never a §7.4 id root). It is
+**omit-when-absent**: no outline → the key is absent, the preimage is the byte-identical four-key
+shape above, and every non-outline `artifact-id` re-mints unchanged (the zero-churn guarantee).
+Horn (a)'s fixed drive posture (§12.1) keeps DR-3 at **exactly one** new identity component —
+there is no `drive-config`/facet key. The digest has **two distinct homes (R4)**: on the **emit**
+path it is the digest of a `Format=outline` artifact's OWN normalized body — the ratified **R4
+exception** to the rule that an artifact's body is never in its identity preimage (an outline's
+identity legitimately depends on its own bytes); on the **drive** path it is the digest of a
+SEPARATE input on a NON-outline artifact — an ordinary content-address in the same category as
+`source-commit`, **not** an R4 exception and never a body-in-preimage breach. See
+`docs/known-issues.md` DR-3.
 
 ### §7.3 Identity exclusions
 
@@ -1143,6 +1160,17 @@ wins* — collapsing them reintroduces blur:
 - The same scope spine, read pre-M1, resolves **which entry** is selected per dimension (the
   selection cascade — the mechanism behind §8's emergent allow-list); read at M2, it resolves
   **which value** each attribute takes. One ordering discipline, two questions.
+- **The DR-3 outline drive brief is a compose-prompt input, NOT a cascade mechanism** (B2 total
+  rule). When an outline drives generation its normalized text enters the writer prompt as a
+  **high-salience brief** that OUTRANKS the dimensions for the rhetorical body skeleton and for
+  content emphasis/order — the fixed **horn (a)** posture (content AND structure; the per-request
+  content/structure/both facet choice is RETIRED, §27.3). The brief is prompt-only: it **never
+  becomes a cascade rung** and **never sets `format.parts` or any cascade-bound attribute**, so
+  M2/M3 and orthogonality are untouched. A **digest-fidelity guard** binds the shown brief to the
+  item's pinned `outline-digest` on every path before any LLM/persist — a mismatch is a loud
+  `ComposeError`, never silent. **Grounding total rule:** the outline asserts no facts and adds no
+  ledger rows (§15), so DR-3 opens **no new fabrication vector** and the §6.5 EXTRACTED tier floor
+  binds every span exactly as before.
 
 ### §12.2 The folio-free M2 spine
 
@@ -1510,6 +1538,13 @@ LAYER 3  Pandoc AST JSON (persisted, ALWAYS produced)         — the standard i
   persona, format, voice, sorted goal-set, source-subset, resolved-overrides delta, and the
   source commit-map (§7.2) — plus the computed `artifact-id` (full digest, §7.4). The IR is self-describing and
   reproducible.
+- **The DR-3 outline emit bridge** (`build_outline_ir`, RI4). An editable outline enters the IR
+  **only at emit**, through a thin bridge: it sets the leaf `body` to the normalized outline
+  `N(md)` and builds an **ordinary `Format=outline` artifact** via the real `build_ir` — an EMPTY
+  grounding ledger, no `data-fact` spans (the outline asserts no facts, §6.5). This is **no new IR
+  type, schema, or registry root**: the outline renders and fetches through the EXISTING
+  serialize/payload path (§17), to any output-type the coordinate selects. Its `artifact-id` rides
+  the `outline-digest` (the §7.2 emit own-body home) and a re-emit is an idempotent no-op (§22.7).
 - **The opaque `metadata` bag rides the envelope** (§11.3): stored, passed through, never
   interpreted, never routed into AST content — carried as a side channel to the layer-3 contract.
 - **Version stamps** (RI4; DR-6 F-a): `ir_version` (now **2**, validated GENERATION-TOLERANTLY —
@@ -1848,6 +1883,7 @@ what lets disconnected workflow 2 render or fetch what workflow 1 produced, toke
 | Folio | `create-folio` | optional | an empty folio; returns its id |
 | | `add-to-folio` | optional | member append/update (params §21.2; semantics §9.2) |
 | Output/Retrieval | `emit-manifest` | optional | persists the manifest (§21.5); none to the SSOT |
+| | `emit-outline` | optional | a `Format=outline` artifact (DR-3); idempotent by `artifact-id` |
 | | `fetch-by-id` | optional | none |
 | | `render` | optional | IR-fitted/AST/bytes; returns deliverable-ids |
 
@@ -1857,6 +1893,13 @@ what lets disconnected workflow 2 render or fetch what workflow 1 produced, toke
 - **`render` is both a standalone verb and an action** (A1b): render is deterministic given an
   id + render coordinate, so it is fundamentally id-addressed and token-free for automation, while
   the in-session action keeps interactive ergonomics.
+- **`emit-outline` is a producer verb, standalone-only** (DR-3 horn (a) / B1): a hand-authored
+  outline + a target coordinate → a byte-faithful `Format=outline` artifact, minted by the
+  coordinate cascade + the outline's OWN normalized bytes (the §7.2 R4 own-body digest) and wired
+  through `build_outline_ir` (§15). It is reachable via programmatic `invoke()`, idempotent by
+  `artifact-id`, and deliberately **NOT CLI-wired** (the `main_cli` door stays render + fetch only,
+  §21.9) and **NOT a `continue-session` action** — the emitted artifact renders and fetches through
+  the existing token-optional verbs.
 
 Every call carries `workspace`; **isolation is enforced by the API, not by trust**: every id must
 resolve inside that workspace or the item is refused (`isolation-violation`). One invocation is
@@ -2553,6 +2596,21 @@ re-registers it with reasons. The register never sits without a clock.
   `Pred` AST (extending the ratified `pred_op` vocabulary with the date-window
   `contains`/`overlaps`, §6.2) would be additive polish; the shared-vocabulary discipline
   prevents drift meanwhile.
+- **DR-3 pre-compose outline store** (registered at the DR-3 build) — editable outlines persist in
+  a dedicated **`outlines/`** directory, content-addressed by the **bare `outline-digest`** (a
+  content address, not a §7.4 id root), created on-demand and deliberately NOT in `STORE_SUBDIRS`
+  (outlines are pre-compose sources, not §18 records). v1 is **retain-all**: abandoned scaffolds
+  and every intermediate edit are kept, byte-compared for idempotency (a same-key/different-bytes
+  collision raises loudly, never a silent overwrite). GC is registered and deferred (as with the
+  non-current-fit retention posture above).
+- **DR-3 v1 honest scope** (registered at the DR-3 build) — v1 ships **horn (a)'s fixed drive
+  posture** (§7.2, §12.1) with **hand-authored** outlines. **DEFERRED:** the **LLM outline
+  drafter** (a named DR-3 backlog, GAP-7 mirror) and the **R1 compose-input-brief live ablation** —
+  an offered, deferred **maintainer-run** measurement (à la the MVP-demo live run / GAP-8 EXP-10).
+  The design is safe regardless of the ablation: the outline enters as **identity** (an
+  `outline-digest` preimage input, not a grounding assertion) and the §6.5 EXTRACTED tier floor
+  binds every span, so the brief's precedence **degree** is empirical, never a correctness gate.
+  See `docs/known-issues.md` DR-3.
 - Notation — the migration package is MIG-1…MIG-7 in this document; the CM-tag collision is
   resolved in Appendix A.
 
