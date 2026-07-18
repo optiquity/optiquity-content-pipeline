@@ -73,7 +73,8 @@ from pipeline.adapters.graphify import GraphifyAdapter
 from pipeline.api import discovery, fetch, folio_verbs, manifest, render, results
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import token as token_mod
-from pipeline.cascade import CascadeEnv
+from pipeline.cascade import CascadeEnv, RunSelection, SelectionError, resolve_compose
+from pipeline.compose import build_outline_ir
 from pipeline.fanout import (
     FanoutError,
     SelectionRequest,
@@ -82,8 +83,9 @@ from pipeline.fanout import (
 )
 from pipeline.folios import FolioError, create_folio
 from pipeline.grounding import build_pool
+from pipeline.ids import PreimageError, mint_artifact_id
 from pipeline.m1 import UnknownEntryError
-from pipeline.outline import OutlineError
+from pipeline.outline import OutlineError, normalize_outline
 from pipeline.outline_store import put_outline
 from pipeline.overrides import OverrideError
 from pipeline.plan import Plan, resolve_plan
@@ -96,7 +98,9 @@ __all__ = [
     "NotYetWired",
     "begin_session_handler",
     "continue_session_handler",
+    "emit_outline_handler",
     "register_api_handlers",
+    "register_emit_outline_handler",
     "register_session_handlers",
 ]
 
@@ -712,6 +716,135 @@ def _status(
 
 
 # ---------------------------------------------------------------------------
+# emit-outline (§21.1, DR-3 horn (a) / B1): a HAND-AUTHORED outline + a target coordinate ->
+# a byte-faithful `Format=outline` artifact, minted + persisted and returned by artifact-id
+# (renderable/fetchable through the EXISTING render/fetch verbs, UNCHANGED). The dual, output
+# sibling of the outline-as-INPUT drive path.
+# ---------------------------------------------------------------------------
+
+
+def _goal_ids(raw: Any) -> tuple[str, ...] | None:
+    """The run goal-set from the emit request (§12.3): a list of goal ids -> a tuple (an
+    explicit `[]` is an explicit empty set); absent (`None`) -> `None`, so the recipe/workspace
+    cascade default applies (never silently emptied). A non-list is a loud `SelectionError`."""
+    if raw is None:
+        return None
+    if isinstance(raw, str | bytes) or not isinstance(raw, Sequence):
+        raise SelectionError(
+            f"invalid-selection: `goals` is a list of goal ids (§12.3), not {type(raw).__name__}"
+        )
+    return tuple(str(goal) for goal in raw)
+
+
+def _emit_outline(
+    ctx: invoke_mod.HandlerContext,
+) -> tuple[Sequence[results.ResultItem], token_mod.Token | None]:
+    """One `emit-outline` call (DR-3 horn (a) / B1): realize a HAND-AUTHORED outline as an
+    ordinary `Format=outline` artifact, minted by its target coordinate + the outline's OWN
+    normalized bytes (the R4 own-body digest), and persisted idempotently.
+
+    Flow: accept + persist the raw outline (`put_outline` = N + §15 substance floor + §3.3
+    secret scan; an empty / secret outline is refused LOUDLY as a typed block, nothing
+    persisted) -> resolve the target coordinate through the SAME cascade the compose/drive path
+    uses (`resolve_compose`, `format` FIXED = `outline`) -> `compose.artifact_preimage(
+    outline_digest=…)` -> `mint_artifact_id` -> `build_outline_ir` (the Commit-4 emit bridge —
+    NO new IR type/schema/registry root). The id rides the `outline-digest` ONLY (the Commit-2
+    preimage extension; horn (a) adds no new preimage key): two different edited outlines over
+    one coordinate mint DIFFERENT ids, a cosmetic edit mints the SAME id, and a re-emit is the
+    idempotent `already-materialized` no-op (§22.7). The emitted artifact renders/fetches
+    through the UNCHANGED render/fetch verbs.
+
+    §21.7 codes: a fresh emit is plain `ok`; a re-emit is the reused `already-materialized`
+    (§22.6/§22.3). The §21.7 vocabulary names NO outline-refusal code, so an empty/secret
+    outline (and a malformed call) is a CODE-LESS `block` (§3.1: no fabricated code) — the SAME
+    honest shape begin-session's ingest leg uses for the identical `OutlineError`.
+    """
+    params = ctx.params
+    md = params.get("outline")
+    if not isinstance(md, str) or not md:
+        return ([_block(
+            "emit-outline needs `outline` (the raw authored Markdown) + a target coordinate "
+            "(topic/persona/voice/goals/source-subset/source-commit; format is fixed = outline)",
+            item="emit-outline",
+        )], None)
+    recipe = params.get("recipe")
+    if not isinstance(recipe, str) or not recipe:
+        return ([_block(
+            "emit-outline needs a `recipe` to resolve the target coordinate (§8/§12.3)",
+            item="emit-outline",
+        )], None)
+
+    # 1. Accept + persist the outline NOW (content-addressed, §22.7). `put_outline` runs
+    #    `accept_outline` FIRST (N + §15 substance floor + §3.3 secret scan) and RAISES BEFORE
+    #    any write, so an empty / secret-shaped outline is a LOUD typed block and never reaches
+    #    disk (nothing persisted). The digest returned IS `outline_digest(md)`.
+    try:
+        digest = put_outline(ctx.store, md)
+    except OutlineError as exc:
+        return ([_block(
+            f"emit-outline refused the outline ({exc.code}, §15/§3.3): {exc}", item="emit-outline"
+        )], None)
+
+    # 2. Resolve the target coordinate through the SAME cascade as compose/drive; `format` is
+    #    FIXED = `outline` (the emit posture — the selection pick outranks the recipe slot).
+    root = _root_of(ctx.store)
+    try:
+        env = CascadeEnv(root, workspace=ctx.workspace, overrides=params.get("overrides"))
+    except OverrideError as exc:
+        return ([results.make_result(
+            results.CODE_INVALID_OVERRIDE, item="overrides", hint=str(exc)
+        )], None)
+    try:
+        selection = RunSelection(
+            recipe=recipe,
+            topic=params.get("topic"),
+            persona=params.get("persona"),
+            format="outline",  # FIXED — the emit produces a `Format=outline` artifact (horn (a))
+            voice=params.get("voice"),
+            goals=_goal_ids(params.get("goals")),
+        )
+        compose = resolve_compose(env, selection)
+    except UnknownEntryError as exc:
+        return (
+            [results.make_result(results.CODE_NOT_FOUND, item="selection", hint=str(exc))],
+            None,
+        )
+    except (SelectionError, OverrideError) as exc:
+        return ([_block(
+            f"emit-outline could not resolve the coordinate (§12.3): {exc}", item="emit-outline"
+        )], None)
+
+    # 3. The §7.2 preimage carries the R4 own-body `outline-digest` as its SOLE new component;
+    #    the id round-trips via `mint_artifact_id(preimage)` (`build_ir` re-mints + refuses a
+    #    forgery inside `build_outline_ir`). A malformed source-subset/commit map is a loud block.
+    try:
+        preimage = compose.artifact_preimage(
+            source_subset=tuple(params.get("source_subset") or ()),
+            source_commit=dict(params.get("source_commit") or {}),
+            outline_digest=digest,
+        )
+    except PreimageError as exc:
+        return ([_block(
+            f"emit-outline coordinate is malformed (§7.2): {exc}", item="emit-outline"
+        )], None)
+    artifact_id = mint_artifact_id(preimage)
+
+    # 4. Persist via the Commit-4 emit bridge (idempotent no-replace; the IR body IS `N(md)`).
+    #    Idempotency reads OUTPUT EXISTENCE (§22.7): a re-emit of the same outline+coordinate is
+    #    the `already-materialized` no-op, the winner's bytes untouched.
+    already = is_done(ctx.store, artifact_id)
+    build_outline_ir(
+        normalize_outline(md), artifact_id=artifact_id, preimage=preimage, store=ctx.store
+    )
+    ids: dict[str, Any] = {"artifact_id": artifact_id}
+    if already:
+        return ([results.make_result(
+            results.CODE_ALREADY_MATERIALIZED, item=artifact_id, ids=ids
+        )], None)
+    return ([results.ResultItem(item=artifact_id, status="ok", ids=ids)], None)
+
+
+# ---------------------------------------------------------------------------
 # Handler factories + the wiring point (§21.1). Registration is EXPLICIT (never a module
 # import side effect) so it never wires verbs the step-32 unwired-registry tests assume.
 # ---------------------------------------------------------------------------
@@ -778,6 +911,23 @@ def continue_session_handler(
     return handler
 
 
+def emit_outline_handler() -> invoke_mod.Handler:
+    """The `emit-outline` handler (DR-3 horn (a) / B1). No seams: the emit is deterministic
+    store I/O + the pure, LLM-free cascade resolution — there is NO reconcile/serialize leg, so
+    no engine to inject and no live subscription call is ever reachable here (unlike `render`)."""
+
+    def handler(ctx: invoke_mod.HandlerContext) -> Any:
+        return _emit_outline(ctx)
+
+    return handler
+
+
+def register_emit_outline_handler() -> None:
+    """Wire `emit-outline` into the invoke dispatch registry (§21.1). EXPLICIT — never at import
+    (keeps the empty-registry gate tests valid), the same discipline as the other producers."""
+    invoke_mod.register_handler("emit-outline", emit_outline_handler())
+
+
 def register_session_handlers(
     *,
     adapters: Mapping[str, SourceAdapter] | None = None,
@@ -819,9 +969,10 @@ def register_api_handlers(
     """Wire the WHOLE API surface into the invoke dispatch registry (§21.1) — the single production
     startup call. Wires `begin-session`/`continue-session` (with the delegation seams), the
     standalone `render`/`fetch-by-id`/`create-folio`/`add-to-folio`, discovery `list`/`get` (fed the
-    single-source `CONTINUE_ACTIONS` for the `actions` meta-type), and `emit-manifest` (§21.5).
-    After step 35 EVERY known verb dispatches to a REAL handler — ZERO `HandlerNotWired` reachable
-    (`tests/test_action_completeness.py` asserts it over the full `invoke.KNOWN_VERBS` set).
+    single-source `CONTINUE_ACTIONS` for the `actions` meta-type), `emit-manifest` (§21.5), and
+    `emit-outline` (DR-3 horn (a)/B1). After step 35 EVERY known verb dispatches to a REAL
+    handler — ZERO `HandlerNotWired` reachable (`tests/test_action_completeness.py` asserts it
+    over the full `invoke.KNOWN_VERBS` set).
 
     EXPLICIT — never at import (keeps the empty-registry gate tests valid). Seams pass through so a
     test/edge can inject the render engine + currency resolver (no live call)."""
@@ -840,3 +991,4 @@ def register_api_handlers(
         resolver=currency_resolver, action_vocab=CONTINUE_ACTIONS
     )
     manifest.register_emit_manifest_handler(resolver=currency_resolver)
+    register_emit_outline_handler()

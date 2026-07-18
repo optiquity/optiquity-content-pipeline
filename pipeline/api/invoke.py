@@ -53,7 +53,9 @@ __all__ = [
 
 #: §21.1 verb map — the closed verb set. Read/Discovery: `list`, `get`. Generation/Session:
 #: `begin-session`, `continue-session`. Folio: `create-folio`, `add-to-folio`. Output/
-#: Retrieval: `emit-manifest`, `fetch-by-id`, `render`. Anything else → `unknown-verb`.
+#: Emit/Retrieval: `emit-manifest`, `emit-outline` (DR-3 horn (a)/B1 — a hand-authored outline
+#: -> a byte-faithful `Format=outline` artifact), `fetch-by-id`, `render`. Anything else →
+#: `unknown-verb`.
 KNOWN_VERBS = frozenset(
     {
         "list",
@@ -63,6 +65,7 @@ KNOWN_VERBS = frozenset(
         "create-folio",
         "add-to-folio",
         "emit-manifest",
+        "emit-outline",
         "fetch-by-id",
         "render",
     }
@@ -401,7 +404,8 @@ def main_cli(argv: list[str] | None = None) -> int:
     full render→retrieve loop is reachable here. SECURITY (§21.9): only those two verbs are
     wired. Operator-only verbs (`drift-report`, …) are NOT in `KNOWN_VERBS` → structurally
     unreachable through this door (they answer `unknown-verb`); the live-quota session verbs
-    (`begin-session`/`continue-session`/…) stay honestly `HandlerNotWired` → exit 3.
+    (`begin-session`/`continue-session`/…) and the `emit-outline` producer verb (reachable via
+    programmatic `invoke()`, deliberately not CLI-wired) stay honestly `HandlerNotWired` → exit 3.
 
     n8n Execute Command CAVEAT (research 3a): the node is **off by default starting n8n v2.0**
     and is **unavailable on n8n Cloud** — SELF-HOSTED only. To drive this door from n8n, self-host
