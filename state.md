@@ -97,9 +97,27 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     `ops-handoff/dr6-build/{coder,reviewer}-0{1..4}*`. **NOT built** (deferred/reconsiderable): the Option-C
     hard self-demarcation coverage gate, `.framing`, the corpus migration — or a future fact-checking
     docs-researcher agent instead.
-  - **PENDING maintainer go-ahead:** the `docs/design.md` body doc-sync (§15 attestation/`ir_version`;
-    §6.3/§12.1 `grounding_posture`; §6.5/§19/§21.7 the advisory audit + abstain) + a small `ir.py`
-    module-docstring note + a mission changelog entry — proposed, not yet landed (edits the ratified SSOT).
+  - **Design-authority doc-sync LANDED** (`5814901`): `docs/design.md` §15 attestation/`ir_version`,
+    §6.3/§12.1 `grounding_posture`, §6.5/§19/§21.7 the advisory audit + abstain, + the `ir.py` docstring
+    note + mission `0.2.1` changelog. Reviewer CLEAN. **DR-6 increment 1 fully closed.**
+
+- **DR-3 (optional editable outline) — BUILT (horn (a) fixed posture + B1 usable product).** The reconciled
+  foundation+feature plan, each commit coder → reviewer → (fix) → commit under the standing cadence:
+  - Foundation (identity-safe): `48393f8` outline normalizer N + `outline_digest` + #3a N-invariance reservation ·
+    `f81d7a4` the `outline-digest` preimage extension (zero-churn, omit-when-absent) · `6d7273d` `formats/outline.md`.
+  - Feature: `6f327c6` emit bridge `build_outline_ir` · `c562ec1` pre-compose outline store (`outlines/`,
+    bare-digest, retain-all) · `90e5f1a` drive path (high-salience brief, horn (a) content+structure,
+    digest-fidelity guard) · `db7979a` `emit-outline` verb (the maintainer-chosen explicit output trigger).
+  - **Decisions (ratified at the plan gate):** horn (a) fixed posture (per-request facet choice RETIRED —
+    hand-editing covers it, horn (b) could mask bad goals/unavailable content); B1 usable product; emit surface
+    = an explicit `emit-outline` verb. **Identity:** non-outline artifact-ids byte-unchanged; the driven/emitted
+    id rides the single `outline-digest` component (no `drive-config`/facet key).
+  - Doc-sync `81a58a1` (design.md §5.2/§7.2/§12.1/§15/§21.1/§27.3 + known-issues DR-3 build-status + mission `0.2.2`).
+  - Gate: `2135 passed, 6 deselected`, ruff + guard clean. Reports: `ops-handoff/dr3-build/`.
+  - **DEFERRED:** the LLM outline drafter (GAP-7 mirror); the R1 compose-input-brief **live ablation** (needs
+    live generation — offered as a maintainer-run measurement; the design is safe regardless).
+  - **NEXT in the build order:** `DR-4 (content templates) → DR-5 (style placement) → DR-2 (style guides)` —
+    await maintainer direction.
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
