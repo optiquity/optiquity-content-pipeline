@@ -726,3 +726,120 @@ class TestOutlineEmit:
         second = build_outline_ir(md, artifact_id=artifact_id, preimage=preimage, store=store)
         assert store.output_path(artifact_id).read_bytes() == before
         assert second == first
+
+
+# --- DR-3 Commit 6: the outline DRIVE path (digest fidelity; B2 total rule; fixed posture) ---
+
+
+class TestOutlineDriveCompose:
+    """DR-3 Commit 6 (horn (a) / B1): a driven `ComposeRequest.outline_brief` inserts a
+    HIGH-SALIENCE drive block into the writer PROMPT and is bound to the artifact's claimed
+    identity by the compose digest-fidelity guard. B2 total rule: the brief NEVER sets
+    `format.parts` / any cascade-bound attribute and never enters the binding. Fixed posture
+    (horn (a)): no facet parameter, no new preimage key — the `outline-digest` alone is the
+    identity carrier."""
+
+    MD = "# Brief\n\n- lead with the problem\n- then the fix\n"
+
+    def _preimage(self, md: str) -> dict:
+        return build_artifact_preimage(
+            topic=EntryBinding("topic-x"),
+            persona=EntryBinding("hiring-manager"),
+            format=EntryBinding("readme"),
+            voice=EntryBinding("business"),
+            goals=[EntryBinding("explain")],
+            source_subset=["acme-graph"],
+            source_commit={"acme-graph": COMMIT_SHA},
+            outline_digest=outline_digest(md),
+        )
+
+    def _driven_request(self, **over) -> ComposeRequest:
+        preimage = self._preimage(self.MD)
+        base = {
+            "artifact_id": mint_artifact_id(preimage),
+            "preimage": preimage,
+            "format_parts": (),
+            "effective_values": {"voice": {"tone": "business"}},
+            "grounded_facts": (make_fact(),),
+            "source_repos": {"acme-graph": "github.com/acme/widget"},
+            "outline_brief": normalize_outline(self.MD),
+        }
+        base.update(over)
+        return ComposeRequest(**base)
+
+    def test_matching_brief_passes_the_guard_and_persists(self, store, claims):
+        request = self._driven_request()
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        # the brief rode the PROMPT (high-salience), never identity/binding.
+        prompt = runner.requests[0].stdin_text
+        assert "lead with the problem" in prompt
+        assert "HIGHEST PRECEDENCE (DR-3" in prompt
+        # B2 total rule: a FLAT body (never a parts list); the binding is preimage-only.
+        assert "body" in outcome.ir and "parts" not in outcome.ir
+        assert outcome.ir["binding"]["preimage"] == dict(request.preimage)
+        assert outcome.ir["binding"]["artifact_id"] == request.artifact_id
+
+    def test_the_brief_never_appears_in_the_persisted_binding(self, store, claims):
+        # the brief is a compose INPUT; only the outline-DIGEST rides identity, never the text.
+        request = self._driven_request()
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert "lead with the problem" not in json.dumps(outcome.ir["binding"])
+        assert "format.parts" not in json.dumps(outcome.ir["binding"])
+
+    def test_mismatched_brief_digest_raises_compose_error(self, store, claims):
+        # (ii) a brief whose digest != the pinned preimage outline-digest is a LOUD ComposeError,
+        # BEFORE any LLM call, and NEVER persisted (never a re-ask, never silent).
+        request = self._driven_request(outline_brief="# DIFFERENT\n\n- other point\n")
+        never = NeverRunner()
+        with pytest.raises(ComposeError, match="digest fidelity|does not match"):
+            compose_artifact(request, store=store, claims=claims, runner=never)
+        assert never.calls == 0
+        assert not store.output_path(request.artifact_id).exists()
+
+    def test_brief_on_an_outline_less_preimage_raises(self, store, claims):
+        # a brief set on a 4-key (outline-less) preimage is a wiring defect — the claimed identity
+        # carries no outline-digest, so the guard refuses loudly (None != actual digest).
+        preimage = make_preimage()  # 4-key, no outline-digest
+        request = ComposeRequest(
+            artifact_id=mint_artifact_id(preimage),
+            preimage=preimage,
+            format_parts=(),
+            effective_values={},
+            grounded_facts=(make_fact(),),
+            source_repos={"acme-graph": "github.com/acme/widget"},
+            outline_brief=normalize_outline(self.MD),
+        )
+        with pytest.raises(ComposeError):
+            compose_artifact(request, store=store, claims=claims, runner=NeverRunner())
+
+    def test_cosmetic_brief_edit_keeps_identity_and_passes_the_guard(self, store, claims):
+        # a COSMETIC edit (N-identical: trailing ws + blank-run collapse) keeps the same digest ->
+        # the same artifact-id, and the guard still passes (the loaded brief is always N(md)).
+        cosmetic = "# Brief\n\n\n- lead with the problem   \n- then the fix\n\n"
+        assert outline_digest(cosmetic) == outline_digest(self.MD)
+        request = self._driven_request(outline_brief=normalize_outline(cosmetic))
+        assert request.artifact_id == mint_artifact_id(self._preimage(self.MD))
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        assert compose_artifact(request, store=store, claims=claims, runner=runner).status == "ok"
+
+    def test_outline_less_compose_is_unchanged_and_has_no_drive_block(self, store, claims):
+        # (iii) an outline-LESS request (default outline_brief=None) composes exactly as before and
+        # the prompt carries NO drive block (the brief CONTENT is absent).
+        request = make_request()
+        assert request.outline_brief is None
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        assert "lead with the problem" not in runner.requests[0].stdin_text
+        assert "HIGHEST PRECEDENCE (DR-3" not in runner.requests[0].stdin_text

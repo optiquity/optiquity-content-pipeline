@@ -72,6 +72,7 @@ from pipeline.dispatch import (
 from pipeline.fanout import SelectionRequest
 from pipeline.grounding import GroundingOutcome, build_pool, ground_item
 from pipeline.ids import mint_artifact_id
+from pipeline.outline_store import get_outline
 from pipeline.plan import DeliverableItem, Plan, PlanItem, resolve_plan
 from pipeline.reconcile import ReconcileRequest, reconcile
 from pipeline.serialize import (
@@ -744,6 +745,20 @@ def _run_artifact(
     )
     format_parts = tuple(compose.format.values.get("parts") or ())
 
+    # DR-3 (horn (a)): load the DRIVING outline brief from the pre-compose outline store by the
+    # item's `outline-digest`. The digest already rode identity (item.preimage carries it); the
+    # brief is the compose INPUT the digest-fidelity guard binds to that identity. An item that
+    # claims an outline the store lacks is a loud wiring defect, never a silent skip (§3.1).
+    outline_brief: str | None = None
+    if item.outline_digest is not None:
+        outline_brief = get_outline(store, item.outline_digest)
+        if outline_brief is None:
+            raise DriverError(
+                f"driver-error: artifact {item.artifact_id} is driven by outline-digest "
+                f"{item.outline_digest} but no such outline is in the store — ingest it before "
+                "driving (DR-3 drive path); never a silent skip (§3.1)"
+            )
+
     request = ComposeRequest(
         artifact_id=item.artifact_id,
         preimage=item.preimage,
@@ -751,6 +766,7 @@ def _run_artifact(
         effective_values=_effective_values(compose),
         grounded_facts=published,
         source_repos=source_repos,
+        outline_brief=outline_brief,
     )
     log(f"  compose: LIVE writer call ({len(published)} grounded fact(s))...")
     cout = compose_artifact(

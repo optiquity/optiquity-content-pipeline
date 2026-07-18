@@ -25,10 +25,11 @@ import pytest
 
 from pipeline.canonical import canonical_json_str, digest_full
 from pipeline.cascade import CascadeEnv
-from pipeline.fanout import FanoutError, SelectionRequest
+from pipeline.fanout import ContentCombination, FanoutError, SelectionRequest
 from pipeline.ids import PreimageError, parse_id
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.m1 import UnknownEntryError
+from pipeline.outline import outline_digest
 from pipeline.plan import Plan, plan_payload, resolve_plan
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -719,3 +720,51 @@ def test_weak_platform_output_type_default_rides_the_coordinates(tmp_path: Path)
     (deliverable,) = item.deliverables
     assert deliverable.output_type == "html"
     assert deliverable.deliverable_id.endswith(".corporate-website.en.html.plain")
+
+
+# ------------------------------------------------------------------------------------
+# DR-3 (horn (a) / B1): the outline DRIVE path — the edit is identity-bearing via the digest
+# ------------------------------------------------------------------------------------
+
+_D_A = outline_digest("# A\n\n- alpha\n- beta\n")
+_D_B = outline_digest("# B\n\n- gamma\n")
+
+
+def test_outline_drives_a_distinct_artifact_id(tmp_path: Path) -> None:
+    root = build_root(tmp_path)
+    # the outline map keys on the pre-resolution content COORDINATE (unselected slots are None).
+    coord = ContentCombination(topic="x-t-alpha", persona=None, format=None, voice=None, goals=None)
+    req = lambda outlines: SelectionRequest(  # noqa: E731
+        recipe="explainer-post", topics=["x-t-alpha"], platforms=["github"], outlines=outlines
+    )
+    base = plan_for(root, req({}))
+    plan_a = plan_for(root, req({coord: _D_A}))
+    plan_b = plan_for(root, req({coord: _D_B}))
+    (base_item,) = base.items
+    (ia,) = plan_a.items
+    (ib,) = plan_b.items
+
+    # (i) two DIFFERENT edited outlines over the SAME coordinate -> DIFFERENT driven artifact-ids.
+    assert ia.artifact_id != ib.artifact_id
+    # the digest rides the item AND enters the §7.2 preimage (the SOLE new component).
+    assert ia.outline_digest == _D_A and ia.preimage["outline-digest"] == _D_A
+    assert ib.outline_digest == _D_B and ib.preimage["outline-digest"] == _D_B
+    # (iii) the outline-LESS coordinate is byte-identical to today: NO outline-digest key; the
+    # 4-key id; and driving changes identity (an outline-less id != a driven id).
+    assert base_item.outline_digest is None
+    assert "outline-digest" not in base_item.preimage
+    assert base_item.artifact_id != ia.artifact_id
+    # the plan_hash moves honestly with the outline (the preimage-digest carries it).
+    assert base.plan_hash != plan_a.plan_hash
+    assert plan_a.plan_hash != plan_b.plan_hash
+
+
+def test_outline_less_plan_is_byte_identical_to_no_outlines_arg(tmp_path: Path) -> None:
+    # regression proof (iii), plan-level: passing an EMPTY outline map yields the byte-identical
+    # plan (same artifact-ids, same plan_hash) as passing no map at all.
+    root = build_root(tmp_path)
+    r = SelectionRequest(recipe="explainer-post", topics=["x-t-alpha"], platforms=["github"])
+    r_empty = SelectionRequest(
+        recipe="explainer-post", topics=["x-t-alpha"], platforms=["github"], outlines={}
+    )
+    assert plan_for(root, r).plan_hash == plan_for(root, r_empty).plan_hash

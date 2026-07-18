@@ -58,9 +58,10 @@ In-latitude decisions (step-19 coder; grounded in the report):
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from itertools import product
+from typing import Any
 
 from pipeline.attrtypes import AttrTypeSpec, ValueValidationError, validate_value
 
@@ -76,6 +77,8 @@ __all__ = [
     "RenderCoordinate",
     "SelectionRequest",
     "content_combinations",
+    "coordinate_from_payload",
+    "coordinate_payload",
     "goal_set_overloaded",
     "pairing_advisory",
     "render_coordinates",
@@ -205,12 +208,33 @@ class SelectionRequest:
     languages: tuple[str, ...] = ()
     output_types: tuple[str, ...] = ()
     presentations: tuple[str, ...] = ()
+    #: DR-3 (horn (a) / B1): the per-COORDINATE outline DRIVE map. Each key is a
+    #: `ContentCombination` coordinate (goals canonicalized to sorted order — the §7.2
+    #: goal-set is a set); each value the BARE 64-char lowercase-hex `outline-digest` of an
+    #: ALREADY-STORED outline (never raw text — ingest happens upstream). Normalized to a
+    #: deterministic tuple of `(coordinate, digest)` pairs, consumed per-combo by
+    #: `resolve_plan` (`outline_for`). Absent/empty -> today's behavior, byte-identical.
+    outlines: Mapping[ContentCombination, str] | tuple[tuple[ContentCombination, str], ...] = ()
 
     def __post_init__(self) -> None:
         _require_slug(self.recipe, "recipe")
         for axis in (*CONTENT_AXES, *RENDERING_AXES):
             object.__setattr__(self, axis, _normalize_axis(getattr(self, axis), axis))
         object.__setattr__(self, "goal_sets", _normalize_goal_sets(self.goal_sets))
+        object.__setattr__(self, "outlines", _normalize_outlines(self.outlines))
+
+    def outline_for(self, combo: ContentCombination) -> str | None:
+        """The DRIVE `outline-digest` for one content coordinate, or None (§8 / DR-3).
+
+        Goals canonicalize to sorted order before the lookup (the §7.2 goal-set is a set),
+        so the map matches artifact identity regardless of authored goal order. `resolve_plan`
+        calls this per `ContentCombination` to thread the digest into the preimage; an absent
+        coordinate resolves outline-less — the byte-identical 4-key id (horn (a) adds no key)."""
+        key = _canonical_coordinate(combo)
+        for stored, digest in self.outlines:
+            if stored == key:
+                return digest
+        return None
 
 
 @dataclass(frozen=True)
@@ -248,6 +272,139 @@ def content_combinations(request: SelectionRequest) -> tuple[ContentCombination,
             _axis_or_unset(request.voices),
             request.goal_sets if request.goal_sets else (None,),
         )
+    )
+
+
+# --- DR-3 outline DRIVE coordinates (the per-item outline map; §8 / horn (a)) ---------------
+
+_OUTLINE_DIGEST_LEN = 64
+_OUTLINE_DIGEST_ALPHABET = frozenset("0123456789abcdef")
+
+
+def _require_outline_digest_ref(value: object, where: str) -> str:
+    """A BARE 64-char lowercase-hex `outline-digest` (a content address, NEVER a §7.4 id).
+
+    Validated DIRECTLY here (pure enumeration — no `pipeline.ids` / `pipeline.outline` import):
+    exactly 64 lowercase-hex chars. `pipeline.ids._require_outline_digest` re-checks it at the
+    mint boundary, so this is the request-boundary teeth (mirrors `_require_slug`)."""
+    if not (
+        isinstance(value, str)
+        and len(value) == _OUTLINE_DIGEST_LEN
+        and set(value) <= _OUTLINE_DIGEST_ALPHABET
+    ):
+        raise FanoutError(
+            f"invalid-selection: {where} must be a BARE 64-char lowercase-hex outline-digest "
+            f"(a content address from pipeline.outline.outline_digest, NOT a §7.4 id), got "
+            f"{value!r}"
+        )
+    return value
+
+
+def _canonical_coordinate(combo: ContentCombination) -> ContentCombination:
+    """The §7.2-canonical coordinate: goals SORTED (the goal-set is a set), everything else
+    as-is. Two coordinates differing only in authored goal ORDER canonicalize equal — they
+    name ONE artifact (the preimage sorts goals), so the outline map keys on the sorted form."""
+    goals = tuple(sorted(combo.goals)) if combo.goals is not None else None
+    return ContentCombination(
+        topic=combo.topic,
+        persona=combo.persona,
+        format=combo.format,
+        voice=combo.voice,
+        goals=goals,
+    )
+
+
+def _coordinate_sort_key(combo: ContentCombination) -> tuple[Any, ...]:
+    return (
+        combo.topic or "",
+        combo.persona or "",
+        combo.format or "",
+        combo.voice or "",
+        combo.goals if combo.goals is not None else (),
+    )
+
+
+def _normalize_outlines(raw: object) -> tuple[tuple[ContentCombination, str], ...]:
+    """Normalize `SelectionRequest.outlines` to a deterministic tuple of
+    `(canonical-coordinate, digest)` pairs. Accepts a `Mapping[ContentCombination, str]` (or
+    an already-normalized sequence of pairs). Each coordinate's axis slugs validate via the
+    §7.4 slug alphabet; each digest is a bare 64-hex content address; a duplicate canonical
+    coordinate is loud (never a silent last-wins). Empty -> `()` (outline-less, byte-neutral)."""
+    if raw is None:
+        return ()
+    if isinstance(raw, Mapping):
+        pairs = list(raw.items())
+    elif isinstance(raw, Sequence) and not isinstance(raw, str | bytes):
+        pairs = list(raw)
+    else:
+        raise FanoutError(
+            "invalid-selection: outlines must be a mapping of ContentCombination coordinate "
+            f"-> outline-digest (DR-3 drive map), got {type(raw).__name__}: {raw!r}"
+        )
+    normalized: dict[ContentCombination, str] = {}
+    for pair in pairs:
+        try:
+            combo, digest = pair
+        except (TypeError, ValueError) as exc:
+            raise FanoutError(
+                "invalid-selection: an outlines entry must be a (coordinate, digest) pair, "
+                f"got {pair!r}"
+            ) from exc
+        if not isinstance(combo, ContentCombination):
+            raise FanoutError(
+                "invalid-selection: an outline map key must be a ContentCombination coordinate "
+                f"(topic/persona/format/voice/goals), got {type(combo).__name__}: {combo!r}"
+            )
+        for name, value in (
+            ("topic", combo.topic),
+            ("persona", combo.persona),
+            ("format", combo.format),
+            ("voice", combo.voice),
+        ):
+            if value is not None:
+                _require_slug(value, f"outline coordinate {name}")
+        if combo.goals is not None:
+            for goal in combo.goals:
+                _require_slug(goal, "outline coordinate goal")
+        canonical = _canonical_coordinate(combo)
+        if canonical in normalized:
+            raise FanoutError(
+                "invalid-selection: two outline entries name the same coordinate "
+                f"{_coordinate_sort_key(canonical)!r} — one outline drives one artifact "
+                "(DR-3); loud, never a silent last-wins"
+            )
+        normalized[canonical] = _require_outline_digest_ref(digest, "outline-digest")
+    return tuple(sorted(normalized.items(), key=lambda kv: _coordinate_sort_key(kv[0])))
+
+
+def coordinate_payload(combo: ContentCombination) -> dict[str, Any]:
+    """The JSON-native projection of one content coordinate (the token/wire form; §20).
+
+    Round-trips with `coordinate_from_payload`; `None` axes stay `None`, goals as a list or
+    `None`. The single source of the coordinate shape the session layer serializes."""
+    return {
+        "topic": combo.topic,
+        "persona": combo.persona,
+        "format": combo.format,
+        "voice": combo.voice,
+        "goals": list(combo.goals) if combo.goals is not None else None,
+    }
+
+
+def coordinate_from_payload(payload: Mapping[str, Any]) -> ContentCombination:
+    """Reconstruct a `ContentCombination` coordinate from its JSON projection (§20 round-trip)."""
+    if not isinstance(payload, Mapping):
+        raise FanoutError(
+            f"invalid-selection: an outline coordinate must be a mapping, got "
+            f"{type(payload).__name__}"
+        )
+    goals = payload.get("goals")
+    return ContentCombination(
+        topic=payload.get("topic"),
+        persona=payload.get("persona"),
+        format=payload.get("format"),
+        voice=payload.get("voice"),
+        goals=tuple(goals) if goals is not None else None,
     )
 
 

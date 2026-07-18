@@ -153,6 +153,11 @@ class PlanItem:
     goals: tuple[str, ...]
     m3: EffectiveSelection
     deliverables: tuple[DeliverableItem, ...]
+    #: DR-3 (horn (a)): the DRIVING outline's bare `outline-digest`, or None (outline-less).
+    #: Rides the plan so the driver loads the brief from the outline store at drive time. The
+    #: digest ALSO entered `preimage` via `artifact_preimage(outline_digest=)` — identity
+    #: already carries it; this is the driver's convenience handle, NOT a 2nd identity input.
+    outline_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -396,10 +401,16 @@ def resolve_plan(
 
     items: dict[str, PlanItem] = {}
     for combo in content_combinations(request):
+        # DR-3 (horn (a)): the per-coordinate DRIVE outline (bare digest), or None. When set it
+        # enters the §7.2 preimage as the SOLE new component (`artifact_preimage(outline_digest=)`)
+        # — an outline-less coordinate mints the byte-identical 4-key id (horn (a) adds no key).
+        outline_digest = request.outline_for(combo)
         compose = resolve_compose(env, _content_selection(request.recipe, combo))
         log.extend(compose.warnings)
         preimage = compose.artifact_preimage(
-            source_subset=source_subset, source_commit=source_commit
+            source_subset=source_subset,
+            source_commit=source_commit,
+            outline_digest=outline_digest,
         )
         artifact_id = mint_artifact_id(preimage)
         goals = tuple(sorted(goal.entry_id for goal in compose.goals))
@@ -447,6 +458,7 @@ def resolve_plan(
             voice=compose.voice.entry_id,
             goals=goals,
             m3=m3,
+            outline_digest=outline_digest,
             deliverables=_resolve_deliverables(
                 env, request, compose, artifact_id, coordinates, log
             ),

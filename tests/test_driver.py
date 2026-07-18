@@ -17,6 +17,7 @@ surgical, non-live changes step 33 made:
 from __future__ import annotations
 
 import ast
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,7 +25,13 @@ import pytest
 
 from pipeline import driver, review
 from pipeline.api import results
+from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id
 from pipeline.m3 import resolve_selection
+from pipeline.outline import normalize_outline, outline_digest
+from pipeline.outline_store import put_outline
+from pipeline.plan import Plan, PlanItem
+from pipeline.spine import registry_for
+from pipeline.ssot import Ssot
 from pipeline.store import WorkspaceStore
 
 
@@ -204,3 +211,120 @@ class TestGroundingAbstain:
         store = self._store(tmp_path)
         store.review_path(self.AID).write_bytes(b'{"checks":{"grounding":{}}}')
         assert driver._grounding_abstain_check(store, self._item("block")) is None
+
+
+class TestOutlineBriefLoad:
+    """DR-3 Commit 6 (horn (a)): `_run_artifact` loads the DRIVING outline brief from the
+    pre-compose outline store by `item.outline_digest` and sets it on the `ComposeRequest`. A unit
+    on the driver WIRING — grounding + compose are monkeypatched (no live call, no pandoc); the
+    real `compose_artifact` digest-fidelity guard is covered in `tests/test_compose.py`."""
+
+    MD = "# Drive\n\n- point a\n- point b\n"
+
+    def _harness(self, tmp_path):
+        store = WorkspaceStore(tmp_path / "ws")
+        store.ensure_layout()
+        claims = registry_for(store)
+        ssot = Ssot(store.root / "ssot.csv")
+        digest = outline_digest(self.MD)
+        preimage = build_artifact_preimage(
+            topic=EntryBinding("t"),
+            persona=EntryBinding("p"),
+            format=EntryBinding("f"),
+            voice=EntryBinding("v"),
+            goals=[],
+            source_subset=["s"],
+            source_commit={"s": "c0ffee0123ab"},
+            outline_digest=digest,
+        )
+        item = PlanItem(
+            artifact_id=mint_artifact_id(preimage),
+            preimage=preimage,
+            topic="t",
+            persona="p",
+            format="f",
+            voice="v",
+            goals=(),
+            m3=resolve_selection(run=None),
+            deliverables=(),
+            outline_digest=digest,
+        )
+        plan = Plan(
+            workspace="ws",
+            recipe="r",
+            source_subset=("s",),
+            source_commit={"s": "c0ffee0123ab"},
+            items=(item,),
+            plan_hash="feedfacefeedface",
+            warnings=(),
+        )
+        return store, claims, ssot, plan, item
+
+    def _patch_stages(self, monkeypatch):
+        monkeypatch.setattr(
+            driver,
+            "ground_item",
+            lambda **kw: SimpleNamespace(
+                status="ok", publishable_facts=("F",), facts=("F",), commit_map={}
+            ),
+        )
+        monkeypatch.setattr(
+            driver,
+            "resolve_compose",
+            lambda env, sel: SimpleNamespace(
+                topic=SimpleNamespace(values={}, entry_id="t"),
+                persona=SimpleNamespace(values={}, entry_id="p"),
+                format=SimpleNamespace(values={}, entry_id="f"),
+                voice=SimpleNamespace(values={}, entry_id="v"),
+                goals=(),
+            ),
+        )
+
+    def _run(self, store, claims, ssot, plan, item):
+        return driver._run_artifact(
+            env=SimpleNamespace(workspace="ws"),
+            store=store,
+            claims=claims,
+            ssot=ssot,
+            plan=plan,
+            item=item,
+            pool=(),
+            adapters={},
+            source_repos={"s": "repo"},
+            now=date.today(),
+            model=None,
+            log=lambda _m: None,
+        )
+
+    def test_brief_is_loaded_from_the_store_and_set_on_the_request(self, tmp_path, monkeypatch):
+        store, claims, ssot, plan, item = self._harness(tmp_path)
+        put_outline(store, self.MD)  # ingest the DRIVING outline into the pre-compose store
+        self._patch_stages(monkeypatch)
+
+        class _Stop(Exception):
+            pass
+
+        captured = {}
+
+        def _capture(request, **_kw):
+            captured["brief"] = request.outline_brief
+            captured["preimage_digest"] = request.preimage.get("outline-digest")
+            raise _Stop()
+
+        monkeypatch.setattr(driver, "compose_artifact", _capture)
+        with pytest.raises(_Stop):
+            self._run(store, claims, ssot, plan, item)
+        # the driver loaded N(md) by the item's digest and set it on the ComposeRequest, and the
+        # request's identity carries the SAME digest (the fidelity guard would bind them).
+        assert captured["brief"] == normalize_outline(self.MD)
+        assert captured["preimage_digest"] == item.outline_digest
+
+    def test_missing_outline_is_a_loud_driver_error(self, tmp_path, monkeypatch):
+        store, claims, ssot, plan, item = self._harness(tmp_path)
+        # deliberately do NOT put the outline -> the store lacks item.outline_digest.
+        self._patch_stages(monkeypatch)
+        monkeypatch.setattr(
+            driver, "compose_artifact", lambda *a, **k: pytest.fail("compose must not run")
+        )
+        with pytest.raises(driver.DriverError, match="no such outline"):
+            self._run(store, claims, ssot, plan, item)

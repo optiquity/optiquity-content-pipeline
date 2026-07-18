@@ -85,7 +85,7 @@ from pipeline.canonical import canonical_json_bytes
 from pipeline.claims import ClaimRegistry
 from pipeline.grounding import GroundedFact
 from pipeline.ids import part_id
-from pipeline.outline import normalize_outline
+from pipeline.outline import normalize_outline, outline_digest
 from pipeline.prompts import load_template
 from pipeline.review import ReviewOutcome
 from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive
@@ -150,6 +150,12 @@ class ComposeRequest:
     roster: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
     packaging_hints: Mapping[str, str] = field(default_factory=dict)
+    #: DR-3 (horn (a) / B1): the DRIVING outline brief — the stored, normalized outline
+    #: Markdown (`N(md)`) the driver loads by the item's `outline-digest`. When set it inserts
+    #: a HIGH-SALIENCE drive block into the writer prompt (outranks the dimensions for the body
+    #: skeleton / emphasis / order) and is bound to identity by the compose digest-fidelity
+    #: guard. None -> no drive block -> the prompt is byte-identical to the pre-DR-3 assembly.
+    outline_brief: str | None = None
 
     @property
     def is_flat(self) -> bool:
@@ -302,6 +308,29 @@ def _structure_context(request: ComposeRequest) -> dict[str, Any]:
     }
 
 
+def _outline_brief_blocks(brief: str) -> list[str]:
+    """The HIGH-SALIENCE drive-brief block (DR-3 horn (a), FIXED posture). Present ONLY when the
+    request carries an `outline_brief`; the pre-DR-3 assembly is byte-unchanged without one. The
+    posture is a compose CONSTANT — the outline drives BOTH content AND structure — never a facet
+    parameter, never a cascade rung, and never sets `format.parts` / any bound attr (B2)."""
+    return [
+        "",
+        "## Drive brief — HIGHEST PRECEDENCE (DR-3, follow for BOTH content and structure)",
+        (
+            "An author-supplied outline drives THIS artifact. It OUTRANKS the dimension "
+            "parameters above for the rhetorical body skeleton, the content emphasis, and the "
+            "ordering — follow it for BOTH content and structure. It is INSTRUCTION, not grounded "
+            "fact: it asserts nothing citable and licenses NO new claim. A point the outline calls "
+            "for that no listed fact supports stays an INFERRED/AMBIGUOUS lead (or is left "
+            "uncovered) — NEVER promote it to an EXTRACTED assertion, and never invent facts to "
+            "satisfy it (the grounding discipline still binds every span, §6.5)."
+        ),
+        "```markdown",
+        brief,
+        "```",
+    ]
+
+
 def build_writer_prompt(
     request: ComposeRequest,
     entries: Sequence[tuple[str, GroundedFact]],
@@ -324,6 +353,8 @@ def build_writer_prompt(
     # date/set in the effective-value view without failing — never a persisted record.
     context_json = json.dumps(context, indent=2, sort_keys=True, ensure_ascii=False, default=str)
     blocks = [template.rstrip(), "", "## Compose context (JSON)", "```json", context_json, "```"]
+    if request.outline_brief:  # DR-3: the high-salience drive block fires ONLY when set
+        blocks += _outline_brief_blocks(request.outline_brief)
     if reask_note:
         blocks += ["", "## Correction required (bounded re-ask)", reask_note]
     return "\n".join(blocks)
@@ -584,6 +615,24 @@ def compose_artifact(
     (injectable for tests; None = real transport, like the writer)."""
     if max_attempts < 1:
         raise ComposeError(f"compose-error: max_attempts must be ≥ 1, got {max_attempts}")
+    # DR-3 digest-fidelity guard (horn (a)): when a drive brief is shown it MUST be exactly the
+    # outline the artifact's identity claims. Bind the shown brief to the pinned preimage digest —
+    # a mismatch is a loud wiring defect (NEVER a re-ask, NEVER silent, §3.1). Runs on every path
+    # (fresh + idempotent) so a wrong-outline drive can never persist under a claimed id.
+    if request.outline_brief is not None:
+        claimed = (
+            request.preimage.get("outline-digest")
+            if isinstance(request.preimage, Mapping)
+            else None
+        )
+        actual = outline_digest(normalize_outline(request.outline_brief))
+        if claimed != actual:
+            raise ComposeError(
+                f"compose-error: the drive-brief outline-digest {actual} does not match the "
+                f"artifact's claimed preimage outline-digest {claimed!r} — the shown brief must "
+                "be EXACTLY the outline the identity claims (DR-3 digest fidelity); never a "
+                "re-ask, never silent"
+            )
     ledger, entries = build_grounding_ledger(
         request.grounded_facts, source_repos=request.source_repos
     )

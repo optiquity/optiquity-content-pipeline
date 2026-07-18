@@ -27,6 +27,8 @@ from pipeline.fanout import (
     RenderCoordinate,
     SelectionRequest,
     content_combinations,
+    coordinate_from_payload,
+    coordinate_payload,
     goal_set_overloaded,
     pairing_advisory,
     render_coordinates,
@@ -305,3 +307,54 @@ def test_goal_set_overload_threshold() -> None:
     assert not goal_set_overloaded(("a", "b", "c"))
     assert goal_set_overloaded(("a", "b", "c", "d"))
     assert not goal_set_overloaded(())
+
+
+# ------------------------------------------------------------------------------------
+# DR-3 (horn (a) / B1): the per-coordinate outline DRIVE map (SelectionRequest.outlines)
+# ------------------------------------------------------------------------------------
+
+
+class TestOutlineDriveMap:
+    """The `outlines` drive map: coordinate -> bare 64-hex outline-digest. Normalized to a
+    deterministic tuple of `(canonical-coordinate, digest)` pairs (goals SORTED — the §7.2
+    goal-set is a set); a bad digest / non-coordinate key / duplicate coordinate is LOUD; absent
+    -> `()` (outline-less, byte-neutral). `coordinate_payload`/`coordinate_from_payload` round-trip
+    (the §20 token/wire form)."""
+
+    D1 = "a" * 64
+    D2 = "b" * 64
+
+    def test_absent_outlines_is_empty(self):
+        assert SelectionRequest(recipe="explainer-post").outlines == ()
+
+    def test_mapping_is_normalized_to_sorted_pairs(self):
+        c = ContentCombination(topic="x-t", persona=None, format=None, voice=None, goals=None)
+        req = SelectionRequest(recipe="explainer-post", topics=["x-t"], outlines={c: self.D1})
+        assert req.outlines == ((c, self.D1),)
+
+    def test_outline_for_is_goal_order_independent(self):
+        # canonical: the map keys on the SORTED goal-set, so authored goal order does not matter.
+        key = ContentCombination("x-t", None, None, None, ("b", "a"))
+        req = SelectionRequest(recipe="explainer-post", topics=["x-t"], outlines={key: self.D1})
+        lookup = ContentCombination("x-t", None, None, None, ("a", "b"))
+        assert req.outline_for(lookup) == self.D1
+        assert req.outline_for(ContentCombination("x-t", None, None, None, None)) is None
+
+    def test_coordinate_payload_round_trips(self):
+        c = ContentCombination(topic="x-t", persona="p", format=None, voice="v", goals=("a", "b"))
+        assert coordinate_from_payload(coordinate_payload(c)) == c
+
+    def test_bad_digest_is_refused(self):
+        c = ContentCombination("x-t", None, None, None, None)
+        with pytest.raises(FanoutError):
+            SelectionRequest(recipe="explainer-post", outlines={c: "not-a-64-hex-digest"})
+
+    def test_non_coordinate_key_is_refused(self):
+        with pytest.raises(FanoutError):
+            SelectionRequest(recipe="explainer-post", outlines={"x-t": self.D1})
+
+    def test_duplicate_canonical_coordinate_is_loud(self):
+        a = ContentCombination("x-t", None, None, None, ("a", "b"))
+        b = ContentCombination("x-t", None, None, None, ("b", "a"))  # same sorted set
+        with pytest.raises(FanoutError, match="same coordinate"):
+            SelectionRequest(recipe="explainer-post", outlines=[(a, self.D1), (b, self.D2)])

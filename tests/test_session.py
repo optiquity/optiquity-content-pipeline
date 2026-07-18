@@ -46,6 +46,8 @@ from pipeline.api import token as token_mod
 from pipeline.driver import DriverError
 from pipeline.folios import create_folio
 from pipeline.lint import REGISTRY_ROOTS
+from pipeline.outline import outline_digest
+from pipeline.outline_store import get_outline, put_outline
 from pipeline.store import WorkspaceStore, is_done
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -604,3 +606,107 @@ class TestRegistration:
         # No injected handlers — the invoke uses the module registry the call wrote.
         out = invoke.invoke("begin-session", WS, base_params(), store=store, root=str(root))
         assert out["envelope"]["ok"] is True and "token" in out
+
+
+# --- DR-3 (horn (a) / B1): the outline INGEST + DRIVE legs, end-to-end via the existing verbs ---
+
+
+def outline_params(md: str, **over) -> dict:
+    """base_params + an `ingest_outlines` leg: hand-authored outline text for the x-t-alpha
+    coordinate. begin-session PUTS it in the store and folds its digest into the drive map."""
+    p = base_params(**over)
+    p["ingest_outlines"] = [{"coordinate": {"topic": "x-t-alpha"}, "text": md}]
+    return p
+
+
+class TestOutlineDrive:
+    """DR-3 Commit 6 end-to-end (iv): a hand-authored outline is PUT in the store (ingest leg,
+    reusing begin-session — no new verb), DRIVES compose via the per-coordinate outlines map, and
+    is identity-bearing via its digest. A COSMETIC edit does not churn the driven artifact-id; a
+    SEMANTIC edit does. The drive map round-trips through the token so generate-next re-resolves
+    the SAME driven plan (no `plan-stale`)."""
+
+    MD_A = "# Outline A\n\n- alpha point\n- beta point\n"
+    MD_B = "# Outline B\n\n- gamma point\n"
+
+    def test_ingest_drives_a_distinct_artifact_id_and_stores_the_outline(self, tmp_path):
+        root = build_root(tmp_path)
+        store = store_for(root)
+        plain = begin(root, store, base_params(), hs=handlers())
+        driven = begin(root, store, outline_params(self.MD_A), hs=handlers())
+        plain_ids = plain["results"][0]["ids"]["artifact_ids"]
+        driven_ids = driven["results"][0]["ids"]["artifact_ids"]
+        # the outline is identity-bearing via its digest -> a DIFFERENT driven artifact-id.
+        assert plain_ids != driven_ids
+        # the ingest leg PUT the outline (content-addressed by its bare digest).
+        assert get_outline(store, outline_digest(self.MD_A)) is not None
+        # the token carries the DIGEST drive-map (round-trips to generate-next; never raw text).
+        decoded = token_mod.decode(driven["token"], expected_workspace=WS)
+        assert decoded.inputs["request"]["outlines"] == [
+            {
+                "coordinate": {
+                    "topic": "x-t-alpha",
+                    "persona": None,
+                    "format": None,
+                    "voice": None,
+                    "goals": None,
+                },
+                "outline_digest": outline_digest(self.MD_A),
+            }
+        ]
+
+    def test_cosmetic_edit_does_not_churn_semantic_does(self, tmp_path):
+        root = build_root(tmp_path)
+        store = store_for(root)
+        base_ids = begin(root, store, outline_params(self.MD_A), hs=handlers())[
+            "results"
+        ][0]["ids"]["artifact_ids"]
+        cosmetic = "# Outline A\n\n\n- alpha point   \n- beta point\n\n"  # N-identical to MD_A
+        cos_ids = begin(root, store, outline_params(cosmetic), hs=handlers())[
+            "results"
+        ][0]["ids"]["artifact_ids"]
+        sem_ids = begin(root, store, outline_params(self.MD_B), hs=handlers())[
+            "results"
+        ][0]["ids"]["artifact_ids"]
+        assert cos_ids == base_ids  # a cosmetic edit is N-invariant -> the SAME id
+        assert sem_ids != base_ids  # a semantic edit churns the id (the accepted R2 cost)
+
+    def test_outline_less_token_inputs_omit_the_drive_map(self, tmp_path):
+        # zero-churn (iii): an outline-LESS begin-session's token inputs carry NO `outlines` key.
+        root = build_root(tmp_path)
+        store = store_for(root)
+        decoded = decode(begin(root, store, base_params(), hs=handlers())["token"])
+        assert "outlines" not in decoded.inputs["request"]
+
+    def test_direct_digest_drive_map_works(self, tmp_path):
+        # the B1 digest form: a pre-stored outline supplied by digest under `outlines` drives too.
+        root = build_root(tmp_path)
+        store = store_for(root)
+        digest = put_outline(store, self.MD_A)
+        params = base_params(
+            outlines=[{"coordinate": {"topic": "x-t-alpha"}, "outline_digest": digest}]
+        )
+        driven = begin(root, store, params, hs=handlers())["results"][0]["ids"]["artifact_ids"]
+        plain_out = begin(root, store, base_params(), hs=handlers())
+        plain = plain_out["results"][0]["ids"]["artifact_ids"]
+        assert driven != plain
+
+    def test_generate_next_re_resolves_the_driven_plan_without_stale(self, tmp_path):
+        root = build_root(tmp_path)
+        store = store_for(root)
+        run = FakeRun()
+        hs = handlers(run)
+        begun = begin(root, store, outline_params(self.MD_A), hs=hs)
+        aid = begun["results"][0]["ids"]["artifact_ids"][0]
+        out = cont(root, store, {"action": "generate-next"}, begun["token"], hs=hs)
+        codes = [r.get("code") for r in out["results"]]
+        assert "plan-stale" not in codes  # the re-resolved driven plan matches the token plan_hash
+        assert run.calls == [aid]  # the DRIVEN item (its id carries the digest) materialized
+
+    def test_empty_ingest_outline_is_a_typed_block(self, tmp_path):
+        # §15 substance floor: an empty / no-substance ingested outline is a typed block.
+        root = build_root(tmp_path)
+        store = store_for(root)
+        out = begin(root, store, outline_params("   \n\n\t\n"), hs=handlers())
+        assert out["results"][0]["status"] == "block"
+        assert "token" not in out

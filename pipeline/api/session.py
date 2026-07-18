@@ -74,10 +74,17 @@ from pipeline.api import discovery, fetch, folio_verbs, manifest, render, result
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import token as token_mod
 from pipeline.cascade import CascadeEnv
-from pipeline.fanout import FanoutError, SelectionRequest
+from pipeline.fanout import (
+    FanoutError,
+    SelectionRequest,
+    coordinate_from_payload,
+    coordinate_payload,
+)
 from pipeline.folios import FolioError, create_folio
 from pipeline.grounding import build_pool
 from pipeline.m1 import UnknownEntryError
+from pipeline.outline import OutlineError
+from pipeline.outline_store import put_outline
 from pipeline.overrides import OverrideError
 from pipeline.plan import Plan, resolve_plan
 from pipeline.spine import registry_for
@@ -173,8 +180,38 @@ def _default_adapters() -> dict[str, SourceAdapter]:
     return {"graphify": GraphifyAdapter()}
 
 
+def _outlines_from_fields(raw: Any) -> list[tuple[Any, str]]:
+    """The DR-3 drive map from the request payload (§20): a list of
+    `{"coordinate": {...}, "outline_digest": <64hex>}` entries -> a list of
+    `(ContentCombination, digest)` pairs `SelectionRequest` normalizes (a duplicate coordinate
+    stays loud there — the list keeps both). Absent/empty -> `[]` (outline-less; byte-identical
+    to today). Round-trips with `_request_payload`."""
+    if not raw:
+        return []
+    if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
+        raise FanoutError(
+            "invalid-selection: `outlines` must be a list of {coordinate, outline_digest} "
+            f"entries (DR-3 drive map), got {type(raw).__name__}"
+        )
+    pairs: list[tuple[Any, str]] = []
+    for entry in raw:
+        if (
+            not isinstance(entry, Mapping)
+            or "coordinate" not in entry
+            or "outline_digest" not in entry
+        ):
+            raise FanoutError(
+                "invalid-selection: each `outlines` entry is "
+                "{coordinate: {...}, outline_digest: <64hex>} (DR-3), got "
+                f"{entry!r}"
+            )
+        pairs.append((coordinate_from_payload(entry["coordinate"]), entry["outline_digest"]))
+    return pairs
+
+
 def _request_from_fields(fields: Mapping[str, Any]) -> SelectionRequest:
-    """Build a `SelectionRequest` from a recipe + per-axis multi-selects (§8)."""
+    """Build a `SelectionRequest` from a recipe + per-axis multi-selects (§8) + the DR-3
+    per-coordinate outline drive map (`outlines`)."""
     return SelectionRequest(
         recipe=fields.get("recipe", ""),
         topics=tuple(fields.get("topics") or ()),
@@ -186,12 +223,16 @@ def _request_from_fields(fields: Mapping[str, Any]) -> SelectionRequest:
         languages=tuple(fields.get("languages") or ()),
         output_types=tuple(fields.get("output_types") or ()),
         presentations=tuple(fields.get("presentations") or ()),
+        outlines=_outlines_from_fields(fields.get("outlines")),
     )
 
 
 def _request_payload(request: SelectionRequest) -> dict[str, Any]:
-    """The canonical (JSON-native) request projection stored in the token inputs (§20)."""
-    return {
+    """The canonical (JSON-native) request projection stored in the token inputs (§20).
+
+    The DR-3 `outlines` drive map is OMITTED when empty (the omit-when-absent zero-churn
+    guarantee — an outline-less session's token inputs are byte-identical to pre-DR-3)."""
+    payload: dict[str, Any] = {
         "recipe": request.recipe,
         "topics": list(request.topics),
         "personas": list(request.personas),
@@ -203,6 +244,13 @@ def _request_payload(request: SelectionRequest) -> dict[str, Any]:
         "output_types": list(request.output_types),
         "presentations": list(request.presentations),
     }
+    outlines = [
+        {"coordinate": coordinate_payload(combo), "outline_digest": digest}
+        for combo, digest in request.outlines
+    ]
+    if outlines:
+        payload["outlines"] = outlines
+    return payload
 
 
 def _resolve_from_inputs(
@@ -271,13 +319,46 @@ def _resolve_target_folio(
     return target  # a concrete folio-id — its existence + workspace were vetted upstream
 
 
+def _ingest_outlines(store: Any, params: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """DR-3 (B1) ingest: put any hand-authored raw outline (`ingest_outlines`:
+    `[{"coordinate": {...}, "text": <md>}]`) into the pre-compose store and return the drive
+    map as digest entries, APPENDED to any already-stored `outlines` digest entries. Idempotent
+    / content-addressed (`put_outline`): the same text yields the same digest, so a retried
+    begin-session reproduces the identical plan_hash (§21.8). Raises `OutlineError` on an
+    empty/secret outline (§15/§3.3) — loud, never a silent skip."""
+    entries: list[dict[str, Any]] = list(params.get("outlines") or [])
+    for raw in params.get("ingest_outlines") or []:
+        if not isinstance(raw, Mapping):
+            raise OutlineError(
+                f"outline-invalid: each ingest_outlines entry is {{coordinate, text}}, got {raw!r}"
+            )
+        md = raw.get("text")
+        if not isinstance(md, str):
+            raise OutlineError(
+                "outline-invalid: an ingest_outlines `text` must be a string (the raw authored "
+                f"outline Markdown), got {type(md).__name__}"
+            )
+        digest = put_outline(store, md)  # N + §15/§3.3 refusals; content-addressed no-replace
+        entries.append({"coordinate": raw.get("coordinate"), "outline_digest": digest})
+    return entries
+
+
 def _begin_session(
     ctx: invoke_mod.HandlerContext, *, adapters: Mapping[str, SourceAdapter]
 ) -> tuple[Sequence[results.ResultItem], token_mod.Token | None]:
     """Resolve the plan (`generate = none` — nothing generated yet) and mint the token."""
     root = _root_of(ctx.store)
     try:
-        request = _request_from_fields(ctx.params)
+        # DR-3 (B1) INGEST leg: a hand-authored outline supplied as raw text under
+        # `ingest_outlines` is put into the pre-compose outline store NOW (content-addressed,
+        # §22.7) and folded into the drive map as its BARE digest — so the token carries only
+        # digests and generate-next re-resolves purely (§21.6). Already-stored digests supplied
+        # directly under `outlines` pass through unchanged. No new verb (reuses begin-session).
+        outline_entries = _ingest_outlines(ctx.store, ctx.params)
+    except OutlineError as exc:
+        return ([_block(f"begin-session could not ingest an outline (§15/§3.3): {exc}")], None)
+    try:
+        request = _request_from_fields({**ctx.params, "outlines": outline_entries})
     except FanoutError as exc:
         return ([_block(f"begin-session needs a valid recipe + selection (§8): {exc}")], None)
     try:

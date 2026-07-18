@@ -21,6 +21,13 @@ emit them.
 - **`roster`** — sibling artifact roles being generated in the same run, for light
   cross-linking ONLY (e.g. "see the getting-started guide"). It is context, never content
   you must cover, and never affects identity.
+- **Drive brief (optional, HIGHEST precedence)** — when a "Drive brief" section appears
+  BELOW the compose context, an author-supplied outline drives this artifact. Follow it for
+  BOTH content and structure (the body skeleton, the emphasis, and the ordering), OUTRANKING
+  the dimension parameters above. It is INSTRUCTION, not fact: it asserts nothing citable and
+  never licenses inventing a fact or promoting a lead to EXTRACTED — the grounding discipline
+  below still binds every claim (a point the brief calls for that no listed fact supports
+  stays an INFERRED/AMBIGUOUS lead, or is left uncovered; §6.5).
 
 ## Grounding discipline (HARD — the pipeline rejects violations and re-asks)
 
