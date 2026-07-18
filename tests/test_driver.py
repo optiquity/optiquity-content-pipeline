@@ -18,8 +18,13 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
-from pipeline import driver
+import pytest
+
+from pipeline import driver, review
+from pipeline.api import results
+from pipeline.m3 import resolve_selection
 from pipeline.store import WorkspaceStore
 
 
@@ -111,3 +116,91 @@ class TestReadStoredRecord:
         store = self._store(tmp_path)
         store.output_path(self.AID).write_bytes(b'{"body": "x", "binding": {}}')
         assert driver._read_stored_record(store, self.AID) == {"body": "x", "binding": {}}
+
+
+class TestGroundingAbstain:
+    """DR-6 (§6.5/§19; D1, §2.4): the opt-in item-level abstain. Under grounding_posture=block
+    ONLY, a PERSISTED Review-1 record with an advisory `grounding` concern makes THIS item abstain
+    with the §6.5/§19 `grounding-uncovered` GENERATION block; every other case FAILS OPEN (ships).
+    A pure unit on the seam — no grounding, no compose, no pandoc (mirrors TestReadStoredRecord)."""
+
+    AID = "a-0000000000000000"
+
+    def _store(self, tmp_path) -> WorkspaceStore:
+        store = WorkspaceStore(tmp_path / "ws")
+        store.ensure_layout()
+        return store
+
+    def _item(self, posture: str | None):
+        # A real folded EffectiveSelection carries grounding_posture; the seam reads item.m3 + id.
+        run = {"grounding_posture": posture} if posture is not None else None
+        return SimpleNamespace(m3=resolve_selection(run=run), artifact_id=self.AID)
+
+    def _persist_grounding_concern(self, store: WorkspaceStore) -> None:
+        # A faithful §19 Review-1 record whose advisory `grounding` check reads `concern`.
+        checks = {name: {"status": "pass", "note": ""} for name in review.ARTIFACT_CHECKS}
+        checks["grounding"] = {"status": "concern", "note": "advisory coverage gap"}
+        record = review.build_review_record(
+            review_type="artifact",
+            reviewed_id=self.AID,
+            reviewed_digest="0" * 64,
+            assessment={"verdict": "concerns", "checks": checks, "summary": "advisory review"},
+        )
+        assert review.persist_review_record(store, record)
+
+    def test_block_with_persisted_grounding_concern_abstains(self, tmp_path):
+        # (e) block + a persisted grounding concern → the item surfaces `grounding-uncovered`.
+        store = self._store(tmp_path)
+        self._persist_grounding_concern(store)
+        with pytest.raises(driver.DriverError) as excinfo:
+            driver._grounding_abstain_check(store, self._item("block"))
+        assert excinfo.value.stage_code == results.CODE_GROUNDING_UNCOVERED
+        spec = results.CODES[results.CODE_GROUNDING_UNCOVERED]
+        assert spec.tier == results.TIER_GENERATION and spec.statuses == ("block",)
+
+    def test_block_with_no_record_ships_and_is_redrive_stable(self, tmp_path):
+        # (g) S2 fail-open: block + NO persisted record → SHIPS, identically on a second (re-drive)
+        # call. Record-absent is deterministically SHIP (fail-OPEN) — the reviewer-pinned invariant.
+        store = self._store(tmp_path)
+        assert not store.review_path(self.AID).exists()
+        assert driver._grounding_abstain_check(store, self._item("block")) is None
+        assert driver._grounding_abstain_check(store, self._item("block")) is None
+
+    def test_default_warn_never_abstains_even_with_a_concern(self, tmp_path):
+        # control: default `warn` (today's behavior) NEVER abstains, even with a concern present.
+        store = self._store(tmp_path)
+        self._persist_grounding_concern(store)
+        assert driver._grounding_abstain_check(store, self._item(None)) is None
+
+    def test_block_with_a_pass_grounding_check_ships(self, tmp_path):
+        # fail-CLOSED only on `concern`: a persisted record whose grounding is `pass` SHIPS.
+        store = self._store(tmp_path)
+        checks = {name: {"status": "pass", "note": ""} for name in review.ARTIFACT_CHECKS}
+        record = review.build_review_record(
+            review_type="artifact",
+            reviewed_id=self.AID,
+            reviewed_digest="0" * 64,
+            assessment={"verdict": "pass", "checks": checks, "summary": "clean"},
+        )
+        assert review.persist_review_record(store, record)
+        assert driver._grounding_abstain_check(store, self._item("block")) is None
+
+    def test_block_with_a_malformed_record_fails_open(self, tmp_path):
+        # a partial/corrupt record fails OPEN (ships) — `.get(...)` never raises on a bad shape.
+        store = self._store(tmp_path)
+        store.review_path(self.AID).write_bytes(b"{ not valid json")
+        assert driver._grounding_abstain_check(store, self._item("block")) is None
+
+    def test_block_with_a_valid_json_non_object_record_ships(self, tmp_path):
+        # N2 fail-open control: a valid-JSON NON-object record (the isinstance Mapping guard)
+        # SHIPS — the seam returns None.
+        store = self._store(tmp_path)
+        store.review_path(self.AID).write_bytes(b"[]")
+        assert driver._grounding_abstain_check(store, self._item("block")) is None
+
+    def test_block_with_a_partial_dict_record_ships(self, tmp_path):
+        # N2 fail-open control: a partial dict (grounding status missing) SHIPS — the nested
+        # `.get(...)` guards never raise on an incomplete shape.
+        store = self._store(tmp_path)
+        store.review_path(self.AID).write_bytes(b'{"checks":{"grounding":{}}}')
+        assert driver._grounding_abstain_check(store, self._item("block")) is None

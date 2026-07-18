@@ -98,9 +98,11 @@ from pipeline.yamlio import YAMLLoadError, load_yaml
 __all__ = [
     "CATEGORICAL_MEMBERS",
     "CONTENT_KIND",
+    "DEFAULT_GROUNDING_POSTURE",
     "DEFAULT_ON_CONFLICT",
     "EffectivePrefer",
     "EffectiveSelection",
+    "GROUNDING_POSTURES",
     "LAYER_KEYS",
     "LAYER_RECIPE",
     "LAYER_RUN",
@@ -750,10 +752,18 @@ def goal_layer_origin(goal_id: str) -> str:
 
 
 #: The closed authored-layer key vocabulary (§6.3 block + the SM3 relax surface).
-LAYER_KEYS = frozenset({"require", "prefer", "span", "on_conflict", "relax"})
+LAYER_KEYS = frozenset({"require", "prefer", "span", "on_conflict", "relax", "grounding_posture"})
 
 #: §6.3: the default conflict strategy.
 DEFAULT_ON_CONFLICT = "downgrade-AMBIGUOUS"
+
+#: DR-6 (§6.5/§19): the default grounding posture. `warn` == today's behavior EXACTLY
+#: (regression-neutral); it is a SELECTION on the cascade, not a relax.
+DEFAULT_GROUNDING_POSTURE = "warn"
+
+#: DR-6 (§6.5/§19): the closed, one-file-extensible posture vocabulary. Only `block` opts into
+#: the item-level abstain on an advisory Review-1 grounding concern (fail-OPEN when absent).
+GROUNDING_POSTURES = frozenset({"warn", "block"})
 
 _SPAN_RELAX_PREFIX = "span "
 
@@ -767,6 +777,7 @@ class SelectionLayer:
     prefer: tuple[tuple[PreferTerm, int], ...] = ()
     span: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     on_conflict: str | None = None
+    grounding_posture: str | None = None
     relax: tuple[str, ...] = ()
 
 
@@ -833,6 +844,15 @@ def parse_selection_layer(
                 f"token, got {on_conflict!r}"
             )
 
+    grounding_posture = raw.get("grounding_posture")
+    if grounding_posture is not None and (
+        not isinstance(grounding_posture, str) or grounding_posture not in GROUNDING_POSTURES
+    ):
+        raise M3GrammarError(
+            f"invalid-selection-grammar: {label}: `grounding_posture` names one of "
+            f"{sorted(GROUNDING_POSTURES)} (DR-6, §6.5/§19), got {grounding_posture!r}"
+        )
+
     relax: list[str] = []
     raw_relax = raw.get("relax", [])
     if not isinstance(raw_relax, list | tuple):
@@ -864,6 +884,7 @@ def parse_selection_layer(
         prefer=tuple(prefer),
         span=span,
         on_conflict=on_conflict,
+        grounding_posture=grounding_posture,
         relax=tuple(relax),
     )
 
@@ -897,6 +918,7 @@ class EffectiveSelection:
     prefer: tuple[EffectivePrefer, ...]
     on_conflict: str
     on_conflict_origin: str  # "default" or a layer origin
+    grounding_posture: str  # DR-6 (§6.5/§19): resolved posture; `warn` (default) == prior behavior
     relaxed: tuple[RelaxEvent, ...] = ()
     warnings: tuple[ResolutionWarning, ...] = ()
 
@@ -916,6 +938,7 @@ def fold_layers(layers: Sequence[SelectionLayer]) -> EffectiveSelection:
     span_origins: dict[str, str] = {}
     on_conflict: str | None = None
     on_conflict_origin = "default"
+    grounding_posture: str | None = None
     relaxed: list[RelaxEvent] = []
     warnings: list[ResolutionWarning] = []
 
@@ -998,6 +1021,10 @@ def fold_layers(layers: Sequence[SelectionLayer]) -> EffectiveSelection:
             on_conflict = layer.on_conflict
             on_conflict_origin = layer.origin
 
+        # -- grounding_posture: most-local-wins selection (DR-6, §6.5/§19; a selection, no warning).
+        if layer.grounding_posture is not None:
+            grounding_posture = layer.grounding_posture
+
         # -- prefer (CA10 lanes).
         for term, weight in layer.prefer:
             if term.key not in terms:
@@ -1039,6 +1066,9 @@ def fold_layers(layers: Sequence[SelectionLayer]) -> EffectiveSelection:
         prefer=tuple(prefer),
         on_conflict=on_conflict if on_conflict is not None else DEFAULT_ON_CONFLICT,
         on_conflict_origin=on_conflict_origin,
+        grounding_posture=(
+            grounding_posture if grounding_posture is not None else DEFAULT_GROUNDING_POSTURE
+        ),
         relaxed=tuple(relaxed),
         warnings=tuple(warnings),
     )

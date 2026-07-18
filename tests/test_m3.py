@@ -20,6 +20,7 @@ from pipeline import opgrammar
 from pipeline.m3 import (
     CATEGORICAL_MEMBERS,
     CONTENT_KIND,
+    DEFAULT_GROUNDING_POSTURE,
     DEFAULT_ON_CONFLICT,
     LAYER_KEYS,
     M3_CLAUSE_TOKENS,
@@ -413,7 +414,9 @@ class TestSpanParsing:
 
 class TestLayerParsing:
     def test_closed_key_vocabulary(self):
-        assert LAYER_KEYS == {"require", "prefer", "span", "on_conflict", "relax"}
+        assert LAYER_KEYS == {
+            "require", "prefer", "span", "on_conflict", "relax", "grounding_posture"
+        }
         with pytest.raises(M3GrammarError, match="unknown selection key"):
             parse_selection_layer({"required": ["trusted >= 3"]}, origin="workspace")
 
@@ -428,6 +431,20 @@ class TestLayerParsing:
             parse_selection_layer({"on_conflict": "two words"}, origin="run")
         with pytest.raises(M3GrammarError, match="strategy"):
             parse_selection_layer({"on_conflict": ["downgrade-AMBIGUOUS"]}, origin="run")
+
+    def test_grounding_posture_token_shape(self):
+        # DR-6 (§6.5/§19): a closed value set — `warn`|`block` parse; anything else is refused.
+        assert parse_selection_layer(
+            {"grounding_posture": "block"}, origin="run"
+        ).grounding_posture == "block"
+        with pytest.raises(M3GrammarError, match="grounding_posture"):
+            parse_selection_layer({"grounding_posture": "halt"}, origin="run")
+
+    def test_grounding_posture_non_str_value_refused(self):
+        # F1 (DR-6): a non-str (unhashable) value is refused with the layer's M3GrammarError
+        # idiom, never a bare TypeError from the frozenset membership test.
+        with pytest.raises(M3GrammarError, match="grounding_posture"):
+            parse_selection_layer({"grounding_posture": ["block"]}, origin="run")
 
     def test_duplicate_prefer_key_in_one_layer_refused(self):
         with pytest.raises(M3GrammarError, match="duplicate prefer key"):
@@ -491,6 +508,24 @@ class TestFold:
     def test_default_on_conflict(self):
         sel = resolve_selection()
         assert (sel.on_conflict, sel.on_conflict_origin) == (DEFAULT_ON_CONFLICT, "default")
+
+    def test_grounding_posture_most_local_wins_no_warning(self):
+        # DR-6 (§6.5/§19): resolves like on_conflict — a selection, most-local-wins, NO warning.
+        # The recipe beats the workspace baseline; the run layer then beats the recipe.
+        assert resolve_selection(
+            workspace={"grounding_posture": "warn"},
+            recipe={"grounding_posture": "block"},
+        ).grounding_posture == "block"
+        sel = resolve_selection(
+            recipe={"grounding_posture": "warn"},
+            run={"grounding_posture": "block"},
+        )
+        assert sel.grounding_posture == "block"
+        assert sel.warnings == ()
+
+    def test_default_grounding_posture_is_warn(self):
+        # absent from every layer → the regression-neutral default (today's behavior EXACTLY).
+        assert resolve_selection().grounding_posture == DEFAULT_GROUNDING_POSTURE == "warn"
 
     def test_relax_most_local_wins_with_warning(self):
         # SM3: the run relaxes a workspace hard clause — warned, never silent (§3.1).

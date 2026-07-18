@@ -1,9 +1,10 @@
 """Step-32 tests: the typed result contract + the CONSOLIDATED §21.7/§22.6 code taxonomy.
 
 The load-bearing test here is the LITERAL code-list (§21.7 + §22.6): `ALL_CODES` must equal
-exactly the design's enumeration — every code present, no extras, no omissions. The 26
+exactly the design's enumeration — every code present, no extras, no omissions. The 27
 strings below are transcribed straight from `docs/design.md` §21.7 (generation + contract
-tiers) and §22.6 (parallel-path tier); a drift check then proves the consolidation is
+tiers), §22.6 (parallel-path tier), and the DR-6 §6.5/§19 `grounding-uncovered` abstain; a
+drift check then proves the consolidation is
 faithful to the codes the producing modules already emit (`reconcile`, `drift`, `grounding`,
 `fit_resolution`, `serialize`, `migration`, `folios`, `overrides`, `dispatch`, `transport`).
 
@@ -34,6 +35,7 @@ GENERATION = {
     "re-serialized",
     "member-updated",
     "ambiguous-migration-decisions",
+    "grounding-uncovered",
 }
 # §21.7 contract tier.
 CONTRACT = {
@@ -65,7 +67,7 @@ class TestCodeTaxonomy:
         # The literal-list pin (§21.7 + §22.6): exact set equality — no extras, no omissions.
         assert results.ALL_CODES == EXPECTED_CODES
         assert set(results.CODES) == EXPECTED_CODES
-        assert len(results.ALL_CODES) == 26
+        assert len(results.ALL_CODES) == 27
 
     def test_forbidden_codes_are_absent(self):
         assert results.ALL_CODES.isdisjoint(FORBIDDEN_CODES)

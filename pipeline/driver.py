@@ -116,10 +116,11 @@ class DriverError(RuntimeError):
     never a silent skip (§3.1). A stage's own typed failure (compose contract, reconcile
     block, transport error) is carried as a result, not raised as this.
 
-    HARD GATE-1 (§21.7 code threading) — CLOSED at step 39. Two GENERATION-TIER raise sites
+    HARD GATE-1 (§21.7 code threading) — CLOSED at step 39. Three GENERATION-TIER raise sites
     thread the stage's TRUE §21.7 taxonomy code so `session._generate_next` can surface it as
     a coded `block` (`empty-pool` at the grounding gate, `hard-limit-exceeded` at the reconcile
-    terminal gate) instead of a bare code-less hint. `stage_code`/`remediation_action` are NEW
+    terminal gate, `grounding-uncovered` at the post-review abstain gate) instead of a bare
+    code-less hint. `stage_code`/`remediation_action` are NEW
     INSTANCE fields, `None` for every OTHER raise (a non-taxonomy failure stays code-less — the
     §3.1 no-fabrication rule). The CLASS attribute `code = "driver-error"` is UNTOUCHED (it is
     the exception's own kind, not a §21.7 result code)."""
@@ -135,8 +136,9 @@ class DriverError(RuntimeError):
     ) -> None:
         super().__init__(message)
         #: The threaded §21.7 stage code (a taxonomy `block` code) or None. Never fabricated:
-        #: only a real `("block",)` generation code (`empty-pool`/`hard-limit-exceeded`) is
-        #: ever passed here; every other raise leaves it None (§3.1).
+        #: only a real `("block",)` generation code
+        #: (`empty-pool`/`hard-limit-exceeded`/`grounding-uncovered`) is ever passed here;
+        #: every other raise leaves it None (§3.1).
         self.stage_code = stage_code
         #: The optional machine remediation action; None lets the session default it from the
         #: threaded code's CodeSpec (`results.make_result`), never a hardcoded guess.
@@ -319,6 +321,40 @@ def _read_stored_record(store: WorkspaceStore, id_str: str) -> Mapping[str, Any]
     except (ValueError, UnicodeDecodeError):
         return None
     return doc if isinstance(doc, Mapping) else None
+
+
+def _grounding_abstain_check(store: WorkspaceStore, item: PlanItem) -> None:
+    """DR-6 (§6.5/§19) item-level abstain — the D1 enforcement seam (§2.4).
+
+    Under `grounding_posture=block` ONLY, a PERSISTED Review-1 record whose advisory `grounding`
+    check reads `concern` makes THIS item ABSTAIN: a coded `grounding-uncovered` block (siblings
+    continue). Default `warn` never abstains — today's behavior EXACTLY (regression-neutral). The
+    gate is FAIL-OPEN: a record that is absent / unreadable / partial / malformed SHIPS (never
+    raises), deterministically identical on re-drive. `pipeline/review.py` stays advisory and
+    SSOT-free; this driver seam is the sole place that advisory concern can gate a ship.
+    """
+    if item.m3.grounding_posture != "block":
+        return
+    path = store.review_path(item.artifact_id)
+    if not path.exists():
+        return  # fail-OPEN: no persisted Review-1 record -> SHIP (identical on re-drive)
+    try:
+        record = json.loads(path.read_bytes())
+    except (OSError, ValueError, UnicodeDecodeError):
+        return  # fail-OPEN: unreadable/corrupt record -> SHIP
+    if not isinstance(record, Mapping):
+        return  # fail-OPEN: a non-object record -> SHIP
+    checks = record.get("checks")
+    grounding = checks.get("grounding") if isinstance(checks, Mapping) else None
+    status = grounding.get("status") if isinstance(grounding, Mapping) else None
+    if status == "concern":
+        raise DriverError(
+            f"driver-error: grounding-uncovered for {item.artifact_id} — grounding_posture=block "
+            "and its advisory Review-1 grounding check flagged a `concern` (§6.5/§19); this item "
+            "ABSTAINED from shipping (siblings continue)",
+            stage_code=results.CODE_GROUNDING_UNCOVERED,
+            remediation_action=None,
+        )
 
 
 def _persist_record(
@@ -778,6 +814,11 @@ def _run_artifact(
     review = cout.review
     if review is not None:
         log(f"  review: artifact {review.code} verdict={review.verdict}")
+
+    # DR-6 (§6.5/§19; D1, §2.4): under grounding_posture=block ONLY, ABSTAIN when this item's
+    # PERSISTED Review-1 record shows an advisory `grounding` concern — FAIL-OPEN when the record is
+    # absent/partial (ships, identical on re-drive). Default `warn` (today's behavior) never fires.
+    _grounding_abstain_check(store, item)
 
     deliverables = tuple(
         _run_deliverable(

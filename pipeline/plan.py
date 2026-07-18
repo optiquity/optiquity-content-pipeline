@@ -197,6 +197,7 @@ def selection_payload(selection: EffectiveSelection) -> dict[str, Any]:
         "span": {axis: list(members) for axis, members in selection.span.items()},
         "prefer": [[term.term.key, term.weight] for term in selection.prefer],
         "on_conflict": selection.on_conflict,
+        "grounding_posture": selection.grounding_posture,
     }
 
 

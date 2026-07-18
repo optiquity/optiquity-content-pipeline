@@ -527,8 +527,9 @@ def _generate_next(
                 # HARD GATE-1 (§21.7 code threading) — CLOSED at step 39 (`mvp-demo` is the
                 # first real caller wiring generate-next to the LIVE transport). The driver now
                 # threads the TRUE §21.7 taxonomy code across the driver→session boundary on its
-                # two generation-tier gates (`empty-pool` at grounding, `hard-limit-exceeded` at
-                # the reconcile terminal gate); a coded block surfaces it with its taxonomy
+                # three generation-tier gates (`empty-pool` at grounding, `hard-limit-exceeded`
+                # at the reconcile terminal gate, `grounding-uncovered` at the post-review
+                # abstain gate); a coded block surfaces it with its taxonomy
                 # `category`. A NON-taxonomy driver failure (malformed call, compose-contract,
                 # transport code) carries NO code and stays a code-less `_block` FOREVER — the
                 # §3.1 no-fabrication rule. `make_result` DEFAULTS the status from the code's

@@ -329,13 +329,14 @@ def _mint_external(store: WorkspaceStore, env: CascadeEnv, *, fitted_id: str) ->
 
 
 def _selection_summary(item: PlanItem) -> dict[str, Any]:
-    """The rendered §6.3 selection (require/span/prefer/on_conflict) — the selection preimage."""
+    """The rendered §6.3 selection (require/span/prefer/on_conflict/grounding_posture)."""
     sel = item.m3
     return {
         "require": [render_clause(c) for c in sel.require],
         "span": {axis: list(members) for axis, members in sel.span.items()},
         "prefer": [[term.term.key, term.weight] for term in sel.prefer],
         "on_conflict": sel.on_conflict,
+        "grounding_posture": sel.grounding_posture,
     }
 
 

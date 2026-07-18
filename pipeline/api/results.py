@@ -66,6 +66,7 @@ __all__ = [
     "CODE_CAPABILITY_INFEASIBLE",
     "CODE_DRIFT_BLOCK",
     "CODE_EMPTY_POOL",
+    "CODE_GROUNDING_UNCOVERED",
     "CODE_HARD_LIMIT_EXCEEDED",
     "CODE_LOW_CONFIDENCE_GROUNDING",
     "CODE_MEMBER_UPDATED",
@@ -150,6 +151,7 @@ CODE_RE_RECONCILED = "re-reconciled"  # ok, §21.8
 CODE_RE_SERIALIZED = "re-serialized"  # ok, §17/§21.8
 CODE_MEMBER_UPDATED = "member-updated"  # warn, §21.2
 CODE_AMBIGUOUS_MIGRATION_DECISIONS = "ambiguous-migration-decisions"  # needs-input, §11.6
+CODE_GROUNDING_UNCOVERED = "grounding-uncovered"  # block, §6.5/§19
 
 # --- contract tier (§21.7) --------------------------------------------------
 CODE_UNKNOWN_VERB = "unknown-verb"  # block (envelope-fatal), §21.1
@@ -273,6 +275,12 @@ CODES: dict[str, CodeSpec] = {
             CODE_AMBIGUOUS_MIGRATION_DECISIONS, TIER_GENERATION, ("needs-input",), "§11.6",
             "The migration worklist has decisions a human must resolve out-of-band.",
             remediation_action=ACTION_RUN_MIGRATE,
+        ),
+        _spec(
+            CODE_GROUNDING_UNCOVERED, TIER_GENERATION, ("block",), "§6.5/§19",
+            "An opt-in grounding_posture=block item abstained on an advisory Review-1 grounding "
+            "concern.",
+            remediation_action=None,
         ),
         # contract tier (§21.7)
         _spec(

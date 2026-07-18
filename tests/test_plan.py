@@ -455,6 +455,7 @@ def test_clause_only_difference_yields_identical_ids(tmp_path: Path) -> None:
         {"require": ["trusted >= 4", "freshness < 6mo"]},
         {"span": {"content-kind": ["general", "research-notes"]}},
         {"on_conflict": "surface-both"},
+        {"grounding_posture": "block"},  # DR-6: a policy selection — rides the plan, not the id
     ):
         varied = plan_for(root, request, run_selection=clauses)
         # Identical artifact-ids AND deliverable-ids: the selection expression rides
@@ -480,9 +481,13 @@ def test_m3_rides_the_plan_but_not_the_preimage(tmp_path: Path) -> None:
     preimage_text = canonical_json_str(item.preimage)
     assert "freshness" not in preimage_text
     assert "trusted" not in preimage_text
+    assert "grounding_posture" not in preimage_text  # DR-6: policy, never the id preimage
     # The payload carries the M3 lane for the grounding stage.
     payload = plan_payload(plan)
     assert payload["items"][0]["m3"]["require"] == rendered
+    # DR-6 (§6.5/§19): the selection payload carries grounding_posture UNCONDITIONALLY, defaulting
+    # to `warn` — it rides plan_hash (like on_conflict), never the artifact-id preimage.
+    assert payload["items"][0]["m3"]["grounding_posture"] == "warn"
 
 
 def test_goal_implied_m3_layer_reaches_the_item(tmp_path: Path) -> None:
