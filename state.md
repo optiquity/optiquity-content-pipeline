@@ -73,6 +73,34 @@ diff** (`ops-handoff/build/step-40/claude-md-proposed.diff`).
   serve-MCP leg, non-blocking). **Backlog (no v1 MUST):** the §21.8 render-verb `{"ir":…}`-vs-raw-IR read
   fix; item-13's CI halves (guard tightening + SV11 PR-base wiring); the 3 optional-hardening items.
 
+### POST-DELIVERY design + build (2026-07-16 → 07-18)
+
+A maintainer-driven design program ran after delivery (each via research → architect initial →
+whole-picture adversarial → reconciliation, all RATIFIED; cross-DR integration + planner pipeline before
+build): **DR-2** style guides · **DR-3** editable outline (Markdown-canonical) · **DR-4** content
+templates · **DR-5** style-placement · **DR-6** general grounding. All tracked in `docs/known-issues.md`;
+18 design records archived under `docs/archive/design-record/dr-design-passes/`.
+
+- **DR-6 increment 1 — BUILT (Option A, advisory).** Four gated commits, each coder → reviewer → (fix →
+  re-review) to CLEAN, commits under the maintainer's standing approval:
+  - `0f6d401` **F-a** — `ir_version`→2 + generation-tolerant validation (old IRs re-reconcile; coverage
+    gate is nowhere in `validate_ir`).
+  - `aeed34d` **attestation carrier** — optional `attestation {primary CSL-JSON, anchor, relation}` ledger
+    field; scenario-1 byte-identical → artifact-id unchanged. Carrier + pass-through only.
+  - `b92b443` **Review-1 advisory audit** — prompt-only `grounding` coverage + faithfulness sub-dimensions,
+    never-block; `ARTIFACT_CHECKS`/`REVIEW_VERSION` unchanged.
+  - `7e935a1` **`grounding_posture` + item-level abstain** — cascading M3 policy (`warn`|`block`, default
+    `warn`); under `block` the driver abstains an item with a persisted Review-1 `grounding` concern
+    (`grounding-uncovered`), **fail-OPEN** on record-absent + re-drive-stable; policy rides `plan_hash`,
+    never the artifact-id preimage; `review.py` unchanged.
+  - Gate at each commit: `2014 passed, 6 deselected`, ruff + content-guard clean. Reports:
+    `ops-handoff/dr6-build/{coder,reviewer}-0{1..4}*`. **NOT built** (deferred/reconsiderable): the Option-C
+    hard self-demarcation coverage gate, `.framing`, the corpus migration — or a future fact-checking
+    docs-researcher agent instead.
+  - **PENDING maintainer go-ahead:** the `docs/design.md` body doc-sync (§15 attestation/`ir_version`;
+    §6.3/§12.1 `grounding_posture`; §6.5/§19/§21.7 the advisory audit + abstain) + a small `ir.py`
+    module-docstring note + a mission changelog entry — proposed, not yet landed (edits the ratified SSOT).
+
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
 routes an agent onto the async-task channel (reports arrive in the task-notification, NO boilerplate);

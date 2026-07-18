@@ -396,6 +396,32 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   or could be delivered differently via a **fact-checking docs-researcher agent that verifies the
   composed IR against the input source contents** — recorded as a future option, **NOT to be designed or
   built now.**
+- **Increment 1 BUILT (2026-07-18) — Option A landed; all four commits reviewed CLEAN, gate green.** The
+  advisory subset shipped as four gated commits (each: coder → reviewer →, where needed, fix-coder →
+  re-review to CLEAN; the commit-4 reviewer's 3 should-fix + 2 nits were all fixed and re-reviewed CLEAN
+  in pass 2):
+  - `0f6d401` **F-a** — `ir_version`→2 + generation-tolerant validation (the single re-validation pin
+    relaxed from exact-equality to `∈ KNOWN_IR_VERSIONS`; ledger split into `LEDGER_REQUIRED` +
+    `LEDGER_OPTIONAL`) so a v1-stamped canonical IR still re-reconciles. The coverage gate is NOWHERE in
+    `validate_ir` (the #1 correctness thesis).
+  - `aeed34d` **attestation carrier** — optional `attestation {primary (structured CSL-JSON), anchor,
+    relation ∈ {wasQuotedFrom}}` on the ledger; validated only when present; scenario-1 ledgers stay
+    byte-identical → artifact-id unchanged. Carrier + pass-through ONLY (no scenario-2 detection/
+    production, no attributability/survivability enforcement).
+  - `b92b443` **Review-1 advisory audit** — prompt-only refinement of the existing `grounding` check into
+    explicit **coverage** + **faithfulness** sub-dimensions, `concern`-level / never-block;
+    `ARTIFACT_CHECKS` (closed 5-key set) and `REVIEW_VERSION` unchanged; no `.framing` / hard gate.
+  - `7e935a1` **`grounding_posture` policy + opt-in item-level abstain** — cascading M3 policy
+    (`warn`|`block`, default `warn`, most-local-wins like `on_conflict`); under `block` ONLY the driver
+    abstains an item whose **PERSISTED** Review-1 record shows a `grounding` concern (code
+    `grounding-uncovered`, GENERATION block), **fail-OPEN** on record absent/corrupt/partial and
+    re-drive-stable. Policy rides `plan_hash` (via `selection_payload`, like `on_conflict`) but NEVER the
+    artifact-id preimage; `review.py` unchanged (the audit stays advisory).
+  - Verification at every commit: final gate `2014 passed, 6 deselected`, ruff clean, content-guard OK.
+    Full coder/reviewer reports under `ops-handoff/dr6-build/{coder,reviewer}-0{1..4}*`.
+  - **PENDING maintainer go-ahead:** the design-authority doc-sync (`docs/design.md` §15 attestation +
+    `ir_version`, §6.3/§12.1 `grounding_posture` cascade, §6.5/§19/§21.7 the advisory audit + abstain) and
+    a small `ir.py` module-docstring note — proposed, not yet landed (edits the ratified design SSOT).
 
 ---
 
