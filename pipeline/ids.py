@@ -119,6 +119,9 @@ _ROOT_HEX_LEN = {"artifact": 16, "folio": 12, "run": 16}
 
 _ROOT_RE = re.compile(r"\A([a-z])-([0-9a-f]+)\Z")
 _HEX12_RE = re.compile(r"\A[0-9a-f]{12}\Z")
+#: §7.2 (DR-3, D-7): an `outline-digest` is the FULL 64-char lowercase-hex SHA-256 from
+#: `pipeline.outline.outline_digest` — a bare content hash, NEVER a §7.4 id root (no `o-`).
+_OUTLINE_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 #: §7.4 safe alphabet: [a-z0-9] + the three separators + the qualifier mark. Nothing else.
 _SAFE_ALPHABET_RE = re.compile(r"\A[a-z0-9.\-~_]+\Z")
 #: §7.4: "a conventional format extension" — one lowercase alphanumeric run, never dotted.
@@ -584,6 +587,26 @@ def _require_entry_id(value: object, what: str) -> None:
         )
 
 
+def _require_outline_digest(value: object) -> str:
+    """Validate an OPTIONAL §7.2 `outline-digest`: a 64-char lowercase-hex SHA-256 (DR-3 D-7).
+
+    The digest is a `pipeline.outline.outline_digest` output. The strict lowercase-hex
+    WHITELIST is a stronger gate than any blacklist: a `[0-9a-f]{64}` string can be
+    NEITHER a §7.3 exclusion (`schema_version`/`metadata` are not 64-hex) NOR a secret
+    shape (every `ir.looks_secret_shaped` pattern needs a character outside the hex
+    alphabet — a `-`, `:`, `@`, `_`, or an uppercase letter), so this one form check
+    provably excludes both WITHOUT importing `pipeline.ir` (which imports `pipeline.ids`
+    — a cycle). Any non-str / non-64 / non-lowercase-hex value is refused loudly.
+    """
+    if not isinstance(value, str) or not _OUTLINE_DIGEST_RE.fullmatch(value):
+        raise PreimageError(
+            "invalid-preimage: outline-digest must be the 64-char lowercase-hex SHA-256 "
+            "from pipeline.outline.outline_digest (a bare content hash, never a §7.4 id "
+            f"root, never a §7.3 exclusion or secret shape), got {value!r}"
+        )
+    return value
+
+
 def build_artifact_preimage(
     *,
     topic: EntryBinding,
@@ -593,6 +616,7 @@ def build_artifact_preimage(
     goals: Iterable[EntryBinding],
     source_subset: Iterable[str],
     source_commit: Mapping[str, str],
+    outline_digest: str | None = None,
 ) -> dict[str, Any]:
     """Construct the canonical §7.2 artifact preimage (the FROZEN shape — see module doc).
 
@@ -601,6 +625,24 @@ def build_artifact_preimage(
     inputs yield identical canonical bytes and identical ids. The returned object is the
     pure-JSON canonical value — exactly what the IR binding records (§15) and what the
     §22.3 S0 preimage check reads back.
+
+    `outline_digest` is the OPTIONAL DR-3 §7.2 outline extension, OMIT-WHEN-ABSENT: when
+    `None` (the default, and the only value any caller passes today) nothing is added, so
+    the returned object is the byte-IDENTICAL 4-key preimage and every existing artifact-id
+    re-mints unchanged — the zero-churn guarantee. When supplied it must be a 64-char
+    lowercase-hex SHA-256 (a `pipeline.outline.outline_digest`) and enters as a single
+    top-level `outline-digest` key.
+
+    R4 — the digest has TWO distinct homes; do NOT conflate them (this constructor is
+    agnostic to which — it validates the hex form and adds the key; the caller owns the
+    distinction):
+      (a) EMIT path — on a `Format=outline` artifact the digest is of the artifact's OWN
+          normalized body. This IS the ratified R4 exception to "the body is never in the
+          preimage": an outline's identity legitimately depends on its own bytes.
+      (b) DRIVE path — on a NON-outline artifact (e.g. a blog post the outline steers) the
+          digest is of a SEPARATE input, an ordinary content-address input in the SAME
+          category as `source-commit` — NOT an R4 exception. A drive-path digest on a
+          non-outline artifact must therefore never be misread as a body-in-preimage breach.
     """
     dimensions: dict[str, Any] = {}
     for name, binding in (
@@ -664,12 +706,16 @@ def build_artifact_preimage(
             f"source-subset instance (§7.2) — subset {sorted(subset)!r} vs commit keys "
             f"{sorted(commit_map)!r}"
         )
-    preimage = {
+    preimage: dict[str, Any] = {
         "dimensions": dimensions,
         "goals": [[goal_id, goal_deltas[goal_id]] for goal_id in sorted(goal_deltas)],
         "source-subset": sorted(subset),
         "source-commit": commit_map,
     }
+    # DR-3 §7.2 outline extension, OMIT-WHEN-ABSENT: `None` adds nothing, so the object
+    # stays the byte-identical 4-key preimage and every existing artifact-id is unchanged.
+    if outline_digest is not None:
+        preimage["outline-digest"] = _require_outline_digest(outline_digest)
     # Total-construction guarantee: every input above was vetted, so this cannot fail;
     # the round-trip makes the returned preimage its own canonical pure-JSON value.
     return json.loads(canonical_json_str(preimage))
@@ -745,13 +791,21 @@ def _require_artifact_preimage_shape(preimage: Any) -> None:
     Depth: the top level plus one level down — dimension `{entry, delta}` maps, goal
     `[goal-entry-id, delta]` pairs, the subset list, the commit map — with delta-map
     KEYS checked against the §7.3 exclusions (attr-name positions only; values are data).
+    The OPTIONAL top-level `outline-digest` (DR-3 §7.2) is accepted in ADDITION to the four
+    required keys — still refusing a missing required key or a 6th unknown key — and, when
+    present, asserted to be a `str` (D-8) so a nested mapping cannot smuggle a §7.3 key.
     """
     expected = {"dimensions", "goals", "source-subset", "source-commit"}
-    if not isinstance(preimage, Mapping) or set(preimage) != expected:
+    if not isinstance(preimage, Mapping) or set(preimage) - {"outline-digest"} != expected:
         raise PreimageError(
             "invalid-preimage: an artifact preimage carries EXACTLY "
-            "dimensions/goals/source-subset/source-commit (§7.2/§7.3) — construct it "
-            "with build_artifact_preimage"
+            "dimensions/goals/source-subset/source-commit — plus an OPTIONAL top-level "
+            "outline-digest (§7.2/§7.3, DR-3) — construct it with build_artifact_preimage"
+        )
+    if "outline-digest" in preimage and not isinstance(preimage["outline-digest"], str):
+        raise PreimageError(
+            "invalid-preimage: outline-digest must be a string (§7.2 D-8) — a nested "
+            "mapping must not smuggle a §7.3 exclusion past the attr-name-position scan"
         )
     dimensions = preimage["dimensions"]
     if not isinstance(dimensions, Mapping) or set(dimensions) != set(CONTENT_DIMENSIONS):

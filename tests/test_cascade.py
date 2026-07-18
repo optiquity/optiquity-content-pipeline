@@ -875,3 +875,27 @@ def test_floor_equal_override_churns_nothing(tmp_path: Path) -> None:
         same.artifact_preimage(source_subset=subset, source_commit=commits)
     )
     assert same_id == base_id
+
+
+
+def test_artifact_preimage_threads_the_outline_digest(tmp_path: Path) -> None:
+    # DR-3 §7.2: the outline_digest pass-through. The default (None) path is byte-identical
+    # to the pre-DR-3 4-key preimage; a supplied 64-char lowercase-hex digest flows through
+    # to build_artifact_preimage, enters as one top-level key, and changes the id.
+    root = build_root(tmp_path)
+    env = make_env(root)
+    compose = resolve_compose(env, SEL)
+    subset, commits = ["x-src"], {"x-src": "abc123"}
+    base = compose.artifact_preimage(source_subset=subset, source_commit=commits)
+    explicit_none = compose.artifact_preimage(
+        source_subset=subset, source_commit=commits, outline_digest=None
+    )
+    assert "outline-digest" not in base
+    assert base == explicit_none  # default path unchanged, byte-identical
+    assert ids.mint_artifact_id(base) == ids.mint_artifact_id(explicit_none)
+    digest = "a" * 64
+    driven = compose.artifact_preimage(
+        source_subset=subset, source_commit=commits, outline_digest=digest
+    )
+    assert driven["outline-digest"] == digest
+    assert ids.mint_artifact_id(driven) != ids.mint_artifact_id(base)

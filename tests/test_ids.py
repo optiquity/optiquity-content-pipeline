@@ -20,6 +20,7 @@ from pipeline.canonical import (
     canonical_json_str,
     digest_hex12,
     digest_hex16,
+    sha256_hex,
 )
 from pipeline.ids import (
     CONTENT_DIMENSIONS,
@@ -893,3 +894,89 @@ def test_preimage_check_is_usable_standalone_for_qualified_ids() -> None:
         preimage_check(FIT_REV, fit_inputs, {"strategy": "split"})
     with pytest.raises(PreimageError, match="invalid-preimage"):
         preimage_check(FIT_REV, fit_inputs, {1: "uncanonicalizable"})
+
+
+# ---------------------------------------------------------------------------
+# DR-3 §7.2 outline-digest preimage extension (zero-churn; PO-1/PO-2/PO-3).
+# ---------------------------------------------------------------------------
+
+#: Two valid `outline-digest` values — the full 64-char lowercase-hex SHA-256 form.
+OUTLINE_DIGEST = sha256_hex(b"# Outline heading\n\n- point one\n- point two\n")
+OTHER_DIGEST = sha256_hex(b"# A different outline\n")
+
+
+def test_outline_digest_absent_is_byte_identical_and_mints_the_same_id() -> None:
+    # PO-1 (the zero-churn thesis): outline_digest=None OMITS the key entirely, so the
+    # preimage is byte-identical to the pre-DR-3 4-key object and re-mints the same id.
+    base = _preimage()
+    explicit_none = _preimage(outline_digest=None)
+    assert set(base) == {"dimensions", "goals", "source-subset", "source-commit"}
+    assert "outline-digest" not in base
+    assert canonical_json_bytes(base) == canonical_json_bytes(explicit_none)
+    assert mint_artifact_id(base) == mint_artifact_id(explicit_none)
+
+
+def test_outline_digest_present_adds_one_key_and_changes_the_id() -> None:
+    # PO-2: a supplied digest enters as a single top-level key and changes the id; a
+    # DIFFERENT outline yields a DIFFERENT id; the SAME outline is deterministic.
+    base = _preimage()
+    driven = _preimage(outline_digest=OUTLINE_DIGEST)
+    assert set(driven) == {
+        "dimensions",
+        "goals",
+        "source-subset",
+        "source-commit",
+        "outline-digest",
+    }
+    assert driven["outline-digest"] == OUTLINE_DIGEST
+    assert mint_artifact_id(driven) != mint_artifact_id(base)
+    assert mint_artifact_id(_preimage(outline_digest=OTHER_DIGEST)) != mint_artifact_id(driven)
+    assert mint_artifact_id(_preimage(outline_digest=OUTLINE_DIGEST)) == mint_artifact_id(driven)
+
+
+def test_mint_accepts_both_preimage_shapes_and_refuses_missing_or_sixth_key() -> None:
+    # PO-3: the shape guard admits the 4-key AND the 5-key (outline-digest) shape, and
+    # still refuses a missing required key and a 6th unknown key under EITHER shape.
+    four = _preimage()
+    five = _preimage(outline_digest=OUTLINE_DIGEST)
+    assert mint_artifact_id(four).startswith("a-")
+    assert mint_artifact_id(five).startswith("a-")
+    # A missing required key raises under both shapes:
+    with pytest.raises(PreimageError, match="EXACTLY"):
+        mint_artifact_id({k: v for k, v in four.items() if k != "goals"})
+    with pytest.raises(PreimageError, match="EXACTLY"):
+        mint_artifact_id({k: v for k, v in five.items() if k != "source-commit"})
+    # A 6th unknown key raises under both shapes (drive-config is the horn-b future key —
+    # today it is still refused, so landing this now needs no rework under either horn):
+    with pytest.raises(PreimageError, match="EXACTLY"):
+        mint_artifact_id({**four, "drive-config": ["x"]})
+    with pytest.raises(PreimageError, match="EXACTLY"):
+        mint_artifact_id({**five, "schema_version": 3})
+
+
+def test_mint_refuses_a_non_string_outline_digest() -> None:
+    # D-8: at mint time a hand-built preimage whose outline-digest is a nested mapping (or
+    # any non-str) is refused, so it cannot smuggle a §7.3 exclusion past the attr-name scan.
+    four = _preimage()
+    with pytest.raises(PreimageError, match="must be a string"):
+        mint_artifact_id({**four, "outline-digest": {"metadata": "x"}})
+    with pytest.raises(PreimageError, match="must be a string"):
+        mint_artifact_id({**four, "outline-digest": 123})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        123,  # non-str
+        b"a" * 64,  # bytes, not str
+        "abc",  # too short
+        OUTLINE_DIGEST[:-1],  # 63 chars
+        OUTLINE_DIGEST + "0",  # 65 chars
+        OUTLINE_DIGEST.upper(),  # uppercase hex — lowercase-only (§7.4)
+        "g" * 64,  # non-hex chars
+        "sk-live-abcdefghijklmnopqrstuvwxyz",  # secret-shaped (also non-64-hex)
+    ],
+)
+def test_invalid_outline_digest_values_are_refused_at_construction(bad: object) -> None:
+    with pytest.raises(PreimageError, match="outline-digest must be"):
+        _preimage(outline_digest=bad)

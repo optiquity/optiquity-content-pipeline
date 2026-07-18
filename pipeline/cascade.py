@@ -603,10 +603,19 @@ class ComposeResolution:
         }
 
     def artifact_preimage(
-        self, *, source_subset: Any, source_commit: Mapping[str, str]
+        self,
+        *,
+        source_subset: Any,
+        source_commit: Mapping[str, str],
+        outline_digest: str | None = None,
     ) -> dict[str, Any]:
         """The canonical §7.2 artifact preimage — `ids.build_artifact_preimage`
-        verbatim; mint with `ids.mint_artifact_id`."""
+        verbatim; mint with `ids.mint_artifact_id`.
+
+        `outline_digest` defaults to `None` → the pre-DR-3 4-key preimage, byte-identical
+        (the omit-when-absent zero-churn guarantee); a digest is threaded through only on
+        the (later) outline drive/emit paths so the default resolution stays unchanged.
+        """
         return build_artifact_preimage(
             topic=self.topic.binding(),
             persona=self.persona.binding(),
@@ -615,6 +624,7 @@ class ComposeResolution:
             goals=[g.binding() for g in self.goals],
             source_subset=source_subset,
             source_commit=source_commit,
+            outline_digest=outline_digest,
         )
 
 
