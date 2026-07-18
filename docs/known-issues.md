@@ -384,7 +384,18 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   "deadlock" is false (both → block-and-report; the §6.5 framework floor outranks a venue's
   grounded-content demand). **`ir_version` evolves** by bump + generation-tolerant validation
   (additive-optional) so old IRs still re-reconcile. Utilization floor dropped. **ZERO new identity
-  surface.** Full design pass: `ops-handoff/dr6-grounding/`.
+  surface.** Full design pass: `ops-handoff/dr6-grounding/` (archived at `docs/archive/design-record/dr-design-passes/dr6-grounding/`).
+- **Build status (2026-07-18) — increment 1 builds OPTION A (advisory), NOT the Option-C hard gate.** At
+  the plan-review gate, once Option C's true cost was concrete (a per-sentence writer self-demarcation
+  discipline + a whole-test-corpus migration), the maintainer chose to build the **advisory subset
+  (Option A)** for v1: **F-a** (`ir_version` foundation) + the **`attestation` ledger carrier** + the
+  **advisory Review-1 framing-honesty/faithfulness audit** + the **`grounding_posture` opt-in item-level
+  abstain** (fail-open on a missing review record). **NOT built:** the hard self-demarcation coverage
+  gate, the `writer.md` all-prose contract, the `.framing` construct + §17 strip, the corpus migration,
+  the reconcile coverage re-check. The hard-enforcement question (Option C) is **reconsiderable later**,
+  or could be delivered differently via a **fact-checking docs-researcher agent that verifies the
+  composed IR against the input source contents** — recorded as a future option, **NOT to be designed or
+  built now.**
 
 ---
 
