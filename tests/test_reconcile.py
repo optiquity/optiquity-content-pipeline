@@ -564,6 +564,25 @@ class TestTransportAndWiring:
             reconcile(request, runner=NeverRunner())
 
 
+# --- F-a (DR-6 build): a stored v1 canonical IR stays read-compatible (RI11 preserved) ------
+
+
+class TestStoredV1CanonicalIrIsAccepted:
+    def test_reconcile_accepts_a_stored_v1_canonical_ir(self):
+        # A canonical IR stamped with the PRIOR generation (ir_version=1, a 6-field ledger, no
+        # optional carrier) is still read-compatible: reconcile must NOT raise a ReconcileError
+        # on it under the v2 code (F-a / RI11). The binding preimage excludes ir_version + the
+        # ledger, so re-stamping the stored record is identity-safe.
+        canonical = make_canonical_ir()
+        assert canonical["ir_version"] == ir.IR_VERSION == 2
+        canonical["ir_version"] = 1  # a stored pre-F-a record
+        request = make_request(canonical_ir=canonical, strategy="pass", hard_limits={})
+        out = reconcile(request, runner=NeverRunner())  # no ReconcileError raised
+        assert out.status == "ok" and out.is_noop is True
+        # The bit-identical passthrough preserves the stored v1 stamp.
+        assert out.fitted_ir["ir_version"] == 1
+
+
 # --- the reconciler prompt -----------------------------------------------------------------
 
 

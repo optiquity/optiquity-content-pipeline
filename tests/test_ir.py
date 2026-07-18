@@ -25,6 +25,10 @@ from pipeline.canonical import digest_full
 from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id, part_id
 from pipeline.ir import (
     IR_VERSION,
+    KNOWN_IR_VERSIONS,
+    LEDGER_FIELDS,
+    LEDGER_OPTIONAL,
+    LEDGER_REQUIRED,
     PANDOC_API_VERSION,
     TOP_LEVEL_KEYS,
     BindingMismatchError,
@@ -487,6 +491,38 @@ class TestTopLevelSchema:
         doc["ir_version"] = 999
         with pytest.raises(SchemaViolation):
             validate_ir(doc)
+
+
+# --- F-a: ir_version generation-tolerant validation + additive-optional ledger (DR-6 build) ---
+
+
+class TestIrVersionGenerationTolerance:
+    def test_fresh_build_stamps_the_current_generation(self, preimage, artifact_id):
+        # `build_ir` stamps IR_VERSION on every fresh envelope — the F-a bump lands here.
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="x")
+        assert doc["ir_version"] == IR_VERSION == 2
+
+    def test_stored_v1_envelope_with_a_6_field_ledger_still_validates(
+        self, preimage, artifact_id
+    ):
+        # The whole point of F-a: a stored PRIOR-generation envelope (ir_version=1, the 6
+        # LEDGER_REQUIRED fields, NO optional carrier) stays read-compatible under the v2 code.
+        # The binding preimage excludes ir_version + the ledger, so re-stamping is identity-safe.
+        doc = build_ir(
+            artifact_id=artifact_id,
+            preimage=preimage,
+            grounding=one_fact_ledger(),  # exactly the 6 LEDGER_REQUIRED fields, no attestation
+            body='The parser runs in [linear time]{.EXTRACTED data-fact="f0"}.',
+        )
+        doc["ir_version"] = 1  # a stored pre-F-a record
+        validate_ir(doc)  # returns cleanly — no raise
+        assert 1 in KNOWN_IR_VERSIONS
+
+    def test_f_a_adds_zero_ledger_semantics(self):
+        # F-a is pure envelope governance: the required set is the pre-F-a `LEDGER_FIELDS`
+        # verbatim and the optional set is EMPTY (no coverage/attestation semantics yet).
+        assert LEDGER_FIELDS == LEDGER_REQUIRED
+        assert LEDGER_OPTIONAL == ()
 
 
 # --- The §15 substance floor (GAP-6): a body whose VISIBLE text has no letter/digit is refused ---

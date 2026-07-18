@@ -80,7 +80,10 @@ from pipeline.ids import IdError, PreimageError, mint_artifact_id, parse_id, par
 
 __all__ = [
     "IR_VERSION",
+    "KNOWN_IR_VERSIONS",
     "LEDGER_FIELDS",
+    "LEDGER_OPTIONAL",
+    "LEDGER_REQUIRED",
     "PACKAGING_HINTS",
     "PACKAGING_HINT_DEFAULT",
     "PANDOC_API_VERSION",
@@ -104,8 +107,16 @@ __all__ = [
 
 #: §15 RI4 render-reproducibility stamps. `ir_version` is the IR schema generation; the IR
 #: is immutable and never schema-migrated (§11.6), so this is a provenance stamp, not a
-#: migration target.
-IR_VERSION = 1
+#: migration target. `build_ir` STAMPS this on every fresh envelope, so fresh IRs are v2.
+IR_VERSION = 2
+
+#: The IR-schema generations this validator reads (F-a, DR-6 build). Read-compatibility is
+#: RESERVED for ADDITIVE-OPTIONAL generations: a generation that only adds optional fields
+#: (e.g. an optional ledger carrier) leaves every older envelope valid, so both may be read.
+#: A BREAKING change (a removed / retyped / newly-required field) must NOT join this set — it
+#: has to GATE (refuse + route to a migration), never silently read. Membership here is the
+#: explicit promise that a generation is read-compatible with the ones alongside it.
+KNOWN_IR_VERSIONS = frozenset({1, 2})
 
 #: §17 RI13 / gate-3 pin (step-06 BUILD PARAMETER SHEET item "Pandoc pin"): the AST
 #: `pandoc-api-version` the serialize pass parses under. Carried on every IR so a later
@@ -123,9 +134,12 @@ PACKAGING_HINTS = ("in-document", "standalone")
 #: serialize-time dispatcher concern (§17); the IR only needs a valid, reproducible value.
 PACKAGING_HINT_DEFAULT = "in-document"
 
-#: §15 RI3: the CLOSED ledger-entry key set. An undeclared key is a secret/scope smuggling
-#: surface (a stray `access_token` field) — refused, never carried.
-LEDGER_FIELDS = (
+#: §15 RI3: the CLOSED ledger-entry key set, split REQUIRED + OPTIONAL (F-a, DR-6 build). An
+#: undeclared key is a secret/scope smuggling surface (a stray `access_token` field) — refused,
+#: never carried. `LEDGER_REQUIRED` are the fields EVERY entry must carry; an additive-optional
+#: generation appends names to `LEDGER_OPTIONAL` so an older 6-field entry stays valid while a
+#: newer entry MAY carry the optional carrier.
+LEDGER_REQUIRED = (
     "tier",
     "source_instance_id",
     "source_repo",
@@ -133,6 +147,18 @@ LEDGER_FIELDS = (
     "traceability_anchor",
     "scores_snapshot",
 )
+
+#: Additive-optional ledger keys — EMPTY in F-a (this commit adds NO coverage/attestation
+#: semantics). A later generation appends names here; F-a only lands the envelope governance
+#: (`LEDGER_REQUIRED ⊆ keys ⊆ LEDGER_REQUIRED ∪ LEDGER_OPTIONAL`) that a carrier will ride.
+LEDGER_OPTIONAL: tuple[str, ...] = ()
+
+#: Back-compat alias (exported): the pre-F-a name for the required set. Callers importing
+#: `LEDGER_FIELDS` keep working; it equals `LEDGER_REQUIRED`.
+LEDGER_FIELDS = LEDGER_REQUIRED
+
+#: The closed ledger-entry key set = required ∪ optional (mirrors `_PART_KEYS`, §15 RI2).
+_LEDGER_KEYS = frozenset((*LEDGER_REQUIRED, *LEDGER_OPTIONAL))
 
 #: The closed top-level envelope key set. `parts`/`body` are mutually exclusive (§15
 #: flat-body collapse); `metadata` is optional (§11.3). Anything else is refused.
@@ -491,11 +517,12 @@ def _require_substance(value: Any, where: str) -> None:
 def validate_grounding_ledger(ledger: Any, *, where: str = "grounding") -> None:
     """Validate one §15 grounding ledger: closed entry schema + the §3.3 no-secrets scan.
 
-    Every fact-id is a simple token; every entry carries EXACTLY the `LEDGER_FIELDS`
-    (an undeclared key is a smuggling surface — refused). `source_commit` may be null
-    (commitless adapters) and `traceability_anchor` may be empty (an anchor-less EXTRACTED
-    fact is legal — SM9). After the shape check, a recursive scan refuses any
-    secret-shaped string anywhere in the ledger.
+    Every fact-id is a simple token; every entry carries the `LEDGER_REQUIRED` fields and MAY
+    carry `LEDGER_OPTIONAL` ones (empty in F-a) — `LEDGER_REQUIRED ⊆ keys ⊆ LEDGER_REQUIRED ∪
+    LEDGER_OPTIONAL`; an undeclared key is a smuggling surface, refused. `source_commit` may be
+    null (commitless adapters) and `traceability_anchor` may be empty (an anchor-less EXTRACTED
+    fact is legal — SM9). After the shape check, a recursive scan refuses any secret-shaped
+    string anywhere in the ledger.
     """
     _require(isinstance(ledger, Mapping), f"{where} must be a map of fact-id -> entry")
     for fact_id, entry in ledger.items():
@@ -507,10 +534,13 @@ def validate_grounding_ledger(ledger: Any, *, where: str = "grounding") -> None:
         _require(isinstance(entry, Mapping), f"{loc} must be a ledger-entry map")
         keys = set(entry)
         _require(
-            keys == set(LEDGER_FIELDS),
-            f"{loc} must carry EXACTLY {sorted(LEDGER_FIELDS)} (§15 RI3, closed schema); "
-            f"got {sorted(keys)}",
+            keys <= _LEDGER_KEYS,
+            f"{loc} has unknown key(s) {sorted(keys - _LEDGER_KEYS)} — a ledger entry is "
+            f"{sorted(LEDGER_REQUIRED)}(+ optional {sorted(LEDGER_OPTIONAL)}) (§15 RI3, closed "
+            "schema)",
         )
+        for required in LEDGER_REQUIRED:
+            _require(required in entry, f"{loc} is missing required key {required!r} (§15 RI3)")
         _require(
             entry["tier"] in TIERS, f"{loc}.tier must be one of {TIERS}, got {entry['tier']!r}"
         )
@@ -685,8 +715,9 @@ def validate_ir(doc: Any) -> None:
     for required in ("ir_version", "pandoc_api_version", "binding", "grounding"):
         _require(required in doc, f"the envelope is missing required key {required!r} (§15)")
     _require(
-        doc["ir_version"] == IR_VERSION,
-        f"ir_version must be {IR_VERSION} (this IR-schema generation), got {doc['ir_version']!r}",
+        doc["ir_version"] in KNOWN_IR_VERSIONS,
+        f"ir_version must be a known IR-schema generation {sorted(KNOWN_IR_VERSIONS)} "
+        f"(additive-optional read-compatibility, F-a), got {doc['ir_version']!r}",
     )
     _require(
         doc["pandoc_api_version"] == list(PANDOC_API_VERSION),
