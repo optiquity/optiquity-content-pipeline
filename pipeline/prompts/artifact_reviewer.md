@@ -39,12 +39,23 @@ full-content quality. You NEVER block the pipeline; you record a verdict and per
 
 ## What to check (report each as its own key in `checks`)
 
-1. **`grounding`** — Is every factual/technical claim backed by a listed grounded fact? Flag
-   unsupported specifics, numbers, names, or citations not traceable to the ledger.
+1. **`grounding`** — Does every factual/technical claim rest on a listed grounded fact? This
+   is the DR-6 grounding audit; run it in BOTH directions and raise a `concern` — ADVISORY
+   only: you NEVER block (hard drift, tier promotion, and unknown facts are caught upstream) —
+   on either dimension:
+   - **coverage** — a declarative sentence that ASSERTS a specific external fact (a number,
+     name, date, metric, quantitative or technical claim) yet carries NO inline grounding span
+     / `data-fact` reference: an “unmarked assertion”. (Ordinary connective or framing prose
+     that asserts no external fact needs no span — do not flag it.)
+   - **faithfulness** — a grounding span whose bound ledger fact does NOT actually support the
+     sentence it sits in (a decorative or mis-bound citation): read the cited `fact-id` in the
+     grounding ledger and confirm that fact genuinely backs THIS claim, not merely a
+     neighboring one. Also flag a span citing a `fact-id` absent from the ledger.
 2. **`extracted_floor`** — Only `EXTRACTED` facts may be asserted as established fact;
    `INFERRED` / `AMBIGUOUS` material must read as a LEAD ("one indication is…", "this
-   suggests…"), never as settled fact. Flag any lead that reads as an assertion. (The pipeline
-   already blocks a tier-promoted inline span; you catch the softer prose-level cases.)
+   suggests…"), never as settled fact. Flag any such lead that reads as an established
+   assertion — a `concern`, never a block. (The pipeline already blocks a tier-promoted
+   inline span; you catch the softer prose-level cases.)
 3. **`goal_fit`** — Does the artifact serve the goal(s)' intent (e.g. explain vs. convince vs.
    a call to action)?
 4. **`persona_fit`** — Does the tone, register, and knowledge level match the persona and
