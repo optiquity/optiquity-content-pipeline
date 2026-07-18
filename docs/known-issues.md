@@ -246,6 +246,28 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   multi-part formats deferred; the `outline-digest`-in-own-preimage exception ratified. **Open:** the
   compose-input-brief quality **ablation** (build-time). **Build paused** behind DR-4 / DR-5 (templates
   and per-output style interact with the outline).
+- **Build decision (2026-07-18) — RATIFIED at the plan gate (planner initial → adversarial → reconciliation;
+  reports `ops-handoff/dr3-build/0{1,2,3}-*`).** The whole-picture adversarial exposed that the drive facets
+  (`use-sections?/use-order?/intents-must-cover?`) **change the composed bytes**, so leaving them off the
+  artifact-id preimage (the initial plan's `grounding_posture` analogy) reintroduces the same-id/different-
+  bytes collision the `outline-digest` closes. Two horns were surfaced; the maintainer chose:
+  - **Decision A — horn (a): fixed byte-neutral drive posture.** v1 pins ONE posture — **the outline drives
+    both content AND structure** (the usual want) — baked as a compose constant, so the `outline-digest`
+    alone is byte-determining and DR-3 keeps **exactly one** preimage component (no §7 re-ratification). The
+    per-request "content / structure / both" facet choice is **RETIRED, not merely deferred:** hand-editing
+    the outline covers the "I want only structure/content" case (small edits are easier), and an unwieldy
+    outline can simply be **abandoned in favor of fixing the recipe's goals** — which is the real lever. Horn
+    (b) (a second `drive-config` preimage component delivering per-request facets) was **rejected on design
+    grounds, not just cost:** a facet knob can **mask badly-constructed goals or unavailable source content**
+    behind an outline override, hiding the real problem. This supersedes the original "user specifies
+    content/structure/both" requirement.
+  - **Decision B — B1 (usable product).** Build the full dual output+input feature end-to-end (emit bridge +
+    pre-compose store + drive path + a minimal ingest/emit/drive trigger) so it is invokable with
+    **hand-authored** outlines; **defer only the LLM drafter** (a named DR-3 backlog, GAP-7 mirror). Verb
+    surface: reuse the existing session/render verbs (no new `KNOWN_VERBS` verb).
+  - **Plan:** the reconciled 7-commit plan (`03-planner-reconciliation`) — Commits 1-3 identity-safe
+    foundation, 4-7 + trigger the usable feature at horn (a). Building now under the standing coder/reviewer/
+    fix cadence.
 
 ### DR-4 — Content templates: typed non-text slots + structure + constraints (Format-adjacent) — design problem
 - **Status:** Deferred (not in v1) — **open design problem; to be specifically scoped by an architect
