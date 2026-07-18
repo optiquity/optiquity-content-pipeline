@@ -82,6 +82,52 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
 Intentional future scope — **recorded, not yet built**. Distinct from the bugs above: these are
 capabilities we have deliberately deferred, kept here so the requirement is not lost.
 
+### Foundation-coherence pass (2026-07-18) — the DR set is BUILD-READY, conditional on the build-entry checklist
+A cross-DR integration / foundation-coherence architect pass (initial → whole-picture adversarial →
+reconciliation) audited all six DRs **together** against the maintainer's four criteria (no scope
+duplication · composition not awkward splits · extensible · generalizable). **Verdict: a sound
+foundation to build on — no ratified decision re-opened, no redesign — CONDITIONAL on the build-entry
+checklist below.** Full design records (every DR pass + this integration pass) are archived at
+`docs/archive/design-record/dr-design-passes/`.
+
+**Build order:** `F-a (ir_version generation-tolerant validation) → F-b (GAP-4 content-guard fix, gates
+DR-2) → DR-6 → DR-3 → DR-4 → DR-5 → DR-2`.
+
+**Build-entry checklist (GO only when every NO-GO is resolved; all integration specs, no redesigns):**
+- **F-a** — `ir_version` bump-to-2 + generation-tolerant (known-compatible-set) validation; ledger →
+  `LEDGER_REQUIRED` + `LEDGER_OPTIONAL`. **NO-GO for any IR-envelope edit** (independent foundation).
+- **F-b** — GAP-4 content-guard known-root fix. **NO-GO for DR-2's `lexicons/` root.**
+- **#3** — the F1 sentinel section-grammar + section-constraint vocabulary, built **SHARED** at DR-4
+  (consumed by DR-4 conformance AND the deferred DR-3 `constraint?`). **NO-GO for DR-4.**
+  **#3a** — F1 sentinels **N-invariant** (a DR-3 build-time requirement: reserve the sentinel-significant
+  structure when pinning N, so un-deferring F1 churns no `outline-digest`). **NO-GO for DR-3 + DR-4.**
+- **#4** — extend the §16 RI5 reconcile-gate ordering (DR-4 structural gate + DR-6 coverage re-check +
+  terminal hard-limit gate; joint hard-structural × hard-limit → block-and-report). **NO-GO for DR-4.**
+  **#4a** — per-section numeric limits are **DR-4 structural constraints** (section-addressed); the §16
+  terminal gate keeps ONLY artifact/capacity limits. **Retract "abstract ≤N words already built."**
+  **NO-GO for DR-4.**
+- **#5** — the writer-contract co-occurrence rules + **"the writer emits `[@key]` markers ONLY and NEVER
+  free-authors the `references` bibliography"** (a free bibliography is the SF-3 fabrication vector;
+  `references` is a projection of the ledger). Ablate after each writer layer (GAP-8). **NO-GO for the
+  writer contract.**
+  **#5a** — the **three-context `[@key]` classifier** (grounding-span → grounding cite; `.framing`-span →
+  bibliographic; **bare → forbidden**). **NO-GO for the writer contract.**
+  **#5b** — narrow the DR-6 exemptions to genuinely non-declarative constructs + require a grounding
+  channel for factual captions/cells; **REGISTER** the un-spannable-factual-content residual
+  (headings, table cells — caught only by the advisory Review-1 audit).
+- **#6** — grounding is enforced at **TWO loci over one ledger** (the DR-5 citation-resolution check is
+  DR-5-owned), not "one chokepoint." **REGISTER.**
+- **#7** — external-side (`side: external`) scenario-2 attribution = **compose-fixed literal prose**; the
+  future DR-5 CSL indirect-citation surface extends it only for `side: internal`. **REGISTER for DR-5.**
+- **#8** — `attestation.primary` is a **structured, one-file-extensible citation-descriptor carrier**
+  (CSL-JSON-shaped/upgradeable), not a bare string. **NO-GO for the DR-6 ledger build.**
+
+**Generalizability refinements (criterion 4):** the lexicon `mechanical` menu and DR-4 section-`type`
+must be **open one-file-add carriers, not closed enums** (DR-5's `csl` and DR-3's `drive` facets are the
+model). **Kept, unbreakable:** zero new `artifact-id` identity surface; the precedence chain (outline >
+dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-6 "deadlock" is false);
+`ir_version` as an evolvable foundation.
+
 ### DR-1 — HTTP/webhook interface for cloud-hosted workflow orchestrators
 - **Status:** Deferred (not in v1) — requirement recorded for a later build.
 - **Need:** The v1 external-actor door (GAP-2) is the local `pipeline invoke render` CLI, invoked
