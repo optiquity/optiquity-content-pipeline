@@ -22,7 +22,10 @@ Design authority: `docs/design.md`
          commits — NEVER secret values** (§3.3, RI3, PC11c): this validator runs a
          closed-schema check (an undeclared ledger key is a smuggling surface — refused)
          AND a secret-shaped-value scan; a secret-shaped value ANYWHERE in the ledger (or
-         the metadata bag) is REJECTED.
+         the metadata bag) is REJECTED. An entry MAY additionally carry the OPTIONAL DR-6
+         `attestation` carrier (`LEDGER_OPTIONAL`; the scenario-2 pool-relation record
+         `{primary, anchor, relation}`) — validated only when present, so a scenario-1 entry
+         stays byte-identical to pre-DR-6 (§15 RI3 note).
   §15 RI4 — **Composition binding:** the envelope records the resolved `artifact-id`
          preimage (§7.2) plus the computed `artifact-id` and the FULL digest (§7.4). The
          binding is self-describing and reproducible: `mint_artifact_id(preimage)` MUST

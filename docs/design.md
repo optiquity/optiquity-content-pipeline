@@ -403,6 +403,7 @@ source_selection:
   span:                           # POSITIVE coverage requirement (a hard clause)
     content-kind: [first-party, independent]
   on_conflict: downgrade-AMBIGUOUS      # selectable strategy (default shown)
+  grounding_posture: warn               # POLICY: warn (default) | block — advisory vs opt-in abstain
 ```
 
 - **Hard vs soft is a property of the clause, not the score** (SM2): any score may appear in
@@ -421,6 +422,12 @@ source_selection:
   conflict; and **fact-vs-opinion-contradiction detection is an available capability** — a
   strategy can identify an opinion contradicting an authoritative fact and surface the
   contradiction itself, for goals like debunk / correct-the-record / fact-check.
+- **`grounding_posture` is a cascading POLICY key** (DR-6, §6.5/§19): `warn` (default) | `block`,
+  the closed set `GROUNDING_POSTURES`. It joins the authored layer keys as a 6th (beside
+  `require`/`prefer`/`span`/`on_conflict`/`relax`) and resolves most-local-wins in M3's four-layer
+  fold EXACTLY like `on_conflict` (run/recipe beats workspace; absent → `warn`). It is POLICY, not
+  identity: it rides `plan_hash` via `selection_payload` (like `on_conflict`) but NEVER the
+  `artifact-id` preimage. Its effect is §19's advisory-vs-abstain switch, never source selection.
 - Goal entries contribute partial `source_selection` clauses over scores (never over ids) — e.g.
   `convince → prefer authoritative +2; require traceability`; `compare → span + preserve-and-attribute`.
 
@@ -469,6 +476,10 @@ deferred (§26) and is never auto-applied.
   overstep of user configuration.
 - Every published claim's grounding — workspace, source repo, source commit, tier — is recorded in
   the artifact's grounding ledger (§15) and re-checked by the deliverable review (§19).
+- **Review 1 audits grounding on two advisory dimensions** (DR-6, §19): **coverage** (a
+  fact-asserting sentence carrying no grounding span) and **faithfulness** (a span whose bound
+  ledger fact does not support the sentence). Both are `concern`-level, never a block — the
+  EXTRACTED floor and tier-honesty stay hard at the IR gate (§15).
 
 ## §7 Identity & lineage
 
@@ -978,6 +989,11 @@ no id churns.
   `definition_version` may jump across unrelated releases; the drift math is unaffected.)
 - **Every entry stamps a single integer `schema_version`** — the version it was authored/last
   migrated under (SV3 stamp shape; encoding §13.4).
+- **The IR envelope's `ir_version` is distinct from `schema_version`** (DR-6 F-a): it names the
+  IR-envelope generation, now **2** (was 1) — a §15/§7 render-reproducibility stamp, not a
+  migration target. It is validated GENERATION-TOLERANTLY: accept any `∈ KNOWN_IR_VERSIONS = {1,2}`,
+  not exact-equality, so an IR stamped at an older additive-optional generation still re-reconciles;
+  a breaking IR change would instead have to gate, never silently read.
 
 ### §11.3 Closed schemas & the artifact metadata bag
 
@@ -1120,7 +1136,8 @@ wins* — collapsing them reintroduces blur:
   (the source pool and facts, not attribute values), with different combination semantics
   (weights *adjust*, Fork-C style; clauses union/tighten/relax per §6.4). **M3 carries the full
   selection expression — the `prefer` weight vector AND `require` predicates, `span` coverage, and
-  the `on_conflict` strategy** (§6.3) — all riding its four-layer cascade, most-local-wins. M3
+  the `on_conflict` strategy, plus the DR-6 `grounding_posture` policy** (§6.3) — all riding its
+  four-layer cascade, most-local-wins. M3
   never binds attribute values; M2 never touches source selection. Their only coupling: M3's
   output (grounded facts + tiers) is an input to compose.
 - The same scope spine, read pre-M1, resolves **which entry** is selected per dimension (the
@@ -1478,14 +1495,27 @@ LAYER 3  Pandoc AST JSON (persisted, ALWAYS produced)         — the standard i
   claims in the Markdown leaves. Content leaves stay pure Markdown; every grounded claim is
   addressable (the reviews §19 and citability §6.5 both need per-fact resolution). The ledger
   stores **ids, anchors, commits — never secret values** (§3.3).
+- **The optional `attestation` ledger carrier** (RI3, DR-6 v1). A ledger entry MAY carry one
+  extra `attestation` field — the scenario-2 pool-relation record `{primary, anchor, relation}`:
+  `primary` a STRUCTURED CSL-JSON descriptor (OPEN key set, one-file-upgradeable), `anchor` a
+  non-empty held-pool anchor string, `relation` a named PROV-O token (`wasQuotedFrom`; the
+  one-file-extensible closed set `ATTESTATION_RELATIONS`). The ledger key set is modeled
+  `LEDGER_REQUIRED` (the original 6 fields) + `LEDGER_OPTIONAL = (attestation,)` and checked by the
+  bounds idiom `LEDGER_REQUIRED ⊆ keys ⊆ LEDGER_REQUIRED ∪ LEDGER_OPTIONAL`; it is validated ONLY
+  when present. A scenario-1 fact OMITS it and its entry is BYTE-IDENTICAL to pre-DR-6 → the
+  `artifact-id` is unchanged (the ledger is not in the identity preimage, §7). This is the v1
+  CARRIER only: scenario-2 detection/production + attributability/survivability enforcement are NOT
+  built (deferred — `docs/known-issues.md` DR-6).
 - **Composition binding** (RI4): the envelope records the resolved `artifact-id` preimage — topic,
   persona, format, voice, sorted goal-set, source-subset, resolved-overrides delta, and the
   source commit-map (§7.2) — plus the computed `artifact-id` (full digest, §7.4). The IR is self-describing and
   reproducible.
 - **The opaque `metadata` bag rides the envelope** (§11.3): stored, passed through, never
   interpreted, never routed into AST content — carried as a side channel to the layer-3 contract.
-- **Version stamps** (RI4): `ir_version` + the `pandoc-api-version` pin — render-reproducibility
-  pins, not migration targets (the IR is immutable and never schema-migrated; §11.6).
+- **Version stamps** (RI4; DR-6 F-a): `ir_version` (now **2**, validated GENERATION-TOLERANTLY —
+  `∈ KNOWN_IR_VERSIONS = {1,2}`, not exact-equality, so an IR stamped at an older additive-optional
+  generation still re-reconciles) + the `pandoc-api-version` pin — render-reproducibility pins, not
+  migration targets (the IR is immutable and never schema-migrated; §11.6).
 - **The substance floor** (RI1; the GAP-6 guardrail). Every leaf `body` (flat) and every part
   `body` must carry ≥1 Unicode letter or digit in its VISIBLE text — the reader-visible characters
   after Pandoc bracketed-span attr blocks (`[…]{.CLASS data-…}`) are stripped. A substance-free
@@ -1710,6 +1740,21 @@ Two distinct, complementary reviews (Q16):
    splits. **Accepted cost:** it runs fully on every deliverable and does not inherit the
    compose-once economy — the deliverable is what ships and must be fully vetted. Review 1 remains
    the fail-fast gate that saves wasted rendering.
+
+**Review 1's `grounding` check is a two-dimension ADVISORY audit (DR-6).** The artifact review runs
+it in BOTH directions and raises a `concern` — NEVER a block: **coverage** (a declarative sentence
+asserting a specific external fact yet carrying no grounding span / `data-fact` — an unmarked
+assertion) and **faithfulness** (a grounding span whose bound ledger fact does not support the
+sentence). A `claude -p` self-check is not a hard per-claim reject, so both stay advisory;
+`ARTIFACT_CHECKS` and `REVIEW_VERSION` are unchanged. The hard tier-promotion / EXTRACTED-floor
+rejects stay upstream at the IR gate (§15) — this audit surfaces only the residual soft cases.
+
+**Honest scope — DR-6 v1 is Option A (advisory).** Increment 1 ships the ADVISORY path only: this
+two-dimension Review-1 audit, the `attestation` ledger carrier (§15), the `grounding_posture`
+policy (§6.3/§12.1), and the opt-in item-level abstain (`grounding-uncovered`, §21.7). The HARD
+self-demarcation coverage gate, the `.framing` mechanism, and the whole-corpus migration are NOT
+built — reconsiderable, or a future fact-checking docs-researcher agent's domain. See
+`docs/known-issues.md` DR-6.
 
 **Fit and serialize revisions × the gates (FR5, FR7.5).** A forced re-reconcile reuses the SAME
 approved IR-canonical — the `artifact-id` is unchanged, so Review 1 is not re-run; preserving
@@ -1991,7 +2036,7 @@ ResultItem = { item, status: ok|warn|block|needs-input, ids{...}, output{path?|b
   carries the new fitted-id + deliverable-id(s), §21.8) · **`re-serialized`** (ok — an
   unqualified render auto-minted a serialize revision, the exact sibling of `re-reconciled`,
   §17/§21.8) · `member-updated` (warn, §21.2) · `ambiguous-migration-decisions` (needs-input,
-  §11.6). `already-materialized` (§22.6) is REUSED, not new, for a force resolving to an existing
+  §11.6) · **`grounding-uncovered`** (block, §6.5/§19). `already-materialized` (§22.6) is REUSED, not new, for a force resolving to an existing
   matching fit (idempotent re-issue or force-after-revert; context names the matched fit) and for
   serialize-resolution hits; there is deliberately NO `superseded-fit`/`non-current-fit` code —
   currency is a computed FIELD on read surfaces (§21.3), never a ResultItem code, so fetch stays
@@ -1999,6 +2044,13 @@ ResultItem = { item, status: ok|warn|block|needs-input, ids{...}, output{path?|b
   unqualified render never returns serialize-stale bytes (FR7.3, §21.8). Contract tier: `unknown-verb`/`unknown-action` · `invalid-override` ·
   `isolation-violation` · `invalid-token` (there is no `stale-token`; §20) · `not-found` ·
   `needs-input: unresolved-member` (§21.5). Parallel-path codes extend the same taxonomy (§22.6).
+- **`grounding-uncovered`** (generation tier, DR-6) is the opt-in item-level abstain: under
+  `grounding_posture == "block"` ONLY, the driver abstains an item whose PERSISTED Review-1 record
+  shows a `grounding` concern (statuses `("block",)`, remediation `None`; siblings continue). It is
+  FAIL-OPEN — an absent / corrupt / partial record, or a non-`concern` grounding status, SHIPS
+  (deterministically identical on re-drive); default `grounding_posture = "warn"` is
+  behavior-identical to before. `review.py` is unchanged — the abstain lives in the driver, the
+  sole seam where an advisory concern can gate a ship.
 - Every non-ok result carries a **machine `remediation.action`** token (e.g. `relax-clause`,
   `run-migrate`, `retry-after`) so callers divert or degrade deterministically — never by parsing
   the human `hint`. The full set is discoverable via `list codes`.
