@@ -35,12 +35,14 @@ from pipeline.compose import (
     ComposeError,
     ComposeRequest,
     build_grounding_ledger,
+    build_outline_ir,
     build_writer_prompt,
     compose_artifact,
 )
 from pipeline.grounding import GroundedFact
-from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id
+from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id, parse_id
 from pipeline.ir import SecretShapedValueError, validate_ir
+from pipeline.outline import normalize_outline, outline_digest
 from pipeline.store import WorkspaceStore
 from pipeline.transport import ProcessOutcome, ProcessRequest
 
@@ -622,3 +624,105 @@ class TestAttestationCarrierPassThrough:
             "preimage": dict(preimage),
             "digest": digest_full(preimage),
         }
+
+
+# --- DR-3 Commit 4: the emit bridge (outline -> Format=outline IR) + PO-4/5/6 -------------
+
+
+class TestOutlineEmit:
+    """DR-3 Commit 4 (horn (a) / B1): `build_outline_ir` realizes an outline as an ORDINARY
+    `Format=outline` IR through the EXISTING `ir.build_ir` + `write_new` machinery — no new IR
+    type, no schema change, no new registry root. The IR body IS the canonical Markdown (a WRAP),
+    the grounding ledger is empty, and there are NO `data-fact` spans. Discharges the identity
+    proof-obligations PO-4 (the emit re-mints its own id from its preimage — the R4 own-body
+    exception), PO-5 (N-stability: cosmetic edits do not churn the id, semantic edits do), and PO-6
+    (no new §7.4 id-family surface — an ordinary artifact-id; the digest a bare content hash)."""
+
+    def _preimage(self, md: str) -> dict:
+        return build_artifact_preimage(
+            topic=EntryBinding("topic-x"),
+            persona=EntryBinding("hiring-manager"),
+            format=EntryBinding("outline"),  # Format=outline
+            voice=EntryBinding("business"),
+            goals=[EntryBinding("explain")],
+            source_subset=["acme-graph"],
+            source_commit={"acme-graph": COMMIT_SHA},
+            outline_digest=outline_digest(md),  # the R4 own-body digest (Commit 6 supplies it)
+        )
+
+    def test_outline_emit_validates_and_wraps_body_byte_exact(self, store):
+        # (i) validate_ir ACCEPTS the envelope; (ii) the body equals N(md) BYTE-for-byte.
+        md = "# Launch outline\r\n\r\n- Problem   \n- Approach\n\n\n- Ship\n"
+        preimage = self._preimage(md)
+        artifact_id = mint_artifact_id(preimage)
+        doc = build_outline_ir(md, artifact_id=artifact_id, preimage=preimage, store=store)
+
+        validate_ir(doc)  # (i) — accepts an ordinary flat-body artifact
+        expected = normalize_outline(md)
+        assert doc["body"] == expected
+        assert doc["body"].encode("utf-8") == expected.encode("utf-8")  # (ii) byte-exact WRAP
+        # ordinary artifact: empty ledger, no data-fact spans, a flat body (never a parts list).
+        assert doc["grounding"] == {}
+        assert "data-fact" not in doc["body"]
+        assert "body" in doc and "parts" not in doc
+
+    def test_outline_emit_persists_under_its_artifact_id(self, store):
+        md = "# Outline\n\n- one\n- two\n"
+        preimage = self._preimage(md)
+        artifact_id = mint_artifact_id(preimage)
+        doc = build_outline_ir(md, artifact_id=artifact_id, preimage=preimage, store=store)
+        # persisted via the no-replace write_new path, keyed by the artifact-id (§22.3).
+        target = store.output_path(artifact_id)
+        assert target.exists()
+        persisted = json.loads(target.read_bytes())
+        validate_ir(persisted)
+        assert persisted == doc  # the persisted record IS the returned raw envelope (no wrapper)
+
+    def test_outline_emit_id_reproduced_from_preimage_PO4(self, store):
+        # PO-4: build_ir -> _validate_binding -> mint_artifact_id(binding["preimage"]) reproduces
+        # the recorded artifact_id byte-exact; the emit id DEPENDS on the outline-digest (R4).
+        md = "# Outline\n\n- alpha\n- beta\n"
+        preimage = self._preimage(md)
+        artifact_id = mint_artifact_id(preimage)
+        doc = build_outline_ir(md, artifact_id=artifact_id, preimage=preimage, store=store)
+        binding = doc["binding"]
+        assert binding["artifact_id"] == artifact_id
+        assert mint_artifact_id(binding["preimage"]) == artifact_id  # re-mints its OWN id
+        assert binding["digest"] == digest_full(binding["preimage"])
+        assert binding["preimage"]["outline-digest"] == outline_digest(md)  # the R4 own-body home
+
+    def test_outline_emit_id_is_N_stable_and_body_dependent_PO5(self, store):
+        # PO-5: N idempotent -> a COSMETIC edit (trailing ws + blank-run collapse) does NOT churn
+        # the digest/id; a SEMANTIC edit DOES (the accepted R2 re-compose cost).
+        md = "# Outline\n\n- one\n- two\n"
+        base_id = mint_artifact_id(self._preimage(md))
+
+        cosmetic = "# Outline\n\n\n- one   \n- two\n\n"  # N-identical to md
+        assert outline_digest(cosmetic) == outline_digest(md)
+        assert mint_artifact_id(self._preimage(cosmetic)) == base_id  # no id churn
+
+        semantic = "# Outline\n\n- one\n- two\n- three\n"  # a real content change
+        assert outline_digest(semantic) != outline_digest(md)
+        assert mint_artifact_id(self._preimage(semantic)) != base_id  # a NEW id
+
+    def test_outline_emit_no_new_id_family_surface_PO6(self, store):
+        # PO-6: the outline is an ORDINARY artifact-id (a-<hex16>); no `o-` root, no new §7.4
+        # family — the outline-digest rides the preimage as a bare content hash, never parse_id'd.
+        md = "# Outline\n\n- only\n"
+        preimage = self._preimage(md)
+        artifact_id = mint_artifact_id(preimage)
+        build_outline_ir(md, artifact_id=artifact_id, preimage=preimage, store=store)
+        parsed = parse_id(artifact_id)
+        assert parsed.family == "artifact" and parsed.level == "artifact" and parsed.part is None
+        assert not artifact_id.startswith("o-")
+
+    def test_outline_emit_is_idempotent(self, store):
+        # §22.7: re-emitting the SAME outline is a benign no-op — the bytes are untouched.
+        md = "# Outline\n\n- one\n"
+        preimage = self._preimage(md)
+        artifact_id = mint_artifact_id(preimage)
+        first = build_outline_ir(md, artifact_id=artifact_id, preimage=preimage, store=store)
+        before = store.output_path(artifact_id).read_bytes()
+        second = build_outline_ir(md, artifact_id=artifact_id, preimage=preimage, store=store)
+        assert store.output_path(artifact_id).read_bytes() == before
+        assert second == first

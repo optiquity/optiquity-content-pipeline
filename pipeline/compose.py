@@ -85,10 +85,11 @@ from pipeline.canonical import canonical_json_bytes
 from pipeline.claims import ClaimRegistry
 from pipeline.grounding import GroundedFact
 from pipeline.ids import part_id
+from pipeline.outline import normalize_outline
 from pipeline.prompts import load_template
 from pipeline.review import ReviewOutcome
 from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive
-from pipeline.store import WorkspaceStore, is_done
+from pipeline.store import AlreadyMaterializedError, WorkspaceStore, is_done, write_new
 from pipeline.transport import Runner, TransportResult, invoke_headless
 
 __all__ = [
@@ -99,6 +100,7 @@ __all__ = [
     "ComposeOutcome",
     "ComposeRequest",
     "build_grounding_ledger",
+    "build_outline_ir",
     "build_writer_prompt",
     "compose_artifact",
     "parse_writer_output",
@@ -689,3 +691,51 @@ def compose_artifact(
     finally:
         if own_cwd:
             shutil.rmtree(scratch, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# The DR-3 emit bridge (Commit 4): an outline -> an ordinary `Format=outline` IR.
+# ---------------------------------------------------------------------------
+
+
+def build_outline_ir(
+    canonical_md: str,
+    *,
+    artifact_id: str,
+    preimage: Mapping[str, Any],
+    store: WorkspaceStore,
+) -> dict[str, Any]:
+    """Realize an outline as an ordinary `Format=outline` IR artifact (DR-3 Commit 4, horn (a)).
+
+    A THIN bridge through the EXISTING machinery — NO new IR type, NO schema change, NO new
+    registry root. The IR `body` IS the canonical outline Markdown,
+    `normalize_outline(canonical_md)` (N): a WRAP, never a transform. The grounding ledger is EMPTY
+    (`{}`) and the body carries NO `data-fact` spans, so the emitted envelope is an ORDINARY
+    flat-body artifact — `validate_ir` (run inside `ir.build_ir`) accepts it, `render` fits +
+    serializes it, and `fetch-by-id` / `emit-manifest` resolve it by `parse_id`, with NO
+    special-casing (S5/Part-D: a flat body has no part circularity; `outline` is non-parametric).
+
+    Identity (PO-4, the R4 own-body exception): the CALLER supplies the already-minted `artifact_id`
+    and its §7.2 `preimage` (which carries `format=outline` + the `outline-digest` of THIS body —
+    constructed by the caller in Commit 6, NEVER here). `ir.build_ir` re-mints from that preimage
+    and refuses a mismatch (`BindingMismatchError`), so the recorded id always reproduces from
+    `mint_artifact_id(binding["preimage"])` and a forged id can never persist. This helper only
+    WRAPS and PERSISTS — it never constructs the preimage and never re-mints.
+
+    Persistence rides the existing no-replace `write_new` path (§22.3 existence authority): a
+    same-id re-emit of the SAME outline (identical digest -> identical preimage -> identical body ->
+    byte-identical envelope) is the designed `already-materialized` no-op, swallowed idempotently so
+    the winner's bytes stand untouched (§22.7). Returns the validated envelope.
+    """
+    body = normalize_outline(canonical_md)
+    doc = ir.build_ir(
+        artifact_id=artifact_id,
+        preimage=preimage,
+        grounding={},
+        body=body,
+    )
+    try:
+        write_new(store.output_path(artifact_id), canonical_json_bytes(doc))
+    except AlreadyMaterializedError:
+        pass  # idempotent: the same outline is already emitted; the old bytes stand (§22.7)
+    return doc
