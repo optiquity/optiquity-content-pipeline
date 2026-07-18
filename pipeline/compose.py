@@ -247,7 +247,7 @@ def build_grounding_ledger(
                     "(§3.3); refusing before any LLM call"
                 )
         fact_id = f"f{index}"
-        ledger[fact_id] = {
+        entry: dict[str, Any] = {
             "tier": fact.tier,
             "source_instance_id": fact.instance_id,
             "source_repo": repo,
@@ -255,6 +255,13 @@ def build_grounding_ledger(
             "traceability_anchor": _anchor_strings(fact),
             "scores_snapshot": _json_safe_scores(fact.scores),
         }
+        # DR-6 scenario-2 carrier (§15 RI3): emit the optional `attestation` ONLY when the fact
+        # carries one. Scenario-1 facts (attestation is None) leave the entry at its pre-DR-6
+        # 6-field shape → byte-identical ledgers, zero churn, no artifact-id/binding impact (the
+        # ledger is not an identity input, §7.2). Pass-through only — nothing here SETS attestation.
+        if fact.attestation is not None:
+            entry["attestation"] = fact.attestation
+        ledger[fact_id] = entry
         entries.append((fact_id, fact))
     ir.validate_grounding_ledger(ledger)  # closed schema + §3.3 secret scan — loud on a secret
     return ledger, tuple(entries)

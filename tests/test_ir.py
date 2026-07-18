@@ -24,6 +24,7 @@ import pytest
 from pipeline.canonical import digest_full
 from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id, part_id
 from pipeline.ir import (
+    ATTESTATION_RELATIONS,
     IR_VERSION,
     KNOWN_IR_VERSIONS,
     LEDGER_FIELDS,
@@ -79,6 +80,24 @@ def ledger_entry(**overrides) -> dict:
 
 def one_fact_ledger(**overrides) -> dict:
     return {"f0": ledger_entry(**overrides)}
+
+
+def valid_attestation(**overrides) -> dict:
+    """A well-formed §15 RI3 (DR-6) scenario-2 attestation: a STRUCTURED CSL-JSON `primary`, a
+    non-empty `anchor` into the held pool source, and a `wasQuotedFrom` PROV-O `relation`."""
+    att = {
+        "primary": {
+            "type": "article-journal",
+            "title": "On Linear-Time Parsing",
+            "author": [{"family": "Smith", "given": "A."}],
+            "issued": {"date-parts": [[2020]]},
+            "DOI": "10.1000/xyz123",
+        },
+        "anchor": "file-line:docs/refs.md:5",
+        "relation": "wasQuotedFrom",
+    }
+    att.update(overrides)
+    return att
 
 
 @pytest.fixture
@@ -275,6 +294,82 @@ class TestNoSecretsInLedger:
     )
     def test_looks_secret_shaped_flags_known_shapes(self, sample):
         assert looks_secret_shaped(sample) is not None
+
+
+# --- The DR-6 attestation carrier (§15 RI3): the optional PROV-O scenario-2 pool-relation record --
+
+
+class TestAttestationCarrier:
+    """§15 RI3 (DR-6 COMMIT 2): the OPTIONAL PROV-O `attestation? {primary, anchor, relation}`
+    scenario-2 pool-relation carrier. Validated ONLY when the key is present; a bare-string
+    `primary`, an unknown sub-key, and a non-vocabulary `relation` are all refused."""
+
+    def test_valid_attestation_validates(self):
+        validate_grounding_ledger(one_fact_ledger(attestation=valid_attestation()))
+
+    def test_attestation_rides_a_full_envelope(self, preimage, artifact_id):
+        doc = build_ir(
+            artifact_id=artifact_id,
+            preimage=preimage,
+            grounding=one_fact_ledger(attestation=valid_attestation()),
+            body='The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.',
+        )
+        assert doc["grounding"]["f0"]["attestation"]["relation"] == "wasQuotedFrom"
+
+    def test_bare_string_primary_is_refused(self):
+        # checklist #8: `primary` is a STRUCTURED CSL-JSON Mapping, NEVER a bare citation string.
+        with pytest.raises(SchemaViolation):
+            validate_grounding_ledger(
+                one_fact_ledger(attestation=valid_attestation(primary="Smith 2020"))
+            )
+
+    def test_unknown_attestation_sub_key_is_refused(self):
+        with pytest.raises(SchemaViolation):
+            validate_grounding_ledger(one_fact_ledger(attestation=valid_attestation(smuggled="x")))
+
+    def test_non_wasquotedfrom_relation_is_refused(self):
+        with pytest.raises(SchemaViolation):
+            validate_grounding_ledger(
+                one_fact_ledger(attestation=valid_attestation(relation="wasDerivedFrom"))
+            )
+
+    def test_empty_anchor_is_refused(self):
+        with pytest.raises(SchemaViolation):
+            validate_grounding_ledger(one_fact_ledger(attestation=valid_attestation(anchor="")))
+
+    def test_missing_attestation_sub_key_is_refused(self):
+        att = valid_attestation()
+        del att["anchor"]
+        with pytest.raises(SchemaViolation):
+            validate_grounding_ledger(one_fact_ledger(attestation=att))
+
+    def test_non_mapping_attestation_is_refused(self):
+        with pytest.raises(SchemaViolation):
+            validate_grounding_ledger(one_fact_ledger(attestation="wasQuotedFrom"))
+
+    def test_primary_csl_key_set_stays_open(self):
+        # One-file-extensibility: extra CSL-JSON keys on `primary` do NOT close the set.
+        att = valid_attestation()
+        att["primary"]["container-title"] = "J. Parsing"
+        att["primary"]["publisher"] = "ACM"
+        validate_grounding_ledger(one_fact_ledger(attestation=att))
+
+    def test_relation_vocabulary_is_the_v1_named_set(self):
+        # The accepted PROV-O relation vocabulary is a NAMED frozenset; v1 = {"wasQuotedFrom"}.
+        assert ATTESTATION_RELATIONS == frozenset({"wasQuotedFrom"})
+
+    def test_scenario1_ledger_omits_attestation_and_stays_valid(self):
+        # Absent-by-default: a 6-field scenario-1 entry carries no `attestation` and validates.
+        ledger = one_fact_ledger()
+        assert "attestation" not in ledger["f0"]
+        validate_grounding_ledger(ledger)
+
+    def test_secret_hidden_in_attestation_is_refused(self):
+        # The recursive no-secrets scan reaches the nested attestation Mapping (NO new scan added).
+        att = valid_attestation()
+        att["primary"]["note"] = "ghp_0123456789abcdefghij0123456789"
+        with pytest.raises(SecretShapedValueError):
+            validate_grounding_ledger(one_fact_ledger(attestation=att))
 
 
 # --- The inline-reference gate (§6.5/§16 via §17 RI8) --------------------------------------
@@ -518,11 +613,12 @@ class TestIrVersionGenerationTolerance:
         validate_ir(doc)  # returns cleanly — no raise
         assert 1 in KNOWN_IR_VERSIONS
 
-    def test_f_a_adds_zero_ledger_semantics(self):
-        # F-a is pure envelope governance: the required set is the pre-F-a `LEDGER_FIELDS`
-        # verbatim and the optional set is EMPTY (no coverage/attestation semantics yet).
+    def test_ledger_required_alias_and_dr6_optional_carrier(self):
+        # The required set is the pre-F-a `LEDGER_FIELDS` verbatim (back-compat alias); DR-6
+        # COMMIT 2 lands the FIRST optional carrier (`attestation`), so scenario-1 6-field
+        # ledgers stay valid while a scenario-2 entry MAY carry it.
         assert LEDGER_FIELDS == LEDGER_REQUIRED
-        assert LEDGER_OPTIONAL == ()
+        assert LEDGER_OPTIONAL == ("attestation",)
 
 
 # --- The §15 substance floor (GAP-6): a body whose VISIBLE text has no letter/digit is refused ---

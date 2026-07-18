@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.adapters.base import Anchor
+from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.claims import ClaimRegistry
 from pipeline.compose import (
     CODE_CONTRACT_VIOLATION,
@@ -120,7 +121,12 @@ class NeverRunner:
 
 
 def make_fact(
-    *, subject="parser", claim="runs in linear time", tier="EXTRACTED", instance="acme-graph"
+    *,
+    subject="parser",
+    claim="runs in linear time",
+    tier="EXTRACTED",
+    instance="acme-graph",
+    attestation=None,
 ):
     return GroundedFact(
         subject=subject,
@@ -137,7 +143,17 @@ def make_fact(
         as_of=datetime.date(2026, 6, 1),
         scores={"trusted": 5, "review_status": "merged", "freshness": datetime.date(2026, 6, 1)},
         weight=1.0,
+        attestation=attestation,
     )
+
+
+#: A well-formed §15 RI3 (DR-6) scenario-2 attestation — a STRUCTURED CSL-JSON `primary`, a
+#: non-empty `anchor` into the held pool source, and a `wasQuotedFrom` PROV-O `relation`.
+VALID_ATTESTATION = {
+    "primary": {"type": "article-journal", "title": "On Parsing", "DOI": "10.1000/xyz"},
+    "anchor": "file-line:docs/refs.md:5",
+    "relation": "wasQuotedFrom",
+}
 
 
 def make_preimage() -> dict:
@@ -528,3 +544,81 @@ class TestSubstanceFloor:
         assert len(outcome.violations) == 1
         assert "ir-empty-substance" in outcome.violations[0]
         assert store.output_path(request.artifact_id).exists()
+
+
+# --- DR-6 attestation carrier + pass-through (§15 RI3): scenario-1 byte-identity ---
+
+
+class TestAttestationCarrierPassThrough:
+    """DR-6 COMMIT 2: `build_grounding_ledger` passes a fact's `attestation` into the ledger entry
+    ONLY when present. A scenario-1 fact (attestation None) yields a byte-IDENTICAL 6-field entry
+    (zero churn, no artifact-id/binding impact); a scenario-2 fact carries the attestation through
+    to the persisted, validated IR."""
+
+    def _six_field_entry(self, repo):
+        # The EXACT pre-DR-6 (6 LEDGER_REQUIRED fields) entry shape that make_fact() produces.
+        return {
+            "tier": "EXTRACTED",
+            "source_instance_id": "acme-graph",
+            "source_repo": repo,
+            "source_commit": COMMIT_SHA,
+            "traceability_anchor": ["file-line:src/parser.py:42"],
+            "scores_snapshot": {"trusted": 5, "review_status": "merged", "freshness": "2026-06-01"},
+        }
+
+    def test_scenario1_ledger_entry_is_byte_identical_pre_step(self):
+        repo = "github.com/acme/x"
+        ledger, _ = build_grounding_ledger((make_fact(),), source_repos={"acme-graph": repo})
+        assert "attestation" not in ledger["f0"]
+        expected = {"f0": self._six_field_entry(repo)}
+        assert ledger == expected
+        # byte-identity under canonical persistence — the scenario-1 ledger is unchanged.
+        assert canonical_json_bytes(ledger) == canonical_json_bytes(expected)
+
+    def test_scenario1_artifact_identity_is_unchanged(self, store, claims):
+        # Zero identity churn: the ledger is NOT an artifact-id input (§7.2). A scenario-1 compose
+        # mints the SAME artifact_id + binding the preimage alone dictates.
+        preimage = make_preimage()
+        request = make_request()
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.ir["binding"] == {
+            "artifact_id": mint_artifact_id(preimage),
+            "preimage": dict(preimage),
+            "digest": digest_full(preimage),
+        }
+
+    def test_attestation_is_carried_through_when_present(self):
+        ledger, _ = build_grounding_ledger(
+            (make_fact(attestation=VALID_ATTESTATION),),
+            source_repos={"acme-graph": "github.com/acme/x"},
+        )
+        assert ledger["f0"]["attestation"] == VALID_ATTESTATION
+
+    def test_scenario2_fact_composes_and_persists_with_attestation(self, store, claims):
+        request = make_request(grounded_facts=(make_fact(attestation=VALID_ATTESTATION),))
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        validate_ir(persisted)
+        assert persisted["grounding"]["f0"]["attestation"] == VALID_ATTESTATION
+
+    def test_scenario2_binding_matches_scenario1_binding(self, store, claims):
+        # scenario-2 mints the SAME artifact_id + binding as scenario-1 — attestation rides the
+        # ledger, never identity (§7.2). Same preimage-derived binding as the scenario-1 test.
+        preimage = make_preimage()
+        request = make_request(grounded_facts=(make_fact(attestation=VALID_ATTESTATION),))
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.ir["binding"] == {
+            "artifact_id": mint_artifact_id(preimage),
+            "preimage": dict(preimage),
+            "digest": digest_full(preimage),
+        }

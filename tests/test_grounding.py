@@ -45,6 +45,7 @@ from pipeline.grounding import (
     STATUS_BLOCK,
     STATUS_OK,
     STATUS_WARN,
+    GroundedFact,
     GroundingError,
     GroundingRequest,
     RefinementError,
@@ -1260,3 +1261,50 @@ class TestEndToEnd:
         # provenance for the §15 ledger: instance + commit per fact, workspace on top
         assert out.commit_map["x-alpha-record"] == synthetic_commit("alpha")
         assert all(f.commit == out.commit_map[f.instance_id] for f in out.facts)
+
+
+# --- DR-6 attestation carrier on GroundedFact (§15 RI3): absent-by-default + pass-through ---
+
+
+def grounded_fact(**overrides) -> GroundedFact:
+    """One minimal `GroundedFact` for the carrier tests — the resolver walk itself is exercised
+    end-to-end elsewhere; here we pin only the DR-6 `attestation` carrier field."""
+    base = dict(
+        subject="parser",
+        claim="runs in linear time",
+        instance_id="acme-graph",
+        adapter="graphify",
+        commit="c0ffee",
+        base_tier=TIER_EXTRACTED,
+        tier=TIER_EXTRACTED,
+        corroboration=0,
+        agreeing_instances=("acme-graph",),
+        anchors=(Anchor("file-line", "src/parser.py:42"),),
+        citable=True,
+        as_of=datetime.date(2026, 6, 1),
+        scores={"trusted": 5},
+        weight=1.0,
+    )
+    base.update(overrides)
+    return GroundedFact(**base)
+
+
+class TestAttestationCarrier:
+    def test_attestation_defaults_to_none(self):
+        # Absent-by-default: a scenario-1 fact (in-pool primary) carries no attestation.
+        assert grounded_fact().attestation is None
+
+    def test_grounded_fact_carries_attestation_when_set(self):
+        att = {
+            "primary": {"type": "article-journal", "title": "On Parsing"},
+            "anchor": "file-line:docs/refs.md:5",
+            "relation": "wasQuotedFrom",
+        }
+        assert grounded_fact(attestation=att).attestation == att
+
+    def test_resolver_facts_carry_none_attestation(self):
+        # The resolver does not SET attestation in this carrier commit (no scenario-2 detection):
+        # every fact from a real walk carries the None default (absent-by-default pass-through).
+        out = ground([inst("x-a", "d")], datasets={"d": (fact("s", "c"),)})
+        assert out.facts  # the walk produced facts
+        assert all(f.attestation is None for f in out.facts)

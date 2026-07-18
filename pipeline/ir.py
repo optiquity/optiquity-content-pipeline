@@ -79,6 +79,7 @@ from pipeline.canonical import CanonicalizationError, digest_full
 from pipeline.ids import IdError, PreimageError, mint_artifact_id, parse_id, part_id
 
 __all__ = [
+    "ATTESTATION_RELATIONS",
     "IR_VERSION",
     "KNOWN_IR_VERSIONS",
     "LEDGER_FIELDS",
@@ -148,10 +149,12 @@ LEDGER_REQUIRED = (
     "scores_snapshot",
 )
 
-#: Additive-optional ledger keys — EMPTY in F-a (this commit adds NO coverage/attestation
-#: semantics). A later generation appends names here; F-a only lands the envelope governance
-#: (`LEDGER_REQUIRED ⊆ keys ⊆ LEDGER_REQUIRED ∪ LEDGER_OPTIONAL`) that a carrier will ride.
-LEDGER_OPTIONAL: tuple[str, ...] = ()
+#: Additive-optional ledger keys (F-a landed the empty envelope governance; DR-6 COMMIT 2 lands
+#: the first carrier). `attestation` is the OPTIONAL PROV-O-shaped scenario-2 pool-relation record
+#: (§15 RI3): an in-pool-primary scenario-1 entry OMITS it (6-field, byte-unchanged) while a
+#: scenario-2 entry MAY carry it. A later generation appends more names; the governance stays
+#: `LEDGER_REQUIRED ⊆ keys ⊆ LEDGER_REQUIRED ∪ LEDGER_OPTIONAL` (an undeclared key is refused).
+LEDGER_OPTIONAL: tuple[str, ...] = ("attestation",)
 
 #: Back-compat alias (exported): the pre-F-a name for the required set. Callers importing
 #: `LEDGER_FIELDS` keep working; it equals `LEDGER_REQUIRED`.
@@ -159,6 +162,17 @@ LEDGER_FIELDS = LEDGER_REQUIRED
 
 #: The closed ledger-entry key set = required ∪ optional (mirrors `_PART_KEYS`, §15 RI2).
 _LEDGER_KEYS = frozenset((*LEDGER_REQUIRED, *LEDGER_OPTIONAL))
+
+#: §15 RI3 (DR-6): the CLOSED `attestation` sub-key set — the optional PROV-O scenario-2 carrier is
+#: EXACTLY {primary, anchor, relation}. An undeclared sub-key is a smuggling/typo surface, refused
+#: (mirrors the ledger-entry closure).
+_ATTESTATION_KEYS = frozenset({"primary", "anchor", "relation"})
+
+#: §15 RI3 (DR-6): the accepted PROV-O `relation` vocabulary. v1 carries `wasQuotedFrom` (a
+#: secondary pool source QUOTED the out-of-pool primary). A NAMED, one-file-extensible frozenset —
+#: append a PROV-O token to widen the set; NEVER an inline literal, so the vocabulary has one place
+#: of record.
+ATTESTATION_RELATIONS = frozenset({"wasQuotedFrom"})
 
 #: The closed top-level envelope key set. `parts`/`body` are mutually exclusive (§15
 #: flat-body collapse); `metadata` is optional (§11.3). Anything else is refused.
@@ -514,11 +528,50 @@ def _require_substance(value: Any, where: str) -> None:
         )
 
 
+def _validate_attestation(value: Any, loc: str) -> None:
+    """Validate one OPTIONAL §15 RI3 `attestation` carrier (DR-6 scenario-2 pool-relation).
+
+    The carrier is a PROV-O-shaped Mapping with EXACTLY `{primary, anchor, relation}`:
+    - `primary` is a STRUCTURED CSL-JSON-shaped Mapping (a citation descriptor for the out-of-pool
+      primary B — NEVER a bare string, checklist #8). It must BE a Mapping; its key set stays OPEN
+      (CSL-JSON keys — `type`, `title`, `author`, `issued`, `DOI`, `container-title`, … — are
+      accepted without closing the set), so the descriptor is one-file-upgradeable. A non-Mapping
+      (a bare "Smith 2020" string) is refused.
+    - `anchor` is a non-empty string pointing INTO the held pool source — the same shape as a
+      `traceability_anchor` entry — which is what makes the attestation itself checkable.
+    - `relation` is a PROV-O token from the one-file-extensible `ATTESTATION_RELATIONS` set.
+    The recursive no-secrets scan (`_scan_no_secrets`) already covers this nested Mapping, so no
+    new secret scan is added here.
+    """
+    _require(isinstance(value, Mapping), f"{loc} must be a PROV-O attestation map (§15 RI3)")
+    keys = set(value)
+    _require(
+        keys == _ATTESTATION_KEYS,
+        f"{loc} must carry EXACTLY {sorted(_ATTESTATION_KEYS)} (§15 RI3, closed schema), got "
+        f"{sorted(keys)}",
+    )
+    _require(
+        isinstance(value["primary"], Mapping),
+        f"{loc}.primary must be a STRUCTURED CSL-JSON-shaped citation descriptor (a Mapping), "
+        f"never a bare string (§15 RI3, DR-6 #8), got {type(value['primary']).__name__}",
+    )
+    _require(
+        _nonempty_str(value["anchor"]),
+        f"{loc}.anchor must be a non-empty anchor string into the held pool source (§15 RI3)",
+    )
+    _require(
+        value["relation"] in ATTESTATION_RELATIONS,
+        f"{loc}.relation must be a PROV-O token in {sorted(ATTESTATION_RELATIONS)} (§15 RI3), "
+        f"got {value['relation']!r}",
+    )
+
+
 def validate_grounding_ledger(ledger: Any, *, where: str = "grounding") -> None:
     """Validate one §15 grounding ledger: closed entry schema + the §3.3 no-secrets scan.
 
     Every fact-id is a simple token; every entry carries the `LEDGER_REQUIRED` fields and MAY
-    carry `LEDGER_OPTIONAL` ones (empty in F-a) — `LEDGER_REQUIRED ⊆ keys ⊆ LEDGER_REQUIRED ∪
+    carry `LEDGER_OPTIONAL` ones (the DR-6 `attestation` carrier) — `LEDGER_REQUIRED ⊆ keys ⊆
+    LEDGER_REQUIRED ∪
     LEDGER_OPTIONAL`; an undeclared key is a smuggling surface, refused. `source_commit` may be
     null (commitless adapters) and `traceability_anchor` may be empty (an anchor-less EXTRACTED
     fact is legal — SM9). After the shape check, a recursive scan refuses any secret-shaped
@@ -562,6 +615,8 @@ def validate_grounding_ledger(ledger: Any, *, where: str = "grounding") -> None:
             isinstance(entry["scores_snapshot"], Mapping),
             f"{loc}.scores_snapshot must be a map of characteristic -> value",
         )
+        if "attestation" in entry:  # DR-6 optional scenario-2 carrier — validated only when present
+            _validate_attestation(entry["attestation"], f"{loc}.attestation")
     _scan_no_secrets(ledger, where)
 
 

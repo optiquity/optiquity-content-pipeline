@@ -377,6 +377,11 @@ class GroundedFact:
     weight: float
     attributed: bool = False
     conflict: ConflictInfo | None = None
+    #: DR-6 scenario-2 pool-relation carrier (§15 RI3), ABSENT-by-default: a PROV-O-shaped
+    #: {primary, anchor, relation} attestation. Scenario-1 facts (in-pool primary) carry None; the
+    #: resolver does not SET it yet (this is the CARRIER + pass-through commit — no scenario-2
+    #: detection). Compose emits it into the ledger entry ONLY when present.
+    attestation: Mapping[str, Any] | None = None
 
     @property
     def publishable(self) -> bool:
