@@ -68,8 +68,8 @@ from pathlib import Path
 from typing import Any
 
 from pipeline import driver, parallel, telemetry
+from pipeline.adapters import default_adapters
 from pipeline.adapters.base import AdapterError, SourceAdapter
-from pipeline.adapters.graphify import GraphifyAdapter
 from pipeline.api import discovery, fetch, folio_verbs, manifest, render, results
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import token as token_mod
@@ -180,8 +180,10 @@ def _parallel_plan_context(root: Path, plan: Plan) -> dict[str, Any]:
 
 
 def _default_adapters() -> dict[str, SourceAdapter]:
-    """The real source-adapter set (grounding + the §7.2 commit pin via `pin_commit`)."""
-    return {"graphify": GraphifyAdapter()}
+    """The real source-adapter set (grounding + the §7.2 commit pin via `pin_commit`) —
+    delegates to the single registration point so `graphify` + `folder` (and any future
+    adapter) resolve identically through the API and the driver."""
+    return default_adapters()
 
 
 def _outlines_from_fields(raw: Any) -> list[tuple[Any, str]]:

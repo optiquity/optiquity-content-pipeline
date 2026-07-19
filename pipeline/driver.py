@@ -51,8 +51,8 @@ from typing import Any
 
 from pipeline import ir
 from pipeline import presentation as _presentation
+from pipeline.adapters import default_adapters
 from pipeline.adapters.base import SourceAdapter
-from pipeline.adapters.graphify import GraphifyAdapter
 from pipeline.api import results
 from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.cascade import (
@@ -908,7 +908,7 @@ def run_thread(
     pool = build_pool(env.resolver, source_ids)
     # Build the adapter set FIRST so the commit-map is pinned through the SAME provenance
     # read grounding uses (CF-1): `_pin_source_commit` delegates to `adapter.pin_commit`.
-    adapters: dict[str, SourceAdapter] = {"graphify": GraphifyAdapter()}
+    adapters: dict[str, SourceAdapter] = default_adapters()
     source_commit: dict[str, str] = {}
     source_repos: dict[str, str] = {}
     for inst in pool:
