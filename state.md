@@ -114,8 +114,10 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     id rides the single `outline-digest` component (no `drive-config`/facet key).
   - Doc-sync `81a58a1` (design.md §5.2/§7.2/§12.1/§15/§21.1/§27.3 + known-issues DR-3 build-status + mission `0.2.2`).
   - Gate: `2135 passed, 6 deselected`, ruff + guard clean. Reports: `ops-handoff/dr3-build/`.
-  - **DEFERRED:** the LLM outline drafter (GAP-7 mirror); the R1 compose-input-brief **live ablation** (needs
-    live generation — offered as a maintainer-run measurement; the design is safe regardless).
+  - **R1 ablation BUILT + RUN** (`2ea1270`, directional n=1): live on `mvp-demo`/optiquity-site graph —
+    V0 (no outline) struct 0.40 / content 0.23 vs V1 (outline brief) struct 1.00 / content 0.50 (Δ +0.60 /
+    +0.27); the brief measurably steers output, identity sanity held live. **DEFERRED:** only the LLM outline drafter
+    (GAP-7 mirror).
   - **NEXT in the build order:** `DR-4 (content templates) → DR-5 (style placement) → DR-2 (style guides)` —
     await maintainer direction.
 
