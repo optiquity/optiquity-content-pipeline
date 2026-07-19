@@ -716,3 +716,142 @@ class TestUnwrapIr:
     def test_ir_is_not_a_top_level_key(self):
         # NEW-E: the discriminator's totality guard — a raw IR can never carry a top-level `"ir"`.
         assert "ir" not in TOP_LEVEL_KEYS
+
+
+# --- DR-4 C4: the OPTIONAL `section_conformance` field (additive-optional; NOT in identity) -------
+
+
+def academic_conformance() -> list[dict]:
+    """A well-formed RESOLVED base schema exercising the WHOLE C2 vocabulary: presence (role),
+    order (role selectors), length (role), and count (a TYPE-axis selector into the carrier)."""
+    return [
+        {"rule": "presence", "axis": "role", "value": "abstract", "required": True,
+         "severity": "error"},
+        {"rule": "presence", "axis": "role", "value": "methods", "severity": "error"},
+        {"rule": "order", "selectors": [
+            {"axis": "role", "value": "abstract"},
+            {"axis": "role", "value": "methods"},
+        ], "severity": "warning"},
+        {"rule": "length", "axis": "role", "value": "abstract", "min_len": 0, "max_len": 2500,
+         "severity": "warning"},
+        {"rule": "count", "axis": "type", "value": "figure", "cardinality": "{1,}",
+         "severity": "info"},
+    ]
+
+
+class TestSectionConformanceField:
+    def test_section_conformance_is_a_declared_top_level_key(self):
+        # The additive-optional key joined the closed top-level set (mirrors LEDGER_OPTIONAL).
+        assert "section_conformance" in TOP_LEVEL_KEYS
+
+    def test_no_ir_version_bump_s5(self):
+        # S-5: the field rides `keys <= TOP_LEVEL_KEYS`, NOT a generation bump — untouched.
+        assert IR_VERSION == 2 and KNOWN_IR_VERSIONS == frozenset({1, 2})
+
+    def test_v2_envelope_without_the_field_still_validates(self, preimage, artifact_id):
+        # BACK-COMPAT: a fresh v2 IR carrying NO section_conformance validates unchanged.
+        doc = build_ir(
+            artifact_id=artifact_id,
+            preimage=preimage,
+            grounding=one_fact_ledger(),
+            body='The parser runs in [linear time]{.EXTRACTED data-fact="f0"}.',
+        )
+        assert "section_conformance" not in doc
+        validate_ir(doc)  # no raise
+        assert doc["ir_version"] == 2
+
+    def test_v1_envelope_without_the_field_still_validates(self, preimage, artifact_id):
+        # BACK-COMPAT: a stored PRIOR-generation (ir_version=1) IR with NO field stays valid.
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.")
+        doc["ir_version"] = 1
+        assert "section_conformance" not in doc
+        validate_ir(doc)  # no raise
+        assert 1 in KNOWN_IR_VERSIONS
+
+    def test_well_formed_field_validates_and_round_trips(self, preimage, artifact_id):
+        schema = academic_conformance()
+        doc = build_ir(
+            artifact_id=artifact_id,
+            preimage=preimage,
+            grounding={},
+            body="Body text.",
+            section_conformance=schema,
+        )
+        assert doc["section_conformance"] == schema  # recorded verbatim (resolved base schema)
+        validate_ir(doc)  # idempotent — build_ir already validated
+
+    def test_well_formed_field_validates_on_a_v1_envelope(self, preimage, artifact_id):
+        # The field is additive-optional across BOTH read generations, not v2-only.
+        doc = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+            section_conformance=academic_conformance(),
+        )
+        doc["ir_version"] = 1
+        validate_ir(doc)  # no raise
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "not-a-list",  # not a list at all
+            [],  # present but EMPTY — omit-when-absent invariant (never []/null)
+            [{"rule": "bogus", "axis": "role", "value": "x"}],  # unknown menu kind
+            [{"rule": "presence", "axis": "role", "value": "x", "severity": "loud"}],  # severity
+            [{"rule": "presence", "axis": "type", "value": "sidebar", "severity": "error"}],  # type
+            [{"rule": "presence", "axis": "role", "value": "x", "bogus": 1}],  # unknown rule key
+            [{"rule": "presence", "axis": "role"}],  # missing required `value`
+            [{"rule": "count", "axis": "role", "value": "x", "cardinality": "??",
+              "severity": "error"}],  # malformed cardinality
+            [{"rule": "order", "selectors": [{"axis": "role", "value": "a"}],
+              "severity": "warning"}],  # order needs >= 2 selectors
+            [{"rule": "length", "axis": "role", "value": "a", "min_len": 5, "max_len": 1,
+              "severity": "error"}],  # max < min
+        ],
+    )
+    def test_malformed_field_is_refused_loudly_typed(self, preimage, artifact_id, bad):
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.")
+        doc["section_conformance"] = bad
+        with pytest.raises(SchemaViolation) as exc:
+            validate_ir(doc)
+        assert exc.value.code == "ir-schema-invalid"
+
+    def test_build_ir_refuses_a_malformed_field(self, preimage, artifact_id):
+        # build_ir validates before returning, so a malformed schema can never be built.
+        with pytest.raises(SchemaViolation):
+            build_ir(
+                artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+                section_conformance=[{"rule": "presence", "axis": "role", "value": "x",
+                                      "severity": "loud"}],
+            )
+
+    def test_omit_when_absent_floor_and_none(self, preimage, artifact_id):
+        # A floor [] (or None) records NO key — never [] / null on the envelope.
+        floor = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+            section_conformance=[],
+        )
+        none = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+            section_conformance=None,
+        )
+        assert "section_conformance" not in floor
+        assert "section_conformance" not in none
+
+    def test_the_field_is_identity_neutral(self, preimage, artifact_id):
+        # THE identity test: two build_ir with the SAME preimage, one WITH and one WITHOUT the
+        # field, mint the SAME artifact_id and the SAME binding digest — the field is DERIVED and
+        # is recorded OUTSIDE binding.preimage, so it can never move identity.
+        without = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body text."
+        )
+        with_field = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body text.",
+            section_conformance=academic_conformance(),
+        )
+        assert "section_conformance" in with_field and "section_conformance" not in without
+        # Same id, same full digest, byte-identical binding (incl. its preimage).
+        assert with_field["binding"]["artifact_id"] == without["binding"]["artifact_id"]
+        assert with_field["binding"]["digest"] == without["binding"]["digest"]
+        assert with_field["binding"] == without["binding"]
+        # The field never leaks into the preimage (the identity SSOT).
+        assert "section_conformance" not in with_field["binding"]["preimage"]
+        assert mint_artifact_id(with_field["binding"]["preimage"]) == artifact_id

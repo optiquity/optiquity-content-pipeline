@@ -80,6 +80,14 @@ from typing import Any
 from pipeline.adapters.base import TIERS
 from pipeline.canonical import CanonicalizationError, digest_full
 from pipeline.ids import IdError, PreimageError, mint_artifact_id, parse_id, part_id
+from pipeline.sections import (
+    Count,
+    Length,
+    Order,
+    Presence,
+    SectionGrammarError,
+    Selector,
+)
 
 __all__ = [
     "ATTESTATION_RELATIONS",
@@ -178,9 +186,21 @@ _ATTESTATION_KEYS = frozenset({"primary", "anchor", "relation"})
 ATTESTATION_RELATIONS = frozenset({"wasQuotedFrom"})
 
 #: The closed top-level envelope key set. `parts`/`body` are mutually exclusive (§15
-#: flat-body collapse); `metadata` is optional (§11.3). Anything else is refused.
+#: flat-body collapse); `metadata` (§11.3) and `section_conformance` (§15/DR-4 C4) are
+#: ADDITIVE-OPTIONAL keys — a fresh IR carrying neither is byte-identical to a pre-DR-4
+#: envelope (NO `ir_version`/`KNOWN_IR_VERSIONS` bump; `validate_ir` accepts them via `keys
+#: <= TOP_LEVEL_KEYS`, mirroring `LEDGER_OPTIONAL`'s `attestation`). Anything else is refused.
 TOP_LEVEL_KEYS = frozenset(
-    {"ir_version", "pandoc_api_version", "binding", "grounding", "parts", "body", "metadata"}
+    {
+        "ir_version",
+        "pandoc_api_version",
+        "binding",
+        "grounding",
+        "parts",
+        "body",
+        "metadata",
+        "section_conformance",
+    }
 )
 
 #: A fact-id: a short lowercase identifier token (compose assigns `f0`, `f1`, …). Never a
@@ -710,6 +730,149 @@ def _validate_part(part: Any, artifact_id: str, index: int, ledger: Mapping[str,
 
 
 # ---------------------------------------------------------------------------
+# Section conformance (§15, DR-4 C4): the OPTIONAL resolved base (Format) section-schema,
+# recorded on the envelope for audit + so reconcile need not re-resolve it compose-side
+# (D-5 record-on-IR). ADDITIVE-OPTIONAL + OMIT-WHEN-ABSENT: a Format at the `section_schema`
+# floor `[]` records NO key (never `[]`/`null`), so a PRESENT field is a non-empty list. The
+# field is a DERIVED projection of the Format delta already in `binding.preimage`, so it is OUT
+# of identity (it never enters the preimage; the artifact-id/digest are unchanged whether or not
+# it is present). When present, every rule is RECONSTRUCTED through its real `pipeline.sections`
+# (C2) constructor, so the axis/severity/section-type/cardinality vocabularies keep ONE place of
+# record and a malformed rule is refused LOUDLY as a typed `SchemaViolation`.
+# ---------------------------------------------------------------------------
+
+#: Per-kind closed key sets for a `section_conformance` rule map: `(REQUIRED, OPTIONAL)` (mirrors
+#: `_PART_KEYS`, §15 RI2). A rule carries EXACTLY `rule` + its kind's required (+ optional) keys;
+#: an undeclared key is a smuggling/typo surface, refused. `count`/`length` carry a REQUIRED
+#: `severity` (the C2 dataclasses give it no default); `presence`/`order` may omit it (dataclass
+#: default applies). `count`'s `cardinality` is the C2 spec string (`?`/`*`/`+`/`{n,m}`).
+_CONFORMANCE_RULE_KEYS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "presence": (frozenset({"rule", "axis", "value"}), frozenset({"required", "severity"})),
+    "order": (frozenset({"rule", "selectors"}), frozenset({"severity"})),
+    "count": (frozenset({"rule", "axis", "value", "cardinality", "severity"}), frozenset()),
+    "length": (
+        frozenset({"rule", "axis", "value", "min_len", "max_len", "severity"}),
+        frozenset(),
+    ),
+}
+
+
+def _conformance_selector(axis: Any, value: Any, where: str) -> Selector:
+    """Reconstruct one C2 `Selector` (raising on a bad axis, or a `type` outside the carrier)."""
+    _require(isinstance(axis, str), f"{where}.axis must be a string (§15/DR-4 C2)")
+    _require(isinstance(value, str), f"{where}.value must be a string (§15/DR-4 C2)")
+    return Selector(axis, value)
+
+
+def _conformance_rule(rule: Any, where: str) -> None:
+    """Reconstruct + shape-check ONE `section_conformance` rule against the C2 vocabulary.
+
+    Each rule is REBUILT through its real `pipeline.sections` constructor, so the axis / severity /
+    section-type / cardinality vocabularies stay single-sourced in C2; a malformed rule surfaces
+    the C2 typed error, which `_validate_section_conformance` wraps as a `SchemaViolation`."""
+    _require(isinstance(rule, Mapping), f"{where} must be a conformance-rule map (§15/DR-4 C4)")
+    kind = rule.get("rule")
+    _require(
+        kind in _CONFORMANCE_RULE_KEYS,
+        f"{where}.rule must name a C2 menu kind {sorted(_CONFORMANCE_RULE_KEYS)}, got {kind!r}",
+    )
+    required, optional = _CONFORMANCE_RULE_KEYS[kind]
+    allowed = required | optional
+    keys = set(rule)
+    _require(
+        keys <= allowed,
+        f"{where} has unknown key(s) {sorted(keys - allowed)} — a {kind} rule is "
+        f"{sorted(required)}(+ optional {sorted(optional)}) (§15/DR-4 C2)",
+    )
+    _require(
+        required <= keys,
+        f"{where} is missing required key(s) {sorted(required - keys)} for a {kind} rule (§15)",
+    )
+    if kind == "presence":
+        kwargs: dict[str, Any] = {}
+        if "required" in rule:
+            _require(
+                isinstance(rule["required"], bool),
+                f"{where}.required must be a boolean (§15/DR-4 C2)",
+            )
+            kwargs["required"] = rule["required"]
+        if "severity" in rule:
+            kwargs["severity"] = rule["severity"]
+        Presence(_conformance_selector(rule["axis"], rule["value"], where), **kwargs)
+    elif kind == "order":
+        raw = rule["selectors"]
+        _require(
+            isinstance(raw, list), f"{where}.selectors must be a list of selector maps (§15/DR-4)"
+        )
+        built: list[Selector] = []
+        for i, sel in enumerate(raw):
+            loc = f"{where}.selectors[{i}]"
+            _require(isinstance(sel, Mapping), f"{loc} must be a selector map {{axis, value}}")
+            selkeys = set(sel)
+            _require(
+                selkeys == {"axis", "value"},
+                f"{loc} must carry EXACTLY {{axis, value}} (§15/DR-4 C2), got {sorted(selkeys)}",
+            )
+            built.append(_conformance_selector(sel["axis"], sel["value"], loc))
+        order_kwargs: dict[str, Any] = {}
+        if "severity" in rule:
+            order_kwargs["severity"] = rule["severity"]
+        Order(tuple(built), **order_kwargs)
+    elif kind == "count":
+        spec = rule["cardinality"]
+        _require(
+            isinstance(spec, str),
+            f"{where}.cardinality must be a C2 spec string (?/*/+/{{n,m}}) (§15/DR-4 C2)",
+        )
+        Count.from_spec(
+            _conformance_selector(rule["axis"], rule["value"], where), spec, rule["severity"]
+        )
+    else:  # length
+        min_len = rule["min_len"]
+        max_len = rule["max_len"]
+        _require(
+            isinstance(min_len, int) and not isinstance(min_len, bool),
+            f"{where}.min_len must be an integer (§15/DR-4 C2)",
+        )
+        _require(
+            max_len is None or (isinstance(max_len, int) and not isinstance(max_len, bool)),
+            f"{where}.max_len must be an integer or null (unbounded) (§15/DR-4 C2)",
+        )
+        Length(
+            _conformance_selector(rule["axis"], rule["value"], where),
+            min_len,
+            max_len,
+            rule["severity"],
+        )
+
+
+def _validate_section_conformance(schema: Any) -> None:
+    """Validate the OPTIONAL `section_conformance` field — the RESOLVED base (Format) section-schema
+    recorded on the envelope for audit (§15/DR-4 C4; D-5 record-on-IR, so reconcile need not
+    re-resolve it compose-side). OMIT-WHEN-ABSENT: a Format at the `section_schema` floor `[]`
+    records NO key, so a PRESENT field is a NON-EMPTY list; each rule is reconstructed through the
+    C2 vocabulary (`pipeline.sections`) and a malformed rule is refused LOUDLY as a typed
+    `SchemaViolation`. NOT an identity input — `build_ir` records it OUTSIDE `binding.preimage`."""
+    _require(
+        isinstance(schema, list),
+        "section_conformance must be an ordered list of C2 conformance rules (§15/DR-4 C4)",
+    )
+    _require(
+        len(schema) >= 1,
+        "section_conformance is present but empty — a Format at the section_schema floor OMITS the "
+        "key entirely (never []/null); only a real resolved schema is recorded (§15/DR-4 C4)",
+    )
+    for index, rule in enumerate(schema):
+        try:
+            _conformance_rule(rule, f"section_conformance[{index}]")
+        except SectionGrammarError as exc:
+            raise SchemaViolation(
+                f"ir-schema-invalid: section_conformance[{index}] is not a valid C2 conformance "
+                f"rule ({exc}) — validate it against pipeline.sections (§15/DR-4 C4)"
+            ) from exc
+
+
+# ---------------------------------------------------------------------------
 # The full-envelope validator (§15 RI1–RI4).
 # ---------------------------------------------------------------------------
 
@@ -760,8 +923,10 @@ def validate_ir(doc: Any) -> None:
     `pandoc-api-version` stamps; the composition binding reproduces the artifact-id and
     full digest (§15 RI4/§7.4); the grounding ledger's closed schema + no-secrets scan
     (§15 RI3/§3.3); the metadata bag (optional, secret-scanned, never interpreted, §11.3);
-    and the `parts` XOR flat-`body` structure with every inline grounded reference known
-    and tier-honest (§15 RI2, §6.5/§16). Raises a typed `IRError` on the first defect.
+    the OPTIONAL `section_conformance` resolved base schema (validated against the C2
+    vocabulary when present, OMIT-WHEN-ABSENT, DR-4 C4); and the `parts` XOR flat-`body`
+    structure with every inline grounded reference known and tier-honest (§15 RI2,
+    §6.5/§16). Raises a typed `IRError` on the first defect.
     """
     _require(isinstance(doc, Mapping), "an IR envelope is a JSON object (§15 RI1)")
     keys = set(doc)
@@ -790,6 +955,8 @@ def validate_ir(doc: Any) -> None:
             isinstance(doc["metadata"], Mapping), "metadata must be a map (§11.3), never a leaf"
         )
         _scan_no_secrets(doc["metadata"], "metadata")
+    if "section_conformance" in doc:
+        _validate_section_conformance(doc["section_conformance"])
 
     has_parts = "parts" in doc
     has_body = "body" in doc
@@ -854,6 +1021,7 @@ def build_ir(
     parts: Sequence[Mapping[str, Any]] | None = None,
     body: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    section_conformance: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble one IR-canonical envelope and validate it (§15 RI1–RI4).
 
@@ -862,6 +1030,11 @@ def build_ir(
     `artifact_id` (else a `BindingMismatchError`) and the recorded digest is
     `digest_full(preimage)`. The returned dict is validated by `validate_ir` before it is
     handed back, so a caller can never build an envelope that would fail persistence.
+
+    `section_conformance` (optional, DR-4 C4) records the RESOLVED base (Format) section-schema
+    for audit. It is OMIT-WHEN-ABSENT (a floor `[]`/`None` records NO key) and is NOT an
+    identity input — it is recorded OUTSIDE `binding.preimage`, so the artifact-id/digest are
+    byte-identical whether or not it is present.
     """
     if (parts is None) == (body is None):
         raise SchemaViolation(
@@ -895,5 +1068,7 @@ def build_ir(
         doc["body"] = body
     if metadata is not None:
         doc["metadata"] = dict(metadata)
+    if section_conformance:  # OMIT-WHEN-ABSENT: a floor [] (or None) records NO key (DR-4 C4).
+        doc["section_conformance"] = [dict(rule) for rule in section_conformance]
     validate_ir(doc)
     return doc
