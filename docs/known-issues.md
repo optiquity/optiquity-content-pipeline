@@ -317,11 +317,17 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
 - **Identity guarantee:** non-outline `artifact-id`s are **byte-unchanged** (the omit-when-absent
   preimage); the driven/emitted id rides the SINGLE `outline-digest` component — horn (a) adds no
   `drive-config`/facet key, so no §7 re-ratification.
-- **DEFERRED (not built):** the **LLM outline drafter** (a named DR-3 backlog, GAP-7 mirror) and
-  the **R1 compose-input-brief live ablation** — an offered **maintainer-run** measurement (à la
-  the MVP-demo live run / GAP-8 EXP-10), not built; the design is safe regardless (input ==
-  identity, the §6.5 tier floor binds every span, so the precedence *degree* is empirical, not a
-  correctness gate).
+- **R1 compose-input-brief ablation — BUILT + RUN (directional, n=1; 2026-07-18).** Harness
+  `scripts/dr3_outline_ablation.py` (+ hermetic `tests/test_dr3_ablation.py`) grounds ONE coordinate
+  once, then composes twice over identical facts — V0 (no outline) vs V1 (outline brief) — and scores
+  outline-fidelity. **LIVE run** (`mvp-demo` / the real optiquity-site graph, 28 EXTRACTED facts,
+  topic `x-architecture-overview`): **V0 struct 0.40 (2/5 headings) / content 0.23** vs **V1 struct
+  1.00 (5/5 headings, in order) / content 0.50** — Δ **+0.60 struct, +0.27 content**. The outline
+  brief measurably STEERS output (V1 follows the outline more), and the identity sanity held live (V0
+  4-key/outline-less, V1 rides the digest, distinct ids). Directional, NOT statistical — the design
+  was already safe regardless (input == identity, §6.5 tier floor); this confirms the precedence works
+  on the real pipeline.
+- **DEFERRED (not built):** the **LLM outline drafter** (a named DR-3 backlog, GAP-7 mirror).
 - **Gate:** final `uv run pytest -q` = **2135 passed, 6 deselected**; `ruff check .` clean;
   `scripts/check-no-content.sh` OK. The design-authority doc-sync (design §5.2/§7.2/§12.1/§15/
   §21.1/§27.3) landed alongside. Coder/reviewer reports under `ops-handoff/dr3-build/`.
