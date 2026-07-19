@@ -14,9 +14,9 @@
 # homing pair-keyed data here would re-couple Format to platforms, which Q4 deleted.
 #
 # The genre's rhetorical structure is the entry's body prose (consumed at compose,
-# §15); the ONE structural attribute is `parts` (Q14). Composing two genres is TWO
-# artifacts, grouped by a folio — never a composite (§5.2). Per-part cascade
-# refinement is a deferred slot (§12.3, §26).
+# §15); the structural attributes are `parts` (Q14) and `section_schema` (DR-4).
+# Composing two genres is TWO artifacts, grouped by a folio — never a composite (§5.2).
+# Per-part cascade refinement is a deferred slot (§12.3, §26).
 schema_version: 1
 attributes:
   parts:
@@ -31,4 +31,44 @@ attributes:
       names surface as part Div ids in the IR/AST (§15). Empty = a single-part genre.
       Ordered `list` by design: `union` on it is a schema-validation ERROR (§11.1 CM3
       — format.parts is the design's own example) and cascade combination is replace.
+    definition_version: 1
+  # --- section_schema (DR-4 C3): the base genre's typed-section conformance contract -----------
+  #
+  # `section_schema` is the Format's OWN declared section contract — the platform-NEUTRAL base of
+  # DR-4 typed-section conformance (§5.2, §15). It is an ORDERED list of typed rules in the C2
+  # vocabulary (`pipeline.sections`: presence / order / count / length, each carrying a role- OR
+  # type-axis selector and an {error,warning,info} severity). ROLES (e.g. `abstract`, `methods`,
+  # `results`) are AUTHORED HERE as role-axis selectors — they are NOT structural `type` kinds and
+  # never enter the `pipeline.sections.SECTION_TYPES` carrier (that carrier holds genre-neutral
+  # STRUCTURAL kinds only: prose/figure/table/callout). Compose checks the composed body against
+  # this base schema (C5); per-venue tightening lives on the Platform (`format_structural`, C6).
+  #
+  # FLOOR `[]` = NO contract. Every existing Format is byte-safe: an unset `section_schema` rides
+  # the L0 floor (§12.2), is OMITTED by `delta_vs_floor` (ids.py §7.2 — a floored attribute never
+  # enters the identity delta), and re-mints every artifact-id UNCHANGED. A missing attribute is
+  # never an error (§11.1/§12.2).
+  #
+  # NIT #2 — MEANINGFUL ONLY ON OUTLINE-SHAPED FORMATS. `section_schema` describes a body's heading
+  # skeleton, so it is meaningful ONLY on an OUTLINE-SHAPED Format (one whose composed IR body IS a
+  # sectioned outline, DR-3). A NON-outline Format that declares one has NO outline scaffold to
+  # check and NO `outline-digest` identity coverage of its structure: the base gate treats such a
+  # Format as EXEMPT (documented, never silently "unconformant-by-absence") and SKIPS the check
+  # cleanly rather than failing a body it cannot see. This "exempt vs unconformant-by-absence"
+  # distinction is made unambiguous at the compose gate (C5) and recorded in the design (C11/§5.2).
+  section_schema:
+    type:
+      type: list
+      element:
+        type: map
+    default: []
+    definition: >-
+      The base genre's OWN typed-section conformance contract (DR-4, §5.2/§15): an ordered list
+      of section-conformance rules in the `pipeline.sections` C2 vocabulary (presence/order/count/
+      length; each with a role- or type-axis selector and an error|warning|info severity). Author
+      ROLE selectors (e.g. abstract/methods/results) HERE — roles are author-declared, never
+      structural `type` kinds (the SECTION_TYPES carrier holds structural kinds only). Floor `[]` =
+      no contract: an unset value rides the L0 floor, is omitted from the §7.2 identity delta, and
+      every existing artifact-id re-mints unchanged. Meaningful ONLY on outline-shaped Formats; a
+      non-outline Format that declares one is treated as EXEMPT by the base gate (no outline
+      scaffold, no outline-digest identity coverage), never silently unconformant-by-absence.
     definition_version: 1
