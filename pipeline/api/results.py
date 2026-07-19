@@ -75,6 +75,7 @@ __all__ = [
     "CODE_RE_RECONCILED",
     "CODE_RE_SERIALIZED",
     "CODE_RENDER_INPUT_MISMATCH",
+    "CODE_SECTION_CONFORMANCE_VIOLATION",
     # contract-tier codes (§21.7)
     "CODE_INVALID_OVERRIDE",
     "CODE_INVALID_TOKEN",
@@ -152,6 +153,7 @@ CODE_RE_SERIALIZED = "re-serialized"  # ok, §17/§21.8
 CODE_MEMBER_UPDATED = "member-updated"  # warn, §21.2
 CODE_AMBIGUOUS_MIGRATION_DECISIONS = "ambiguous-migration-decisions"  # needs-input, §11.6
 CODE_GROUNDING_UNCOVERED = "grounding-uncovered"  # block, §6.5/§19
+CODE_SECTION_CONFORMANCE_VIOLATION = "section-conformance-violation"  # block, §15/§16 (DR-4)
 
 # --- contract tier (§21.7) --------------------------------------------------
 CODE_UNKNOWN_VERB = "unknown-verb"  # block (envelope-fatal), §21.1
@@ -280,6 +282,13 @@ CODES: dict[str, CodeSpec] = {
             CODE_GROUNDING_UNCOVERED, TIER_GENERATION, ("block",), "§6.5/§19",
             "An opt-in grounding_posture=block item abstained on an advisory Review-1 grounding "
             "concern.",
+            remediation_action=None,
+        ),
+        _spec(
+            CODE_SECTION_CONFORMANCE_VIOLATION, TIER_GENERATION, ("block",), "§15/§16",
+            "A composed (or reconciled) body persistently violated its typed-section conformance "
+            "contract (base required/forbidden/order) across the bounded re-ask; blocked, never "
+            "persisted (DR-4).",
             remediation_action=None,
         ),
         # contract tier (§21.7)

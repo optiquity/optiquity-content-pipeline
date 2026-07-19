@@ -81,6 +81,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pipeline import ir, review
+from pipeline.api.results import CODE_SECTION_CONFORMANCE_VIOLATION
 from pipeline.canonical import canonical_json_bytes
 from pipeline.claims import ClaimRegistry
 from pipeline.grounding import GroundedFact
@@ -88,12 +89,27 @@ from pipeline.ids import part_id
 from pipeline.outline import normalize_outline, outline_digest
 from pipeline.prompts import load_template
 from pipeline.review import ReviewOutcome
+from pipeline.sections import (
+    SEVERITY_ERROR,
+    Count,
+    Length,
+    Order,
+    Presence,
+    Rule,
+    Schema,
+    SectionGrammarError,
+    Selector,
+    Violation,
+    check_conformance,
+    parse_sections,
+)
 from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, is_done, write_new
 from pipeline.transport import Runner, TransportResult, invoke_headless
 
 __all__ = [
     "CODE_CONTRACT_VIOLATION",
+    "CODE_SECTION_CONFORMANCE_VIOLATION",
     "DEFAULT_MAX_ATTEMPTS",
     "WRITER_TEMPLATE",
     "ComposeError",
@@ -504,10 +520,14 @@ def _recorded_preimage_lookup(store: WorkspaceStore):
     return lookup
 
 
-def _reask_note(violations: Sequence[str]) -> str:
-    """The corrective note appended on a re-ask: the most recent violation + the contract
-    reminder. Concise and machine-derived — never invents new requirements (§3.1)."""
+def _reask_note(violations: Sequence[str], failure_code: str) -> str:
+    """The corrective note appended on a re-ask: the most recent violation + the relevant
+    contract reminder. A base structural derail (DR-4 C5) points the writer at the section
+    contract; every other derail points at the IR/grounding contract. Concise and
+    machine-derived — never invents new requirements (§3.1)."""
     latest = violations[-1] if violations else "unspecified"
+    if failure_code == CODE_SECTION_CONFORMANCE_VIOLATION:
+        return _base_structural_reask_note(latest)
     return (
         f"Your previous output was REJECTED by the IR contract: {latest}. Return ONLY the "
         "JSON object in the exact shape the compose context's `structure.output_contract` "
@@ -516,6 +536,150 @@ def _reask_note(violations: Sequence[str]) -> str:
         "an unknown fact-id or a promoted tier (e.g. asserting an INFERRED lead as EXTRACTED) "
         "is rejected again."
     )
+
+
+# ---------------------------------------------------------------------------
+# DR-4 C5: the HARD base structural gate at compose (platform-NEUTRAL). Post-mint, INSIDE the
+# bounded re-ask, the composed FLAT body's `##`-heading skeleton (C1 `parse_sections`) is checked
+# against the base Format `section_schema` (C2 `check_conformance`), resolved from
+# `request.effective_values["format"]` (NO new ComposeRequest field). An ERROR-severity base
+# violation (required-missing / forbidden-present / an error-severity order/count/length) feeds the
+# SAME bounded re-ask with a correction note; a PERSISTENT failure blocks as the NEW never-persisted
+# `section-conformance-violation` (a SIBLING of `compose-contract-violation`, NOT a reuse). No-op
+# when the Format declares no schema (pre-DR-4 compose bytes byte-identical); EXEMPT when a
+# `section_schema`-bearing Format composes a NON-outline body (FOLDED NIT #2 — never silently
+# "unconformant"). Advisory (warning/info) violations are NON-blocking here; their warn-surfacing is
+# the DEFERRED Review-1 advisory check (D-4). Platform-NEUTRAL: genre BASE sections only (per-venue
+# tightening is C8). The gate NEVER mutates the IR (it parses a normalized COPY of the body).
+# ---------------------------------------------------------------------------
+
+
+def _base_structural_reask_note(latest: str) -> str:
+    """The corrective note for an ERROR-severity BASE structural violation (DR-4 C5): the specific
+    breach + a concise pointer to the writer.md `Section structure` contract. Machine-derived — it
+    never invents a new structural requirement (§3.1)."""
+    return (
+        f"Your previous output VIOLATED the Format's base section contract: {latest}. Fix ONLY the "
+        "body's `##`-heading skeleton, per the 'Section structure' contract above: include every "
+        "REQUIRED section (keep each required heading's exact text so its implicit slug still "
+        "matches — do NOT rename or drop it), omit every FORBIDDEN section, and keep the required "
+        "relative order. Return the SAME JSON shape; NEVER invent a fact to add a section (the "
+        "grounding discipline still binds every claim)."
+    )
+
+
+def _is_outline_shaped(request: ComposeRequest) -> bool:
+    """True iff this artifact's heading STRUCTURE is identity-covered by a DR-3 `outline-digest` AND
+    is a single FLAT body — the precondition for the platform-NEUTRAL base gate to be meaningful
+    (the `section_schema` schema-doc / FOLDED NIT #2). A NON-outline artifact (no `outline-digest`
+    coverage of its structure, or a multi-part body) has no identity-covered heading skeleton to
+    enforce, so the base gate treats it as EXEMPT."""
+    preimage = request.preimage
+    covered = isinstance(preimage, Mapping) and preimage.get("outline-digest") is not None
+    return covered and request.is_flat
+
+
+def _reconstruct_rule(raw: Any) -> Rule:
+    """Rebuild ONE C2 conformance rule from its serialized Format-`section_schema` map, through the
+    REAL `pipeline.sections` constructors — so the axis / severity / section-type / cardinality
+    vocabularies stay single-sourced in C2. A malformed rule raises (caught + re-raised as a loud
+    wiring `ComposeError` by `_resolve_base_gate_schema`)."""
+    kind = raw["rule"]
+    if kind == "presence":
+        kwargs: dict[str, Any] = {}
+        if "required" in raw:
+            kwargs["required"] = raw["required"]
+        if "severity" in raw:
+            kwargs["severity"] = raw["severity"]
+        return Presence(Selector(raw["axis"], raw["value"]), **kwargs)
+    if kind == "order":
+        selectors = tuple(Selector(sel["axis"], sel["value"]) for sel in raw["selectors"])
+        order_kwargs: dict[str, Any] = {}
+        if "severity" in raw:
+            order_kwargs["severity"] = raw["severity"]
+        return Order(selectors, **order_kwargs)
+    if kind == "count":
+        return Count.from_spec(
+            Selector(raw["axis"], raw["value"]), raw["cardinality"], raw["severity"]
+        )
+    if kind == "length":
+        return Length(
+            Selector(raw["axis"], raw["value"]), raw["min_len"], raw["max_len"], raw["severity"]
+        )
+    raise ValueError(f"unknown section_schema rule kind {kind!r}")
+
+
+def _resolve_base_gate_schema(request: ComposeRequest) -> Schema | None:
+    """Resolve the base Format `section_schema` to enforce at compose — reconstructed into the C2
+    vocabulary — or None when the base gate does NOT apply. Two documented None cases:
+
+    * **NO-OP** — the Format declares no `section_schema` (unset / floor `[]`), so the pre-DR-4
+      compose path is byte-IDENTICAL (the gate does nothing).
+    * **EXEMPT (FOLDED NIT #2)** — a `section_schema`-bearing Format composes a NON-outline body (no
+      `outline-digest` identity coverage of its structure), so the gate SKIPS cleanly — never
+      silently "unconformant-by-absence".
+
+    A MALFORMED base schema is a loud wiring `ComposeError` (a bad Format entry — never a writer
+    re-ask, never silent), raised BEFORE any LLM call."""
+    fmt = request.effective_values.get("format")
+    raw = fmt.get("section_schema") if isinstance(fmt, Mapping) else None
+    if not raw:
+        return None  # NO-OP: no base contract → pre-DR-4 compose bytes are byte-identical
+    if not _is_outline_shaped(request):
+        return None  # EXEMPT: a non-outline body has no identity-covered heading skeleton
+    try:
+        return tuple(_reconstruct_rule(rule) for rule in raw)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ComposeError(
+            f"compose-error: the Format `section_schema` is malformed ({exc}) — a base section "
+            "contract must be a list of C2 conformance rules (DR-4 C5); fix the Format entry "
+            "(never a writer re-ask, never silent)"
+        ) from exc
+
+
+def _describe_selector(selector: Selector) -> str:
+    return f"{selector.axis} {selector.value!r}"
+
+
+def _describe_violation(violation: Violation) -> str:
+    """A concise, machine-derived description of ONE base-conformance breach for the re-ask."""
+    rule = violation.rule
+    if isinstance(rule, Presence):
+        target = _describe_selector(rule.selector)
+        if rule.required:
+            return f"required base section {target} is MISSING"
+        where = f" (heading {violation.section.heading!r})" if violation.section else ""
+        return f"forbidden base section {target} is PRESENT{where}"
+    if isinstance(rule, Order):
+        seq = " -> ".join(_describe_selector(sel) for sel in rule.selectors)
+        return f"base sections are out of the required order [{seq}]"
+    if isinstance(rule, Count):
+        return f"base section {_describe_selector(rule.selector)} breaks its count bound"
+    if isinstance(rule, Length):
+        where = f" (heading {violation.section.heading!r})" if violation.section else ""
+        return f"base section {_describe_selector(rule.selector)} breaks its length bound{where}"
+    return "base section contract violated"  # pragma: no cover — the C2 menu is closed
+
+
+def _base_conformance_note(doc: Mapping[str, Any], schema: Schema) -> str | None:
+    """Run the C5 base gate on the composed FLAT body; return a re-ask correction note for the
+    error-severity base violations, or None when the body conforms (or carries no flat body). ONLY
+    error-severity violations block via the re-ask; advisory (warning/info) violations are
+    NON-blocking here (their warn-surfacing is the DEFERRED Review-1 check, D-4). NEVER mutates
+    `doc` — it parses a NORMALIZED COPY of the body, so a conforming compose is byte-identical."""
+    body = doc.get("body")
+    if not isinstance(body, str):
+        return None  # no flat body (a parts envelope is EXEMPT — filtered by _is_outline_shaped)
+    try:
+        sections = parse_sections(normalize_outline(body))
+    except SectionGrammarError as exc:
+        # The writer body declares an unknown section `type=` — a writer-correctable content defect;
+        # feed it to the SAME bounded re-ask like any other base structural derail.
+        return f"[{exc.code}] {exc}"
+    errors = [v for v in check_conformance(sections, schema) if v.severity == SEVERITY_ERROR]
+    if not errors:
+        return None
+    return "; ".join(_describe_violation(v) for v in errors)
 
 
 def _persist(
@@ -677,14 +841,22 @@ def compose_artifact(
             review=maybe_review(None),  # §19: review runs post-mint (loads the IR if absent)
         )
 
+    # DR-4 C5: resolve the platform-NEUTRAL base structural gate ONCE (a malformed Format
+    # schema aborts LOUDLY here, before any writer call). None = the gate does not apply — no
+    # Format `section_schema` (pre-DR-4 no-op, byte-identical) or a non-outline body (EXEMPT,
+    # NIT #2). The gate itself runs post-mint INSIDE the bounded re-ask below (D-2 severities;
+    # D-4: HARD at compose now, the advisory Review-1 check deferred).
+    base_schema = _resolve_base_gate_schema(request)
+
     own_cwd = cwd is None
     scratch = Path(tempfile.mkdtemp(prefix="optiquity-compose-")) if own_cwd else Path(cwd)
     extra = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
     violations: list[str] = []
     last_transport: TransportResult | None = None
+    last_failure_code = CODE_CONTRACT_VIOLATION  # the exhaustion code = the last derail's kind
     try:
         for attempt in range(1, max_attempts + 1):
-            note = _reask_note(violations) if violations else None
+            note = _reask_note(violations, last_failure_code) if violations else None
             prompt = build_writer_prompt(request, entries, reask_note=note)
             transport = invoke_headless(prompt, cwd=scratch, runner=runner, model=model, **extra)
             last_transport = transport
@@ -711,7 +883,20 @@ def compose_artifact(
                 # caught and NEVER persisted (`compose-contract-violation`); the substance-specific
                 # message surfaces to the model via `_reask_note` (`violations[-1]`).
                 violations.append(f"[{exc.code}] {exc}")
+                last_failure_code = CODE_CONTRACT_VIOLATION
                 continue  # bounded re-ask (§21.9)
+            # DR-4 C5 base structural gate (platform-NEUTRAL), post-mint, INSIDE the bounded re-ask:
+            # an ERROR-severity base violation (required-missing / forbidden-present / order) feeds
+            # the SAME re-ask with a correction note; a PERSISTENT failure blocks as the NEW
+            # never-persisted `section-conformance-violation` (a SIBLING of the contract violation,
+            # NOT a reuse). No-op / EXEMPT when `base_schema is None`; advisory severities never
+            # block (D-2 / D-4). The gate never mutates `doc`, so a pass is byte-exact.
+            if base_schema is not None:
+                base_note = _base_conformance_note(doc, base_schema)
+                if base_note is not None:
+                    violations.append(base_note)
+                    last_failure_code = CODE_SECTION_CONFORMANCE_VIOLATION
+                    continue  # bounded re-ask (§21.9 / D-2)
             result = _persist(
                 doc, request, store=store, claims=claims, advance=advance, lookup=lookup
             )
@@ -726,10 +911,12 @@ def compose_artifact(
                 transport_result=transport,
                 review=maybe_review(doc),  # §19: Review 1, post-mint, on the fresh IR
             )
-        # Re-ask bound exhausted: caught, and NEVER persisted (§21.9).
+        # Re-ask bound exhausted: caught, and NEVER persisted (§21.9). The exhaustion CODE is the
+        # LAST derail's kind — `section-conformance-violation` when the terminal failure was the
+        # DR-4 base structural gate, else `compose-contract-violation` (the IR/grounding contract).
         return ComposeOutcome(
             status="error",
-            code=CODE_CONTRACT_VIOLATION,
+            code=last_failure_code,
             artifact_id=request.artifact_id,
             ir=None,
             attempts=max_attempts,

@@ -32,6 +32,7 @@ from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.claims import ClaimRegistry
 from pipeline.compose import (
     CODE_CONTRACT_VIOLATION,
+    CODE_SECTION_CONFORMANCE_VIOLATION,
     ComposeError,
     ComposeRequest,
     build_grounding_ledger,
@@ -41,7 +42,7 @@ from pipeline.compose import (
 )
 from pipeline.grounding import GroundedFact
 from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id, parse_id
-from pipeline.ir import SecretShapedValueError, validate_ir
+from pipeline.ir import SecretShapedValueError, build_ir, validate_ir
 from pipeline.outline import normalize_outline, outline_digest
 from pipeline.store import WorkspaceStore
 from pipeline.transport import ProcessOutcome, ProcessRequest
@@ -843,3 +844,152 @@ class TestOutlineDriveCompose:
         assert outcome.status == "ok"
         assert "lead with the problem" not in runner.requests[0].stdin_text
         assert "HIGHEST PRECEDENCE (DR-3" not in runner.requests[0].stdin_text
+
+
+# --- DR-4 C5: the HARD base structural gate at compose (platform-NEUTRAL) ------------------
+
+
+class TestBaseStructuralGate:
+    """DR-4 C5 (D-2 severities, D-4 defer): the platform-NEUTRAL base structural gate runs
+    post-mint INSIDE the bounded re-ask. A conforming body ships; an ERROR-severity base violation
+    (required-missing) re-asks then BLOCKS with the NEW never-persisted `section-conformance-
+    violation`; a Format with NO `section_schema` composes BYTE-IDENTICAL to the pre-DR-4 golden; a
+    `section_schema`-bearing Format with a NON-outline body is EXEMPT (never a false block); an
+    advisory (warning-severity) order breach WARNS and never blocks; a malformed Format schema is a
+    loud wiring defect. The schema is resolved from `request.effective_values["format"]` (NO new
+    ComposeRequest field) — the artifact is outline-shaped iff its preimage carries an
+    `outline-digest`."""
+
+    OUTLINE_MD = "# Paper\n\n- intro\n- body\n"
+    REQUIRE_INTRO = [{"rule": "presence", "axis": "role", "value": "intro", "required": True}]
+
+    def _outline_preimage(self, md: str) -> dict:
+        return build_artifact_preimage(
+            topic=EntryBinding("topic-x"),
+            persona=EntryBinding("hiring-manager"),
+            format=EntryBinding("academic-paper"),
+            voice=EntryBinding("business"),
+            goals=[EntryBinding("explain")],
+            source_subset=["acme-graph"],
+            source_commit={"acme-graph": COMMIT_SHA},
+            outline_digest=outline_digest(md),  # the DR-3 identity coverage of the structure
+        )
+
+    def _request(self, *, section_schema, preimage=None, **over) -> ComposeRequest:
+        preimage = preimage if preimage is not None else self._outline_preimage(self.OUTLINE_MD)
+        base = {
+            "artifact_id": mint_artifact_id(preimage),
+            "preimage": preimage,
+            "format_parts": (),
+            "effective_values": {"format": {"section_schema": section_schema}},
+            "grounded_facts": (make_fact(),),
+            "source_repos": {"acme-graph": "github.com/acme/widget"},
+        }
+        base.update(over)
+        return ComposeRequest(**base)
+
+    def test_conforming_body_ships(self, store, claims):
+        # `## Intro` auto-slugs to role "intro" → the required section is present → ships.
+        request = self._request(section_schema=self.REQUIRE_INTRO)
+        body = '## Intro\n\nThe parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert (outcome.status, outcome.code, outcome.attempts) == ("ok", "ok", 1)
+        assert store.output_path(request.artifact_id).exists()
+
+    def test_required_missing_reasks_then_blocks_and_never_persists(self, store, claims):
+        # Every attempt renames the required-role heading, so its implicit slug ("overview") never
+        # matches the required role "intro" — the rename-broken implicit slug the section-typing
+        # design relies on the hard gate to catch. RE-ASKS then BLOCKS, never persisted.
+        request = self._request(section_schema=self.REQUIRE_INTRO)
+        body = '## Overview\n\nThe parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=runner, max_attempts=3
+        )
+        assert outcome.status == "error"
+        assert outcome.code == CODE_SECTION_CONFORMANCE_VIOLATION  # the NEW sibling code
+        assert outcome.code == "section-conformance-violation"
+        assert outcome.ir is None
+        assert outcome.attempts == 3 and runner.calls == 3  # re-asked (attempts > 1) then blocked
+        assert len(outcome.violations) == 3
+        assert all("intro" in v for v in outcome.violations)
+        # NEVER persisted — the sibling of compose-contract-violation.
+        assert not store.output_path(request.artifact_id).exists()
+        assert not store.artifacts_dir.joinpath(request.artifact_id).exists()
+
+    def test_reask_recovers_within_the_bound(self, store, claims):
+        # attempt-1 breaks the required slug ("overview"); attempt-2 fixes it ("intro") → ships. The
+        # STRUCTURAL correction note (writer.md 'Section structure') rides the re-ask prompt.
+        request = self._request(section_schema=self.REQUIRE_INTRO)
+        bad = '## Overview\n\nA [claim]{.EXTRACTED data-fact="f0"}.'
+        good = '## Intro\n\nA [claim]{.EXTRACTED data-fact="f0"}.'
+        runner = ScriptedRunner([writer_ok({"body": bad}), writer_ok({"body": good})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert (outcome.status, outcome.attempts) == ("ok", 2)
+        assert len(outcome.violations) == 1 and "intro" in outcome.violations[0]
+        assert store.output_path(request.artifact_id).exists()
+        second_prompt = runner.requests[1].stdin_text.lower()
+        assert "base section contract" in second_prompt  # the structural re-ask note fired
+
+    def test_no_section_schema_is_byte_identical_no_op(self, store, claims):
+        # A Format with NO `section_schema` (the default make_request has none) composes BYTE-
+        # IDENTICAL to the pre-DR-4 golden: the persisted envelope is EXACTLY ir.build_ir's
+        # assembly of the writer body — the base gate added nothing (no section_conformance key).
+        request = make_request()
+        content = {"body": 'A [claim]{.EXTRACTED data-fact="f0"}.'}
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=ScriptedRunner([writer_ok(content)])
+        )
+        assert outcome.status == "ok"
+        persisted = store.output_path(request.artifact_id).read_bytes()
+        ledger, _ = build_grounding_ledger(
+            request.grounded_facts, source_repos=request.source_repos
+        )
+        expected = build_ir(
+            artifact_id=request.artifact_id,
+            preimage=request.preimage,
+            grounding=ledger,
+            body=content["body"],
+        )
+        assert persisted == canonical_json_bytes(expected)  # the pre-DR-4 golden, byte-for-byte
+        assert "section_conformance" not in json.loads(persisted)
+
+    def test_non_outline_section_schema_is_exempt(self, store, claims):
+        # FOLDED NIT #2: a `section_schema`-bearing Format whose artifact is NOT outline-shaped (no
+        # `outline-digest` in the preimage) is EXEMPT — the gate SKIPS cleanly, so a body that WOULD
+        # violate the schema still ships (never a false block, never silently "unconformant").
+        request = self._request(section_schema=self.REQUIRE_INTRO, preimage=make_preimage())
+        body = '## Overview\n\nA [claim]{.EXTRACTED data-fact="f0"}.'  # no "intro" section
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"  # EXEMPT — not blocked despite the missing required role
+        assert store.output_path(request.artifact_id).exists()
+
+    def test_advisory_order_violation_warns_never_blocks(self, store, claims):
+        # An order rule defaults to WARNING severity (D-2) — an out-of-order body WARNS, never
+        # blocks (its warn-surfacing is the DEFERRED Review-1 advisory check, D-4).
+        schema = [
+            {
+                "rule": "order",
+                "selectors": [
+                    {"axis": "role", "value": "intro"},
+                    {"axis": "role", "value": "body"},
+                ],
+            }
+        ]
+        request = self._request(section_schema=schema)
+        body = '## Body\n\nA [claim]{.EXTRACTED data-fact="f0"}.\n\n## Intro\n\nmore prose'
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert (outcome.status, outcome.attempts) == ("ok", 1)  # advisory → never blocks/re-asks
+        assert store.output_path(request.artifact_id).exists()
+
+    def test_malformed_format_schema_is_a_loud_wiring_defect(self, store, claims):
+        # A bad Format entry is a loud ComposeError BEFORE any LLM call — never a writer re-ask.
+        request = self._request(section_schema=[{"rule": "not-a-real-kind"}])
+        never = NeverRunner()
+        with pytest.raises(ComposeError):
+            compose_artifact(request, store=store, claims=claims, runner=never)
+        assert never.calls == 0
+        assert not store.output_path(request.artifact_id).exists()

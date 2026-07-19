@@ -47,6 +47,22 @@ emit them.
 5. **Never surface secrets or credentials.** The facts contain ids, anchors, and commits —
    never tokens, keys, or passwords, and neither may your output.
 
+## Section structure (only when the Format declares a base section contract)
+
+Some genres carry a base SECTION contract over the body's heading skeleton — its `##` (ATX)
+headings. It never overrides the grounding rules above; it only constrains WHICH sections appear
+and in what order. When a re-ask says your output violated the base section contract, fix ONLY the
+heading skeleton:
+
+- **Include every REQUIRED section.** A required section is matched by its heading's implicit slug
+  (Pandoc's auto-identifier of the heading text — e.g. `## Introduction` -> `introduction`) or by
+  an explicit `{#id}` on the heading. Do NOT rename or drop a required heading: renaming changes
+  its slug, and the section then reads as MISSING.
+- **Omit every FORBIDDEN section.**
+- **Keep the required RELATIVE order** of the named sections.
+- **Never invent a fact to satisfy a required section.** An unsupported point stays an
+  INFERRED/AMBIGUOUS lead or is left out — the grounding discipline still binds every claim.
+
 ## Output shape (return this and only this)
 
 Flat (`shape: "flat"`):
