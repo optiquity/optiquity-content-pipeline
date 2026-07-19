@@ -8,12 +8,17 @@
 # cross-dimension values into the cascade (per-format advisories, per-format
 # reconcile-strategy defaults, a weak default output-type).
 #
-# The two ratified constraint classes are two attributes (CA9, §12.7):
+# The three ratified per-deliverable constraint classes (CA9, §12.7 + the DR-4 addition):
 #   advisory_norms / format_advisories — advisory norms RIDE the M2 cascade as configured
 #       values; a recipe/run may deviate, firing a one-time lint warning (§8);
-#   hard_limits — live entirely OUTSIDE M2: never bound, never overridable, enforced at
-#       exactly one place — the reconcile pass's terminal gate (§16), which fits or
-#       blocks and never silently passes.
+#   hard_limits — WHOLE-ARTIFACT hard limits live entirely OUTSIDE M2: never bound, never
+#       overridable, enforced at exactly one place — the reconcile pass's terminal gate (§16),
+#       which fits or blocks and never silently passes;
+#   format_structural — per-(format) HARD typed-section conformance (DR-4): a per-format
+#       tightening of the base genre's section contract, M2-EXCLUDED exactly like hard_limits,
+#       BLOCKING at the reconcile STRUCTURAL gate (wired C8, §16). Section-addressed (a NAMED
+#       section) and so disjoint by SCOPE from the whole-artifact hard_limits (#4a); see its
+#       manifest row below.
 #
 # Reconcile-strategy (§12.3) is an M2-bound render ATTRIBUTE, not a dimension. Its
 # defaulting is two-tier: L0 is the single-attribute schema floor declared HERE
@@ -59,6 +64,59 @@ attributes:
       Per-format ADVISORY constraint projections (§5.3, §12.3): format entry id -> map
       of advisory values refining advisory_norms for that format on this platform.
       Merges into the cascade below L5 (map-merge, §12.3); advisory class only (CA9).
+    definition_version: 1
+  # --- format_structural (DR-4 C6): the THIRD §12.7 class — per-format HARD section conformance
+  #
+  # `format_structural` is the Platform's per-(format) tightening of the base genre section
+  # contract — the platform-SPECIFIC half of DR-4 typed-section conformance (§5.3, §12.7, §16).
+  # It maps a Format entry id -> a section-conformance schema in the SAME C2 vocabulary as the
+  # Format's own `section_schema` (`pipeline.sections`: presence / order / count / length, each
+  # carrying a role- or type-axis selector and an {error,warning,info} severity — SINGLE-SOURCED,
+  # never a forked grammar). A venue TIGHTENS the base: turn an optional section required, FORBID
+  # a section (a forbidden-presence rule), or tighten a per-section numeric bound.
+  #
+  # HARD (blocks) — the sibling of advisory `format_advisories` (which only warns) and numeric
+  # `hard_limits` (whole-artifact). An error-severity `format_structural` violation BLOCKS the
+  # deliverable at the reconcile STRUCTURAL gate (wired in C8, §16), never a silent pass.
+  #
+  # M2-EXCLUDED (SF-1) — like `hard_limits`, `format_structural` lives entirely OUTSIDE the M2
+  # cascade: it is M1-resolved directly from the platform entry's effective value (the driver's
+  # `_platform_hard_limits` reads `entry.effective['hard_limits']`; C8 adds the sibling
+  # `_platform_format_structural` reading `entry.effective['format_structural']` the SAME way),
+  # never bound as a cascade value and never projected below L5. An L3/L5/L6 override must NEVER
+  # silently relax a HARD structural guarantee — a hard venue contract is not overridable,
+  # exactly as a hard limit is not.
+  #
+  # #4a AUTHORING INVARIANT (the section/artifact partition; S-3 disjointness) — per-section
+  # NUMERIC limits ("abstract <= 250 chars") are DR-4 structural constraints and live HERE,
+  # section-addressed as a `length`/`count` rule on a NAMED section; the whole-artifact capacity
+  # limits (total length, byte/page/slide caps) stay in `hard_limits`. The two are disjoint by
+  # SCOPE (DR-4 governs a named section; §16 governs the whole artifact), so a `format_structural`
+  # section-limit NAME must never ALSO be a `hard_limits` key (the S-3 disjointness lint enforces
+  # the partition; `hard_limits` stays numeric-only).
+  #
+  # FLOOR `{}` = NO per-venue tightening. Every existing Platform is byte-safe: an unset
+  # `format_structural` rides the L0 floor, is omitted by `delta_vs_floor` (§7.2), and once the
+  # reconcile-inputs preimage grows its 5th OMIT-WHEN-FLOOR `structural` component (C8) a
+  # floor-`{}` platform yields a BYTE-IDENTICAL `fit_digest` (today it is not read at all).
+  format_structural:
+    type: map
+    default: {}
+    definition: >-
+      Per-(format) HARD typed-section conformance (DR-4, §5.3/§12.7/§16): a map of Format entry
+      id -> a section-conformance schema in the `pipeline.sections` C2 vocabulary (presence/
+      order/count/length; role- or type-axis selectors; error|warning|info severity) that
+      TIGHTENS the Format's base `section_schema` for this venue (optional->required, forbid a
+      section, tighten a per-section bound). A HARD class (CA9 §12.7): an error-severity violation
+      BLOCKS at the reconcile structural gate (C8), the sibling of advisory `format_advisories`
+      and numeric `hard_limits`. M2-EXCLUDED like `hard_limits` — M1-resolved from the platform
+      entry's effective value, never bound as a cascade value and never overridable (an L3/L5/L6
+      override must not silently relax a hard structural guarantee, SF-1). #4a: per-section NUMERIC
+      limits live HERE (section-addressed), NOT in `hard_limits` (whole-artifact only); a
+      section-limit name is never also a `hard_limits` key (S-3 disjointness). Floor `{}` = no
+      tightening: an unset value rides the L0 floor, is omitted from the §7.2 identity delta, and
+      yields a byte-identical `fit_digest` once the preimage's omit-when-floor structural
+      component lands (C8).
     definition_version: 1
   reconcile_strategy:
     type:
