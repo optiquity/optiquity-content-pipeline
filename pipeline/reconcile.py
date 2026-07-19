@@ -89,11 +89,6 @@ from typing import Any, Literal
 
 from pipeline import ir
 from pipeline.canonical import canonical_json_bytes, canonical_json_str, digest_hex12
-
-# DR-4 C8 reuse (SINGLE-SOURCE against C2, never a forked decoder): the serialized-rule → C2 `Rule`
-# reconstruction is compose's `_reconstruct_rule` — the SAME decoder the base gate uses. Imported
-# here for the TERMINAL venue-structural gate; compose does not import reconcile (no import cycle).
-from pipeline.compose import _reconstruct_rule
 from pipeline.ids import IdError, delta_vs_floor, fitted_id
 from pipeline.outline import normalize_outline
 from pipeline.prompts import load_template
@@ -111,6 +106,7 @@ from pipeline.sections import (
     Violation,
     check_conformance,
     parse_sections,
+    reconstruct_rule,
 )
 from pipeline.transport import Runner, TransportResult, invoke_headless
 
@@ -191,15 +187,12 @@ CODE_HARD_LIMIT_EXCEEDED = "hard-limit-exceeded"
 #: severity) — the deliverable is BLOCKED at the TERMINAL structural gate (block, §16), siblings
 #: continue (§6.4). The SAME string as `pipeline.api.results.CODE_SECTION_CONFORMANCE_VIOLATION` (a
 #: `("block",)`/TIER_GENERATION code the driver's `stage_code` guard threads unchanged via
-#: `ALL_CODES`), carried here as a typed module constant (the drift.py `CODE_*` pattern) rather than
-#: imported DIRECTLY from the §21.7 taxonomy module. HONEST NOTE (C8 coupling): as of C8 this module
-#: imports `compose._reconstruct_rule` to decode the venue structural schema, and `compose` in turn
-#: imports `pipeline.api.results` — so this fit core now TRANSITIVELY reaches the §21.7 taxonomy
-#: module (the earlier "imports no §21.7 taxonomy module" claim no longer holds). The typed-constant
-#: discipline still keeps the DIRECT dependency out; the tracked R1 follow-up (hoist
-#: `_reconstruct_rule` to `pipeline.sections`, the shared C2-vocabulary home) would drop the compose
-#: import and restore the transitive purity. DISTINCT from `CODE_STRUCTURE_NOT_PRESERVED` (the
-#: C7 preserve/no-mint re-ask code) and `CODE_FIDELITY_VIOLATION` (the coverage/echo re-ask code):
+#: `ALL_CODES`), carried here as a typed module constant (the drift.py `CODE_*` pattern) so this
+#: pure fit core imports no §21.7 taxonomy module — neither directly nor transitively: the venue
+#: schema is decoded through `sections.reconstruct_rule` (R1: the shared C2-vocabulary home, NOT
+#: compose), so this module does not import `pipeline.compose` at all and never reaches
+#: `pipeline.api.results`. DISTINCT from `CODE_STRUCTURE_NOT_PRESERVED` (the C7 preserve/no-mint
+#: re-ask code) and `CODE_FIDELITY_VIOLATION` (the coverage/echo re-ask code):
 #: those two ride the bounded fidelity re-ask, THIS one is the terminal block-and-report verdict.
 CODE_SECTION_CONFORMANCE_VIOLATION = "section-conformance-violation"
 
@@ -562,7 +555,7 @@ def _parse_body_sections(ir_doc: Mapping[str, Any]) -> tuple[Section, ...]:
 
 def _schema_referenced_keys(canonical_ir: Mapping[str, Any]) -> set[tuple[str, str]]:
     """The `(axis, value)` selector keys the IR's RESOLVED `section_conformance` base schema
-    references (DR-4 C4). Reads the serialized C2 rule maps (the compose.py `_reconstruct_rule`
+    references (DR-4 C4). Reads the serialized C2 rule maps (the `sections.reconstruct_rule`
     shape, already `validate_ir`-shape-checked): `presence`/`count`/`length` carry `(axis, value)`;
     an `order` rule carries a list of `{axis, value}` selectors. EMPTY/ABSENT ⇒ NO schema-
     referenced keys ⇒ the whole preserve/no-mint check is INERT (every reconcile path stays
@@ -679,7 +672,7 @@ def validate_structural_preservation(
 
 # ---------------------------------------------------------------------------
 # The TERMINAL venue-structural gate (§15/§16 / DR-4 C8) — the HARD `format_structural` contract,
-# reconstructed into C2 (via compose's `_reconstruct_rule`, SINGLE-SOURCED, never forked) and run
+# reconstructed into C2 (via `sections.reconstruct_rule`, SINGLE-SOURCED, never forked) and run
 # over the FITTED sections. #4a per-section Length/Count limits are checked HERE, never by the
 # whole-artifact `max_chars` gate. INERT for a floor / no-entry format.
 # ---------------------------------------------------------------------------
@@ -692,9 +685,10 @@ def _pinned_format_schema(request: ReconcileRequest) -> Schema:
     The format-id is the composition preimage's bound format entry — the SAME indexing C7's
     `_format_forbids` uses — so ONLY this artifact's venue tightening participates; an unrelated
     format's schema never reaches this gate (the C7→C8 identity obligation). The serialized rule
-    maps are decoded through compose's `_reconstruct_rule` (SINGLE-SOURCED against C2, never a
-    forked decoder). A MALFORMED venue rule is a loud platform-authoring `ReconcileError` (never a
-    silent pass, never a writer re-ask; §3.1) — mirrors compose's `_resolve_base_gate_schema`."""
+    maps are decoded through `sections.reconstruct_rule` (SINGLE-SOURCED against C2, never a
+    forked decoder — the SAME decoder compose's base gate uses). A MALFORMED venue rule is a loud
+    platform-authoring `ReconcileError` (never a silent pass, never a writer re-ask; §3.1) —
+    mirrors compose's `_resolve_base_gate_schema`."""
     format_id = (
         request.canonical_ir.get("binding", {})
         .get("preimage", {})
@@ -706,7 +700,7 @@ def _pinned_format_schema(request: ReconcileRequest) -> Schema:
     if not raw:
         return ()
     try:
-        return tuple(_reconstruct_rule(rule) for rule in raw)
+        return tuple(reconstruct_rule(rule) for rule in raw)
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ReconcileError(
             f"reconcile-error: this format's `format_structural` venue schema is malformed ({exc}) "

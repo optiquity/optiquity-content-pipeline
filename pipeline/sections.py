@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 __all__ = [
     "AXES",
@@ -88,6 +89,7 @@ __all__ = [
     "UnknownSectionTypeError",
     "Violation",
     "check_conformance",
+    "reconstruct_rule",
     "parse_cardinality",
     "parse_sections",
 ]
@@ -641,6 +643,37 @@ class Length:
 # A conformance rule is exactly one MENU kind; a schema is an ordered tuple of them.
 Rule = Presence | Order | Count | Length
 Schema = tuple[Rule, ...]
+
+
+def reconstruct_rule(raw: Any) -> Rule:
+    """Rebuild ONE C2 conformance rule from its serialized `section_schema`/`format_structural`
+    map, through the REAL C2 constructors — so the axis / severity / section-type / cardinality
+    vocabularies stay SINGLE-SOURCED here (never a forked decoder). The SAME decoder the compose
+    base gate and the reconcile terminal venue gate both consume. A malformed rule raises (the
+    caller re-raises it as a loud wiring error — `ComposeError` / `ReconcileError`)."""
+    kind = raw["rule"]
+    if kind == "presence":
+        kwargs: dict[str, Any] = {}
+        if "required" in raw:
+            kwargs["required"] = raw["required"]
+        if "severity" in raw:
+            kwargs["severity"] = raw["severity"]
+        return Presence(Selector(raw["axis"], raw["value"]), **kwargs)
+    if kind == "order":
+        selectors = tuple(Selector(sel["axis"], sel["value"]) for sel in raw["selectors"])
+        order_kwargs: dict[str, Any] = {}
+        if "severity" in raw:
+            order_kwargs["severity"] = raw["severity"]
+        return Order(selectors, **order_kwargs)
+    if kind == "count":
+        return Count.from_spec(
+            Selector(raw["axis"], raw["value"]), raw["cardinality"], raw["severity"]
+        )
+    if kind == "length":
+        return Length(
+            Selector(raw["axis"], raw["value"]), raw["min_len"], raw["max_len"], raw["severity"]
+        )
+    raise ValueError(f"unknown section_schema rule kind {kind!r}")
 
 
 @dataclass(frozen=True, slots=True)

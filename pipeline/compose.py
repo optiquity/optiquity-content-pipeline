@@ -95,13 +95,13 @@ from pipeline.sections import (
     Length,
     Order,
     Presence,
-    Rule,
     Schema,
     SectionGrammarError,
     Selector,
     Violation,
     check_conformance,
     parse_sections,
+    reconstruct_rule,
 )
 from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, is_done, write_new
@@ -579,36 +579,6 @@ def _is_outline_shaped(request: ComposeRequest) -> bool:
     return covered and request.is_flat
 
 
-def _reconstruct_rule(raw: Any) -> Rule:
-    """Rebuild ONE C2 conformance rule from its serialized Format-`section_schema` map, through the
-    REAL `pipeline.sections` constructors — so the axis / severity / section-type / cardinality
-    vocabularies stay single-sourced in C2. A malformed rule raises (caught + re-raised as a loud
-    wiring `ComposeError` by `_resolve_base_gate_schema`)."""
-    kind = raw["rule"]
-    if kind == "presence":
-        kwargs: dict[str, Any] = {}
-        if "required" in raw:
-            kwargs["required"] = raw["required"]
-        if "severity" in raw:
-            kwargs["severity"] = raw["severity"]
-        return Presence(Selector(raw["axis"], raw["value"]), **kwargs)
-    if kind == "order":
-        selectors = tuple(Selector(sel["axis"], sel["value"]) for sel in raw["selectors"])
-        order_kwargs: dict[str, Any] = {}
-        if "severity" in raw:
-            order_kwargs["severity"] = raw["severity"]
-        return Order(selectors, **order_kwargs)
-    if kind == "count":
-        return Count.from_spec(
-            Selector(raw["axis"], raw["value"]), raw["cardinality"], raw["severity"]
-        )
-    if kind == "length":
-        return Length(
-            Selector(raw["axis"], raw["value"]), raw["min_len"], raw["max_len"], raw["severity"]
-        )
-    raise ValueError(f"unknown section_schema rule kind {kind!r}")
-
-
 def _resolve_base_gate_schema(request: ComposeRequest) -> Schema | None:
     """Resolve the base Format `section_schema` to enforce at compose — reconstructed into the C2
     vocabulary — or None when the base gate does NOT apply. Two documented None cases:
@@ -628,7 +598,7 @@ def _resolve_base_gate_schema(request: ComposeRequest) -> Schema | None:
     if not _is_outline_shaped(request):
         return None  # EXEMPT: a non-outline body has no identity-covered heading skeleton
     try:
-        return tuple(_reconstruct_rule(rule) for rule in raw)
+        return tuple(reconstruct_rule(rule) for rule in raw)
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ComposeError(
             f"compose-error: the Format `section_schema` is malformed ({exc}) — a base section "
