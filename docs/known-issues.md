@@ -522,7 +522,24 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
 
 The build's HARD GATES were closed inline during the build (gate G2 at steps 37–38, the §21.7
 generation-code gate at step 39); those are recorded in `state.md` and the commit history. The
-entries below are post-build defects closed by the **`render-output-fix`** series (2026-07-16).
+entries below are post-build defects, starting with the **`render-output-fix`** series (2026-07-16).
+
+### Folder adapter could ground but not compose (commitless + unregistered) — RESOLVED (2026-07-18)
+- **Symptom:** a `folder` source grounded fine but couldn't mint an artifact-id — the folder adapter was
+  commitless (`pin_commit → None`) while §7.2 requires exactly one commit per source, so
+  `build_artifact_preimage` failed; and `FolderAdapter` was not in the production adapter set, so a folder
+  source wasn't reachable through `begin-session`/`invoke`/`run_thread`.
+- **Closed by:** `0d2cc45` — the folder adapter pins a git-checkout's HEAD via a READ-ONLY
+  `git rev-parse HEAD` (`ground().built_at_commit` and `pin_commit()` agree, CF-1), so a git repo is
+  compose-capable; a plain non-git folder stays commitless as designed; plus a `budget` connection key
+  bounding grounded facts (folder's analogue of graphify's `--budget`). Then `c4f481d` — a single
+  `pipeline.adapters.default_adapters()` factory registers `{graphify, folder}`, delegated to by session +
+  driver (cycle-free; a future third adapter is a one-place change).
+- **Demonstrated:** a LIVE run over `~/Developer/OptiquityTrader` (a non-Graphify Swift repo, READ-ONLY
+  throughout) — pinned HEAD `3a79a92`, grounded 40 facts from `docs/project/ARCHITECTURE.md`
+  (budget-capped), composed a grounded artifact `a-1ebf747e75ccc422` (~$0.69).
+- **Source:** discovered 2026-07-18 while standing up OptiquityTrader as a folder-adapter source for the
+  outline (DR-3) work.
 
 ### GAP-1 — Cannot re-render a stored document into another format without re-running the pipeline — RESOLVED
 - **Closed by:** `558846c` (driver + `render.py::_render` read the **raw** stored IR via `unwrap_ir`;

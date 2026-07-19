@@ -122,6 +122,13 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
   - **NEXT in the build order:** `DR-4 (content templates) → DR-5 (style placement) → DR-2 (style guides)` —
     await maintainer direction.
 
+- **Folder adapter — compose-capable + registered (2026-07-18).** Discovered while standing up
+  `~/Developer/OptiquityTrader` (a non-Graphify Swift repo, READ-ONLY) as a folder-adapter source for the
+  outline work: a folder source could ground but not compose (commitless + unregistered). Fixed — `0d2cc45`
+  (git-HEAD `pin_commit` + a `budget` connection key) + `c4f481d` (single `default_adapters()` factory
+  registers `{graphify, folder}`). Demonstrated live (artifact `a-1ebf747e75ccc422`, grounded in OT's
+  `ARCHITECTURE.md`). See `docs/known-issues.md` Resolved. Reports: `ops-handoff/folder-fix/`, `folder-register/`.
+
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
 routes an agent onto the async-task channel (reports arrive in the task-notification, NO boilerplate);
