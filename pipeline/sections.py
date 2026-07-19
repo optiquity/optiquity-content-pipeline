@@ -65,11 +65,30 @@ import re
 from dataclasses import dataclass
 
 __all__ = [
+    "AXES",
+    "AXIS_ROLE",
+    "AXIS_TYPE",
+    "Cardinality",
+    "Count",
     "DEFAULT_SECTION_TYPE",
+    "Length",
+    "Order",
+    "Presence",
+    "Rule",
     "SECTION_TYPES",
+    "SEVERITIES",
+    "SEVERITY_ERROR",
+    "SEVERITY_INFO",
+    "SEVERITY_WARNING",
+    "Schema",
     "Section",
     "SectionGrammarError",
+    "SectionSchemaError",
+    "Selector",
     "UnknownSectionTypeError",
+    "Violation",
+    "check_conformance",
+    "parse_cardinality",
     "parse_sections",
 ]
 
@@ -370,3 +389,351 @@ def _autoslug(text: str) -> str:
         start += 1
     ident = ident[start:]
     return ident if ident else "section"
+
+
+# ===========================================================================
+# CONFORMANCE LAYER (DR-4 / C2) — the typed-section conformance vocabulary + a
+# PURE checker over C1's parsed `Section` records. This half adds NOTHING to the
+# grammar/parse/identity behavior above: `parse_sections`, the `Section` shape,
+# `SECTION_TYPES`, and every `_*` grammar helper are UNTOUCHED. It only READS
+# `Section` records + the `SECTION_TYPES` carrier.
+#
+# A section-conformance SCHEMA is an ORDERED list of typed rules drawn from an
+# à-la-carte MENU. Every rule is INDEPENDENT and OPTIONAL — a schema may use any
+# subset (e.g. presence-only), which is what gives templates GRADUATED strictness
+# (a loose base genre vs. a strict venue). Each rule carries:
+#   * a SELECTOR keying on EITHER axis — a `role` selector OR a structural `type`
+#     selector; neither axis re-owns the other (a rule may address a section by
+#     its author-declared role OR by its structural kind);
+#   * a SEVERITY in {error, warning, info}.
+#
+# THE MENU (each an independent rule KIND):
+#   * Presence — a selected section is REQUIRED (>=1 match) or FORBIDDEN (0 matches).
+#   * Order    — a sequence of selectors that must appear in that RELATIVE order.
+#   * Count    — a cardinality bound on the number of matches: `?`={0,1}, `*`={0,},
+#                `+`={1,}, and the brace forms `{n}` / `{n,}` / `{,m}` / `{n,m}`.
+#   * Length   — a min/max on EACH matched section's `body` length (characters).
+#
+# DEFAULT SEVERITIES PER KIND (D-2, RATIFIED). A schema may OVERRIDE any rule's
+# severity; these are only the defaults where a KIND has one:
+#   * Presence required-missing  -> error   (default)
+#   * Presence forbidden-present -> error   (default)
+#   * Order    section-order      -> warning (default, overridable)
+#   * Count / Length              -> NO blanket default (severity is per-schema, a
+#                                    REQUIRED constructor argument).
+#
+# PURITY: `check_conformance` performs NO I/O, mints NO identity, calls NO LLM, and
+# imports NOTHING from `pipeline.ids`/`compose`/`reconcile`. It is a pure, total
+# function of (parsed sections, schema) -> a tuple of typed `Violation` records.
+# ===========================================================================
+
+# The three severities a rule (and each Violation it yields) can carry.
+SEVERITY_ERROR = "error"
+SEVERITY_WARNING = "warning"
+SEVERITY_INFO = "info"
+SEVERITIES = frozenset({SEVERITY_ERROR, SEVERITY_WARNING, SEVERITY_INFO})
+
+# The two selector axes. A selector keys on EXACTLY one: a section's author-declared
+# `role` OR its structural `type`. Neither re-owns the other.
+AXIS_ROLE = "role"
+AXIS_TYPE = "type"
+AXES = frozenset({AXIS_ROLE, AXIS_TYPE})
+
+# The brace cardinality forms: `{n}` (exact) and `{n,}` / `{,m}` / `{n,m}` (range).
+_CARD_EXACT_RE = re.compile(r"\{(\d+)\}")
+_CARD_RANGE_RE = re.compile(r"\{(\d*),(\d*)\}")
+
+
+class SectionSchemaError(SectionGrammarError):
+    """A malformed section-conformance SCHEMA (bad axis / cardinality / severity).
+
+    A typed refusal (a `SectionGrammarError`/`ValueError` subtype), never an uncaught
+    crash — a schema-authoring defect surfaced loudly at construction time.
+    """
+
+    code = "section-schema-invalid"
+
+
+def _check_severity(severity: str) -> None:
+    """Reject a severity outside the {error, warning, info} set with a typed error."""
+    if severity not in SEVERITIES:
+        raise SectionSchemaError(
+            f"unknown severity {severity!r}: choose one of {sorted(SEVERITIES)}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Selector:
+    """A rule's target: a section's `role` OR its structural `type` (EITHER axis).
+
+    Construct via `Selector.by_role(value)` or `Selector.by_type(value)`. A `type`
+    selector naming a member OUTSIDE the open `SECTION_TYPES` carrier is a one-file-add
+    OMISSION surfaced as a typed `UnknownSectionTypeError` at construction (fail-CLOSED,
+    exactly parallel to C1's parse-side refusal) — never an uncaught crash. `role`
+    selectors are OPEN (roles are author-declared): `abstract`/`methods`/`results` are
+    ROLE selectors, never `type` members.
+    """
+
+    axis: str
+    value: str
+
+    def __post_init__(self) -> None:
+        if self.axis not in AXES:
+            raise SectionSchemaError(
+                f"unknown selector axis {self.axis!r}: choose {sorted(AXES)}"
+            )
+        if not self.value:
+            raise SectionSchemaError("a selector value must be non-empty")
+        if self.axis == AXIS_TYPE and self.value not in SECTION_TYPES:
+            raise UnknownSectionTypeError(
+                f"unknown section type {self.value!r} in a type selector: add it to the "
+                f"SECTION_TYPES carrier (one-file change) or select one of "
+                f"{sorted(SECTION_TYPES)}"
+            )
+
+    @classmethod
+    def by_role(cls, value: str) -> Selector:
+        """A selector keyed on a section's author-declared `role` (open; no carrier check)."""
+        return cls(AXIS_ROLE, value)
+
+    @classmethod
+    def by_type(cls, value: str) -> Selector:
+        """A selector keyed on a section's structural `type` (validated vs. the carrier)."""
+        return cls(AXIS_TYPE, value)
+
+    def matches(self, section: Section) -> bool:
+        """True iff `section` bears this selector's value on the selected axis."""
+        if self.axis == AXIS_ROLE:
+            return section.role == self.value
+        return section.type == self.value
+
+
+@dataclass(frozen=True, slots=True)
+class Cardinality:
+    """A count bound `[min, max]`; `max is None` means unbounded (open above).
+
+    Parse the sugar forms with `parse_cardinality`: `?`={0,1}, `*`={0,}, `+`={1,},
+    `{n}`={n,n}, `{n,}`={n,}, `{,m}`={0,m}, `{n,m}`.
+    """
+
+    min: int
+    max: int | None
+
+    def __post_init__(self) -> None:
+        if self.min < 0:
+            raise SectionSchemaError(f"cardinality min must be >= 0, got {self.min}")
+        if self.max is not None and self.max < self.min:
+            raise SectionSchemaError(
+                f"cardinality max {self.max} is below min {self.min}"
+            )
+
+    def satisfied_by(self, count: int) -> bool:
+        """True iff `count` lies within `[min, max]` (`max is None` = no upper bound)."""
+        if count < self.min:
+            return False
+        return self.max is None or count <= self.max
+
+
+def parse_cardinality(spec: str) -> Cardinality:
+    """Parse a cardinality spec string into a `Cardinality` (typed error, never a crash).
+
+    Accepts `?`/`*`/`+` and the brace forms `{n}`, `{n,}`, `{,m}`, `{n,m}`. Any other
+    shape (incl. an inverted `{m,n}` with m>n) raises `SectionSchemaError`.
+    """
+    text = spec.strip()
+    simple = {"?": (0, 1), "*": (0, None), "+": (1, None)}
+    if text in simple:
+        low, high = simple[text]
+        return Cardinality(low, high)
+    exact = _CARD_EXACT_RE.fullmatch(text)
+    if exact:
+        n = int(exact.group(1))
+        return Cardinality(n, n)
+    rng = _CARD_RANGE_RE.fullmatch(text)
+    if rng:
+        low = int(rng.group(1)) if rng.group(1) else 0
+        high = int(rng.group(2)) if rng.group(2) else None
+        return Cardinality(low, high)
+    raise SectionSchemaError(
+        f"invalid cardinality {spec!r}: use ?, *, +, or a brace form "
+        f"{{n}}/{{n,}}/{{,m}}/{{n,m}}"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Presence:
+    """MENU rule — a selected section is REQUIRED (>=1 match) or FORBIDDEN (0 matches).
+
+    D-2 default severity = `error` for BOTH required-missing and forbidden-present
+    (overridable per-schema).
+    """
+
+    selector: Selector
+    required: bool = True
+    severity: str = SEVERITY_ERROR
+
+    def __post_init__(self) -> None:
+        _check_severity(self.severity)
+
+
+@dataclass(frozen=True, slots=True)
+class Order:
+    """MENU rule — the given selectors must appear in that RELATIVE document order.
+
+    D-2 default severity = `warning` (overridable per-schema). A selector matching
+    NOTHING is skipped (absence is a `Presence` concern, not an order one). The rule
+    checks every ordered pair (i<j), so an absent middle selector cannot mask a breach.
+    """
+
+    selectors: tuple[Selector, ...]
+    severity: str = SEVERITY_WARNING
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "selectors", tuple(self.selectors))
+        if len(self.selectors) < 2:
+            raise SectionSchemaError("an order rule needs at least two selectors")
+        _check_severity(self.severity)
+
+
+@dataclass(frozen=True, slots=True)
+class Count:
+    """MENU rule — a cardinality bound on the NUMBER of sections matching the selector.
+
+    Severity is per-schema (NO blanket default; a REQUIRED argument).
+    """
+
+    selector: Selector
+    cardinality: Cardinality
+    severity: str
+
+    def __post_init__(self) -> None:
+        _check_severity(self.severity)
+
+    @classmethod
+    def from_spec(cls, selector: Selector, spec: str, severity: str) -> Count:
+        """Build a Count from a cardinality spec string (`?`/`*`/`+`/`{n,m}`)."""
+        return cls(selector, parse_cardinality(spec), severity)
+
+
+@dataclass(frozen=True, slots=True)
+class Length:
+    """MENU rule — a min/max bound on EACH matched section's `body` length (characters).
+
+    `max_len is None` means no upper bound. Severity is per-schema (NO blanket default;
+    a REQUIRED argument). One Violation is emitted per offending matched section.
+    """
+
+    selector: Selector
+    min_len: int
+    max_len: int | None
+    severity: str
+
+    def __post_init__(self) -> None:
+        if self.min_len < 0:
+            raise SectionSchemaError(f"length min must be >= 0, got {self.min_len}")
+        if self.max_len is not None and self.max_len < self.min_len:
+            raise SectionSchemaError(
+                f"length max {self.max_len} is below min {self.min_len}"
+            )
+        _check_severity(self.severity)
+
+
+# A conformance rule is exactly one MENU kind; a schema is an ordered tuple of them.
+Rule = Presence | Order | Count | Length
+Schema = tuple[Rule, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Violation:
+    """One conformance breach.
+
+    * `rule`     — the failing MENU rule.
+    * `section`  — the offending `Section`, or `None` for an AGGREGATE breach that has
+                   no single locus (a required-missing or an under-count).
+    * `severity` — copied from `rule.severity` so a consumer need not re-inspect the
+                   rule to triage the breach.
+    """
+
+    rule: Rule
+    section: Section | None
+    severity: str
+
+
+def check_conformance(
+    sections: tuple[Section, ...], schema: Schema
+) -> tuple[Violation, ...]:
+    """Check parsed `sections` against a conformance `schema` — PURE, total, side-effect-free.
+
+    Returns the `Violation`s in schema-rule order (and, within a rule, in document order).
+    Performs NO I/O, mints NO identity, calls NO LLM, and imports nothing from
+    `pipeline.ids`/`compose`/`reconcile`. An empty result means fully conformant. A schema
+    using only a SUBSET of the menu (e.g. presence rules alone, or the empty schema) is
+    valid — the graduated-strictness contract.
+    """
+    violations: list[Violation] = []
+    for rule in schema:
+        violations.extend(_check_rule(rule, sections))
+    return tuple(violations)
+
+
+def _check_rule(rule: Rule, sections: tuple[Section, ...]) -> tuple[Violation, ...]:
+    if isinstance(rule, Presence):
+        return _check_presence(rule, sections)
+    if isinstance(rule, Order):
+        return _check_order(rule, sections)
+    if isinstance(rule, Count):
+        return _check_count(rule, sections)
+    if isinstance(rule, Length):
+        return _check_length(rule, sections)
+    raise SectionSchemaError(f"unknown conformance rule kind {type(rule).__name__!r}")
+
+
+def _check_presence(
+    rule: Presence, sections: tuple[Section, ...]
+) -> tuple[Violation, ...]:
+    matched = [s for s in sections if rule.selector.matches(s)]
+    if rule.required:
+        if matched:
+            return ()
+        return (Violation(rule, None, rule.severity),)
+    # forbidden: one Violation per present (forbidden) section, in document order.
+    return tuple(Violation(rule, s, rule.severity) for s in matched)
+
+
+def _check_order(rule: Order, sections: tuple[Section, ...]) -> tuple[Violation, ...]:
+    positions = [
+        [j for j, s in enumerate(sections) if selector.matches(s)]
+        for selector in rule.selectors
+    ]
+    count = len(rule.selectors)
+    for a in range(count):
+        for b in range(a + 1, count):
+            if positions[a] and positions[b] and max(positions[a]) > min(positions[b]):
+                # The later selector's earliest section precedes the earlier selector's
+                # last section: report that out-of-place later section.
+                return (Violation(rule, sections[min(positions[b])], rule.severity),)
+    return ()
+
+
+def _check_count(rule: Count, sections: tuple[Section, ...]) -> tuple[Violation, ...]:
+    matched = [s for s in sections if rule.selector.matches(s)]
+    count = len(matched)
+    if rule.cardinality.satisfied_by(count):
+        return ()
+    upper = rule.cardinality.max
+    if upper is not None and count > upper:
+        # Over the bound: point at the first section beyond the allowance.
+        return (Violation(rule, matched[upper], rule.severity),)
+    # Under the bound: an aggregate shortfall with no single offending section.
+    return (Violation(rule, None, rule.severity),)
+
+
+def _check_length(rule: Length, sections: tuple[Section, ...]) -> tuple[Violation, ...]:
+    out: list[Violation] = []
+    for section in sections:
+        if not rule.selector.matches(section):
+            continue
+        length = len(section.body)
+        if length < rule.min_len or (rule.max_len is not None and length > rule.max_len):
+            out.append(Violation(rule, section, rule.severity))
+    return tuple(out)
