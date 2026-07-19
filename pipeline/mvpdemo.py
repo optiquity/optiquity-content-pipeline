@@ -279,7 +279,9 @@ def _mint_external(store: WorkspaceStore, env: CascadeEnv, *, fitted_id: str) ->
     # An external plain-floor target lowers to the empty RenderInputs (B1 parity).
     render_inputs_view = {"flags": [], "variables": {}, "assets": [], "engine": target.engine}
     preimage = serialize.serialize_inputs_preimage(
-        render_target=target_values, render_inputs=render_inputs_view
+        render_target=target_values,
+        render_inputs=render_inputs_view,
+        section_attr_transformed=dout.section_attr_transformed,
     )
     render_binding = serialize.build_render_binding(
         fitted_id=fitted_id,

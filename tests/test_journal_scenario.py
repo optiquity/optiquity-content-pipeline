@@ -395,6 +395,37 @@ def test_fitted_typed_deliverable_renders_valid_public_bytes(tmp_path):
     assert 'id="abstract"' in text
 
 
+def test_two_phase_render_engine_records_the_typed_version(tmp_path):
+    """RT: `DefaultRenderEngine.serialize_preimage` runs BEFORE dispatch (two-phase), so it
+    computes the SD-5 flag from the fitted AST itself (gated by `should_strip`). A TYPED
+    deliverable's preimage therefore records `section_attr_transform_version` — the SAME conclusion
+    dispatch reaches — so a typed standalone-API render mints an id matching its bytes."""
+    _requires_pandoc()
+    from pipeline.api.render import DefaultRenderEngine, SerializeLeg
+
+    root = _build_root(tmp_path)
+    env = CascadeEnv(root, workspace=WS)
+    fit = _reconcile_at(env, _compose_conforming_ir(root), "journal-strict")
+    assert fit.status == "ok" and fit.fitted_ir is not None
+
+    # dispatch (the reference) confirms this typed deliverable's public-writer strip fires:
+    dout, _driver_preimage = _serialize_html(env, fit.fitted_ir, "journal-strict-look")
+    assert dout.section_attr_transformed is True
+
+    # the two-phase engine, WITHOUT running dispatch, must reach the SAME conclusion and record it:
+    leg = SerializeLeg(
+        root=root,
+        workspace=WS,
+        store=WorkspaceStore(root / "workspaces" / WS),
+        fitted_id=fit.fitted_id,
+        fitted_ir=fit.fitted_ir,
+        output_type="html",
+        presentation="journal-strict-look",
+    )
+    preimage = DefaultRenderEngine().serialize_preimage(leg)
+    assert "section_attr_transform_version" in preimage["tool_bundle"]
+
+
 def test_stored_typed_deliverable_reports_no_spurious_drift(tmp_path):
     """(A) end-to-end: the render-binding preimage of a REAL fitted typed deliverable reports NO
     spurious drift through the live `DefaultCurrencyResolver` — the C9 carry-forward fix threads

@@ -554,9 +554,26 @@ class DefaultRenderEngine:
         return outcome.fitted_ir, outcome.fit_binding
 
     def serialize_preimage(self, leg: SerializeLeg) -> Mapping[str, Any]:
+        from pipeline.dispatch import render_target_from_entry
+        from pipeline.filters.provenance_strip import should_strip
+        from pipeline.filters.section_attr_validity import strip_section_attrs
+
         target_values, render_inputs_view, _render_inputs = self._serialize_inputs(leg)
+        # RT: the SD-5 section-attr strip runs at dispatch on public writers (§17 C9); its
+        # OMIT-WHEN-ABSENT version must ride the preimage so a TYPED deliverable's id matches the
+        # bytes mint_deliverable emits (and `current_serialize_digest` reports no spurious drift).
+        # Two-phase: this preimage precedes dispatch, so compute the flag the SAME way dispatch
+        # does: `strip_section_attrs` on the fitted AST, gated by `should_strip`. (The provenance
+        # strip is order-independent for type/role detection, so it need not run here.) A floor or
+        # non-typed render yields False, so the key is omitted: byte-identical to the pre-RT corpus.
+        section_attr_transformed = False
+        if should_strip(render_target_from_entry(target_values).writer):
+            units = serialize.serialize_fitted(leg.fitted_ir)
+            section_attr_transformed = any(strip_section_attrs(unit.ast)[1] for unit in units)
         return serialize.serialize_inputs_preimage(
-            render_target=target_values, render_inputs=render_inputs_view
+            render_target=target_values,
+            render_inputs=render_inputs_view,
+            section_attr_transformed=section_attr_transformed,
         )
 
     def mint_deliverable(
