@@ -486,20 +486,20 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     a conformance contract over multi-part / folio sub-outputs is deferred.
   - **content-KIND validators** — the section `type` carrier names STRUCTURAL kinds only; validators
     that check a figure/table section's CONTENT shape (columns present, a caption exists) are deferred.
-- **NEW DR-4 build carry-forwards (tracked follow-ups — NOT done):**
-  - **R1 — hoist `_reconstruct_rule`** from `pipeline/compose.py` to `pipeline/sections.py` (the shared
+- **NEW DR-4 build carry-forwards — BUILT (both closed after the 11-commit build, maintainer-approved):**
+  - **R1 — hoist `reconstruct_rule`** from `pipeline/compose.py` to `pipeline/sections.py` (the shared
     C2-vocabulary home) so `reconcile.py` stops transitively importing the compose subsystem (and, via
-    it, the §21.7 taxonomy module `pipeline.api.results`). A C8 reviewer recommendation; **advisory,
-    non-blocking** — the C11 R2 comment (`reconcile.py`) now records the current coupling honestly.
-  - **Render-site version threading** — two C9/C10 carry-forwards where the SD-5
-    `section_attr_transform_version` is not threaded into the serialize preimage:
-    - `pipeline/api/render.py` `serialize_preimage` (~L558, two-phase): a latent identity
-      UNDER-CAPTURE — a TYPED deliverable rendered via that engine would mint a deliverable-id MISSING
-      the version key. **NO discovery drift; no v1 correctness hole** (the driver path IS threaded; the
-      standalone render engine is not on a typed-deliverable production path today).
-    - `pipeline/mvpdemo.py` (~L281): a trivial one-line thread, currently **INERT** (the MVP external
-      plain-floor target never types sections).
-- **Gate:** final `uv run pytest -q` = **2378 passed**; `ruff check .` clean;
+    it, the §21.7 taxonomy module `pipeline.api.results`). **DONE `35b4238`** — behavior-neutral
+    relocation; a fresh `import pipeline.reconcile` now reaches neither `compose` nor `api.results`; the
+    `reconcile.py` purity comment is restored to accurate.
+  - **Render-site version threading** — the SD-5 `section_attr_transform_version` is now threaded into
+    the serialize preimage at both remaining sites. **DONE `aaa4d44`**: `pipeline/mvpdemo.py` threads
+    `dout.section_attr_transformed` (dispatch-first); `pipeline/api/render.py` `serialize_preimage`
+    (two-phase) computes the flag the SAME way dispatch does — `strip_section_attrs` on the fitted AST
+    gated by `should_strip` — so a TYPED standalone-API render mints an id matching its bytes.
+    Behavior-neutral (non-typed corpus byte-identical). *Optional, still-open:* cache the fitted AST
+    across the preimage→mint seam to avoid the double pandoc-reader read (non-blocking).
+- **Gate:** final `uv run pytest -q` = **2379 passed** (post R1+RT); `ruff check .` clean;
   `scripts/check-no-content.sh` OK. Coder/reviewer reports under `ops-handoff/dr4-build/`.
 
 ### DR-5 — Compose-vs-render placement of style; per-output style variation from one IR (reopens DR-2) — design problem

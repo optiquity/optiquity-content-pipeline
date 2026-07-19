@@ -158,13 +158,14 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     the DR-6 coverage re-check leg stays deferred); #4a per-section limits genuinely BUILT at the
     structural gate (`abstract ≤ 800` on journal-concise; "already built" claim RETRACTED). See
     `docs/known-issues.md` DR-4 build status.
-  - **Follow-ups (tracked, NOT done):** **R1** hoist `_reconstruct_rule` `compose`→`pipeline.sections`
-    (advisory; restores reconcile's transitive import purity — the C11 R2 comment records the current
-    coupling); **render-site version threading** — `api/render.py::serialize_preimage` (~L558; a latent
-    identity UNDER-CAPTURE, NO v1 correctness hole — the driver path IS threaded) + `mvpdemo.py` (~L281;
-    an inert one-liner).
-  - **Gate:** final `uv run pytest -q` = **2378 passed**; ruff + content guard clean. Reports:
-    `ops-handoff/dr4-build/`.
+  - **Follow-ups — BUILT (both, maintainer-approved post-build):** **R1** (`35b4238`) hoist
+    `reconstruct_rule` `compose`→`pipeline.sections` — behavior-neutral; reconcile now imports neither
+    `compose` nor `api.results` (purity restored, comment corrected). **RT** (`aaa4d44`) render-site
+    version threading — `mvpdemo.py` (dispatch-first) + `api/render.py::serialize_preimage` (two-phase;
+    computes the flag via `strip_section_attrs` on the fitted AST as dispatch does); non-typed corpus
+    byte-identical. *Optional open:* cache the fitted AST across the preimage→mint seam (non-blocking).
+  - **Gate:** final `uv run pytest -q` = **2379 passed** (post R1+RT); ruff + content guard clean.
+    Reports: `ops-handoff/dr4-build/`.
   - **NEXT in the build order:** `DR-5 (style placement) → DR-2 (style guides)` — await maintainer direction.
 
 - **Folder adapter — compose-capable + registered (2026-07-18).** Discovered while standing up
