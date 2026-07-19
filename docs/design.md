@@ -249,6 +249,22 @@ ships an **`outline`** Format (DR-3) — a single-part, non-parametric, platform
 scaffold (`parts` rides the `[]` floor, like `readme`) — the genre an editable outline realizes as
 when emitted (§15).
 
+A Format may ALSO declare a **`section_schema`** (DR-4) — its **base genre section contract**: an
+ordered list of typed-section conformance rules in the C2 vocabulary
+(`presence` / `order` / `count` / `length`, each keyed by a `role`- or `type`-axis selector, with
+`error` / `warning` / `info` severity; floor `[]` = no contract, so every existing Format is
+byte-safe). It records what a structurally well-formed instance of the genre looks like — the
+framework **`academic-paper`** requires `abstract`/`methods`/`results` **role** sections, asks for
+that order, and caps the abstract's length — and is enforced by the platform-neutral base
+structural gate at compose (§15); a venue may tighten it per-format (`format_structural`, §12.7).
+Distinct from `parts` (which packages intra-genre **sub-outputs**), `section_schema` constrains the
+rhetorical body's own **heading skeleton**, so it is meaningful only on an **outline-shaped** body:
+a `section_schema`-bearing Format that composes a NON-outline body is **EXEMPT** — never counted as
+silently unconformant (a section contract has nothing to enforce against a bodyless/non-sectioned
+artifact; the base gate no-ops rather than blocking). The section **`type`** carrier (`prose`,
+`figure`, `table`, `callout`) is an OPEN one-file-add frozenset, not a closed enum; author-declared
+**roles** (`abstract`, …) are open and are never `type` kinds.
+
 **Voice — how it sounds.** Owns all register/affect/manner: formality, humor, warmth, energy,
 narrator-persona, plus free-text guidelines. Parametric: a named voice is a saved slider
 configuration + guidelines; sliders are tunable at recipe/run. Voices are generatable from example
@@ -1350,12 +1366,25 @@ deferred (§26).
 
 ### §12.7 Constraints & weights
 
-- **Two constraint classes, two homes** (CA9). **Advisory norms ride M2** as configured values: a
-  recipe/run may deviate, which fires a one-time lint warning (§8) — the user's act, recorded.
-  **Hard limits live entirely OUTSIDE M2**: they are never bound, never overridable, and are
-  enforced at exactly one place — the reconcile pass's terminal gate (§16), which fits or blocks
-  and never silently passes. Value binding is what you'd like; the gate is what's physically
-  possible; the gate enforces feasibility regardless of what M2 bound.
+- **Three constraint classes** (CA9; the third added by DR-4). **Advisory norms ride M2** as
+  configured values: a recipe/run may deviate, which fires a one-time lint warning (§8) — the
+  user's act, recorded (a Platform carries its per-format advisory refinements in
+  `format_advisories`). **Numeric hard limits live entirely OUTSIDE M2**: whole-artifact / capacity
+  ceilings (`hard_limits`) that are never bound, never overridable, and are enforced at exactly one
+  place — the reconcile pass's terminal gate (§16), which fits or blocks and never silently passes.
+  Value binding is what you'd like; the gate is what's physically possible; the gate enforces
+  feasibility regardless of what M2 bound.
+- **`format_structural` — the THIRD class: per-format HARD typed-section conformance** (CA9; DR-4
+  C6/C8). A Platform entry may carry a per-format **`format_structural`** map (`{<format-id>: <C2
+  section-schema>}`; floor `{}`) that **tightens** the base genre `section_schema` (§5.2) for one
+  format at this venue — a required/forbidden/ordered/count/length section rule enforced at
+  `error` severity. Like the numeric hard limits it is **M2-EXCLUDED** (never a bound cascade value)
+  and enforced outside M2 — but at the reconcile **structural** gate rather than the numeric terminal
+  gate (§16), because it constrains the fitted body's **heading skeleton**, not a whole-artifact
+  count. It is the venue sibling of the advisory `format_advisories` and the numeric whole-artifact
+  `hard_limits`; a section-limit name may not be double-homed across `format_structural` and
+  `hard_limits` (a schema-lint disjointness check). A floor `{}` venue rides the base contract
+  unchanged and churns no fit identity (§16).
 - **Goal nudges never move an explicit user weight** (CA10). A goal-implied source-weight nudge
   adjusts only the **workspace baseline** in M3; an explicit user weight at recipe/run is the
   most-local rung and wins outright. Goals still nudge (on the baseline); the system never bends a
@@ -1554,6 +1583,24 @@ LAYER 3  Pandoc AST JSON (persisted, ALWAYS produced)         — the standard i
   type, schema, or registry root**: the outline renders and fetches through the EXISTING
   serialize/payload path (§17), to any output-type the coordinate selects. Its `artifact-id` rides
   the `outline-digest` (the §7.2 emit own-body home) and a re-emit is an idempotent no-op (§22.7).
+- **The DR-4 `section_conformance` IR field + the base structural gate** (RI4, DR-4 C4/C5). Compose
+  records the RESOLVED base Format `section_schema` (§5.2) on the IR as an optional top-level
+  **`section_conformance`** key — additive-optional (the unchanged `keys ⊆ TOP_LEVEL_KEYS` bound,
+  mirroring the `attestation` LEDGER_OPTIONAL pattern), **OMIT-WHEN-ABSENT** (a floor `[]` / no
+  contract records no key), and **NOT in the artifact-id preimage** — so it is identity-neutral
+  (the same preimage ± the field mints the same `artifact-id` and binding digest; no `ir_version`
+  bump). When present it is validated by reconstructing each rule through the real C2 constructors
+  (single-sourced vocabulary; a malformed schema is refused loudly as `ir-schema-invalid`). It is
+  enforced by the **HARD base structural gate at compose** — **platform-neutral** (genre base
+  sections only; per-venue tightening is the reconcile structural gate, §16): post-mint, inside the
+  existing bounded re-ask, the composed flat body is parsed (the F1 section grammar) and checked
+  against the base schema (C2 `check_conformance`). **Error-severity** base violations
+  (required/forbidden/order) feed the re-ask a correction note and, on exhaustion, **block** with
+  the never-persisted `section-conformance-violation` (a GENERATION-tier §21.7 block code, sibling
+  of `compose-contract-violation`). **Advisory** (warning/info) violations never block here — their
+  surfacing is the DEFERRED Review-1 advisory check (D-4), re-derivable from the persisted IR. A
+  Format with no `section_schema` is a no-op (compose bytes byte-identical to pre-DR-4); a
+  `section_schema`-bearing Format composing a NON-outline body is EXEMPT (§5.2).
 - **The opaque `metadata` bag rides the envelope** (§11.3): stored, passed through, never
   interpreted, never routed into AST content — carried as a side channel to the layer-3 contract.
 - **Version stamps** (RI4; DR-6 F-a): `ir_version` (now **2**, validated GENERATION-TOLERANTLY —
@@ -1587,22 +1634,52 @@ selection (`adapt | split | pass | truncate`, §12.3) + the voice/content parame
 **Produces:** a persisted IR-fitted variant per `fitted-id` — reshaped leaves, possibly split into
 reconcile-parts `(deliverable-id, part-id)`, localized, with provenance bindings intact.
 
-**Internal ordering is fixed** (RI5; the Q13 side-effect ordering):
+**Internal ordering is fixed** (RI5; the Q13 side-effect ordering, extended by DR-4 C8):
 
 1. **Localize** (when `language` ≠ source language; feature deferred, slot designed — §5.3, §26).
 2. **Reshape** per the selected strategy toward the platform's capabilities and limits.
-3. **The TERMINAL hard-limit gate** — last, **after** localize, because localization alters length
-   and can breach a limit step 2 had satisfied. The gate is **fit-or-block, never silent-pass**
-   (CA9): content that cannot be made to fit a hard limit **blocks that deliverable**, surfaced in
-   run results (`hard-limit-exceeded`, §21.7) while other fanout items continue (the §6.4
-   block-and-report pattern). Advisory norms only warn and are the user's to deviate from (§3.1).
+3. **The DR-4 structural gate** (C8) — the fitted body is checked against the selected venue's
+   per-format `format_structural` contract (§12.7), evaluated with the SAME C2 `check_conformance`
+   used by the base gate (§15; the venue schema reconstructed through compose's single-sourced
+   rule decoder, never a fork). An `error`-severity structural breach — a required / forbidden /
+   ordered / count / **per-section length** (the #4a limits below) rule — **blocks that
+   deliverable** with `section-conformance-violation` (§21.7), while sibling fanout items continue
+   (the §6.4 block-and-report pattern).
+4. **The TERMINAL hard-limit gate** — last, **after** localize (localization alters length and can
+   breach a limit step 2 had satisfied), and scoped now to **whole-artifact / capacity** numeric
+   limits ONLY (`hard-limit-exceeded`, §21.7): the **#4a per-section numeric limits are RE-HOMED to
+   the structural gate above** (they are section-addressed, so they ride the venue's C2 schema, not
+   this whole-artifact gate). The gate is **fit-or-block, never silent-pass** (CA9). Advisory norms
+   only warn and are the user's to deviate from (§3.1).
+
+**Joint block-and-report — the early-return refactor** (C8). The structural gate (3) and the
+numeric hard-limit gate (4) both evaluate BEFORE any block-return, so a fit that breaches both
+surfaces BOTH concern-sets on the reconcile outcome (`structural_violations` AND `blocked_limits`,
+the structural `section-conformance-violation` the primary block code) — never a single early return
+that hides the other. `format_structural` is **M2-EXCLUDED** and read straight from the selected
+platform entry's effective values; only the pinned format's tightening threads in, so an unrelated
+format's tightening never churns this fit (the C7→C8 identity obligation).
 
 **The pass-1 fidelity constraint** (RI3-fidelity, extending Q13): because reconcile is an LLM
-rewrite, it MUST preserve **(i) voice and content parameters, (ii) meaning, and (iii) the
-per-claim provenance/tier bindings — re-anchored onto the fitted text.** It must never upgrade an
-INFERRED lead into asserted fact (tier promotion is impossible anywhere downstream of ground,
-§6.5). Losing (iii) would blind the deliverable review's grounding re-check (§19). This constraint
-binds the product-plane reconcile agent's contract (§27.4).
+rewrite, it MUST preserve **(i) voice and content parameters, (ii) meaning, (iii) the
+per-claim provenance/tier bindings — re-anchored onto the fitted text, and (iv) the outline's
+declared section keys (below).** It must never upgrade an INFERRED lead into asserted fact (tier
+promotion is impossible anywhere downstream of ground, §6.5). Losing (iii) would blind the
+deliverable review's grounding re-check (§19). This constraint binds the product-plane reconcile
+agent's contract (§27.4).
+
+**The DR-4 preserve-section-keys foundation** (C7). Reconcile is now section-key aware. Scoped to
+the keys the IR's resolved `section_conformance` base schema names (a plain reshape that adds
+or renames a NON-schema heading is **not** blocked — a global fitted ⊆ composed would regress every
+reshape), the fit MUST **preserve through** every schema-referenced heading the outline declared,
+and MUST **NEVER MINT** a new schema-satisfying role/type from content absent at compose — **the
+section-typing role-forgeability backstop** (a fit cannot forge a section the writer never produced
+merely to satisfy a venue's contract). A venue that legitimately makes a section optional/forbidden
+(a `presence` / `required:false` rule in this format's `format_structural`) lets it be dropped. A
+preserve/no-mint breach (`structure-not-preserved`, a DISTINCT code) first-remediates via the SAME
+bounded fidelity re-ask; a persistent breach exhausts the bound and is NEVER fitted (surfacing as
+`fit-fidelity-violation`). This preserve-through is the foundation over which the C8 terminal
+structural gate's block-and-report verdict layers.
 
 **The reconcile-inputs preimage & the fit-binding (FR2).** Reconcile consumes NON-coordinate
 inputs, and they are recorded once, at the level that consumes them. The **canonical
@@ -1612,8 +1689,13 @@ default churns nothing) comprises: (1) the effective reconcile-strategy (§12.3)
 entry's effective hard-limit set (CA9; M1-resolved entry values); (3) the effective advisory
 constraint values bound at M2-render (the Platform per-format projection + any L3/L5/L6
 deviations), scoped to attributes the reconcile pass consumes; (4) any other reconcile-consumed
-rendering-dimension attribute binding — exactly the recording set, no more. **Excluded** (each
-already identity-covered or identity-irrelevant): the voice/content parameters to preserve (fixed
+rendering-dimension attribute binding; (5) **this artifact's pinned-format `format_structural`
+venue tightening** (DR-4 C8; the HARD structural class, §12.7), **OMIT-WHEN-FLOOR** — a floor `{}`
+value produces NO `structural` key, so every floor platform's `fit-digest` is byte-identical to the
+pre-DR-4 four-component preimage (the golden fit-digest corpus is unperturbed) and only a non-floor
+venue tightening adds the component and churns the fit identity — exactly the recording set, no
+more. **Excluded** (each already identity-covered or identity-irrelevant): the voice/content
+parameters to preserve (fixed
 by `artifact-id`, §7.2); platform and language themselves (coordinates); serialize-side pins and
 Presentation inputs (deliverable-level, §17); `schema_version` and the `metadata` bag (§7.3).
 When localization GA lands (§26), its non-coordinate knobs join this preimage additively.
@@ -1661,6 +1743,19 @@ survive. The old never-block text must not re-enter from any archived source.
   an html5/epub3-only *allowlist* would leave open (add a writer, forget the enumeration, leak).
   It is owned by serialize, is not a Presentation lever, and cannot be disabled by any style
   configuration (PD3) — it protects the grounding + no-secrets guarantee (§3.3).
+- **The SD-5 section-attribute validity transform (serialize-owned, DR-4 C9):** DR-4 authors typed
+  sections as `## H {#id type=figure}` headings; on a public writer Pandoc would emit those bare
+  `type`/`role` kv as **illegal HTML5** (`<h2 id=… type="figure">`). A **pinned, deterministic**
+  pre-serialize transform strips the bare `type`/`role` kv from heading nodes on the SAME
+  `should_strip`-gated public-writer copy the provenance-strip filter runs on — **keeping** the
+  valid `{#id}` anchor — so v1 ships no illegal syntax. It is DISJOINT from the provenance strip by
+  NODE (Header vs Div/Span) AND by key set (`type`/`role` vs `data-*`); the internal SAFE writers
+  (markdown/json) keep the attrs (the round-trippable internal record). Its identity is captured
+  **OMIT-WHEN-ABSENT**: a `section_attr_transform_version` joins the serialize-inputs preimage's
+  tool bundle ONLY when the transform actually fired (a typed public render), so every existing /
+  non-typed / SAFE render is byte-identical (the golden render-digest corpus is unperturbed); a
+  typed render records the version and **re-mints its deliverable loudly** (§7.4; FR7.3). No
+  `schema_version` bump; the provenance strip's own pinned version is untouched.
 - **One AST per physical output document; the pipeline orchestrates N** (RI9): the per-part
   `packaging_hint` decides — `in-document` parts co-render into one file/one AST (slides + notes →
   one pptx); `standalone` parts are N files/N ASTs, each `(artifact-id, part-id)`-addressable. The
@@ -2635,8 +2730,10 @@ RI11-tier-2 × no-replace contradiction — designed and ratified as FR7 (§17, 
 **Open areas (carried from superseded docs, not dropped):**
 
 - **Product-plane agents & skills organization.** The generation-stage *contracts* are fixed
-  (writer emits the IR §15; reconcile agent honors §16's fidelity constraint; two reviews §19;
-  deterministic render §17) — but the agent/skill packaging for the product plane is open. The
+  (writer emits the IR §15; reconcile agent honors §16's fidelity constraint — grown by DR-4 so the
+  **preserve-section-keys** contract joins the voice/content, provenance/tier, and typed-section
+  obligations; two reviews §19; deterministic render §17) — but the agent/skill packaging for the
+  product plane is open. The
   **IDEATION stage** (repo + audience → ranked idea queue; §2.1) has **no ratified contract at
   all**: fully open, product-plane. Nothing in this document designs either.
 - Mission §10.4 remainders: **D3** (runtime minimums — decide at install), **D5** (writing-base

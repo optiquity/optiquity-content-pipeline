@@ -99,13 +99,33 @@ DR-2) → DR-6 → DR-3 → DR-4 → DR-5 → DR-2`.
 - **F-b** — GAP-4 content-guard known-root fix. **NO-GO for DR-2's `lexicons/` root.**
 - **#3** — the F1 sentinel section-grammar + section-constraint vocabulary, built **SHARED** at DR-4
   (consumed by DR-4 conformance AND the deferred DR-3 `constraint?`). **NO-GO for DR-4.**
+  **→ RESOLVED at DR-4 (C1/C2, `pipeline/sections.py`; 2026-07-19):** the F1 sentinel section grammar
+  (C1) + the C2 conformance vocabulary are BUILT and shared. **STILL DEFERRED (precise):** the DR-3
+  `constraint?` consumer (DR-3 cut `constraint?` from v1, so #3's "consumed by the deferred DR-3
+  `constraint?`" half awaits DR-3's resumption); and the F1-sentinel BROADENING — v1 recognizes ATX
+  headings ONLY, SETEXT/blockquoted headings fail-closed to body (a known limit, never a mistyped
+  section).
   **#3a** — F1 sentinels **N-invariant** (a DR-3 build-time requirement: reserve the sentinel-significant
   structure when pinning N, so un-deferring F1 churns no `outline-digest`). **NO-GO for DR-3 + DR-4.**
+  **→ HONORED, NOT un-deferred (2026-07-19):** the N-invariance RESERVATION was made in DR-3
+  (`pipeline/outline.py`) and C1 respects it (section boundaries derive only from N-preserved
+  structure — full-line content + leading indentation, never trailing whitespace / blank-run counts /
+  nesting depth), so a future F1 broadening churns no `outline-digest`. The broadening itself stays
+  deferred.
 - **#4** — extend the §16 RI5 reconcile-gate ordering (DR-4 structural gate + DR-6 coverage re-check +
   terminal hard-limit gate; joint hard-structural × hard-limit → block-and-report). **NO-GO for DR-4.**
+  **→ RESOLVED at DR-4 (C8; 2026-07-19):** the DR-4 structural gate + the terminal hard-limit gate + the
+  joint hard-structural × hard-limit **block-and-report** (the early-return refactor — both
+  `structural_violations` and `blocked_limits` populate before any block-return) are BUILT. **STILL
+  DEFERRED (precise):** the **DR-6 coverage re-check** leg of the ordering (DR-6 increment 1 built the
+  Option-A advisory subset, NOT the reconcile coverage re-check — see the DR-6 build status below).
   **#4a** — per-section numeric limits are **DR-4 structural constraints** (section-addressed); the §16
   terminal gate keeps ONLY artifact/capacity limits. **Retract "abstract ≤N words already built."**
   **NO-GO for DR-4.**
+  **→ RESOLVED at DR-4 (C8; 2026-07-19):** per-section numeric limits are now genuinely enforced at the
+  reconcile STRUCTURAL gate (riding the venue's C2 schema); the §16 terminal gate keeps ONLY
+  whole-artifact / capacity limits. `journal-concise` ships `abstract ≤ 800`. The stale "abstract ≤N
+  words already built" claim is **RETRACTED** — it is built NOW, at the structural gate, not before.
 - **#5** — the writer-contract co-occurrence rules + **"the writer emits `[@key]` markers ONLY and NEVER
   free-authors the `references` bibliography"** (a free bibliography is the SF-3 fabrication vector;
   `references` is a projection of the ledger). Ablate after each writer layer (GAP-8). **NO-GO for the
@@ -385,6 +405,102 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   + Presentation coordinates, NOT a recipe** (dissolves the DR-2 recipe-bundle collision; house style =
   an L3 baseline). **v1 = whole-section conformance; nested-in-prose slots deferred.** ZERO new
   `artifact-id` preimage component. Full design pass: `ops-handoff/dr4-dr5-templates-style/`.
+- **Build status (2026-07-19) — DR-4 BUILT (typed-section conformance; three-venues-one-paper; gate
+  green).** The ratified template shipped as **11 gated commits** C1–C11 (each: coder → reviewer →,
+  where needed, fix-coder → re-review to CLEAN), under the standing commit approval. DR-4 is realized
+  as a **typed-section conformance envelope over the outline's sections** (DR-3 × DR-4 unified) — NOT
+  `format.parts`, NOT the T7-reserved IR `constraints?` field: DR-4 got its OWN `section_conformance`
+  field. **Horn-a section-typing SD-1..SD-5; D-8b = RECORD-NOW.** Commits:
+  - `b0ee351` **C1** `pipeline/sections.py` — the F1 sentinel section grammar
+    (`parse_sections(normalize_outline(md))`; `Section=(level,role,type,heading,body,span)`;
+    role=`{#id}` else auto-slug; the OPEN one-file-add `SECTION_TYPES` frozenset
+    `{prose,figure,table,callout}` — extend the set, NOT a closed enum). ATX-only (SETEXT/blockquote
+    fail-closed); honors the #3a N-invariance reservation.
+  - `d005ae4` **C2** `pipeline/sections.py` — the conformance vocabulary: `Rule = Presence|Order|Count|
+    Length`, role/type-axis `Selector`, `{error,warning,info}` severity, `check_conformance(sections,
+    schema)` — a PURE, side-effect-free checker.
+  - `cdce299` **C3** `formats/_schema.yaml` + `formats/academic-paper.md` — the Format `section_schema`
+    attribute (floor `[]`); academic-paper requires abstract/methods/results (role selectors, error),
+    asks the canonical order (warning), caps the abstract (warning).
+  - `3c158b8` **C4** `pipeline/ir.py` — the `section_conformance` IR field (additive-optional via `keys
+    ⊆ TOP_LEVEL_KEYS`, OMIT-WHEN-ABSENT, NOT in `binding.preimage` → identity-neutral, no `ir_version`
+    bump).
+  - `661ba5d` **C5** `pipeline/compose.py` + `pipeline/api/results.py` — the HARD platform-neutral base
+    structural gate at compose (error → bounded re-ask → `section-conformance-violation` block); EXEMPT
+    for a non-outline body; advisory (warning/info) deferred to Review-1 (D-4). `ALL_CODES` 27→28.
+  - `92cb3ef` **C6** `platforms/_schema.yaml` — the Platform `format_structural` per-format HARD class
+    (floor `{}`), sibling of `hard_limits`, M2-EXCLUDED; the S-3 disjointness lint (no section-limit
+    name double-homed with a `hard_limits` key).
+  - `b8a7436` **C7** `pipeline/reconcile.py` — the preserve-through + no-mint role backstop (**the
+    section-typing role-forgeability backstop**; `structure-not-preserved`, rides the bounded fidelity
+    re-ask), scoped to schema-referenced keys (FOLDED SHOULD-FIX #2 — a non-schema reshape is NOT
+    blocked); the `format_structural` request fields (INERT here).
+  - `4cea5fa` **C8** `pipeline/reconcile.py` + `driver.py` + `cascade.py` — the reconcile STRUCTURAL
+    gate (per-venue, C2 `check_conformance`), the **5th OMIT-WHEN-FLOOR `structural` preimage
+    component**, the early-return refactor (joint structural + limit → both concern-sets), #4a
+    per-section limits RE-HOMED here, the M2-exclusion of `format_structural`.
+  - `1fc0d0f` **C9** `pipeline/filters/section_attr_validity.py` + `dispatch.py` + `serialize.py` — the
+    **SD-5 STRIP validity transform** (public writers strip bare `type`/`role`, keep `{#id}`) + the
+    omit-when-absent `section_attr_transform_version` in the serialize preimage.
+  - `23e06a2` **C10** `platforms/journal-*.md` + `presentations/journal-*-look.md` + the integration
+    test — the three-venues-one-paper driving example (journal-strict FORBIDS acknowledgements;
+    journal-structured REQUIRES discussion; journal-concise #4a `abstract ≤ 800` + tight `max_chars`);
+    proves the block/fit diagonal (each paper variant blocks exactly one venue, siblings continue §6.4).
+  - **C11** (this) — docs + SSOT sync (design.md §5.2/§12.7/§15/§16/§17/§27.4; this entry; state.md) +
+    the R2 accuracy comment (`reconcile.py`) + the N-3 docstring fix (`ids.py`). No production logic
+    change; no `schema_version`/`ir_version` bump.
+- **Identity discipline (DR-4):** additive-at-floor everywhere; **no `schema_version` bump** (all 14
+  registry schemas stay at 1; the global version-equality lint stays green) and **no `ir_version`
+  bump**; the reconcile **OMIT-WHEN-FLOOR `structural`** component (floor `{}` → no `structural` key →
+  byte-identical `fit-digest`) and the serialize **OMIT-WHEN-ABSENT** `section_attr_transform_version`
+  (fires only on a typed public render) keep every existing artifact-id / fit-digest / render-digest
+  byte-identical (golden corpora unperturbed). **ZERO new `artifact-id` preimage component.**
+- **Section-typing settled design SD-1..SD-5 (RECORDED):**
+  - **SD-1** — `type=` OVER `.class`: a section's structural KIND is declared as a pandoc heading
+    key-value attribute `## H {#id type=figure}` (not a `.class`); a single bare interior word voids
+    the block → literal heading, so `type=` is the ratified carrier.
+  - **SD-2** — `{#id}` OVER `{role=}`: the section ROLE is keyed by the explicit `{#id}` anchor (else the
+    pandoc auto-slug of the heading text) — NOT an explicit `role=` attribute; a BARE key, never a §7.4
+    id, never `parse_id`-parsed.
+  - **SD-3** — DROP the content-KIND check for v1: v1 does NOT validate that a `type=figure` section
+    actually contains a figure (no content-KIND validator); `type` is a DECLARED structural kind trusted
+    at the author layer (the content-KIND validator is registered deferred, below).
+  - **SD-4** — HYBRID role default + RENAME-STABLE binding: the role defaults to the heading's auto-slug
+    (explicit `{#id}` wins) and is the STABLE section key across edit/reshape — C7's preserve-through
+    rides it.
+  - **SD-5** — STRIP-INVALID-KEEP-VALID at public render (bare `type`/`role` stripped, `{#id}` kept) —
+    **BUILT in C9.**
+- **FOLDED SHOULD-FIX #3 — the SD-5 DR-5→DR-4 reassignment (RECORDED).** SD-5 was originally handed to
+  DR-5 by the section-typing reconciliation; it is now BUILT in DR-4 (C9) under the ratified **HARD
+  validity requirement + FULL option-(b)** (strip on the public-writer copy, keep the SAFE internal
+  record). **D-3 correction (RECORDED):** `format_structural`'s fit-identity contribution was
+  reassigned from **"item-3 (advisory)"** (folding it into the reconcile preimage's advisory
+  constraint-values component) to a **distinct 5th OMIT-WHEN-FLOOR `structural` preimage component**
+  (C8) — so a floor-`{}` venue churns no fit-digest and a HARD structural class is never conflated with
+  advisory norms.
+- **Still-deferred DR-4-adjacent items (REGISTERED, not built):**
+  - **nested-in-prose slots** — v1 is WHOLE-SECTION conformance (the contract is pinned to the outline
+    section skeleton); typed slots nested inside prose (a table with specified columns mid-section, an
+    inline figure slot) are deferred.
+  - **whole-part sub-output conformance** — the `format.parts` packaging surface is untouched by DR-4;
+    a conformance contract over multi-part / folio sub-outputs is deferred.
+  - **content-KIND validators** — the section `type` carrier names STRUCTURAL kinds only; validators
+    that check a figure/table section's CONTENT shape (columns present, a caption exists) are deferred.
+- **NEW DR-4 build carry-forwards (tracked follow-ups — NOT done):**
+  - **R1 — hoist `_reconstruct_rule`** from `pipeline/compose.py` to `pipeline/sections.py` (the shared
+    C2-vocabulary home) so `reconcile.py` stops transitively importing the compose subsystem (and, via
+    it, the §21.7 taxonomy module `pipeline.api.results`). A C8 reviewer recommendation; **advisory,
+    non-blocking** — the C11 R2 comment (`reconcile.py`) now records the current coupling honestly.
+  - **Render-site version threading** — two C9/C10 carry-forwards where the SD-5
+    `section_attr_transform_version` is not threaded into the serialize preimage:
+    - `pipeline/api/render.py` `serialize_preimage` (~L558, two-phase): a latent identity
+      UNDER-CAPTURE — a TYPED deliverable rendered via that engine would mint a deliverable-id MISSING
+      the version key. **NO discovery drift; no v1 correctness hole** (the driver path IS threaded; the
+      standalone render engine is not on a typed-deliverable production path today).
+    - `pipeline/mvpdemo.py` (~L281): a trivial one-line thread, currently **INERT** (the MVP external
+      plain-floor target never types sections).
+- **Gate:** final `uv run pytest -q` = **2378 passed**; `ruff check .` clean;
+  `scripts/check-no-content.sh` OK. Coder/reviewer reports under `ops-handoff/dr4-build/`.
 
 ### DR-5 — Compose-vs-render placement of style; per-output style variation from one IR (reopens DR-2) — design problem
 - **Status:** Deferred (not in v1) — **open design problem; reopens part of the reconciled DR-2 design.**

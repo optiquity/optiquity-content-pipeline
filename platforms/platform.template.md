@@ -7,10 +7,13 @@ it; to adjust a shipped framework entry, add an `extends:` partial (design §10 
 The co-located **`platforms/_schema.yaml` is the authoritative field list**; design **§5.3** defines
 Platform as a **destination + constraint layer, selected per deliverable** (routing, never an
 instance-wide baseline, never a folio property). It is the one dimension whose entries **project**
-cross-dimension values into the cascade. Two ratified constraint classes (CA9, §12.7): **advisory
-norms** ride the cascade (a recipe/run may deviate with a one-time warning); **hard limits** live
-outside the cascade, enforced only at the reconcile gate (§16). A Platform entry carries **no**
-format-pairing data — pairing is user-driven (design §8).
+cross-dimension values into the cascade. Three ratified constraint classes (CA9, §12.7): **advisory
+norms** (`advisory_norms` / per-format `format_advisories`) ride the cascade (a recipe/run may
+deviate with a one-time warning); **numeric whole-artifact hard limits** (`hard_limits`) live
+outside the cascade, enforced at the reconcile terminal gate (§16); and the DR-4 **per-format HARD
+structural** class (`format_structural`) — a per-format typed-section conformance tightening of a
+Format's base `section_schema`, also outside the cascade, enforced at the reconcile structural gate
+(§16). A Platform entry carries **no** format-pairing data — pairing is user-driven (design §8).
 
 ## The entry (YAML frontmatter + prose body)
 

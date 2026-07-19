@@ -191,8 +191,14 @@ CODE_HARD_LIMIT_EXCEEDED = "hard-limit-exceeded"
 #: severity) — the deliverable is BLOCKED at the TERMINAL structural gate (block, §16), siblings
 #: continue (§6.4). The SAME string as `pipeline.api.results.CODE_SECTION_CONFORMANCE_VIOLATION` (a
 #: `("block",)`/TIER_GENERATION code the driver's `stage_code` guard threads unchanged via
-#: `ALL_CODES`), carried here as a typed module constant (the drift.py `CODE_*` pattern) so this
-#: pure fit core imports no §21.7 taxonomy module. DISTINCT from `CODE_STRUCTURE_NOT_PRESERVED` (the
+#: `ALL_CODES`), carried here as a typed module constant (the drift.py `CODE_*` pattern) rather than
+#: imported DIRECTLY from the §21.7 taxonomy module. HONEST NOTE (C8 coupling): as of C8 this module
+#: imports `compose._reconstruct_rule` to decode the venue structural schema, and `compose` in turn
+#: imports `pipeline.api.results` — so this fit core now TRANSITIVELY reaches the §21.7 taxonomy
+#: module (the earlier "imports no §21.7 taxonomy module" claim no longer holds). The typed-constant
+#: discipline still keeps the DIRECT dependency out; the tracked R1 follow-up (hoist
+#: `_reconstruct_rule` to `pipeline.sections`, the shared C2-vocabulary home) would drop the compose
+#: import and restore the transitive purity. DISTINCT from `CODE_STRUCTURE_NOT_PRESERVED` (the
 #: C7 preserve/no-mint re-ask code) and `CODE_FIDELITY_VIOLATION` (the coverage/echo re-ask code):
 #: those two ride the bounded fidelity re-ask, THIS one is the terminal block-and-report verdict.
 CODE_SECTION_CONFORMANCE_VIOLATION = "section-conformance-violation"

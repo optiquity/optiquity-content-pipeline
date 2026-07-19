@@ -119,8 +119,53 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     (Δ +0.83 / +0.08). **Honest read:** the brief's effect is STRUCTURAL (imposes the skeleton + order); content
     steering is small once the outline is faithful (V0 already covers the facts — the outline organizes grounded
     facts, can't inject them). Identity sanity held live. **DEFERRED:** only the LLM outline drafter (GAP-7 mirror).
-  - **NEXT in the build order:** `DR-4 (content templates) → DR-5 (style placement) → DR-2 (style guides)` —
-    await maintainer direction.
+  - **DR-4 was NEXT and is now BUILT** — see the DR-4 bullet below.
+
+- **DR-4 (content templates: typed-section conformance) — BUILT (horn (a) section-typing SD-1..SD-5;
+  three venues, one paper; D-8b = RECORD-NOW).** 11 gated commits C1–C11, each coder → reviewer → (fix)
+  → commit under the standing cadence; realized as a **typed-section conformance envelope over the
+  outline's sections** (DR-3 × DR-4 unified) — NOT `format.parts`, NOT the IR `constraints?` field:
+  DR-4 got its OWN `section_conformance` field.
+  - `b0ee351` **C1** F1 sentinel section grammar (`pipeline/sections.py`; `parse_sections`; the OPEN
+    one-file-add `SECTION_TYPES` frozenset `{prose,figure,table,callout}`; ATX-only, fail-closed). ·
+    `d005ae4` **C2** the conformance vocabulary (`Presence|Order|Count|Length`, role/type `Selector`,
+    error/warning/info, the pure `check_conformance`).
+  - `cdce299` **C3** the Format `section_schema` attribute (floor `[]`) + the `academic-paper` genre. ·
+    `3c158b8` **C4** the `section_conformance` IR field (additive-optional, omit-when-absent, NOT in the
+    binding preimage → identity-neutral).
+  - `661ba5d` **C5** the HARD platform-neutral base structural gate at compose (error → bounded re-ask →
+    `section-conformance-violation`; non-outline body EXEMPT; advisory deferred to Review-1, D-4). ·
+    `92cb3ef` **C6** the Platform `format_structural` per-format HARD class (floor `{}`, sibling of
+    `hard_limits`, M2-EXCLUDED).
+  - `b8a7436` **C7** the preserve-through + no-mint role backstop (the section-typing role-forgeability
+    backstop; `structure-not-preserved`, rides the bounded fidelity re-ask). · `4cea5fa` **C8** the
+    reconcile STRUCTURAL gate + the **5th OMIT-WHEN-FLOOR `structural` preimage component** + the
+    early-return joint block-and-report + #4a per-section limits RE-HOMED here + the `format_structural`
+    M2-exclusion.
+  - `1fc0d0f` **C9** the SD-5 STRIP validity transform (public writers strip bare `type`/`role`, keep
+    `{#id}`) + the omit-when-absent `section_attr_transform_version`. · `23e06a2` **C10** the
+    three-venues-one-paper driving example (journal-strict FORBIDS acknowledgements; journal-structured
+    REQUIRES discussion; journal-concise #4a `abstract ≤ 800`) — block/fit diagonal proven hermetically. ·
+    **C11** (this) docs + SSOT sync + the R2 accuracy comment + the N-3 docstring fix.
+  - **Identity discipline:** additive-at-floor everywhere; **no `schema_version` bump, no `ir_version`
+    bump**; the reconcile OMIT-WHEN-FLOOR `structural` component (floor `{}` → no key → byte-identical
+    fit-digest) + the serialize OMIT-WHEN-ABSENT SD-5 version (fires only on a typed public render) keep
+    every existing artifact-id / fit-digest / render-digest byte-identical (golden corpora unperturbed);
+    **ZERO new `artifact-id` preimage component.**
+  - **#3/#3a/#4/#4a resolution (precise):** #3 the section grammar + vocabulary BUILT (C1/C2; the DR-3
+    `constraint?` consumer + the F1 broadening stay deferred); #3a the N-invariance reservation HONORED
+    (not un-deferred); #4 the DR-4 structural gate + terminal gate + joint block-and-report BUILT (C8;
+    the DR-6 coverage re-check leg stays deferred); #4a per-section limits genuinely BUILT at the
+    structural gate (`abstract ≤ 800` on journal-concise; "already built" claim RETRACTED). See
+    `docs/known-issues.md` DR-4 build status.
+  - **Follow-ups (tracked, NOT done):** **R1** hoist `_reconstruct_rule` `compose`→`pipeline.sections`
+    (advisory; restores reconcile's transitive import purity — the C11 R2 comment records the current
+    coupling); **render-site version threading** — `api/render.py::serialize_preimage` (~L558; a latent
+    identity UNDER-CAPTURE, NO v1 correctness hole — the driver path IS threaded) + `mvpdemo.py` (~L281;
+    an inert one-liner).
+  - **Gate:** final `uv run pytest -q` = **2378 passed**; ruff + content guard clean. Reports:
+    `ops-handoff/dr4-build/`.
+  - **NEXT in the build order:** `DR-5 (style placement) → DR-2 (style guides)` — await maintainer direction.
 
 - **Folder adapter — compose-capable + registered (2026-07-18).** Discovered while standing up
   `~/Developer/OptiquityTrader` (a non-Graphify Swift repo, READ-ONLY) as a folder-adapter source for the

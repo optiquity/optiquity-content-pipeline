@@ -627,9 +627,10 @@ def build_artifact_preimage(
     §22.3 S0 preimage check reads back.
 
     `outline_digest` is the OPTIONAL DR-3 §7.2 outline extension, OMIT-WHEN-ABSENT: when
-    `None` (the default, and the only value any caller passes today) nothing is added, so
-    the returned object is the byte-IDENTICAL 4-key preimage and every existing artifact-id
-    re-mints unchanged — the zero-churn guarantee. When supplied it must be a 64-char
+    `None` (the default — the value every non-outline-driven coordinate passes; the DR-3
+    outline drive/emit paths thread a real digest) nothing is added, so the returned object
+    is the byte-IDENTICAL 4-key preimage and every existing artifact-id re-mints unchanged —
+    the zero-churn guarantee. When supplied it must be a 64-char
     lowercase-hex SHA-256 (a `pipeline.outline.outline_digest`) and enters as a single
     top-level `outline-digest` key.
 

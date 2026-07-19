@@ -13,9 +13,14 @@ Key consequences:
 - Word limits are **Platform** `hard_limits`/`advisory_norms` (§5.3), not a Format field.
 - The genre's rhetorical structure/outline is the **entry body prose** (consumed at compose, §15),
   not a config attribute.
-- The only structural attribute is **`parts`** — an ordered list of named intra-genre sub-outputs
-  (e.g. `slide-deck → [slides, presenter-notes]`), defined entirely inside this one entry (Q14).
-  Composing two genres is **two artifacts** grouped by a folio, never a composite.
+- Two structural attributes. **`parts`** — an ordered list of named intra-genre sub-outputs
+  (e.g. `slide-deck → [slides, presenter-notes]`), defined entirely inside this one entry (Q14);
+  composing two genres is **two artifacts** grouped by a folio, never a composite. And, for an
+  outline-shaped genre, **`section_schema`** (DR-4) — the **base genre section contract**: typed
+  section-conformance rules (required/forbidden/ordered/count/length over `role`/`type` selectors;
+  floor `[]` = no contract) over the rhetorical body's own heading skeleton, enforced at the compose
+  base structural gate (§15) and tightenable per-venue (Platform `format_structural`, §12.7). `parts`
+  packages sub-outputs; `section_schema` constrains the body's sections — they are orthogonal.
 
 ## The entry (YAML frontmatter + prose body)
 
