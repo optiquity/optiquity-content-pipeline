@@ -195,10 +195,22 @@ class DefaultCurrencyResolver:
             render_inputs = stored_preimage.get("render_inputs")
             if not isinstance(render_target, Mapping) or not isinstance(render_inputs, Mapping):
                 return stored_digest
+            # DR-4 C9 carry-forward: a TYPED deliverable's stored `tool_bundle` carries the SD-5
+            # `section_attr_transform_version` key (present only when the section-attr strip altered
+            # published bytes, §17 FR7.1 OMIT-WHEN-ABSENT). The rebuild must re-derive that flag
+            # from the stored bundle and thread it through — otherwise the rebuilt tool_bundle omits
+            # the key, the digest differs, and a stable typed deliverable reads as SPURIOUS drift.
+            stored_tool = stored_preimage.get("tool_bundle", {})
+            section_attr_transformed = (
+                isinstance(stored_tool, Mapping)
+                and "section_attr_transform_version" in stored_tool
+            )
             # Rebuild with the CURRENT pinned tool bundle (serialize_inputs_preimage sources the
             # pins from the live module constants); the stored render_target/inputs are kept.
             rebuilt = serialize.serialize_inputs_preimage(
-                render_target=render_target, render_inputs=render_inputs
+                render_target=render_target,
+                render_inputs=render_inputs,
+                section_attr_transformed=section_attr_transformed,
             )
             return serialize.serialize_digest(rebuilt)
         except Exception:  # noqa: BLE001 — no detectable drift on a config-read failure

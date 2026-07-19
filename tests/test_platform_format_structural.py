@@ -104,9 +104,15 @@ def test_no_schema_version_bump_keeps_the_version_equality_lint_green() -> None:
     assert versions == {1}
 
 
+# The C10 journal venue-PROFILES are the FIRST shipped platforms to SET `format_structural`
+# (they tighten `academic-paper` per venue); every other shipped platform rides the floor `{}`.
+_C10_JOURNAL_VENUES = frozenset({"journal-strict", "journal-structured", "journal-concise"})
+
+
 def test_existing_platforms_validate_and_ride_the_format_structural_floor() -> None:
-    """Every shipped Platform loads + schema-validates; none SETS `format_structural`
-    (they ride the floor — a missing attribute is never an error, §11.1/§12.2)."""
+    """Every shipped Platform loads + schema-validates; every NON-journal platform rides the
+    `format_structural` floor (a missing attribute is never an error, §11.1/§12.2). The C10
+    journal venue-PROFILES are the FIRST to SET it — they tighten `academic-paper` per venue."""
     schema = _platforms_schema()
     loaded = {}
     for path in sorted(PLATFORMS_DIR.glob("*.md")):
@@ -115,10 +121,17 @@ def test_existing_platforms_validate_and_ride_the_format_structural_floor() -> N
         entry = load_entry(path, schema)
         loaded[entry.id] = entry
         assert entry.provenance == "framework"
-        assert "format_structural" not in entry.set_attributes
-    # The shipped platform set exists and rides the floor.
+        if entry.id in _C10_JOURNAL_VENUES:
+            # C10: a journal venue SETS `format_structural`, keyed to `academic-paper`.
+            assert "format_structural" in entry.set_attributes
+            assert "academic-paper" in entry.attributes["format_structural"]
+        else:
+            assert "format_structural" not in entry.set_attributes
+    # The shipped platform set exists; the pre-C10 platforms ride the floor.
     for pid in ("linkedin", "github", "medium-post", "corporate-website"):
         assert pid in loaded
+    # The C10 journals shipped (the driving-example venues).
+    assert _C10_JOURNAL_VENUES <= set(loaded)
 
 
 # ---------------------------------------------------------------------------
