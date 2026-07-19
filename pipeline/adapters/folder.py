@@ -23,9 +23,19 @@ verbatim `Fact`:
   traceability: a resolvable file:line locator).
 - **`as_of`** = the document's mtime date (§6.2 freshness basis "derived (commit/
   mtime)": a plain folder has no commit, so mtime IS the basis).
-- **`built_at_commit` = None** — the folder adapter is THE commitless adapter kind the
-  contract names (`base.GroundingResult`: "None when the adapter kind has no commit
-  notion (e.g. a plain folder)").
+- **`built_at_commit`** = the bound folder's git **HEAD** for a **git-checkout** folder
+  (via the same read-only `git rev-parse HEAD` the graphify adapter uses), so the adapter
+  is compose-capable and its §7.2 identity commit-map agrees with the §15 grounding ledger
+  (CF-1: `ground()` and `pin_commit()` report the SAME commit). A **plain** non-git folder
+  has no HEAD → `None`, the commitless posture the contract names (`base.GroundingResult`:
+  "None when the adapter kind has no commit notion (e.g. a plain folder)").
+- **Fact budget (`budget` connection key)** — a positive int (default `DEFAULT_BUDGET`)
+  that caps the grounded output to the first `budget` query-matching paragraph-facts in
+  the deterministic walk order (parent-first, lexicographic): the folder analogue of
+  graphify's `--budget`. The cap is deterministic and IN-BAND — an over-budget corpus
+  truncates to the first N; it is NOT an error. Folder does NO relevance ranking (a coarse
+  substring + first-N adapter, unlike graphify's ranked query), so "first N in walk order"
+  is exactly what the cap means.
 - **Content-kind tagging (§6.1 Q10/SM5, plan step 18 "with content-kind tagging"):**
   the kind tag lives on the SOURCE INSTANCE (`sources/_schema.yaml` `content_kind:`),
   not on the adapter — a folder of research notes tags `research-notes`, a docs mirror
@@ -37,10 +47,12 @@ verbatim `Fact`:
   the whole corpus — byte-parity with the mock adapter's documented filter, so the
   step-17 resolver behaves identically over both.
 
-Rule 1 is STRUCTURAL: the module contains no write primitive at all (reads via
-`Path.read_text`, walks via `os.walk` with `followlinks=False`), and the bound path is
-asserted OUTSIDE this repo's `workspaces/` (plan step 18) — a step-18 test scans this
-source for write primitives and snapshots a grounded folder byte-for-byte.
+Rule 1 is STRUCTURAL: the module contains no write primitive at all — it READS via
+`Path.read_text`, walks via `os.walk` with `followlinks=False`, and its ONLY subprocess is
+the read-only `git rev-parse HEAD` (never a state-changing git verb, never a write). The
+bound path is asserted OUTSIDE this repo's `workspaces/` (plan step 18) — a test scans this
+source for write primitives, pins the sole git call to read-only rev-parse, and snapshots a
+grounded folder byte-for-byte.
 
 Loud, never silent: an absent/relative/non-directory path, an unknown connection key,
 and an undecodable document are typed `AdapterError`s. An EMPTY result (no documents,
@@ -51,6 +63,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +80,7 @@ from pipeline.adapters.base import (
 
 __all__ = [
     "CONNECTION_KEYS",
+    "DEFAULT_BUDGET",
     "DOC_SUFFIXES",
     "FolderAdapter",
     "REPO_WORKSPACES",
@@ -76,8 +90,15 @@ __all__ = [
 #: the same extension discipline as `base.ANCHOR_KINDS`).
 DOC_SUFFIXES = (".md", ".txt")
 
-#: The closed connection-key set: one bound folder, nothing else.
-CONNECTION_KEYS = frozenset({"path"})
+#: The per-invocation fact budget default — the folder analogue of graphify's
+#: `DEFAULT_BUDGET`. Folder grounds EVERY query-matching paragraph, so a large corpus can
+#: emit thousands of facts and flood the writer prompt; the budget caps the output to the
+#: first N in walk order. 2000 mirrors graphify's default, so either adapter caps its
+#: contribution to the writer prompt at the same order of magnitude (a coherent ceiling).
+DEFAULT_BUDGET = 2000
+
+#: The closed connection-key set: the bound folder + its fact budget, nothing else.
+CONNECTION_KEYS = frozenset({"path", "budget"})
 
 #: This repo's workspaces root (CLAUDE.md rule 2): client CONTENT lives there; grounding
 #: SOURCES live outside it. A folder path under it is refused loudly (plan step 18).
@@ -113,7 +134,15 @@ def _paragraph_blocks(text: str) -> list[_Block]:
     return blocks
 
 
-def _validate_connection(connection: Mapping[str, Any]) -> Path:
+@dataclass(frozen=True)
+class _Connection:
+    """One validated folder connection: the resolved read-only root + the fact budget."""
+
+    root: Path
+    budget: int
+
+
+def _validate_connection(connection: Mapping[str, Any]) -> _Connection:
     if not isinstance(connection, Mapping):
         raise AdapterError(
             f"adapter-failure: folder connection must be a mapping, "
@@ -152,7 +181,14 @@ def _validate_connection(connection: Mapping[str, Any]) -> Path:
         raise AdapterError(
             f"adapter-failure: folder connection path is not a directory: {resolved}"
         )
-    return resolved
+    budget = connection.get("budget", DEFAULT_BUDGET)
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+        raise AdapterError(
+            f"adapter-failure: folder connection budget must be a positive integer "
+            f"(deterministic first-N cap on grounded facts, default {DEFAULT_BUDGET}), "
+            f"got {budget!r}"
+        )
+    return _Connection(root=resolved, budget=budget)
 
 
 def _collect_documents(root: Path) -> tuple[str, ...]:
@@ -187,10 +223,13 @@ class FolderAdapter(SourceAdapter):
             raise AdapterError(
                 f"adapter-failure: query must be a string, got {type(query).__name__}"
             )
-        root = _validate_connection(connection)
+        conn = _validate_connection(connection)
+        root = conn.root
         needle = query.strip().lower()
         facts: list[Fact] = []
         for relpath in _collect_documents(root):
+            if len(facts) >= conn.budget:
+                break  # budget reached: don't even read further docs (deterministic cap)
             file = root / relpath
             try:
                 text = file.read_text(encoding="utf-8")
@@ -223,4 +262,35 @@ class FolderAdapter(SourceAdapter):
                         refinements={},  # the adapter classifies nothing; kind defaults ride
                     )
                 )
-        return GroundingResult(facts=tuple(facts), built_at_commit=None)
+                if len(facts) >= conn.budget:
+                    break  # first-N cap: in-band truncation, NOT an error (docstring)
+        return GroundingResult(facts=tuple(facts), built_at_commit=self._head_commit(root))
+
+    def _head_commit(self, root: Path) -> str | None:
+        """`git -C <bound folder> rev-parse HEAD` — the plan step-18 READ-ONLY git command
+        (git discovers the enclosing checkout root itself). ANY failure — git absent, the
+        folder is not a repo, a non-zero exit — is commitless (`None`), the designed
+        plain-folder posture; never an error, never a write (rule 1). Mirrors the graphify
+        adapter's `_source_commit_fallback`."""
+        argv = ["git", "-C", str(root), "rev-parse", "HEAD"]
+        try:
+            proc = subprocess.run(  # noqa: S603 — list-form read-only rev-parse, no shell
+                argv, capture_output=True, text=True, check=False
+            )
+        except FileNotFoundError:
+            return None
+        if proc.returncode != 0:
+            return None
+        lines = proc.stdout.strip().splitlines()
+        head = lines[0].strip() if lines else ""
+        return head or None
+
+    def pin_commit(self, connection: Mapping[str, Any]) -> str | None:
+        """The §7.2 identity commit-map value for a folder source — read by the SAME
+        read-only provenance path `ground()` uses (`git rev-parse HEAD` over the bound
+        folder), so the artifact-id commit-map (identity, §7.2) and the §15 grounding
+        ledger NEVER disagree about provenance (CF-1). A git-checkout folder pins its HEAD
+        (compose-capable); a plain non-git folder stays commitless (`None`), the designed
+        posture. Read-only, never a write (rule 1)."""
+        conn = _validate_connection(connection)
+        return self._head_commit(conn.root)

@@ -356,6 +356,15 @@ Characterization attaches at **three tiers** (Q10):
 The `content-kinds/` registry is a small collection like any other: it inherits the provenance
 guard (§10), schema-versioning (§11.7), and one-file extensibility (§5.4).
 
+The `folder` adapter pins the git **HEAD** of a **git-checkout** folder — via the same read-only
+`git rev-parse HEAD` fallback the `graphify` adapter uses — so it is **compose-capable** and its
+§7.2 identity commit-map agrees with the §15 grounding ledger (`ground()` and `pin_commit()` report
+the same commit; the CF-1 invariant). A **plain** (non-git) folder has no HEAD and stays commitless,
+its mtime the freshness basis (§6.2). The adapter also takes a `budget` connection key bounding
+grounded output to the first *N* query-matching paragraph-facts in its deterministic walk order — the
+folder analogue of graphify's `--budget`; the cap is a deterministic, in-band truncation, not an
+error.
+
 ### §6.2 The score set
 
 The core score vocabulary is **eight scores**, each defined once in the source schema (§11.1) with

@@ -20,6 +20,8 @@ from __future__ import annotations
 import datetime
 import hashlib
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -32,6 +34,7 @@ from pipeline.adapters.base import (
 )
 from pipeline.adapters.folder import (
     CONNECTION_KEYS,
+    DEFAULT_BUDGET,
     DOC_SUFFIXES,
     REPO_WORKSPACES,
     FolderAdapter,
@@ -99,7 +102,7 @@ class TestConnectionValidation:
             FolderAdapter().ground(connection=[("path", "/x")], query="q")
 
     def test_unknown_key_refused_closed_set(self):
-        assert CONNECTION_KEYS == frozenset({"path"})
+        assert CONNECTION_KEYS == frozenset({"path", "budget"})
         with pytest.raises(AdapterError, match="CLOSED"):
             FolderAdapter().ground(connection={"path": "/x", "glob": "*.md"}, query="q")
 
@@ -186,9 +189,11 @@ class TestExtraction:
         assert all(fact.refinements == {} for fact in result.facts)
 
     def test_pin_commit_agrees_with_ground_commitless(self, tmp_path):
-        # CF-1: the folder adapter is THE commitless kind — `pin_commit` (the base default)
-        # returns None, matching `ground().built_at_commit`, so identity and the §15 ledger
-        # agree (both commitless). No override needed.
+        # CF-1 for a PLAIN (non-git) folder: `pin_commit` OVERRIDES the base to hit the
+        # read-only `git rev-parse HEAD`, which fails over a non-repo tmp dir -> None,
+        # matching `ground().built_at_commit` — identity and the §15 ledger agree (both
+        # commitless), the designed plain-folder posture. (The git-checkout case, where
+        # both AGREE on the real HEAD, is TestCommitProvenance below.)
         root = make_corpus(tmp_path / "corpus")
         assert FolderAdapter().pin_commit({"path": str(root)}) is None
         assert ground_all(root).built_at_commit is None
@@ -258,8 +263,9 @@ class TestReadOnly:
         assert snapshot(tmp_path) == before  # zero writes toward the source, ever
 
     def test_module_source_has_no_write_primitives(self):
-        # Rule 1 structural: the adapter module cannot write — no write primitive
-        # appears anywhere in its source (reads via read_text + os.walk only).
+        # Rule 1 structural: the adapter module cannot write — no filesystem write
+        # primitive appears anywhere in its source (reads via read_text + os.walk), and
+        # its ONLY subprocess is the read-only `git rev-parse HEAD` (asserted below).
         import pipeline.adapters.folder as module
 
         source = Path(module.__file__).read_text(encoding="utf-8")
@@ -277,9 +283,12 @@ class TestReadOnly:
             "symlink_to",
             "touch(",
             "shutil",
-            "subprocess",
         ):
             assert token not in source, f"write primitive {token!r} found in folder adapter"
+        # The sole subprocess is the READ-ONLY rev-parse HEAD — exactly one call site,
+        # never a state-changing git verb.
+        assert source.count("subprocess.run(") == 1
+        assert '"rev-parse"' in source and '"HEAD"' in source
 
     def test_contract_shape(self):
         assert issubclass(FolderAdapter, SourceAdapter)
@@ -380,3 +389,150 @@ class TestResolverIntegration:
         assert outcome.status == "ok"
         assert all(fact.citable for fact in outcome.facts)
         assert all(fact.commit is None for fact in outcome.facts)
+
+
+# --- git-checkout commit provenance (CF-1: ground == pin_commit) + fact budget ----------------
+
+HAS_GIT = shutil.which("git") is not None
+requires_git = pytest.mark.skipif(not HAS_GIT, reason="git binary not available")
+
+
+def _git(root: Path, *args: str) -> None:
+    """Run a git subcommand in the TEST (never in the adapter) to build a real checkout."""
+    subprocess.run(
+        ["git", "-C", str(root), *args], check=True, capture_output=True, text=True
+    )
+
+
+def make_git_corpus(tmp_path: Path) -> Path:
+    """`make_corpus` under a REAL initialized git checkout with one commit — synthetic-
+    generic content under `tmp_path`, this instance's own throwaway repo, never a client."""
+    root = make_corpus(tmp_path / "gitcorpus")
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "config", "user.name", "Folder Adapter Test")
+    _git(root, "add", "-A")
+    _git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "corpus")
+    return root
+
+
+def real_head(root: Path) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+    return proc.stdout.strip()
+
+
+class TestCommitProvenance:
+    @requires_git
+    def test_git_checkout_pins_head_and_ground_agrees(self, tmp_path):
+        # CF-1: for a git-checkout folder, pin_commit == ground().built_at_commit ==
+        # the REAL HEAD — identity (§7.2 commit-map) and the §15 ledger AGREE, so the
+        # folder adapter is compose-capable (it can mint a commit-pinned artifact-id).
+        root = make_git_corpus(tmp_path)
+        head = real_head(root)
+        assert len(head) == 40  # a real 40-hex commit SHA
+        adapter = FolderAdapter()
+        pinned = adapter.pin_commit({"path": str(root)})
+        grounded = adapter.ground(connection={"path": str(root)}, query="").built_at_commit
+        assert pinned == grounded == head
+
+    def test_git_helper_returns_none_when_not_a_repo(self, tmp_path):
+        # A plain folder is not a git repo → `git rev-parse` exits non-zero → None,
+        # never raised: the designed commitless posture (unchanged for plain folders).
+        root = make_corpus(tmp_path / "corpus")
+        assert FolderAdapter()._head_commit(root) is None
+
+    def test_git_helper_returns_none_when_git_absent(self, tmp_path, monkeypatch):
+        # git binary absent → FileNotFoundError is CAUGHT → None, never raised.
+        import pipeline.adapters.folder as module
+
+        def boom(*args, **kwargs):
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(module.subprocess, "run", boom)
+        root = make_corpus(tmp_path / "corpus")
+        adapter = FolderAdapter()
+        assert adapter._head_commit(root) is None
+        assert adapter.pin_commit({"path": str(root)}) is None
+        assert adapter.ground(connection={"path": str(root)}, query="").built_at_commit is None
+
+    def test_git_helper_returns_none_on_nonzero_exit(self, tmp_path, monkeypatch):
+        # A non-zero git exit → None, never raised (commitless posture).
+        import pipeline.adapters.folder as module
+
+        class _Outcome:
+            returncode = 128
+            stdout = ""
+            stderr = "fatal: not a git repository"
+
+        monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: _Outcome())
+        root = make_corpus(tmp_path / "corpus")
+        assert FolderAdapter()._head_commit(root) is None
+
+
+class TestReadOnlyGitCall:
+    def test_only_subprocess_is_read_only_git_rev_parse(self, tmp_path, monkeypatch):
+        # Rule 1 behavioral: the SOLE subprocess the adapter spawns is the READ-ONLY
+        # `git -C <root> rev-parse HEAD` — captured argv, never a state-changing verb.
+        import pipeline.adapters.folder as module
+
+        recorded: list[list[str]] = []
+
+        class _Outcome:
+            returncode = 0
+            stdout = "ab" * 20 + "\n"
+            stderr = ""
+
+        def recorder(argv, **kwargs):
+            recorded.append(list(argv))
+            return _Outcome()
+
+        monkeypatch.setattr(module.subprocess, "run", recorder)
+        root = make_corpus(tmp_path / "corpus")
+        result = ground_all(root)
+        assert result.built_at_commit == "ab" * 20
+        assert recorded == [["git", "-C", str(root.resolve()), "rev-parse", "HEAD"]]
+
+
+class TestBudget:
+    def test_budget_is_a_connection_key_in_the_closed_set(self):
+        assert CONNECTION_KEYS == frozenset({"path", "budget"})
+
+    def test_budget_caps_fact_count_first_n(self, tmp_path):
+        # `budget` caps grounded facts to the first N in the deterministic walk order.
+        root = make_corpus(tmp_path / "corpus")
+        result = FolderAdapter().ground(connection={"path": str(root), "budget": 2}, query="")
+        assert len(result.facts) == 2
+        assert tuple(f.subject for f in result.facts) == EXPECTED_SUBJECTS[:2]
+
+    def test_over_budget_corpus_truncates_deterministically_not_an_error(self, tmp_path):
+        # An over-budget corpus is NOT an error — it truncates to the first N, idempotently.
+        root = make_corpus(tmp_path / "corpus")  # 4 facts; budget 1
+        capped = FolderAdapter().ground(connection={"path": str(root), "budget": 1}, query="")
+        assert tuple(f.subject for f in capped.facts) == EXPECTED_SUBJECTS[:1]
+        again = FolderAdapter().ground(connection={"path": str(root), "budget": 1}, query="")
+        assert capped == again  # deterministic first-N, every time
+
+    def test_budget_counts_matching_facts_after_filter(self, tmp_path):
+        # The cap counts query-MATCHING facts (post-filter), first-N in walk order.
+        root = make_corpus(tmp_path / "corpus")
+        result = FolderAdapter().ground(
+            connection={"path": str(root), "budget": 2}, query="widget"
+        )
+        assert tuple(f.subject for f in result.facts) == EXPECTED_SUBJECTS[:2]
+
+    def test_budget_absent_applies_default(self, tmp_path):
+        # No `budget` key → DEFAULT_BUDGET applies; the small corpus is well under it.
+        assert DEFAULT_BUDGET == 2000
+        root = make_corpus(tmp_path / "corpus")
+        result = FolderAdapter().ground(connection={"path": str(root)}, query="")
+        assert len(result.facts) == len(EXPECTED_SUBJECTS)
+
+    @pytest.mark.parametrize("bad", [0, -1, -5, 3.0, "2", True, False, None])
+    def test_invalid_budget_is_a_typed_error(self, tmp_path, bad):
+        # Non-int or ≤0 budget is a typed, loud AdapterError (never a silent default).
+        root = make_corpus(tmp_path / "corpus")
+        with pytest.raises(AdapterError, match="budget must be a positive integer"):
+            FolderAdapter().ground(connection={"path": str(root), "budget": bad}, query="")
