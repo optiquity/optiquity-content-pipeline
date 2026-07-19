@@ -422,6 +422,29 @@ def _platform_hard_limits(env: CascadeEnv, platform: str) -> tuple[dict[str, Any
     return dict(limits), dict(floor)
 
 
+def _platform_format_structural(
+    env: CascadeEnv, platform: str, format_id: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """This platform's per-format HARD `format_structural` venue schema for THIS artifact's format
+    (DR-4 C6/C8) + the schema floor `{}` — the §16 terminal structural-gate input.
+
+    `format_structural` lives entirely OUTSIDE M2 (M2-EXCLUDED, the sibling of `hard_limits`), so it
+    is read from the raw platform entry's `effective`, NEVER from the render resolution's bound
+    values. SINGLE-ENTRY scoping is the C7→C8 identity obligation: only THIS `format_id`'s venue
+    schema is threaded — `({format_id: <that C2 schema>}, {})` when the platform tightens this
+    format, else `({}, {})`. An UNRELATED format's venue-tightening must never enter this fit's
+    preimage (it would churn `fit_digest`), so the whole `format_structural` map is indexed down to
+    the pinned format-id (matching C7's `_format_forbids` / reconcile's pinned-format resolution).
+    The defaults are the schema floor `{}` (a floor `format_structural` contributes no `structural`
+    preimage key and an INERT gate)."""
+    entry = env.resolver.resolve("platforms", platform)
+    all_structural = entry.effective.get("format_structural") or {}
+    this_format = all_structural.get(format_id)
+    if this_format is None:
+        return {}, {}
+    return {format_id: this_format}, {}
+
+
 # --- The one-deliverable render leg (reconcile → serialize → persist) ----------------------
 
 
@@ -466,9 +489,16 @@ def _run_deliverable(
         ),
     )
     hard_limits, hard_limit_defaults = _platform_hard_limits(env, d.platform)
+    # DR-4 C8: this artifact's pinned-format HARD venue structural class (SINGLE-ENTRY scoped —
+    # an unrelated format's tightening never enters this fit's identity). `item.format` is the
+    # format entry-id (the artifact-level dimension). M2-EXCLUDED, like `hard_limits`.
+    format_structural, format_structural_defaults = _platform_format_structural(
+        env, d.platform, item.format
+    )
 
     # -- reconcile (§16): the demo binds `pass`, so a same-language fit is a ZERO-LLM
-    #    passthrough; the terminal hard-limit gate still runs (fit-or-block, never silent).
+    #    passthrough; the terminal joint gate still runs (fit-or-block, never silent) — the
+    #    hard-limit gate AND the DR-4 C8 venue-structural gate (INERT at a floor format).
     rout = reconcile(
         ReconcileRequest(
             canonical_ir=canonical_ir,
@@ -481,18 +511,22 @@ def _run_deliverable(
             hard_limit_defaults=hard_limit_defaults,
             advisory=render.advisories,
             advisory_defaults={},
+            format_structural=format_structural,
+            format_structural_defaults=format_structural_defaults,
         )
     )
     if rout.status != "ok" or rout.fitted_ir is None or rout.fit_binding is None:
         # HARD GATE-1 (§21.7): thread the reconcile stage's TRUE taxonomy code — GUARDED to
-        # a real §21.7 code (`hard-limit-exceeded` on the terminal-gate block; else the typed
-        # non-taxonomy `fit-fidelity-violation`/transport codes stay code-less, never
-        # fabricated, §3.1). `session._generate_next` derives the block STATUS from the code's
-        # CodeSpec (`("block",)`), never a hardcoded status.
+        # a real §21.7 code (`hard-limit-exceeded` on the terminal hard-limit block, or DR-4 C8's
+        # `section-conformance-violation` on a venue-structural block — both `("block",)` in
+        # `ALL_CODES`; else the typed non-taxonomy `fit-fidelity-violation`/transport codes stay
+        # code-less, never fabricated, §3.1). Both concern-sets (`blocked_limits` +
+        # `structural_violations`) ride the message. `session._generate_next` derives the block
+        # STATUS from the code's CodeSpec (`("block",)`), never a hardcoded status.
         raise DriverError(
             f"driver-error: reconcile did not fit deliverable {d.deliverable_id} — "
             f"status={rout.status} code={rout.code} blocked_limits={rout.blocked_limits} "
-            f"violations={rout.violations}",
+            f"structural_violations={rout.structural_violations} violations={rout.violations}",
             stage_code=rout.code if rout.code in results.ALL_CODES else None,
         )
     fitted_ir = rout.fitted_ir

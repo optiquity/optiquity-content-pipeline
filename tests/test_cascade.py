@@ -603,9 +603,11 @@ def test_advisory_projection_merges_and_hard_limits_are_absent(tmp_path: Path) -
     # The per-format projection refined the platform-wide norm (map-merge below L5).
     assert render.advisories == {"preferred_char_count": 1200, "hashtag_count_max": 5}
     assert render.platform.provenance["advisory_norms"] == RUNG_PROJECTION
-    # THE CA9 acceptance: no hard limit among bound values — and no projection table.
+    # THE CA9 acceptance: no hard limit among bound values — and no projection table. DR-4 C8 adds
+    # `format_structural` (the HARD structural sibling of `hard_limits`) to the M2-EXCLUDED set.
     for never_bound in (
         "hard_limits",
+        "format_structural",
         "format_advisories",
         "reconcile_strategy_defaults",
         "default_output_type",
@@ -666,6 +668,18 @@ def test_projection_tables_and_m3_carriers_are_unbindable(tmp_path: Path) -> Non
         l2=BASE_L2 + "values:\n  goal.source_selection:\n    require: []\n",
     )
     with pytest.raises(UnbindableAttributeError, match="M2 never touches"):
+        make_env(root)
+
+
+def test_format_structural_is_unbindable_at_m2(tmp_path: Path) -> None:
+    # DR-4 C8: `platform.format_structural` is the HARD structural sibling of `hard_limits`,
+    # M2-EXCLUDED. Offered as an M2 binding it refuses as the GENERIC `unbindable-attribute`
+    # (NOT the `hard_limits`-specific HardLimitBindingError — the special-case is not extended).
+    root = build_root(
+        tmp_path,
+        l2=BASE_L2 + "values:\n  platform.format_structural:\n    academic-paper: []\n",
+    )
+    with pytest.raises(UnbindableAttributeError, match="per-format HARD structural"):
         make_env(root)
 
 

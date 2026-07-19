@@ -184,6 +184,11 @@ UNBINDABLE_VALUE_BINDINGS: dict[tuple[str, str], str] = {
         "hard limits never enter M2 — never bound, never overridable; enforced only at "
         "the reconcile gate (CA9, §12.7/§16)"
     ),
+    ("platform", "format_structural"): (
+        "a per-format HARD structural class never enters M2 — never bound, never overridable; "
+        "enforced only at the reconcile structural gate (the sibling of hard_limits; §12.7/§16 "
+        "DR-4)"
+    ),
     ("platform", "format_advisories"): (
         "a projection TABLE consumed by the per-format advisory projection below L5 "
         "(§12.3) — deviate via `platform.advisory_norms` instead"

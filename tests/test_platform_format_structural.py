@@ -292,14 +292,15 @@ def _floor_request(**overrides) -> ReconcileRequest:
     return ReconcileRequest(**base)
 
 
-def test_reconcile_preimage_has_no_structural_component_yet() -> None:
-    """C6 declares the schema attribute; the 5th preimage component is C8. Today the preimage
-    is EXACTLY the four §16 components — no `structural` key exists to churn a `fit_digest`."""
+def test_reconcile_preimage_omits_the_structural_component_at_floor() -> None:
+    """C8 makes `format_structural` the 5th OMIT-WHEN-FLOOR preimage component. A floor platform
+    (`format_structural` unset → `{}`) produces an EMPTY delta, so the `structural` key is omitted
+    entirely — the preimage is byte-identical to the pre-C8 four §16 components (the golden
+    corpus), yet `structural` is now a listed component (a non-floor venue tightens it in)."""
     preimage = reconcile_inputs_preimage(_floor_request())
-    assert set(preimage) == set(RECONCILE_INPUT_COMPONENTS)
     assert set(preimage) == {"strategy", "hard-limits", "advisory", "render-dims"}
     assert "structural" not in preimage
-    assert "structural" not in RECONCILE_INPUT_COMPONENTS
+    assert "structural" in RECONCILE_INPUT_COMPONENTS  # C8: the 5th component is now listed
 
 
 def test_floor_format_structural_yields_a_byte_identical_fit_digest() -> None:

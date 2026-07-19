@@ -89,14 +89,27 @@ from typing import Any, Literal
 
 from pipeline import ir
 from pipeline.canonical import canonical_json_bytes, canonical_json_str, digest_hex12
+
+# DR-4 C8 reuse (SINGLE-SOURCE against C2, never a forked decoder): the serialized-rule → C2 `Rule`
+# reconstruction is compose's `_reconstruct_rule` — the SAME decoder the base gate uses. Imported
+# here for the TERMINAL venue-structural gate; compose does not import reconcile (no import cycle).
+from pipeline.compose import _reconstruct_rule
 from pipeline.ids import IdError, delta_vs_floor, fitted_id
 from pipeline.outline import normalize_outline
 from pipeline.prompts import load_template
 from pipeline.sections import (
     AXIS_ROLE,
     AXIS_TYPE,
+    SEVERITY_ERROR,
+    Count,
+    Length,
+    Order,
+    Presence,
+    Schema,
     Section,
     SectionGrammarError,
+    Violation,
+    check_conformance,
     parse_sections,
 )
 from pipeline.transport import Runner, TransportResult, invoke_headless
@@ -104,6 +117,7 @@ from pipeline.transport import Runner, TransportResult, invoke_headless
 __all__ = [
     "CODE_FIDELITY_VIOLATION",
     "CODE_HARD_LIMIT_EXCEEDED",
+    "CODE_SECTION_CONFORMANCE_VIOLATION",
     "CODE_STRUCTURE_NOT_PRESERVED",
     "DEFAULT_CHAR_LIMIT_KEY",
     "DEFAULT_MAX_ATTEMPTS",
@@ -136,11 +150,16 @@ RECONCILE_STRATEGIES = ("adapt", "split", "pass", "truncate")
 #: (delta-vs-floor, CA6), so a baseline `adapt` fit contributes nothing to the preimage.
 RECONCILE_STRATEGY_FLOOR = "adapt"
 
-#: §16 — the reconcile-inputs preimage's four INCLUSION components (delta-vs-floor each).
+#: §16 / DR-4 C8 — the reconcile-inputs preimage's five INCLUSION components (delta-vs-floor each).
 #: (1) the effective reconcile-strategy; (2) the platform entry's effective hard-limit set;
 #: (3) the effective advisory constraint values bound at M2-render, scoped to the attributes
-#: the reconcile pass consumes; (4) any other reconcile-consumed rendering-dimension binding.
-RECONCILE_INPUT_COMPONENTS = ("strategy", "hard-limits", "advisory", "render-dims")
+#: the reconcile pass consumes; (4) any other reconcile-consumed rendering-dimension binding;
+#: (5) this artifact's pinned-format `format_structural` venue tightening — the HARD structural
+#: class, sibling of `hard-limits`. Component (5) is OMIT-WHEN-FLOOR: a floor `{}` value produces
+#: NO `structural` key at all, so every floor platform's preimage/`fit_digest` is byte-identical to
+#: the pre-C8 four-key preimage (the golden fit-digest corpus is unperturbed); only a non-floor
+#: venue tightening adds the key and churns identity.
+RECONCILE_INPUT_COMPONENTS = ("strategy", "hard-limits", "advisory", "render-dims", "structural")
 
 #: §16 — EXCLUDED from the reconcile-inputs preimage, EXACTLY (each already identity-covered
 #: or identity-irrelevant). Enumerated so the acceptance test proves the exclusion set is
@@ -167,6 +186,17 @@ DEFAULT_MAX_ATTEMPTS = 3
 #: (block, §16). A typed module constant (the drift.py `CODE_*` pattern), never inlined.
 CODE_HARD_LIMIT_EXCEEDED = "hard-limit-exceeded"
 
+#: DR-4 C8 §15/§16 pinned block code: the FITTED body violates the selected venue's HARD
+#: `format_structural` section contract (a required/forbidden/ordered/count/length rule at ERROR
+#: severity) — the deliverable is BLOCKED at the TERMINAL structural gate (block, §16), siblings
+#: continue (§6.4). The SAME string as `pipeline.api.results.CODE_SECTION_CONFORMANCE_VIOLATION` (a
+#: `("block",)`/TIER_GENERATION code the driver's `stage_code` guard threads unchanged via
+#: `ALL_CODES`), carried here as a typed module constant (the drift.py `CODE_*` pattern) so this
+#: pure fit core imports no §21.7 taxonomy module. DISTINCT from `CODE_STRUCTURE_NOT_PRESERVED` (the
+#: C7 preserve/no-mint re-ask code) and `CODE_FIDELITY_VIOLATION` (the coverage/echo re-ask code):
+#: those two ride the bounded fidelity re-ask, THIS one is the terminal block-and-report verdict.
+CODE_SECTION_CONFORMANCE_VIOLATION = "section-conformance-violation"
+
 #: A §21.7-style internal code (the compose `compose-contract-violation` sibling): the
 #: reconciler never produced a fidelity-valid fit within the re-ask bound — NEVER fitted.
 CODE_FIDELITY_VIOLATION = "fit-fidelity-violation"
@@ -174,10 +204,11 @@ CODE_FIDELITY_VIOLATION = "fit-fidelity-violation"
 #: DR-4 C7 — a §16 preserve-section-keys breach: the fit dropped/renamed a schema-referenced
 #: (non-forbidden) section the compose declared, OR MINTED a schema-satisfying section absent at
 #: compose (GAP-2 no-mint). A DISTINCT code from `CODE_FIDELITY_VIOLATION` (the coverage/echo
-#: contract) and from C8's future TERMINAL `section-conformance-violation` block code — this one
-#: first-remediates via the SAME bounded re-ask (an `ir.IRError`), and C8's distinct block-and-
-#: report layer consumes it later. It never appears on a `ReconcileOutcome.code` (a persistent
-#: breach exhausts the re-ask bound and surfaces as `CODE_FIDELITY_VIOLATION`, never fitted).
+#: contract) and from C8's TERMINAL `CODE_SECTION_CONFORMANCE_VIOLATION` block code — this one
+#: first-remediates via the SAME bounded re-ask (an `ir.IRError`), and C8's distinct terminal
+#: structural gate is the block-and-report layer. It never appears on a `ReconcileOutcome.code` (a
+#: persistent breach exhausts the re-ask bound and surfaces as `CODE_FIDELITY_VIOLATION`, never
+#: fitted).
 CODE_STRUCTURE_NOT_PRESERVED = "structure-not-preserved"
 
 #: `default_measure`'s single hard-limit key — total leaf-body character length. A caller
@@ -236,13 +267,15 @@ class ReconcileRequest:
     for delta-vs-floor (CA6). `voice_content_params` is the §16 preserve set — EXCLUDED from the
     preimage (fixed by artifact-id, §7.2) but echoed by the reconciler.
 
-    `format_structural` / `format_structural_defaults` (DR-4 C6/C7) carry the per-format HARD
+    `format_structural` / `format_structural_defaults` (DR-4 C6/C7/C8) carry the per-format HARD
     structural tightening — `{format_id: <C2 section-conformance schema list>}` exactly as the
-    Platform attribute stores it — that C7's preserve-through check reads (this artifact's
-    format-id resolves its venue-forbids; an empty map / no entry ⇒ no forbids). They sit with
-    the delta-vs-floor CONSUMED pairs because they are DESTINED to become the 5th omit-when-floor
-    preimage component in C8 (a HARD class, the sibling of `hard_limits`). They are INERT in C7:
-    `reconcile_inputs_preimage` does NOT read them — the 5th preimage component lands in C8.
+    Platform attribute stores it — SINGLE-ENTRY scoped to THIS artifact's format (the driver
+    threads only the pinned format so an unrelated venue never churns this fit's identity). They
+    are LIVE at C8 on TWO seams: (i) C7's preserve-through check reads their venue-forbids, and
+    (ii) they are the 5th OMIT-WHEN-FLOOR reconcile-inputs preimage component (a HARD class, the
+    sibling of `hard_limits`) AND the reconstructed schema the TERMINAL structural gate enforces.
+    An empty map / no entry ⇒ no venue tightening: no preimage `structural` key (byte-identical
+    `fit_digest`) and an INERT gate.
 
     The trailing four fields are EXCLUDED from the reconcile-inputs preimage (§16) and are
     carried only so a caller assembling the full render context has one home for them — and
@@ -261,9 +294,9 @@ class ReconcileRequest:
     advisory_defaults: Mapping[str, Any] = field(default_factory=dict)
     render_dims: Mapping[str, Any] = field(default_factory=dict)
     render_dim_defaults: Mapping[str, Any] = field(default_factory=dict)
-    # DR-4 C6/C7 per-format HARD structural tightening — a delta-vs-floor CONSUMED pair
-    # (C8's 5th preimage component). READ by C7's preserve-through (venue-forbids), NOT by the
-    # preimage (INERT in C7 — the 5th component lands in C8).
+    # DR-4 C6/C7/C8 per-format HARD structural tightening — a delta-vs-floor CONSUMED pair, LIVE at
+    # C8: it is the 5th OMIT-WHEN-FLOOR preimage component, the TERMINAL structural gate's schema,
+    # and C7's preserve-through venue-forbids source (pinned to THIS artifact's format only).
     format_structural: Mapping[str, Any] = field(default_factory=dict)
     format_structural_defaults: Mapping[str, Any] = field(default_factory=dict)
     voice_content_params: Mapping[str, Any] = field(default_factory=dict)
@@ -287,8 +320,13 @@ class ReconcileOutcome:
     otherwise); `fit_binding` is the §16 record on `ok` (None otherwise); `preimage`/`digest`
     are always present (computed before the gate). `is_noop` marks the zero-LLM passthrough;
     `dropped_facts` is the explicit drop-as-lead set; `blocked_limits` names the breached
-    hard limits on a `block`; `attempts` counts reconciler invocations (0 on the no-op/pass
-    paths); `transport_result` is the last transport outcome (None when no LLM ran)."""
+    hard limits on a `block`; `structural_violations` names the FITTED body's HARD venue
+    `format_structural` breaches on a `block` (DR-4 C8 — DISTINCT from the fidelity `violations`
+    field: those are the bounded-re-ask fidelity/coverage strings, these are the terminal
+    structural gate's error-severity venue breaches, and a JOINT structural+limit block populates
+    BOTH `structural_violations` AND `blocked_limits`); `attempts` counts reconciler invocations
+    (0 on the no-op/pass paths); `transport_result` is the last transport outcome (None when no
+    LLM ran)."""
 
     status: Literal["ok", "block", "error"]
     code: str
@@ -300,6 +338,7 @@ class ReconcileOutcome:
     is_noop: bool
     dropped_facts: tuple[str, ...]
     blocked_limits: tuple[str, ...]
+    structural_violations: tuple[str, ...]
     attempts: int
     violations: tuple[str, ...]
     transport_result: TransportResult | None
@@ -313,17 +352,21 @@ class ReconcileOutcome:
 def reconcile_inputs_preimage(request: ReconcileRequest) -> dict[str, Any]:
     """Build the canonical §16 reconcile-inputs preimage (delta-vs-floor per CA6).
 
-    Comprises EXACTLY the four `RECONCILE_INPUT_COMPONENTS` — (1) the effective strategy,
-    (2) the effective hard-limit set, (3) the reconcile-consumed advisory bindings, (4) any
-    other reconcile-consumed render-dim binding — each reduced to its deviation from the
-    schema floor (an attribute at its default is ABSENT, so an additively shipped constraint
-    at its default churns nothing). EXCLUDES EXACTLY `RECONCILE_INPUT_EXCLUSIONS`: the
-    excluded items are never read here (`platform`/`language` are minting coordinates;
-    `voice_content_params`/`serialize_pins`/`presentation_inputs`/`schema_version`/`metadata`
-    are separate request fields), and `delta_vs_floor` independently refuses the §7.3 keys.
-    The returned value is the canonical pure-JSON object — exactly what the fit-binding
-    records and the §22.3 S0 preimage check reads back. `minted_ts` is NOT part of it."""
-    preimage = {
+    Comprises the five `RECONCILE_INPUT_COMPONENTS` — (1) the effective strategy, (2) the
+    effective hard-limit set, (3) the reconcile-consumed advisory bindings, (4) any other
+    reconcile-consumed render-dim binding, and (5) this artifact's pinned-format
+    `format_structural` venue tightening — each reduced to its deviation from the schema floor (an
+    attribute at its default is ABSENT, so an additively shipped constraint at its default churns
+    nothing). Component (5) is OMIT-WHEN-FLOOR: a floor `{}` `format_structural` yields an empty
+    delta and NO `structural` key at all, so a floor platform's preimage is byte-identical to the
+    pre-C8 four-key preimage (the golden `fit_digest` corpus is unperturbed); only a non-floor venue
+    tightening adds the key. EXCLUDES EXACTLY `RECONCILE_INPUT_EXCLUSIONS`: the excluded items are
+    never read here (`platform`/`language` are minting coordinates;
+    `voice_content_params`/`serialize_pins`/`presentation_inputs`/`schema_version`/`metadata` are
+    separate request fields), and `delta_vs_floor` independently refuses the §7.3 keys. The returned
+    value is the canonical pure-JSON object — exactly what the fit-binding records and the §22.3 S0
+    preimage check reads back. `minted_ts` is NOT part of it."""
+    preimage: dict[str, Any] = {
         "strategy": delta_vs_floor(
             {"strategy": request.strategy},
             {"strategy": request.strategy_default},
@@ -337,6 +380,13 @@ def reconcile_inputs_preimage(request: ReconcileRequest) -> dict[str, Any]:
             request.render_dims, request.render_dim_defaults, where="render-dims"
         ),
     }
+    # (5) OMIT-WHEN-FLOOR: a floor `{}` `format_structural` produces an empty delta, so the guard
+    # drops the `structural` key ENTIRELY — the byte-identity every floor platform depends on.
+    structural = delta_vs_floor(
+        request.format_structural, request.format_structural_defaults, where="structural"
+    )
+    if structural:
+        preimage["structural"] = structural
     # Total-construction: every value above was vetted by delta_vs_floor; the round-trip makes
     # the returned preimage its own canonical pure-JSON value (mirrors ids.build_artifact_preimage).
     return json.loads(canonical_json_str(preimage))
@@ -619,6 +669,95 @@ def validate_structural_preservation(
                 "MINTED in the fit (absent at compose) — the reconciler may DROP or PRESERVE a "
                 "schema-satisfying section but NEVER invent one from ungrounded content (GAP-2)"
             )
+
+
+# ---------------------------------------------------------------------------
+# The TERMINAL venue-structural gate (§15/§16 / DR-4 C8) — the HARD `format_structural` contract,
+# reconstructed into C2 (via compose's `_reconstruct_rule`, SINGLE-SOURCED, never forked) and run
+# over the FITTED sections. #4a per-section Length/Count limits are checked HERE, never by the
+# whole-artifact `max_chars` gate. INERT for a floor / no-entry format.
+# ---------------------------------------------------------------------------
+
+
+def _pinned_format_schema(request: ReconcileRequest) -> Schema:
+    """Reconstruct THIS artifact's pinned-format `format_structural` venue schema into the C2
+    vocabulary, or `()` when the format carries no venue tightening.
+
+    The format-id is the composition preimage's bound format entry — the SAME indexing C7's
+    `_format_forbids` uses — so ONLY this artifact's venue tightening participates; an unrelated
+    format's schema never reaches this gate (the C7→C8 identity obligation). The serialized rule
+    maps are decoded through compose's `_reconstruct_rule` (SINGLE-SOURCED against C2, never a
+    forked decoder). A MALFORMED venue rule is a loud platform-authoring `ReconcileError` (never a
+    silent pass, never a writer re-ask; §3.1) — mirrors compose's `_resolve_base_gate_schema`."""
+    format_id = (
+        request.canonical_ir.get("binding", {})
+        .get("preimage", {})
+        .get("dimensions", {})
+        .get("format", {})
+        .get("entry")
+    )
+    raw = request.format_structural.get(format_id)
+    if not raw:
+        return ()
+    try:
+        return tuple(_reconstruct_rule(rule) for rule in raw)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ReconcileError(
+            f"reconcile-error: this format's `format_structural` venue schema is malformed ({exc}) "
+            "— a per-format HARD structural class is a list of C2 conformance rules (DR-4 C6/C8); "
+            "fix the Platform entry (never a writer re-ask, never silent)"
+        ) from exc
+
+
+def _describe_structural_violation(violation: Violation) -> str:
+    """A concise, machine-derived description of ONE venue-structural breach (mirrors compose's
+    `_describe_violation`, venue-scoped wording). Presentation text only — never invents a rule."""
+    rule = violation.rule
+    selector = getattr(rule, "selector", None)
+    target = f"{selector.axis} {selector.value!r}" if selector is not None else "section"
+    if isinstance(rule, Presence):
+        if rule.required:
+            return f"required venue section {target} is MISSING"
+        where = f" (heading {violation.section.heading!r})" if violation.section else ""
+        return f"forbidden venue section {target} is PRESENT{where}"
+    if isinstance(rule, Order):
+        seq = " -> ".join(f"{sel.axis} {sel.value!r}" for sel in rule.selectors)
+        return f"venue sections are out of the required order [{seq}]"
+    if isinstance(rule, Count):
+        return f"venue section {target} breaks its count bound"
+    if isinstance(rule, Length):
+        where = f" (heading {violation.section.heading!r})" if violation.section else ""
+        return f"venue section {target} breaks its per-section length bound{where}"
+    return "venue section contract violated"  # pragma: no cover — the C2 menu is closed
+
+
+def _structural_gate_violations(
+    request: ReconcileRequest, fitted_ir: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """The DR-4 C8 TERMINAL venue-structural gate on the FITTED body (§15/§16).
+
+    Reconstructs THIS artifact's pinned-format `format_structural` schema (`_pinned_format_schema`)
+    and runs C2 `check_conformance` over the FITTED sections (the shared `_parse_body_sections`
+    parse — the SAME C1 parse compose/C7 use, never a fork). Returns the ERROR-severity breaches as
+    concise machine-derived strings (mirrors compose's C5 `_base_conformance_note`); warning/info
+    violations never block (advisory, §3.1). INERT — returns `()` — when this format has no venue
+    tightening (a floor platform never blocks structurally). #4a per-section Length/Count limits are
+    checked HERE (they ride the venue schema), NEVER by the whole-artifact `max_chars` gate. A
+    FITTED-body grammar derail at this TERMINAL point is a loud wiring/late `ReconcileError`: the
+    body already cleared the re-ask loop, so it must parse (never a silent pass; §3.1)."""
+    schema = _pinned_format_schema(request)
+    if not schema:
+        return ()
+    try:
+        sections = _parse_body_sections(fitted_ir)
+    except SectionGrammarError as exc:
+        raise ReconcileError(
+            f"reconcile-error: the FITTED body's section grammar is invalid ({exc}) at the "
+            "terminal venue-structural gate — a fitted body reaching the gate must parse (a "
+            "wiring/late defect, never a silent pass; §3.1/§16 DR-4 C8)"
+        ) from exc
+    errors = [v for v in check_conformance(sections, schema) if v.severity == SEVERITY_ERROR]
+    return tuple(_describe_structural_violation(v) for v in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -927,6 +1066,7 @@ def _outcome(
     is_noop: bool = False,
     dropped_facts: tuple[str, ...] = (),
     blocked_limits: tuple[str, ...] = (),
+    structural_violations: tuple[str, ...] = (),
     attempts: int = 0,
     violations: tuple[str, ...] = (),
     transport_result: TransportResult | None = None,
@@ -942,6 +1082,7 @@ def _outcome(
         is_noop=is_noop,
         dropped_facts=dropped_facts,
         blocked_limits=blocked_limits,
+        structural_violations=structural_violations,
         attempts=attempts,
         violations=violations,
         transport_result=transport_result,
@@ -963,13 +1104,15 @@ def reconcile(
     """Fit one IR-canonical artifact to a `(platform, language)` target — PURE fit machinery.
 
     Ordering is FIXED and internal (§16): localize [deferred no-op seam] → reshape per
-    strategy → the TERMINAL hard-limit gate (fit-or-block). `pass` never invokes the LLM (it
-    no-ops when it fits + the language matches — a bit-identical passthrough, ZERO LLM — or is
-    blocked by the gate); `adapt`/`split`/`truncate` invoke the reconciler (`runner`
-    injectable for tests) with a bounded fidelity re-ask. A transport-level failure surfaces
-    immediately (an account-side condition a re-ask cannot fix); a persistent fidelity failure
-    past `max_attempts` returns `fit-fidelity-violation` and is NEVER fitted. Unfittable
-    content BLOCKS (`hard-limit-exceeded`) while siblings continue. On a fit, the fit-binding
+    strategy → the TERMINAL joint gate (fit-or-block; DR-4 C8 evaluates the HARD venue-structural
+    contract AND the hard-limit gate together, populating both concern-sets on a joint breach).
+    `pass` never invokes the LLM (it no-ops when it fits + the language matches — a bit-identical
+    passthrough, ZERO LLM — or is blocked by the gate); `adapt`/`split`/`truncate` invoke the
+    reconciler (`runner` injectable for tests) with a bounded fidelity re-ask. A transport-level
+    failure surfaces immediately (an account-side condition a re-ask cannot fix); a persistent
+    fidelity failure past `max_attempts` returns `fit-fidelity-violation` and is NEVER fitted.
+    Unfittable content BLOCKS (`section-conformance-violation` for a venue-structural breach, else
+    `hard-limit-exceeded`) while siblings continue. On a fit, the fit-binding
     (preimage, hex12 digest, fitted-id, `minted_ts` [record-only], outcome) is returned
     alongside the reshaped IR; `revision` selects the baseline vs revision fitted-id (step
     26's FR2 decision, this module only mints). NEVER raises for a reconciler defect — those
@@ -1053,15 +1196,27 @@ def reconcile(
             if own_cwd:
                 shutil.rmtree(scratch, ignore_errors=True)
 
-    # 3. The TERMINAL hard-limit gate (§16 step 3) — LAST, fit-or-block, never silent-pass.
+    # 3. The TERMINAL joint gate (§16 step 3 / DR-4 C8) — LAST, fit-or-block, never silent-pass.
+    #    BOTH concern-sets are evaluated BEFORE any block-return, so a JOINT structural+limit case
+    #    populates BOTH fields (no early-return masking): the venue-structural gate (the HARD
+    #    `format_structural` contract, #4a per-section limits included; INERT at a floor format) and
+    #    the whole-artifact hard-limit gate. On a block the primary `code` is the structural code
+    #    when any venue rule breached, else the hard-limit code — BOTH fields populate regardless.
+    structural_violations = _structural_gate_violations(request, fitted_ir)
     breached = breached_limits(fitted_ir, request.hard_limits, measure=measure)
-    if breached:
+    if structural_violations or breached:
+        code = (
+            CODE_SECTION_CONFORMANCE_VIOLATION
+            if structural_violations
+            else CODE_HARD_LIMIT_EXCEEDED
+        )
         return _outcome(
             status="block",
-            code=CODE_HARD_LIMIT_EXCEEDED,
+            code=code,
             preimage=preimage,
             digest=digest,
             blocked_limits=breached,
+            structural_violations=structural_violations,
             attempts=attempts,
             violations=tuple(violations),
             transport_result=transport_result,

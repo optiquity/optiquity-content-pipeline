@@ -36,6 +36,7 @@ from pipeline.ids import (
 from pipeline.reconcile import (
     CODE_FIDELITY_VIOLATION,
     CODE_HARD_LIMIT_EXCEEDED,
+    CODE_SECTION_CONFORMANCE_VIOLATION,
     CODE_STRUCTURE_NOT_PRESERVED,
     RECONCILE_INPUT_COMPONENTS,
     RECONCILE_INPUT_EXCLUSIONS,
@@ -195,20 +196,31 @@ def make_request(*, canonical_ir=None, strategy="adapt", **overrides) -> Reconci
 
 
 class TestReconcileInputsPreimage:
-    def test_preimage_carries_exactly_the_four_components(self):
+    def test_preimage_carries_exactly_the_five_components(self):
+        # DR-4 C8: with a non-floor `format_structural`, ALL FIVE components are present.
         request = make_request(
             strategy="split",
             advisory={"heading_style": "title-case"},
             render_dims={"emphasis": "bold"},
             hard_limits={"max_chars": 500},
             hard_limit_defaults={"max_chars": 1000},
+            format_structural=_README_FORBIDS_ACKS,  # a non-floor venue tightening for `readme`
+            format_structural_defaults={},
         )
         preimage = reconcile_inputs_preimage(request)
         assert set(preimage) == set(RECONCILE_INPUT_COMPONENTS)
-        # The non-default strategy, advisory, render-dim, and breached limit all enter.
+        assert RECONCILE_INPUT_COMPONENTS == (
+            "strategy",
+            "hard-limits",
+            "advisory",
+            "render-dims",
+            "structural",
+        )
+        # Non-default strategy, advisory, render-dim, breached limit, and venue tightening enter.
         text = canonical_json_str(preimage)
         assert preimage["strategy"] == {"strategy": "split"}
         assert preimage["hard-limits"] == {"max_chars": 500}
+        assert preimage["structural"] == _README_FORBIDS_ACKS
         assert "title-case" in text and "bold" in text
 
     def test_at_floor_attributes_churn_nothing(self):
@@ -787,42 +799,81 @@ class TestPreserveThroughAndNoMint:
         assert any(CODE_STRUCTURE_NOT_PRESERVED in v for v in out.violations)
 
 
-# --- obligation 1: the C6 field-add is preimage-INERT in C7 (the 5th component is C8) --------
+# --- DR-4 C8 identity obligations: the 5th OMIT-WHEN-FLOOR `structural` preimage component -----
+#
+# C6 shipped `format_structural` preimage-INERT; C8 makes it the 5th reconcile-inputs preimage
+# component, OMIT-WHEN-FLOOR. Obligation 1: a FLOOR value omits `structural` ENTIRELY -> a
+# byte-identical preimage / fit_digest (every existing floor platform's fitted-id is UNPERTURBED —
+# the golden corpus). Obligation 2: a NON-FLOOR venue tightening adds `structural` and perturbs the
+# fit_digest (the component is LIVE). Obligation 4: RECONCILE_INPUT_COMPONENTS is the 5-tuple.
+# (Obligation 3, pinned-format scoping, is the DRIVER resolver's job — the request only ever carries
+# THIS artifact's pinned format; see tests/test_driver.py::TestPlatformFormatStructural.)
 
 
-class TestFormatStructuralPreimageInert:
-    def test_format_structural_never_reaches_the_preimage_or_the_fit_digest(self):
+class TestFormatStructuralPreimageComponent:
+    def test_floor_format_structural_omits_the_structural_key_byte_identically(self):
+        # Obligation 1: a floor `{}` `format_structural` (the golden corpus) OMITS `structural`
+        # ENTIRELY — byte-identical preimage + fit_digest to a request that never carries the field.
         ci = make_canonical_ir()
-        without = make_request(canonical_ir=ci, strategy="split", advisory={"x": 1})
-        with_fs = make_request(
+        absent = make_request(canonical_ir=ci, strategy="split", advisory={"x": 1})
+        floor = make_request(
+            canonical_ir=ci,
+            strategy="split",
+            advisory={"x": 1},
+            format_structural={},
+            format_structural_defaults={},
+        )
+        pre_absent = reconcile_inputs_preimage(absent)
+        pre_floor = reconcile_inputs_preimage(floor)
+        assert "structural" not in pre_absent and "structural" not in pre_floor
+        assert canonical_json_bytes(pre_absent) == canonical_json_bytes(pre_floor)
+        assert fit_digest(pre_absent) == fit_digest(pre_floor)
+
+    def test_non_floor_venue_tightening_adds_structural_and_perturbs_the_fit_digest(self):
+        # Obligation 2: a journal-style venue tightening (forbid acknowledgements for `readme`)
+        # produces a `structural` preimage key and a DIFFERENT fit_digest than the same request at
+        # floor — proof the 5th component is LIVE.
+        ci = make_canonical_ir()
+        floor = make_request(canonical_ir=ci, strategy="split", advisory={"x": 1})
+        tightened = make_request(
             canonical_ir=ci,
             strategy="split",
             advisory={"x": 1},
             format_structural=_README_FORBIDS_ACKS,
             format_structural_defaults={},
         )
-        pre_without = reconcile_inputs_preimage(without)
-        pre_with = reconcile_inputs_preimage(with_fs)
-        # BYTE-IDENTICAL preimage + fit_digest — the field is INERT in C7 (5th component is C8).
-        assert canonical_json_bytes(pre_without) == canonical_json_bytes(pre_with)
-        assert fit_digest(pre_without) == fit_digest(pre_with)
-        # obligation 3: RECONCILE_INPUT_COMPONENTS is UNCHANGED — still the 4-tuple, no `structural`
-        assert RECONCILE_INPUT_COMPONENTS == ("strategy", "hard-limits", "advisory", "render-dims")
-        assert set(pre_with) == set(RECONCILE_INPUT_COMPONENTS)
-        assert "structural" not in pre_with and "format_structural" not in pre_with
+        pre_floor = reconcile_inputs_preimage(floor)
+        pre_tight = reconcile_inputs_preimage(tightened)
+        assert "structural" not in pre_floor
+        assert pre_tight["structural"] == _README_FORBIDS_ACKS
+        assert canonical_json_bytes(pre_floor) != canonical_json_bytes(pre_tight)
+        assert fit_digest(pre_floor) != fit_digest(pre_tight)
 
-    def test_format_structural_populated_fit_mints_the_same_fitted_id(self):
-        # A stronger identity guard: a `pass` fit with format_structural populated mints the SAME
-        # baseline fitted-id as one without it (the fitted-id derives from the preimage only).
+    def test_reconcile_input_components_is_the_five_tuple(self):
+        # Obligation 4: RECONCILE_INPUT_COMPONENTS now lists the 5th `structural` component.
+        assert RECONCILE_INPUT_COMPONENTS == (
+            "strategy",
+            "hard-limits",
+            "advisory",
+            "render-dims",
+            "structural",
+        )
+
+    def test_a_non_floor_pass_fit_perturbs_the_digest_while_the_baseline_id_is_unchanged(self):
+        # The end-to-end identity delta: a `pass` fit whose venue tightening the body SATISFIES
+        # (forbid-acks, body has none -> the gate passes -> ok) still mints a DIFFERENT
+        # reconcile-inputs DIGEST than the same fit at floor. The baseline (non-revision) fitted-id
+        # template is unchanged, but the digest — which rides the language segment on a REVISION
+        # fit — perturbs, so any forced re-fit lands a distinct `_hex12`.
         ci = make_canonical_ir()
         base = reconcile(make_request(canonical_ir=ci, strategy="pass"), runner=NeverRunner())
-        withfs = reconcile(
+        tight = reconcile(
             make_request(canonical_ir=ci, strategy="pass", format_structural=_README_FORBIDS_ACKS),
             runner=NeverRunner(),
         )
-        assert base.status == "ok" and withfs.status == "ok"
-        assert base.fit_binding["fitted_id"] == withfs.fit_binding["fitted_id"]
-        assert base.digest == withfs.digest
+        assert base.status == "ok" and tight.status == "ok"  # body has no acks -> the gate fits
+        assert base.fit_binding["fitted_id"] == tight.fit_binding["fitted_id"]  # baseline unchanged
+        assert base.digest != tight.digest  # but the identity-bearing digest perturbs (LIVE)
 
 
 # --- the pure `validate_structural_preservation` function (direct, no transport) -------------
@@ -900,3 +951,137 @@ class TestValidateStructuralPreservationUnit:
         with pytest.raises(StructuralPreservationViolation) as exc:
             validate_structural_preservation(request, fitted)
         assert "grammar" in str(exc.value)
+
+
+# --- DR-4 C8: the TERMINAL venue-structural gate (block-and-report) --------------------------
+#
+# The gate reconstructs THIS artifact's pinned-format `format_structural` schema and runs C2
+# check_conformance over the FITTED sections. A HARD (error-severity) breach BLOCKS with
+# `section-conformance-violation` and populates `structural_violations`. The JOINT case populates
+# BOTH concern-sets before any block-return (the early-return refactor, S-2). #4a per-section
+# limits ride the venue schema HERE, never the whole-artifact `max_chars` gate. A floor / no-entry
+# format leaves the gate INERT. `pass` fits (fitted body == canonical) exercise the gate directly.
+
+
+_METHODS_ACKS_BODY = (
+    '## Methods {#methods}\n\nThe parser [runs in linear time]{.EXTRACTED data-fact="f0"}.\n\n'
+    "## Acknowledgements {#acknowledgements}\n\nThanks to the many reviewers and readers."
+)
+
+
+class TestTerminalStructuralGate:
+    def test_a_forbidden_section_in_the_fitted_body_blocks(self):
+        # `pass` fit: the fitted body == canonical, which carries a venue-FORBIDDEN acknowledgements
+        # section -> the terminal structural gate BLOCKS with section-conformance-violation.
+        ci = make_canonical_ir(body=_METHODS_ACKS_BODY)
+        request = make_request(
+            canonical_ir=ci, strategy="pass", format_structural=_README_FORBIDS_ACKS
+        )
+        out = reconcile(request, runner=NeverRunner())
+        assert out.status == "block" and out.code == CODE_SECTION_CONFORMANCE_VIOLATION
+        assert out.structural_violations
+        assert any("acknowledgements" in v for v in out.structural_violations)
+        assert out.blocked_limits == ()  # no whole-artifact limit breach
+        assert out.fitted_ir is None and out.fit_binding is None
+
+    def test_a_per_section_over_limit_blocks_via_the_structural_gate_not_max_chars(self):
+        # #4a: a per-section Length bound is enforced by the STRUCTURAL gate, NEVER the
+        # whole-artifact max_chars gate (which stays generous here, so it never fires).
+        body = (
+            "## Abstract {#abstract}\n\nThis abstract is comfortably over the tiny venue bound.\n\n"
+            '## Methods {#methods}\n\nThe parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+        )
+        ci = make_canonical_ir(body=body)
+        fs = {
+            "readme": [
+                {"rule": "length", "axis": "role", "value": "abstract",
+                 "min_len": 0, "max_len": 10, "severity": "error"},
+            ],
+        }
+        request = make_request(
+            canonical_ir=ci,
+            strategy="pass",
+            format_structural=fs,
+            hard_limits={"max_chars": 100000},  # generous -> the max_chars gate never fires
+            hard_limit_defaults={},
+        )
+        out = reconcile(request, runner=NeverRunner())
+        assert out.status == "block" and out.code == CODE_SECTION_CONFORMANCE_VIOLATION
+        assert any("length" in v for v in out.structural_violations)
+        assert out.blocked_limits == ()  # the whole-artifact max_chars gate did NOT block (#4a)
+
+    def test_a_joint_structural_and_limit_block_populates_both_structural_is_primary(self):
+        # The early-return refactor (S-2): BOTH gates evaluate before any block-return, so a joint
+        # breach populates BOTH concern-sets and the structural code is PRIMARY. This proves the
+        # gate does NOT mask structural_violations behind an early hard-limit return.
+        ci = make_canonical_ir(body=_METHODS_ACKS_BODY)
+        request = make_request(
+            canonical_ir=ci,
+            strategy="pass",
+            format_structural=_README_FORBIDS_ACKS,
+            hard_limits={"max_chars": 5},  # the body far exceeds 5 -> ALSO a hard-limit breach
+            hard_limit_defaults={},
+        )
+        out = reconcile(request, runner=NeverRunner())
+        assert out.status == "block"
+        assert out.code == CODE_SECTION_CONFORMANCE_VIOLATION  # structural is PRIMARY
+        assert any("acknowledgements" in v for v in out.structural_violations)  # NOT masked
+        assert out.blocked_limits == ("max_chars",)  # AND the limit breach populates too
+
+    def test_a_conforming_fit_under_a_venue_schema_is_not_blocked(self):
+        # Control: a body that SATISFIES the venue schema (no forbidden acks) fits cleanly — the
+        # gate is a real check, not a blanket block whenever format_structural is present.
+        body = (
+            '## Methods {#methods}\n\nThe parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+        )
+        ci = make_canonical_ir(body=body)
+        request = make_request(
+            canonical_ir=ci, strategy="pass", format_structural=_README_FORBIDS_ACKS
+        )
+        out = reconcile(request, runner=NeverRunner())
+        assert out.status == "ok" and out.structural_violations == ()
+
+    def test_a_floor_format_leaves_the_gate_inert(self):
+        # No venue tightening -> the gate is INERT; a body a venue MIGHT forbid still fits.
+        ci = make_canonical_ir(body=_METHODS_ACKS_BODY)
+        out = reconcile(make_request(canonical_ir=ci, strategy="pass"), runner=NeverRunner())
+        assert out.status == "ok" and out.structural_violations == ()
+
+    def test_an_unrelated_format_tightening_does_not_reach_this_fit_at_the_gate(self):
+        # Pinned-format scoping at the GATE: a format_structural keyed to a DIFFERENT format
+        # (academic-paper) never enforces on a `readme` artifact — the gate reads only THIS
+        # format's entry via get(format_id). (The driver resolver guarantees the request only
+        # carries the pinned format; this asserts the gate's own scoping as a backstop.)
+        ci = make_canonical_ir(body=_METHODS_ACKS_BODY)
+        other = {
+            "academic-paper": [
+                {"rule": "presence", "axis": "role", "value": "acknowledgements",
+                 "required": False, "severity": "error"},
+            ],
+        }
+        out = reconcile(
+            make_request(canonical_ir=ci, strategy="pass", format_structural=other),
+            runner=NeverRunner(),
+        )
+        assert out.status == "ok" and out.structural_violations == ()
+
+    def test_an_adapt_reshape_that_forbids_a_present_section_blocks_at_the_gate(self):
+        # A non-`pass` reshape whose FITTED body carries a venue-forbidden section is blocked by the
+        # TERMINAL gate (post-fidelity, post-re-ask): a distinct block from the C7 preserve re-ask.
+        ci = make_canonical_ir(body=_METHODS_ACKS_BODY)
+        request = make_request(
+            canonical_ir=ci, strategy="adapt", format_structural=_README_FORBIDS_ACKS
+        )
+        runner = ScriptedRunner([reconciler_ok({"body": _METHODS_ACKS_BODY})])
+        out = reconcile(request, runner=runner)
+        assert out.status == "block" and out.code == CODE_SECTION_CONFORMANCE_VIOLATION
+        assert any("acknowledgements" in v for v in out.structural_violations)
+
+    def test_a_malformed_venue_schema_is_a_loud_wiring_defect(self):
+        # A malformed venue rule (unknown rule kind) is a loud platform-authoring ReconcileError at
+        # the gate — never a silent pass, never a writer re-ask (§3.1).
+        ci = make_canonical_ir(body=_METHODS_ACKS_BODY)
+        bad = {"readme": [{"rule": "not-a-rule", "axis": "role", "value": "x"}]}
+        request = make_request(canonical_ir=ci, strategy="pass", format_structural=bad)
+        with pytest.raises(ReconcileError):
+            reconcile(request, runner=NeverRunner())

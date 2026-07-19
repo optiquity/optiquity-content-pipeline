@@ -75,6 +75,13 @@ fitted identity, the fit-binding, and every version stamp. You cannot and must n
    do NOT rename or drop it. Drop such a section ONLY when the venue forbids it. And NEVER
    invent a new schema-satisfying section (a required role/type) out of ungrounded content —
    the pipeline rejects a dropped, renamed, or minted required section and re-asks.
+7. **Satisfy the venue's structural rules.** When this platform tightens the format for its
+   venue, your fit MUST satisfy that venue's required / forbidden / ordered / count / per-section
+   length rules for this format — include every section the venue requires, omit every section it
+   forbids, keep the required order, and respect each per-section count/length bound. A fit that
+   breaks a HARD venue rule is BLOCKED by the pipeline downstream (a `section-conformance-violation`
+   block). This is machine-checked from the venue's own schema; never invent a requirement it does
+   not state.
 
 ## Output shape (return this and only this)
 
