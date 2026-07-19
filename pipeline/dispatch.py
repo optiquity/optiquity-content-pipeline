@@ -43,6 +43,7 @@ from typing import Any, Literal
 from pipeline import review
 from pipeline.canonical import canonical_json_bytes
 from pipeline.filters.provenance_strip import should_strip, strip_provenance
+from pipeline.filters.section_attr_validity import strip_section_attrs
 from pipeline.review import ReviewOutcome
 from pipeline.serialize import (
     PANDOC_BINARY_DEFAULT,
@@ -162,12 +163,16 @@ class DispatchOutcome:
     (AST persisted + handed off, rendered elsewhere)}. `output_bytes` holds layer-2 bytes for
     an internal render (None external); `payload_ast` holds the hand-off AST for an external
     target (None internal) — stripped for a public writer. `stripped` records whether the
-    provenance-strip filter ran for this render (§17 R-4)."""
+    provenance-strip filter ran for this render (§17 R-4); `section_attr_transformed` records
+    whether the SD-5 section-attr validity strip actually removed a bare `type=`/`role=` heading
+    kv on this render (True only on a public writer over a typed heading — the signal that keys
+    the serialize preimage's transform-version record, §17 FR7.1)."""
 
     side: str
     writer: str
     code: str
     stripped: bool
+    section_attr_transformed: bool
     output_bytes: bytes | None = None
     payload_ast: dict[str, Any] | None = None
 
@@ -183,15 +188,23 @@ def dispatch(
 
     Applies the provenance-strip filter (on a COPY) whenever `should_strip(target.writer)` — a
     decision made purely on the writer, unreachable from `render_inputs` (the security property,
-    §17 R-4). Then: `side: internal` → `pandoc -f json -t <writer>` produces layer-2 bytes;
-    `side: external` → the (possibly stripped) AST is returned for persistence + hand-off,
-    deferred in v1 (gate step 3). `render_inputs` is the lowered Presentation struct (plain in
-    step 27); its flags are appended to the writer invocation.
+    §17 R-4) — then, on the SAME public-writer path, the SD-5 section-attr validity strip
+    (`strip_section_attrs`) removes the bare `type=`/`role=` heading kv so the published bytes are
+    valid HTML5. The safe (internal-record) writers run neither strip → they KEEP both provenance
+    and the structural typing (the round-trippable internal record). Then: `side: internal` →
+    `pandoc -f json -t <writer>` produces layer-2 bytes; `side: external` → the (possibly stripped)
+    AST is returned for persistence + hand-off, deferred in v1 (gate step 3). `render_inputs` is
+    the lowered Presentation struct (plain in step 27); its flags are appended to the invocation.
     """
     capability_check(target)
     inputs = render_inputs if render_inputs is not None else RenderInputs()
     strip = should_strip(target.writer)
-    render_ast = strip_provenance(ast) if strip else ast
+    if strip:
+        render_ast = strip_provenance(ast)
+        render_ast, section_attr_transformed = strip_section_attrs(render_ast)
+    else:  # safe (internal-record) writer: keep provenance AND the structural section typing
+        render_ast = ast
+        section_attr_transformed = False
 
     if target.side == "external":
         return DispatchOutcome(
@@ -199,6 +212,7 @@ def dispatch(
             writer=target.writer,
             code=EXTERNAL_DEFERRED,
             stripped=strip,
+            section_attr_transformed=section_attr_transformed,
             payload_ast=render_ast,
         )
 
@@ -208,6 +222,7 @@ def dispatch(
             writer=target.writer,
             code="ok",
             stripped=strip,
+            section_attr_transformed=section_attr_transformed,
             output_bytes=canonical_json_bytes(render_ast),
         )
 
@@ -226,6 +241,7 @@ def dispatch(
         writer=target.writer,
         code="ok",
         stripped=strip,
+        section_attr_transformed=section_attr_transformed,
         output_bytes=outcome.stdout,
     )
 

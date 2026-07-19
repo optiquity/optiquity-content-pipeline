@@ -600,7 +600,9 @@ def _run_deliverable(
         "engine": render_inputs.engine,
     }
     serialize_preimage = serialize_inputs_preimage(
-        render_target=target_values, render_inputs=render_inputs_view
+        render_target=target_values,
+        render_inputs=render_inputs_view,
+        section_attr_transformed=dout.section_attr_transformed,
     )
     render_binding = build_render_binding(
         fitted_id=fitted_id,
@@ -641,6 +643,7 @@ def _run_deliverable(
             "writer": target.writer,
             "side": target.side,
             "stripped": dout.stripped,
+            "section_attr_transformed": dout.section_attr_transformed,
         },
         preimage=serialize_preimage,
         advance=ssot.advance_hook("rendered"),

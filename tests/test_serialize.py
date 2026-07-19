@@ -26,6 +26,11 @@ from pathlib import Path
 import pytest
 
 from pipeline import dispatch as D
+from pipeline.filters.provenance_strip import STRIP_FILTER_VERSION, strip_provenance
+from pipeline.filters.section_attr_validity import (
+    SECTION_ATTR_TRANSFORM_VERSION,
+    strip_section_attrs,
+)
 from pipeline.ir import PANDOC_API_VERSION, extract_fact_refs
 from pipeline.serialize import (
     READER_PIN,
@@ -394,6 +399,71 @@ def test_serialize_revision_qualifier_mints_on_the_presentation_segment():
 
 
 # ---------------------------------------------------------------------------
+# SD-5 (C9): the section-attr transform version rides the preimage OMIT-WHEN-ABSENT.
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_preimage_omits_transform_version_when_absent():
+    # OMIT-WHEN-ABSENT: the default (and every non-typed / SAFE-writer render) leaves the key
+    # ABSENT → the preimage is byte-identical to the pre-SD-5 form → the golden corpus is unchanged.
+    pre_default = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS
+    )
+    pre_false = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, section_attr_transformed=False
+    )
+    assert "section_attr_transform_version" not in pre_default["tool_bundle"]
+    assert pre_default == pre_false  # the new kwarg's default reproduces the pre-SD-5 preimage
+    assert serialize_digest(pre_default) == serialize_digest(pre_false)
+
+
+def test_serialize_preimage_records_transform_version_when_typed():
+    # Obligation 3: a TRANSFORMED render carries the version AND mints a DIFFERENT digest (a loud
+    # re-mint the moment SD-5 alters bytes, never a silent one — §17 FR7.1).
+    pre_false = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, section_attr_transformed=False
+    )
+    pre_true = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, section_attr_transformed=True
+    )
+    assert (
+        pre_true["tool_bundle"]["section_attr_transform_version"] == SECTION_ATTR_TRANSFORM_VERSION
+    )
+    assert "section_attr_transform_version" not in pre_false["tool_bundle"]
+    assert serialize_digest(pre_true) != serialize_digest(pre_false)
+
+
+def test_strip_filter_version_unchanged_and_disjoint_from_sd5():
+    # Obligation 4: adding the SD-5 key leaves the disjoint provenance-strip pin untouched.
+    assert STRIP_FILTER_VERSION == 1
+    pre = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, section_attr_transformed=True
+    )
+    assert pre["tool_bundle"]["strip_filter_version"] == 1
+
+
+def test_non_typed_render_is_byte_identical_on_both_axes():
+    # Obligation 2: a non-typed render is byte-identical to pre-SD-5 on BOTH axes —
+    #   (a) the render AST fed to the writer (strip_section_attrs is a no-op atop the provenance
+    #       strip, so the pandoc input bytes do not move), and
+    #   (b) the serialize preimage (the transform key is absent → the digest is unchanged).
+    ast = serialize_fitted(_flat_fitted())[0].ast  # claim spans, NO typed headings
+    prov = strip_provenance(ast)
+    render_ast, changed = strip_section_attrs(prov)
+    assert changed is False and render_ast == prov  # (a) byte-identical render input
+    dout = D.dispatch(D.RenderTarget(writer="html5", side="internal"), ast)
+    assert dout.section_attr_transformed is False
+    pre = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET,
+        render_inputs=_RENDER_INPUTS,
+        section_attr_transformed=dout.section_attr_transformed,
+    )
+    baseline = serialize_inputs_preimage(render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS)
+    assert "section_attr_transform_version" not in pre["tool_bundle"]  # (b)
+    assert pre == baseline and serialize_digest(pre) == serialize_digest(baseline)
+
+
+# ---------------------------------------------------------------------------
 # The pinned parse: api-version verification (RI13).
 # ---------------------------------------------------------------------------
 
@@ -484,6 +554,7 @@ def test_serialize_plane_imports_no_ssot():
         root / "ast_store.py",
         root / "dispatch.py",
         root / "filters" / "provenance_strip.py",
+        root / "filters" / "section_attr_validity.py",
     ]
     for path in files:
         tree = ast_mod.parse(path.read_text(encoding="utf-8"))

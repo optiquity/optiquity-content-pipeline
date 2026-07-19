@@ -57,6 +57,7 @@ from pipeline import ids
 from pipeline.canonical import canonical_json_str, digest_hex12
 from pipeline.claims import AcquireOutcome, ClaimRegistry
 from pipeline.filters.provenance_strip import STRIP_FILTER_VERSION
+from pipeline.filters.section_attr_validity import SECTION_ATTR_TRANSFORM_VERSION
 from pipeline.ids import IdError, PreimageError, deliverable_id, delta_vs_floor
 from pipeline.ir import PANDOC_API_VERSION, match_bracket
 
@@ -640,6 +641,7 @@ def serialize_inputs_preimage(
     render_target: Mapping[str, Any],
     render_inputs: Mapping[str, Any],
     render_target_defaults: Mapping[str, Any] | None = None,
+    section_attr_transformed: bool = False,
 ) -> dict[str, Any]:
     """Build the COMPLETE canonical serialize-inputs preimage (§17 FR7.1).
 
@@ -649,7 +651,16 @@ def serialize_inputs_preimage(
        AST api-version + reader extension set + the provenance-strip filter's pinned version
        (it deterministically alters html5/epub3 bytes, so it belongs in the preimage, §17 R-4).
        Read LITERALLY (they have no schema floor and are always present — they churn only when
-       they actually change, which is exactly when bytes change, §17 FR7.1).
+       they actually change, which is exactly when bytes change, §17 FR7.1). The SD-5 section-attr
+       transform's version (`section_attr_transform_version`) joins the bundle OMIT-WHEN-ABSENT:
+       the key is present ONLY when `section_attr_transformed is True` — i.e. when the transform
+       actually stripped a bare `type=`/`role=` heading kv and thereby altered the published bytes.
+       On every non-typed / SAFE-writer render (`section_attr_transformed=False`) the key is ABSENT,
+       so the `tool_bundle` bytes are BYTE-IDENTICAL to the pre-SD-5 form — zero churn across the
+       whole existing render-digest corpus. This is UNLIKE `strip_filter_version` (an always-present
+       v0 pin): a new always-present key would re-mint every existing binding for zero byte
+       difference, so this one is omit-when-absent — present only when it has teeth (a typed render,
+       or a future SD-5 rule change that re-mints the version), absent otherwise.
     2. **the render-target's byte-determining effective values, DELTA-VS-FLOOR** (`writer`,
        `engine`, `reference_doc`, writer options — the output-type *slug* is a coordinate and
        excluded via `_TARGET_PREIMAGE_EXCLUDED`; `side` is dispatch routing and excluded). The
@@ -686,13 +697,19 @@ def serialize_inputs_preimage(
     except PreimageError as exc:  # pragma: no cover — defensive: a malformed render-target
         # preimage surfaces as SerializeError, uniform with the other id/preimage wraps below.
         raise SerializeError(f"serialize-error: render-target preimage: {exc}") from exc
+    tool_bundle: dict[str, Any] = {
+        "pandoc_version": PANDOC_VERSION_PIN,
+        "pandoc_api_version": list(PANDOC_API_VERSION),
+        "reader": READER_PIN,
+        "strip_filter_version": STRIP_FILTER_VERSION,
+    }
+    # OMIT-WHEN-ABSENT (SD-5, §17 FR7.1): record the section-attr transform version ONLY when the
+    # transform actually altered bytes. Absent for every non-typed / SAFE-writer render → the
+    # bundle bytes are byte-identical to pre-SD-5 → the golden render-digest corpus is unchanged.
+    if section_attr_transformed:
+        tool_bundle["section_attr_transform_version"] = SECTION_ATTR_TRANSFORM_VERSION
     preimage = {
-        "tool_bundle": {
-            "pandoc_version": PANDOC_VERSION_PIN,
-            "pandoc_api_version": list(PANDOC_API_VERSION),
-            "reader": READER_PIN,
-            "strip_filter_version": STRIP_FILTER_VERSION,
-        },
+        "tool_bundle": tool_bundle,
         "render_target": target_values,
         "render_inputs": dict(render_inputs),
     }
