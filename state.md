@@ -114,10 +114,11 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     id rides the single `outline-digest` component (no `drive-config`/facet key).
   - Doc-sync `81a58a1` (design.md §5.2/§7.2/§12.1/§15/§21.1/§27.3 + known-issues DR-3 build-status + mission `0.2.2`).
   - Gate: `2135 passed, 6 deselected`, ruff + guard clean. Reports: `ops-handoff/dr3-build/`.
-  - **R1 ablation BUILT + RUN** (`2ea1270`, directional n=1): live on `mvp-demo`/optiquity-site graph —
-    V0 (no outline) struct 0.40 / content 0.23 vs V1 (outline brief) struct 1.00 / content 0.50 (Δ +0.60 /
-    +0.27); the brief measurably steers output, identity sanity held live. **DEFERRED:** only the LLM outline drafter
-    (GAP-7 mirror).
+  - **R1 ablation BUILT + RUN** (`2ea1270`, directional n=1): live on `mvp-demo`/optiquity-site graph, two
+    outlines. Grounded outline: V0 struct 0.17 / content 0.83 vs V1 struct 1.00 (6/6 in order) / content 0.91
+    (Δ +0.83 / +0.08). **Honest read:** the brief's effect is STRUCTURAL (imposes the skeleton + order); content
+    steering is small once the outline is faithful (V0 already covers the facts — the outline organizes grounded
+    facts, can't inject them). Identity sanity held live. **DEFERRED:** only the LLM outline drafter (GAP-7 mirror).
   - **NEXT in the build order:** `DR-4 (content templates) → DR-5 (style placement) → DR-2 (style guides)` —
     await maintainer direction.
 

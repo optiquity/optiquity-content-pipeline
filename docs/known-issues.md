@@ -320,13 +320,21 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
 - **R1 compose-input-brief ablation — BUILT + RUN (directional, n=1; 2026-07-18).** Harness
   `scripts/dr3_outline_ablation.py` (+ hermetic `tests/test_dr3_ablation.py`) grounds ONE coordinate
   once, then composes twice over identical facts — V0 (no outline) vs V1 (outline brief) — and scores
-  outline-fidelity. **LIVE run** (`mvp-demo` / the real optiquity-site graph, 28 EXTRACTED facts,
-  topic `x-architecture-overview`): **V0 struct 0.40 (2/5 headings) / content 0.23** vs **V1 struct
-  1.00 (5/5 headings, in order) / content 0.50** — Δ **+0.60 struct, +0.27 content**. The outline
-  brief measurably STEERS output (V1 follows the outline more), and the identity sanity held live (V0
-  4-key/outline-less, V1 rides the digest, distinct ids). Directional, NOT statistical — the design
-  was already safe regardless (input == identity, §6.5 tier floor); this confirms the precedence works
-  on the real pipeline.
+  outline-fidelity. **LIVE** on `mvp-demo` / the real optiquity-site graph (28 EXTRACTED facts, topic
+  `x-architecture-overview`), TWO outlines:
+  - *generic scaffold* (topic-agnostic section intents): V0 struct 0.40 / content 0.23 vs V1 struct 1.00
+    / content 0.50 — Δ **+0.60 struct, +0.27 content**.
+  - *grounded outline* (every point traced to a real EXTRACTED fact): V0 struct 0.17 (1/6) / content 0.83
+    vs V1 struct 1.00 (6/6, in order) / content 0.91 — Δ **+0.83 struct, +0.08 content** (V1 also −445
+    bytes: more focused).
+  **Interpretation (honest):** the brief's effect is **structural** — it decisively imposes the section
+  skeleton + order (V1 realizes ALL headings in order; V0 alone realizes ~1/6–2/5). **Content** steering
+  is SMALL once the outline is faithful to the grounding (V0 already covered 84/101 keywords because the
+  outline and the writer draw from the same facts); the generic run's larger content Δ was largely an
+  artifact of the scaffold's arbitrary vocabulary, not real steering. This matches the design intent — the
+  outline ORGANIZES grounded facts, it cannot inject new ones (no fabrication vector; §6.5 floor). Identity
+  sanity held live both runs (V0 4-key/outline-less, V1 rides the digest, distinct ids). Directional, NOT
+  statistical — the design was safe regardless; this confirms the precedence works on the real pipeline.
 - **DEFERRED (not built):** the **LLM outline drafter** (a named DR-3 backlog, GAP-7 mirror).
 - **Gate:** final `uv run pytest -q` = **2135 passed, 6 deselected**; `ruff check .` clean;
   `scripts/check-no-content.sh` OK. The design-authority doc-sync (design §5.2/§7.2/§12.1/§15/
