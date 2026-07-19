@@ -90,12 +90,21 @@ from typing import Any, Literal
 from pipeline import ir
 from pipeline.canonical import canonical_json_bytes, canonical_json_str, digest_hex12
 from pipeline.ids import IdError, delta_vs_floor, fitted_id
+from pipeline.outline import normalize_outline
 from pipeline.prompts import load_template
+from pipeline.sections import (
+    AXIS_ROLE,
+    AXIS_TYPE,
+    Section,
+    SectionGrammarError,
+    parse_sections,
+)
 from pipeline.transport import Runner, TransportResult, invoke_headless
 
 __all__ = [
     "CODE_FIDELITY_VIOLATION",
     "CODE_HARD_LIMIT_EXCEEDED",
+    "CODE_STRUCTURE_NOT_PRESERVED",
     "DEFAULT_CHAR_LIMIT_KEY",
     "DEFAULT_MAX_ATTEMPTS",
     "RECONCILER_TEMPLATE",
@@ -107,6 +116,7 @@ __all__ = [
     "ReconcileError",
     "ReconcileOutcome",
     "ReconcileRequest",
+    "StructuralPreservationViolation",
     "breached_limits",
     "build_fit_binding",
     "build_reconciler_prompt",
@@ -116,6 +126,7 @@ __all__ = [
     "reconcile",
     "reconcile_inputs_preimage",
     "validate_fidelity",
+    "validate_structural_preservation",
 ]
 
 #: §12.3 — the reshape-strategy set. `pass` is the never-LLM strategy (no-op or block only).
@@ -160,6 +171,15 @@ CODE_HARD_LIMIT_EXCEEDED = "hard-limit-exceeded"
 #: reconciler never produced a fidelity-valid fit within the re-ask bound — NEVER fitted.
 CODE_FIDELITY_VIOLATION = "fit-fidelity-violation"
 
+#: DR-4 C7 — a §16 preserve-section-keys breach: the fit dropped/renamed a schema-referenced
+#: (non-forbidden) section the compose declared, OR MINTED a schema-satisfying section absent at
+#: compose (GAP-2 no-mint). A DISTINCT code from `CODE_FIDELITY_VIOLATION` (the coverage/echo
+#: contract) and from C8's future TERMINAL `section-conformance-violation` block code — this one
+#: first-remediates via the SAME bounded re-ask (an `ir.IRError`), and C8's distinct block-and-
+#: report layer consumes it later. It never appears on a `ReconcileOutcome.code` (a persistent
+#: breach exhausts the re-ask bound and surfaces as `CODE_FIDELITY_VIOLATION`, never fitted).
+CODE_STRUCTURE_NOT_PRESERVED = "structure-not-preserved"
+
 #: `default_measure`'s single hard-limit key — total leaf-body character length. A caller
 #: injects a richer measurer (per-platform limits) without touching the gate.
 DEFAULT_CHAR_LIMIT_KEY = "max_chars"
@@ -186,6 +206,19 @@ class FidelityViolation(ir.IRError):
     code = CODE_FIDELITY_VIOLATION
 
 
+class StructuralPreservationViolation(ir.IRError):
+    """A §16/DR-4 C7 preserve-section-keys breach, scoped to the keys the IR's resolved
+    `section_conformance` base schema references: a schema-referenced section the compose
+    declared that the fit DROPPED/renamed without a venue-forbid (preserve-through), or a
+    schema-satisfying section the fit MINTED from content absent at compose (GAP-2 no-mint).
+    A subclass of `ir.IRError` — a DISTINCT `code` from `FidelityViolation` — so a breach rides
+    the SAME bounded fidelity re-ask (§16); a persistent breach exhausts the bound and is NEVER
+    fitted (surfacing as `CODE_FIDELITY_VIOLATION`). C8's terminal structural gate + its
+    `section-conformance-violation` block-and-report layer over this same distinct code."""
+
+    code = CODE_STRUCTURE_NOT_PRESERVED
+
+
 # ---------------------------------------------------------------------------
 # The reconcile request + outcome (§16 inputs/results).
 # ---------------------------------------------------------------------------
@@ -199,9 +232,17 @@ class ReconcileRequest:
     `artifact_id` MUST equal its composition binding's id (a fit does not re-compose).
     `platform`/`language` are the target coordinates the fitted-id extends (§7.4);
     `source_language` is the IR's own language, the localize seam's comparand (§16 step 1).
-    `strategy` ∈ `RECONCILE_STRATEGIES` (§12.3). The four `*_defaults` maps supply the
-    schema floors for delta-vs-floor (CA6). `voice_content_params` is the §16 preserve set —
-    EXCLUDED from the preimage (fixed by artifact-id, §7.2) but echoed by the reconciler.
+    `strategy` ∈ `RECONCILE_STRATEGIES` (§12.3). The `*_defaults` maps supply the schema floors
+    for delta-vs-floor (CA6). `voice_content_params` is the §16 preserve set — EXCLUDED from the
+    preimage (fixed by artifact-id, §7.2) but echoed by the reconciler.
+
+    `format_structural` / `format_structural_defaults` (DR-4 C6/C7) carry the per-format HARD
+    structural tightening — `{format_id: <C2 section-conformance schema list>}` exactly as the
+    Platform attribute stores it — that C7's preserve-through check reads (this artifact's
+    format-id resolves its venue-forbids; an empty map / no entry ⇒ no forbids). They sit with
+    the delta-vs-floor CONSUMED pairs because they are DESTINED to become the 5th omit-when-floor
+    preimage component in C8 (a HARD class, the sibling of `hard_limits`). They are INERT in C7:
+    `reconcile_inputs_preimage` does NOT read them — the 5th preimage component lands in C8.
 
     The trailing four fields are EXCLUDED from the reconcile-inputs preimage (§16) and are
     carried only so a caller assembling the full render context has one home for them — and
@@ -220,6 +261,11 @@ class ReconcileRequest:
     advisory_defaults: Mapping[str, Any] = field(default_factory=dict)
     render_dims: Mapping[str, Any] = field(default_factory=dict)
     render_dim_defaults: Mapping[str, Any] = field(default_factory=dict)
+    # DR-4 C6/C7 per-format HARD structural tightening — a delta-vs-floor CONSUMED pair
+    # (C8's 5th preimage component). READ by C7's preserve-through (venue-forbids), NOT by the
+    # preimage (INERT in C7 — the 5th component lands in C8).
+    format_structural: Mapping[str, Any] = field(default_factory=dict)
+    format_structural_defaults: Mapping[str, Any] = field(default_factory=dict)
     voice_content_params: Mapping[str, Any] = field(default_factory=dict)
     strategy_default: str = RECONCILE_STRATEGY_FLOOR
     # --- EXCLUDED from the reconcile-inputs preimage (§16); never read by it ---
@@ -432,6 +478,146 @@ def validate_fidelity(
             raise FidelityViolation(
                 f"fit-fidelity-violation: voice/content parameter {key!r} was echoed as "
                 f"{voice_content_echo[key]!r} but must be preserved as {value!r} (§16 fidelity (i))"
+            )
+
+
+# ---------------------------------------------------------------------------
+# The preserve-section-keys contract (§16 / DR-4 C7) — REUSE compose's C1 parse path, add the
+# preserve-through + no-mint (GAP-2) coverage the reshape (whole-leaf-body swap) cannot preserve
+# mechanically. SCOPED to the keys the IR's resolved C4 `section_conformance` base schema
+# references — a global `fitted ⊆ composed` would regress every plain-outline adapt/split.
+# ---------------------------------------------------------------------------
+
+
+def _parse_body_sections(ir_doc: Mapping[str, Any]) -> tuple[Section, ...]:
+    """Parse EVERY Markdown leaf of an IR envelope into its C1 heading-sections, via compose's
+    EXACT parse path — `parse_sections(normalize_outline(body))` — so the composed body and the
+    fitted body key their sections IDENTICALLY (never a forked parser). Flat or parts (iterates
+    the leaves like `_iter_leaves`). Propagates `SectionGrammarError`: a FITTED-body derail (an
+    unknown section `type=`) is a writer-correctable content defect the CALLER feeds to the SAME
+    bounded re-ask compose.py uses at its base gate; a composed body carries a compose-gated
+    skeleton so it does not raise in practice. This shared parse is what C8's terminal structural
+    gate reuses on the already-parsed FITTED sections (no double-parse)."""
+    sections: list[Section] = []
+    for _where, body in _iter_leaves(ir_doc):
+        sections.extend(parse_sections(normalize_outline(body)))
+    return tuple(sections)
+
+
+def _schema_referenced_keys(canonical_ir: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """The `(axis, value)` selector keys the IR's RESOLVED `section_conformance` base schema
+    references (DR-4 C4). Reads the serialized C2 rule maps (the compose.py `_reconstruct_rule`
+    shape, already `validate_ir`-shape-checked): `presence`/`count`/`length` carry `(axis, value)`;
+    an `order` rule carries a list of `{axis, value}` selectors. EMPTY/ABSENT ⇒ NO schema-
+    referenced keys ⇒ the whole preserve/no-mint check is INERT (every reconcile path stays
+    byte-unchanged — no-op safety)."""
+    keys: set[tuple[str, str]] = set()
+    for rule in canonical_ir.get("section_conformance", ()):
+        if not isinstance(rule, Mapping):
+            continue  # pragma: no cover — validate_ir already shape-checked every rule
+        if rule.get("rule") == "order":
+            for sel in rule.get("selectors", ()):
+                if isinstance(sel, Mapping) and "axis" in sel and "value" in sel:
+                    keys.add((sel["axis"], sel["value"]))
+        elif "axis" in rule and "value" in rule:
+            keys.add((rule["axis"], rule["value"]))
+    return keys
+
+
+def _has_section_key(sections: Sequence[Section], axis: str, value: str) -> bool:
+    """True iff some parsed section bears `value` on the selected axis (the C2 `Selector.matches`
+    predicate, inlined to avoid re-validating a `type` selector against the carrier — the keys
+    come from an already-validated `section_conformance` and the fitted `type`s from
+    `parse_sections`, both carrier-clean)."""
+    if axis == AXIS_ROLE:
+        return any(section.role == value for section in sections)
+    if axis == AXIS_TYPE:
+        return any(section.type == value for section in sections)
+    return False  # pragma: no cover — validate_ir refuses any axis outside {role, type}
+
+
+def _format_forbids(request: ReconcileRequest, axis: str, value: str) -> bool:
+    """True iff THIS artifact's format's `format_structural` schema declares a `presence`
+    rule with `required: false` for the `(axis, value)` key — a venue-FORBID, the ONE legitimate
+    reason a composed schema-referenced section may be dropped by the fit (DR-4 C7). The
+    format-id is the composition preimage's bound format entry; an empty map / no entry for this
+    format ⇒ no forbids. (C8 threads ONLY this artifact's pinned-format tightening so an unrelated
+    format's venue-forbid never churns this fit's identity.)"""
+    format_id = (
+        request.canonical_ir.get("binding", {})
+        .get("preimage", {})
+        .get("dimensions", {})
+        .get("format", {})
+        .get("entry")
+    )
+    schema = request.format_structural.get(format_id, ())
+    for rule in schema:
+        if (
+            isinstance(rule, Mapping)
+            and rule.get("rule") == "presence"
+            and rule.get("required") is False
+            and rule.get("axis") == axis
+            and rule.get("value") == value
+        ):
+            return True
+    return False
+
+
+def validate_structural_preservation(
+    request: ReconcileRequest, fitted_ir: Mapping[str, Any]
+) -> None:
+    """The §16/DR-4 C7 preserve-section-keys contract on an ALREADY-fidelity-valid fitted IR.
+
+    The reshape swaps WHOLE leaf bodies (`_assemble_fitted_ir`), so the composed body's section
+    keys are NOT mechanically preserved — they must be CHECKED. Two rules, both SCOPED to the
+    `(axis, value)` keys the IR's resolved `section_conformance` base schema references (C4):
+
+    1. **PRESERVE-THROUGH** — every schema-referenced key present in the COMPOSED sections must be
+       present in the FITTED sections, UNLESS this format's `format_structural` FORBIDS it (a
+       `presence required=false` venue-forbid = a legitimate drop). A dropped/renamed non-forbidden
+       schema-referenced key is a breach.
+    2. **NO-MINT (GAP-2)** — a schema-referenced key present in the FITTED sections but ABSENT from
+       the COMPOSED sections is a breach (the reconciler may DROP or PRESERVE a schema-satisfying
+       role/type, but NEVER MINT one from arbitrary content — the machine analog of
+       author-declaration-trust).
+
+    SCOPING is load-bearing: a NON-schema-referenced heading a plain-outline `adapt`/`split`
+    legitimately ADDS or RENAMES is NEVER touched (a global `fitted ⊆ composed` would regress
+    every existing reshape). INERT — a byte-unchanged no-op — when the IR carries no schema-
+    referenced keys (a plain outline with no `section_schema`).
+
+    Raises `StructuralPreservationViolation` (an `ir.IRError`, a DISTINCT code from the fidelity
+    violation) so a breach rides the SAME bounded re-ask (§16); a persistent breach exhausts the
+    bound and is NEVER fitted. A `SectionGrammarError` from the FITTED body is folded into the
+    same re-ask, exactly as compose.py does at its base gate."""
+    schema_keys = _schema_referenced_keys(request.canonical_ir)
+    if not schema_keys:
+        return  # INERT: no schema-referenced keys → byte-unchanged no-op (no-op safety)
+    composed = _parse_body_sections(request.canonical_ir)
+    try:
+        fitted = _parse_body_sections(fitted_ir)
+    except SectionGrammarError as exc:
+        # A writer-correctable fitted-body grammar derail — feed the SAME bounded re-ask.
+        raise StructuralPreservationViolation(
+            f"structure-not-preserved: the fitted body's section grammar is invalid ({exc}) — "
+            "reshape the body's `##`-heading skeleton so it parses, keeping every schema-"
+            "referenced heading the outline declared (§16/DR-4 C7)"
+        ) from exc
+    for axis, value in sorted(schema_keys):
+        in_composed = _has_section_key(composed, axis, value)
+        in_fitted = _has_section_key(fitted, axis, value)
+        if in_composed and not in_fitted and not _format_forbids(request, axis, value):
+            raise StructuralPreservationViolation(
+                f"structure-not-preserved: the schema-referenced section {axis} {value!r} was "
+                "present at compose but is DROPPED/renamed in the fit, and this format does not "
+                "forbid it — keep its EXACT heading so its slug/{#id} still matches; drop a "
+                "section ONLY when the venue forbids it (§16/DR-4 C7)"
+            )
+        if in_fitted and not in_composed:
+            raise StructuralPreservationViolation(
+                f"structure-not-preserved: the schema-referenced section {axis} {value!r} is "
+                "MINTED in the fit (absent at compose) — the reconciler may DROP or PRESERVE a "
+                "schema-satisfying section but NEVER invent one from ungrounded content (GAP-2)"
             )
 
 
@@ -690,7 +876,13 @@ def _localize(
     differ, are recorded for the fit outcome; localization GA (§26) fills this seam
     additively (its non-coordinate knobs then join the reconcile-inputs preimage, §16). This
     is a NO-OP, not a stub to fail on — a v1 fit whose target language equals its source
-    language never needs it, and that is the exercised path."""
+    language never needs it, and that is the exercised path.
+
+    FORWARD contract (NOT built now): at localization GA (§26) the SAME preserve-section-keys
+    rule (`validate_structural_preservation`, DR-4 C7) applies ADDITIVELY across the localize
+    seam — a localized body must keep every schema-referenced section heading exactly as the
+    source did (its slug/{#id} must still match), so a translation may not drop or rename a
+    schema-referenced section any more than a reshape may."""
     if target_language == source_language:
         return canonical_ir, ()
     return canonical_ir, (source_language, target_language)
@@ -837,6 +1029,9 @@ def reconcile(
                         voice_content_echo=parsed["voice_content_echo"],
                         voice_content_params=request.voice_content_params,
                     )
+                    # DR-4 C7 preserve-through + no-mint (a distinct `ir.IRError` code); first
+                    # remediated by this SAME bounded re-ask, then C8's terminal gate blocks.
+                    validate_structural_preservation(request, candidate)
                 except ir.IRError as exc:
                     violations.append(f"[{exc.code}] {exc}")
                     continue  # bounded fidelity re-ask (§16)

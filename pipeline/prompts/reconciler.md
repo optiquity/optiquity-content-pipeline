@@ -70,6 +70,11 @@ fitted identity, the fit-binding, and every version stamp. You cannot and must n
    support; do not add specifics, numbers, or citations not backed by a listed fact. The
    ledger holds ids, anchors, and commits — never tokens, keys, or passwords, and neither may
    your output.
+6. **Preserve the section keys.** Keep every schema-referenced `##`-section heading the
+   outline declared, with its EXACT heading text so its implicit slug / `{#id}` still matches —
+   do NOT rename or drop it. Drop such a section ONLY when the venue forbids it. And NEVER
+   invent a new schema-satisfying section (a required role/type) out of ungrounded content —
+   the pipeline rejects a dropped, renamed, or minted required section and re-asks.
 
 ## Output shape (return this and only this)
 

@@ -36,15 +36,18 @@ from pipeline.ids import (
 from pipeline.reconcile import (
     CODE_FIDELITY_VIOLATION,
     CODE_HARD_LIMIT_EXCEEDED,
+    CODE_STRUCTURE_NOT_PRESERVED,
     RECONCILE_INPUT_COMPONENTS,
     RECONCILE_INPUT_EXCLUSIONS,
     ReconcileError,
     ReconcileRequest,
+    StructuralPreservationViolation,
     breached_limits,
     build_reconciler_prompt,
     fit_digest,
     reconcile,
     reconcile_inputs_preimage,
+    validate_structural_preservation,
 )
 from pipeline.transport import ProcessOutcome, ProcessRequest
 
@@ -599,3 +602,301 @@ class TestReconcilerPrompt:
         request = make_request(strategy="adapt")
         prompt = build_reconciler_prompt(request, reask_note="prior fit was rejected")
         assert "Correction required" in prompt and "prior fit was rejected" in prompt
+
+
+# --- DR-4 C7: preserve-through + no-mint (scoped to schema-referenced section keys) ---------
+#
+# The reshape swaps WHOLE leaf bodies, so a composed section's key is NOT mechanically preserved.
+# C7 CHECKS it, scoped to the (axis, value) keys the IR's resolved `section_conformance` base
+# schema references (C4): a dropped/renamed non-forbidden schema-referenced key is a breach
+# (preserve-through), a MINTED schema-referenced key is a breach (no-mint / GAP-2), and a
+# NON-schema-referenced heading an adapt/split adds or renames is NEVER blocked (the scoping that
+# keeps a plain-outline reshape green). A breach rides the SAME bounded re-ask; on persistence the
+# fit is NEVER produced (`CODE_FIDELITY_VIOLATION`).
+
+
+_ABSTRACT_REQUIRED = [
+    {"rule": "presence", "axis": "role", "value": "abstract", "required": True,
+     "severity": "error"},
+]
+_ABSTRACT_LENGTH = [
+    {"rule": "length", "axis": "role", "value": "abstract", "min_len": 0, "max_len": 500,
+     "severity": "error"},
+]
+_ACKS_LENGTH = [
+    {"rule": "length", "axis": "role", "value": "acknowledgements", "min_len": 0, "max_len": 500,
+     "severity": "error"},
+]
+_README_FORBIDS_ACKS = {
+    "readme": [
+        {"rule": "presence", "axis": "role", "value": "acknowledgements", "required": False,
+         "severity": "error"},
+    ],
+}
+
+
+def make_conformance_ir(*, body, section_conformance, grounding=None) -> dict:
+    """A valid §15 IR-canonical envelope carrying a RESOLVED `section_conformance` base schema
+    (via `ir.build_ir` + a real `parse_sections`-clean body) — the C7 preserve/no-mint fit input."""
+    preimage = make_preimage()
+    if grounding is None:
+        grounding = {"f0": ledger_entry()}
+    return ir.build_ir(
+        artifact_id=mint_artifact_id(preimage),
+        preimage=preimage,
+        grounding=grounding,
+        body=body,
+        section_conformance=section_conformance,
+    )
+
+
+def make_fitted_ir(body: str) -> dict:
+    """A valid fitted IR envelope (same preimage/grounding as the fixtures) carrying a reshaped
+    body — for DIRECT `validate_structural_preservation` unit tests (no transport)."""
+    preimage = make_preimage()
+    return ir.build_ir(
+        artifact_id=mint_artifact_id(preimage),
+        preimage=preimage,
+        grounding={"f0": ledger_entry()},
+        body=body,
+    )
+
+
+_ABSTRACT_METHODS_BODY = (
+    "## Abstract {#abstract}\n\nWe study the parser.\n\n"
+    "## Methods {#methods}\n\n"
+    'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+)
+_METHODS_ONLY_BODY = (
+    '## Methods {#methods}\n\nThe parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+)
+
+
+class TestPreserveThroughAndNoMint:
+    def test_dropping_a_schema_referenced_section_is_caught_and_never_fitted(self):
+        composed = make_conformance_ir(
+            body=_ABSTRACT_METHODS_BODY, section_conformance=_ABSTRACT_REQUIRED
+        )
+        request = make_request(canonical_ir=composed, strategy="adapt")
+        # The fit DROPS the schema-referenced `{#abstract}` (non-forbidden) — a preserve-through
+        # breach. Facts stay re-anchored (f0 rides methods), so ONLY the structural rule fires.
+        drop = reconciler_ok({"body": _METHODS_ONLY_BODY})
+        out = reconcile(request, runner=ScriptedRunner([drop]), max_attempts=2)
+        assert out.status == "error" and out.code == CODE_FIDELITY_VIOLATION
+        assert out.fitted_ir is None and out.attempts == 2
+        assert any(CODE_STRUCTURE_NOT_PRESERVED in v for v in out.violations)
+        assert any("abstract" in v for v in out.violations)
+
+    def test_minting_a_schema_referenced_section_is_rejected(self):
+        # section_conformance REFERENCES abstract (a length rule) but the compose body OMITS it,
+        # so a fit that MINTS `## Anything {#abstract}` is caught by the no-mint backstop (GAP-2).
+        composed = make_conformance_ir(
+            body=_METHODS_ONLY_BODY, section_conformance=_ABSTRACT_LENGTH
+        )
+        request = make_request(canonical_ir=composed, strategy="adapt")
+        mint = reconciler_ok(
+            {"body": (
+                "## Anything {#abstract}\n\nMinted summary.\n\n"
+                "## Methods {#methods}\n\n"
+                'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+            )}
+        )
+        out = reconcile(request, runner=ScriptedRunner([mint]), max_attempts=1)
+        assert out.status == "error" and out.code == CODE_FIDELITY_VIOLATION
+        assert out.fitted_ir is None
+        assert any("MINTED" in v for v in out.violations)
+
+    def test_a_venue_forbidden_section_may_be_dropped(self):
+        composed = make_conformance_ir(
+            body=(
+                "## Methods {#methods}\n\n"
+                'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.\n\n'
+                "## Acknowledgements {#acknowledgements}\n\nThanks to the reviewers."
+            ),
+            section_conformance=_ACKS_LENGTH,
+        )
+        # This format (readme) FORBIDS acknowledgements — a single-entry pinned-format map.
+        request = make_request(
+            canonical_ir=composed,
+            strategy="adapt",
+            format_structural=_README_FORBIDS_ACKS,
+            format_structural_defaults={},
+        )
+        drop = reconciler_ok({"body": _METHODS_ONLY_BODY})
+        out = reconcile(request, runner=ScriptedRunner([drop]))
+        # The forbidden drop is legitimate — preservation PASSES (no re-ask, a clean fit).
+        assert out.status == "ok" and out.attempts == 1
+        assert out.fit_binding["outcome"]["strategy"] == "adapt"
+
+    def test_a_plain_outline_reshape_that_adds_or_renames_headings_is_not_blocked(self):
+        # FOLDED SHOULD-FIX #2: no section_conformance → NO schema-referenced keys → the
+        # preserve/no-mint check is INERT. An adapt that RENAMES + ADDS auto-slug headings must
+        # NOT be blocked (a global `fitted ⊆ composed` would regress every existing reshape).
+        composed = make_canonical_ir(
+            body='## Intro\n\nThe parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+        )
+        request = make_request(canonical_ir=composed, strategy="adapt")
+        reshaped = (
+            "## Overview\n\n"
+            'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.\n\n'
+            "## Summary\n\nIt is fast."
+        )
+        out = reconcile(request, runner=ScriptedRunner([reconciler_ok({"body": reshaped})]))
+        assert out.status == "ok" and out.is_noop is False
+        assert "## Overview" in out.fitted_ir["body"]  # the rename is not blocked
+        assert "## Summary" in out.fitted_ir["body"]  # the added non-schema heading survives
+
+    def test_scoping_only_schema_referenced_keys_are_enforced(self):
+        # section_conformance references ONLY abstract; the fit PRESERVES abstract but renames a
+        # NON-referenced heading (intro→overview) and ADDS one (summary) — NOT blocked (a global
+        # subset check would wrongly flag both).
+        composed = make_conformance_ir(
+            body=(
+                "## Abstract {#abstract}\n\nWe study the parser.\n\n"
+                "## Intro {#intro}\n\nBackground.\n\n"
+                "## Methods {#methods}\n\n"
+                'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+            ),
+            section_conformance=_ABSTRACT_REQUIRED,
+        )
+        request = make_request(canonical_ir=composed, strategy="adapt")
+        reshaped = (
+            "## Abstract {#abstract}\n\nWe study the parser.\n\n"
+            "## Overview {#overview}\n\nBackground.\n\n"
+            "## Methods {#methods}\n\n"
+            'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.\n\n'
+            "## Summary {#summary}\n\nIt is fast."
+        )
+        out = reconcile(request, runner=ScriptedRunner([reconciler_ok({"body": reshaped})]))
+        assert out.status == "ok"
+
+    def test_a_self_healing_fit_re_adds_the_dropped_section_within_the_bound(self):
+        # attempt 1 drops abstract (structural breach → re-ask); attempt 2 restores it → fitted.
+        composed = make_conformance_ir(
+            body=_ABSTRACT_METHODS_BODY, section_conformance=_ABSTRACT_REQUIRED
+        )
+        request = make_request(canonical_ir=composed, strategy="adapt")
+        runner = ScriptedRunner(
+            [
+                reconciler_ok({"body": _METHODS_ONLY_BODY}),  # drop → structural breach
+                reconciler_ok({"body": _ABSTRACT_METHODS_BODY}),  # restore → fit
+            ]
+        )
+        out = reconcile(request, runner=runner, max_attempts=3)
+        assert out.status == "ok" and out.attempts == 2
+        assert any(CODE_STRUCTURE_NOT_PRESERVED in v for v in out.violations)
+
+
+# --- obligation 1: the C6 field-add is preimage-INERT in C7 (the 5th component is C8) --------
+
+
+class TestFormatStructuralPreimageInert:
+    def test_format_structural_never_reaches_the_preimage_or_the_fit_digest(self):
+        ci = make_canonical_ir()
+        without = make_request(canonical_ir=ci, strategy="split", advisory={"x": 1})
+        with_fs = make_request(
+            canonical_ir=ci,
+            strategy="split",
+            advisory={"x": 1},
+            format_structural=_README_FORBIDS_ACKS,
+            format_structural_defaults={},
+        )
+        pre_without = reconcile_inputs_preimage(without)
+        pre_with = reconcile_inputs_preimage(with_fs)
+        # BYTE-IDENTICAL preimage + fit_digest — the field is INERT in C7 (5th component is C8).
+        assert canonical_json_bytes(pre_without) == canonical_json_bytes(pre_with)
+        assert fit_digest(pre_without) == fit_digest(pre_with)
+        # obligation 3: RECONCILE_INPUT_COMPONENTS is UNCHANGED — still the 4-tuple, no `structural`
+        assert RECONCILE_INPUT_COMPONENTS == ("strategy", "hard-limits", "advisory", "render-dims")
+        assert set(pre_with) == set(RECONCILE_INPUT_COMPONENTS)
+        assert "structural" not in pre_with and "format_structural" not in pre_with
+
+    def test_format_structural_populated_fit_mints_the_same_fitted_id(self):
+        # A stronger identity guard: a `pass` fit with format_structural populated mints the SAME
+        # baseline fitted-id as one without it (the fitted-id derives from the preimage only).
+        ci = make_canonical_ir()
+        base = reconcile(make_request(canonical_ir=ci, strategy="pass"), runner=NeverRunner())
+        withfs = reconcile(
+            make_request(canonical_ir=ci, strategy="pass", format_structural=_README_FORBIDS_ACKS),
+            runner=NeverRunner(),
+        )
+        assert base.status == "ok" and withfs.status == "ok"
+        assert base.fit_binding["fitted_id"] == withfs.fit_binding["fitted_id"]
+        assert base.digest == withfs.digest
+
+
+# --- the pure `validate_structural_preservation` function (direct, no transport) -------------
+
+
+class TestValidateStructuralPreservationUnit:
+    def _composed(self):
+        return make_conformance_ir(
+            body=_ABSTRACT_METHODS_BODY, section_conformance=_ABSTRACT_REQUIRED
+        )
+
+    def test_inert_when_the_ir_carries_no_section_conformance(self):
+        composed = make_canonical_ir(
+            body='## Intro\n\nA [c]{.EXTRACTED data-fact="f0"}.'
+        )
+        request = make_request(canonical_ir=composed, strategy="adapt")
+        # No schema-referenced keys → a no-op even though every heading changed.
+        fitted = make_fitted_ir('## Different {#x}\n\nA [c]{.EXTRACTED data-fact="f0"}.')
+        assert validate_structural_preservation(request, fitted) is None
+
+    def test_passes_when_the_schema_referenced_key_survives(self):
+        request = make_request(canonical_ir=self._composed(), strategy="adapt")
+        fitted = make_fitted_ir(
+            "## Abstract {#abstract}\n\nReshaped.\n\n"
+            '## Methods {#methods}\n\nA [c]{.EXTRACTED data-fact="f0"}.'
+        )
+        assert validate_structural_preservation(request, fitted) is None
+
+    def test_preserve_through_raises_on_a_non_forbidden_drop(self):
+        request = make_request(canonical_ir=self._composed(), strategy="adapt")
+        fitted = make_fitted_ir('## Methods {#methods}\n\nA [c]{.EXTRACTED data-fact="f0"}.')
+        with pytest.raises(StructuralPreservationViolation) as exc:
+            validate_structural_preservation(request, fitted)
+        assert exc.value.code == CODE_STRUCTURE_NOT_PRESERVED
+        assert "abstract" in str(exc.value)
+
+    def test_no_mint_raises_on_a_minted_key(self):
+        composed = make_conformance_ir(
+            body='## Methods {#methods}\n\nA [c]{.EXTRACTED data-fact="f0"}.',
+            section_conformance=_ABSTRACT_LENGTH,
+        )
+        request = make_request(canonical_ir=composed, strategy="adapt")
+        fitted = make_fitted_ir(
+            "## Abstract {#abstract}\n\nMinted.\n\n"
+            '## Methods {#methods}\n\nA [c]{.EXTRACTED data-fact="f0"}.'
+        )
+        with pytest.raises(StructuralPreservationViolation) as exc:
+            validate_structural_preservation(request, fitted)
+        assert "MINTED" in str(exc.value)
+
+    def test_a_venue_forbidden_drop_passes(self):
+        composed = make_conformance_ir(
+            body=(
+                '## Methods {#methods}\n\nA [c]{.EXTRACTED data-fact="f0"}.\n\n'
+                "## Acknowledgements {#acknowledgements}\n\nThanks."
+            ),
+            section_conformance=_ACKS_LENGTH,
+        )
+        request = make_request(
+            canonical_ir=composed,
+            strategy="adapt",
+            format_structural=_README_FORBIDS_ACKS,
+        )
+        fitted = make_fitted_ir('## Methods {#methods}\n\nA [c]{.EXTRACTED data-fact="f0"}.')
+        assert validate_structural_preservation(request, fitted) is None
+
+    def test_a_fitted_grammar_derail_is_folded_into_the_reask(self):
+        request = make_request(canonical_ir=self._composed(), strategy="adapt")
+        # An unknown section `type=` in the fitted body — parse_sections raises; C7 folds it into
+        # the SAME bounded re-ask as an `ir.IRError` (compose.py's base-gate pattern).
+        fitted = make_fitted_ir(
+            "## Abstract {#abstract}\n\nx\n\n"
+            '## Bad {type=bogus}\n\nA [c]{.EXTRACTED data-fact="f0"}.'
+        )
+        with pytest.raises(StructuralPreservationViolation) as exc:
+            validate_structural_preservation(request, fitted)
+        assert "grammar" in str(exc.value)
