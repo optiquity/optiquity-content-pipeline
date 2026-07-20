@@ -650,6 +650,10 @@ class DefaultRenderEngine:
                 fitted_ir=leg.fitted_ir,
                 requested_output_types=[leg.output_type],
                 extension=serialize.extension_for(leg.output_type),
+                # C10: carry the citeproc REQUIREMENT (content-gated) + the C7 csl style so the
+                # external actor resolves `[@key]` under the pinned pandoc + the venue's style.
+                citeproc_enabled=dout.citeproc_enabled,
+                csl=render_inputs.csl,
             )
             return MintOutcome(
                 binding=render_binding,

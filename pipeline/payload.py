@@ -6,7 +6,9 @@ Design authority: `docs/design.md`
           (1) the **Pandoc AST JSON** (embedding its api-version);
           (2) a **reproducibility sidecar** — `deliverable-id`/`artifact-id`/`fitted-id`,
               requested output-types, required Pandoc version + writer + engine + reference-doc,
-              all pins (the RI13 pin bundle);
+              all pins (the RI13 pin bundle), and — for a CITING AST only (DR-5 C10) — a
+              `citeproc` REQUIREMENT block (`enabled` + per-venue `csl` style + pinned pandoc
+              version) the external actor honors to resolve `[@key]` under the right style;
           (3) the **part structure** — ordered `part-id`, `role`, advisory intra-work
               **`sequence`**, packaging hint — so the actor knows how many files to emit and can
               address part 3/7 directly;
@@ -135,6 +137,8 @@ def build_payload(
     fitted_ir: Mapping[str, Any],
     requested_output_types: Sequence[str],
     extension: str,
+    citeproc_enabled: bool = False,
+    csl: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """Assemble the five-component RI14 layer-3 contract payload for a `side: external` target.
 
@@ -143,11 +147,34 @@ def build_payload(
     structure + the opaque `metadata` bag; `requested_output_types` are the actor's targets;
     `extension` is the conventional format extension for §7.4 filename naming.
 
+    CITEPROC REQUIREMENT (DR-5 C10, §17 R-4 family). An external deliverable's AST is handed to an
+    EXTERNAL actor who renders it with ITS OWN pandoc/citeproc — so a citing AST (`Cite` nodes that
+    dispatch resolves internally via `--citeproc`) must carry the enablement as a REQUIREMENT the
+    actor honors, not resolved bytes. When `citeproc_enabled` is true the reproducibility sidecar
+    gains a `citeproc` block: `enabled`, the per-venue `csl` STYLE (C7 `(path, content-hash)` →
+    `{"path", "content_hash"}`, or None for the writer's default author-date), and the pinned
+    `pandoc_version` — so the actor runs `--citeproc` (+ `--csl=<path>` when set) under the pinned
+    pandoc. The block is OMIT-WHEN-ABSENT (the twin of the C6/C7 serialize-preimage idiom): a
+    NON-citing external payload gains NO `citeproc` key → byte-identical to a pre-C10 payload, and a
+    citation-LESS csl-set render carries no csl requirement (mirroring dispatch's content-gating of
+    `--csl` WITH `--citeproc`). `csl` is honored only when `citeproc_enabled` is true.
+
+    DETERMINISM GATE (GAP-1, register lands in C12). Internal targets resolve citations under the
+    PINNED pandoc; an external actor uses its OWN toolchain, so the SAME paper+csl can render
+    citations differently — OUTSIDE the pin boundary. The `citeproc` block carries the pandoc
+    version + csl style as pins the actor MUST honor to stay inside the boundary; the payload
+    cannot enforce the actor's toolchain, only STATE the requirement. (The full §-register — and
+    the #7 scenario-2 note that the external CSL surface extends scenario-2 for `side: internal`
+    only — is a C12 register note, not built here.)
+
     SECURITY (RI14): the AST is stripped of ALL provenance UNCONDITIONALLY (`strip_provenance`,
     fail-closed) and re-verified with `has_provenance` — provenance/tier tags and any fact-anchor
     id are EXCLUDED; the grounding ledger is not a component; the `metadata` bag rides through
-    opaque (secret-scanned upstream at IR build). Raises `PayloadError` on a non-external target,
-    a non-deliverable id, or (the fail-closed guard) surviving provenance."""
+    opaque (secret-scanned upstream at IR build). The strip's attr-walk touches only Pandoc `Attr`
+    carriers, so the pre-citeproc `Cite` nodes and the `meta.references` MetaMap SURVIVE it intact
+    (citeproc runs on the actor's side → NO `data-cites` exists at payload time → the fail-closed
+    guard does not trip). Raises `PayloadError` on a non-external target, a non-deliverable id, or
+    (the fail-closed guard) surviving provenance."""
     if not isinstance(render_target, RenderTarget):
         raise PayloadError(
             f"payload-error: render_target must be a dispatch.RenderTarget, got "
@@ -175,22 +202,34 @@ def build_payload(
             "provenance (§17 RI14); refusing to hand off a leaking AST"
         )
 
+    # (2) the reproducibility sidecar — ids, requested output-types, tool requirements, pins.
+    reproducibility: dict[str, Any] = {
+        "deliverable_id": deliverable_id,
+        "artifact_id": artifact_id,
+        "fitted_id": fitted_id,
+        "requested_output_types": list(requested_output_types),
+        "pandoc_version": pin_bundle.get("pandoc_version"),
+        "writer": render_target.writer,
+        "engine": render_target.engine or pin_bundle.get("engine", ""),
+        "reference_doc": render_target.reference_doc or pin_bundle.get("reference_doc", ""),
+        "pins": dict(pin_bundle),
+        "filename": ids.output_filename(deliverable_id, extension),
+    }
+    # (2b) the CITEPROC REQUIREMENT (C10) — OMIT-WHEN-ABSENT so a non-citing external payload is
+    # byte-identical to pre-C10, and a citation-less csl-set render carries no csl requirement
+    # (mirroring dispatch's content-gating of `--csl` WITH `--citeproc`). Present ONLY for a citing
+    # AST: the actor runs `--citeproc` (+ `--csl=<path>` when set) under the pinned pandoc version.
+    if citeproc_enabled:
+        reproducibility["citeproc"] = {
+            "enabled": citeproc_enabled,
+            "csl": {"path": csl[0], "content_hash": csl[1]} if csl is not None else None,
+            "pandoc_version": pin_bundle.get("pandoc_version"),
+        }
+
     return {
         # (1) the AST JSON, embedding its api-version.
         "ast": payload_ast,
-        # (2) the reproducibility sidecar — ids, requested output-types, tool requirements, pins.
-        "reproducibility": {
-            "deliverable_id": deliverable_id,
-            "artifact_id": artifact_id,
-            "fitted_id": fitted_id,
-            "requested_output_types": list(requested_output_types),
-            "pandoc_version": pin_bundle.get("pandoc_version"),
-            "writer": render_target.writer,
-            "engine": render_target.engine or pin_bundle.get("engine", ""),
-            "reference_doc": render_target.reference_doc or pin_bundle.get("reference_doc", ""),
-            "pins": dict(pin_bundle),
-            "filename": ids.output_filename(deliverable_id, extension),
-        },
+        "reproducibility": reproducibility,
         # (3) the part structure with EXPLICIT sequence.
         "parts": part_structure(fitted_ir, extension=extension),
         # (4) the opaque metadata bag, untouched (secret-scanned upstream at IR build).

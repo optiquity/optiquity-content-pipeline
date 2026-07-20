@@ -302,6 +302,12 @@ def _mint_external(store: WorkspaceStore, env: CascadeEnv, *, fitted_id: str) ->
         fitted_ir=fitted_ir,
         requested_output_types=[EXTERNAL_OUTPUT_TYPE],
         extension=EXTERNAL_OUTPUT_TYPE,
+        # C10: thread the citeproc REQUIREMENT. The MVP external target is the plain-floor epub3
+        # of a non-citing artifact → `dout.citeproc_enabled` is False and there is no csl lever
+        # (`dispatch(target, ast)` carries no RenderInputs), so the `citeproc` block is OMITTED →
+        # the MVP external payload is byte-identical to pre-C10.
+        citeproc_enabled=dout.citeproc_enabled,
+        csl=None,
     )
 
     claims = registry_for(store)
