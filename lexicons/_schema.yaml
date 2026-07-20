@@ -1,0 +1,91 @@
+# lexicons/_schema.yaml — co-located schema for the house-style Lexicon registry
+# (DR-2 C1; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10).
+#
+# A Lexicon carries CLASS-(ii) HOUSE STYLE: terminology (preferred/banned terms),
+# proper-name casing, a spelling standard, and mechanical rules (Oxford comma, number/
+# date/unit style). It is the content-side style carrier DR-2 ratified — distinct from
+# the Voice dimension (diction/tone/stance, class-(i) prose guidance): a Lexicon is the
+# MECHANICAL, checkable half of house style, expressed as structured data, not prose.
+#
+# ─── THE RATIFIED IDENTITY INVARIANT (load-bearing — do not break) ───────────────────
+# EVERY compose-consumable rule is declared HERE as a SCHEMA ATTRIBUTE. The entry `.md`
+# BODY is DOCUMENTATION ONLY and is NEVER compose-consumed: no attribute in this schema
+# is body-consuming (there is NO `markdown`/prose attribute — contrast `voices.guidelines`
+# and `topics.why`, which ARE `markdown` and DO carry prose into compose). This keeps the
+# lexicon IDENTITY-HONEST: the resolved lexicon's contribution to identity is
+# `delta_vs_floor` over its ATTRIBUTES (§7.2) — which captures every rule above and NEVER
+# the body — so a lexicon can never change composed bytes without churning the artifact id
+# (the C2 wiring threads the resolved lexicon `{entry, delta}` into the artifact-id
+# preimage; an attribute-only lexicon makes that delta total over the rules). Documentation
+# prose lives in the body precisely BECAUSE it is inert to compose.
+#
+# UNWIRED at C1 (registry only): no artifact reads this collection yet — zero artifact-id
+# churn. `Resolver.resolve("lexicons", <id>)` serves it as any co-located-schema collection
+# (SV4); it is NOT an identity dimension (absent from `m1.DIMENSION_COLLECTIONS`).
+#
+# ALL attributes are FLOOR-EMPTY (§12.2 L0): a lexicon that sets nothing imposes no rule,
+# and a newly shipped attribute at its default churns no id (§7.2).
+schema_version: 1
+attributes:
+  preferred_terms:
+    type:
+      type: map
+      element: text
+    default: {}
+    definition: >-
+      Terminology preferences as an avoid → use map: each key is a term to avoid and
+      its value is the preferred replacement (e.g. `utilize: use`). A `map` of `text`,
+      not a `set`, because the pairing (what to say INSTEAD) is the payload. Floor `{}`
+      = no terminology preferences. Compose-consumed as an attribute (the identity
+      invariant); the body never carries these.
+    definition_version: 1
+  banned_terms:
+    type:
+      type: set
+      element: text
+    default: []
+    definition: >-
+      Terms that must never appear — an unordered `set` of `text` (order is not
+      meaningful; the set canonicalizes sorted+deduped into any identity delta, §7.1/
+      §12.4). Distinct from `preferred_terms` (which supplies a replacement); a banned
+      term is simply disallowed. Default combine across rungs is REPLACE (§12.4 — no
+      `combine:` override at C1; a `union` accumulation is a later wiring decision, not
+      a registry-stand-up concern). Floor empty = no banned terms.
+    definition_version: 1
+  proper_names:
+    type:
+      type: map
+      element: text
+    default: {}
+    definition: >-
+      Proper-name canonical casing as a token → canonical-casing map (e.g.
+      `github: GitHub`, `javascript: JavaScript`): each key is a lowercased lookup
+      token and its value is the one correct rendering. A `map` of `text` (the casing
+      is the payload). Floor `{}` = no proper-name casing rules. Compose-consumed as an
+      attribute; the body never carries these.
+    definition_version: 1
+  spelling:
+    type:
+      type: enum
+      values: ["", us, uk]
+    default: ""
+    definition: >-
+      The spelling standard to enforce: `us` or `uk`. The floor is the NEUTRAL member
+      `""` — an unset lexicon imposes NO spelling rule (absent = no normalization),
+      exactly the honest-unset precedent the `""` floor encodes elsewhere (e.g.
+      `platforms.default_output_type`). `us`/`uk` select a standard; the empty member
+      is never a spelling — it is the "no rule" floor, so shipping this attribute churns
+      no id for a lexicon that omits it (§7.2).
+    definition_version: 1
+  mechanical:
+    type: map
+    default: {}
+    definition: >-
+      Mechanical house-style rules as an OPEN, bare/untyped `map` (keys like
+      `oxford_comma`, `number_style`, `date_style`, `unit_style`). Deliberately NOT a
+      closed enum: a new mechanical rule must be a ONE-FILE add on a lexicon ENTRY, never
+      a schema edit (known-issues.md — the open-carrier posture). Values are opaque to
+      the schema (a bare map is not element-typed); a consumer reads the keys it knows.
+      Floor `{}` = no mechanical rules. Compose-consumed as an attribute; the body never
+      carries these.
+    definition_version: 1

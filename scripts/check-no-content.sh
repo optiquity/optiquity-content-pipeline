@@ -65,7 +65,7 @@ set -euo pipefail
 # self-enforcing: the GAP-4a coverage check below fails the guard if any top-level dir has
 # registry SHAPE (the SV4 `<dir>/_schema.yaml` marker) but is missing from this list — so a
 # new registry root (e.g. a future `lexicons/`) can never ship UNSCANNED. Add a new root here.
-REGISTRY_ROOTS="topics personas formats voices goals platforms languages output-types presentations content-kinds sources render-targets recipes folio-types"
+REGISTRY_ROOTS="topics personas formats voices goals platforms languages output-types presentations content-kinds sources render-targets recipes folio-types lexicons"
 SCOPES="$REGISTRY_ROOTS instance workspaces"
 
 MODE="tracked"

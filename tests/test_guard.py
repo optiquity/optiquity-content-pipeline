@@ -271,28 +271,92 @@ def test_all_mode_scans_symlinks(tmp_path):
 def test_unwhitelisted_registry_root_fails_loudly(tmp_path):
     """GAP-4a: a brand-new top-level registry root (registry SHAPE = a co-located
     `_schema.yaml`, the SV4 marker) that is NOT in REGISTRY_ROOTS must FAIL the guard
-    instead of passing UNSCANNED. This is the exact leak surface DR-2's `lexicons/` root
-    would create — a corporate lexicon there would otherwise escape the content scan."""
+    instead of passing UNSCANNED. This is exactly the leak surface DR-2's `lexicons/` root
+    created BEFORE this commit whitelisted it (see the lexicons-coverage tests below) — the
+    check is what forced the conscious REGISTRY_ROOTS line. It must still protect the NEXT
+    unknown root: here a stand-in `glossaries/`, whose corporate entry would otherwise
+    escape the content scan."""
     root = tmp_path / "new-root"
-    (root / "lexicons").mkdir(parents=True)
-    (root / "lexicons" / "_schema.yaml").write_text(
+    (root / "glossaries").mkdir(parents=True)
+    (root / "glossaries" / "_schema.yaml").write_text(
         "schema_version: 1\nattributes: {}\n", encoding="utf-8"
     )
     # An entry with NO provenance + client-looking content: proof it escapes the content
-    # scan (lexicons/ is outside $SCOPES, so the file loop never sees it) — only the
+    # scan (glossaries/ is outside $SCOPES, so the file loop never sees it) — only the
     # structural coverage check catches the dir.
-    (root / "lexicons" / "acme-house-lexicon.md").write_text(
-        "# synthetic corporate lexicon - never real\n", encoding="utf-8"
+    (root / "glossaries" / "acme-house-glossary.md").write_text(
+        "# synthetic corporate glossary - never real\n", encoding="utf-8"
     )
     proc = run_guard("--root", str(root), "--mode", "all")
     assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert "LEAK[unknown-registry-root] lexicons" in proc.stdout
+    assert "LEAK[unknown-registry-root] glossaries" in proc.stdout
     # The message must name the dir AND instruct the maintainer to whitelist it.
     assert "REGISTRY_ROOTS" in proc.stdout
     # It is the ONLY finding — the un-scanned entry file itself never fires a content leak
     # (that is the whole GAP-4a hazard); the structural check is what makes it non-silent.
     leaks = [line for line in proc.stdout.splitlines() if line.startswith("LEAK[")]
     assert len(leaks) == 1, proc.stdout
+
+
+# -----------------------------------------------------------------------------------
+# DR-2 C1: the `lexicons/` root is whitelisted → scanned (the coverage counterpart)
+# -----------------------------------------------------------------------------------
+
+
+def test_lexicons_root_is_now_scanned(tmp_path):
+    """DR-2 C1 added `lexicons` to REGISTRY_ROOTS, so the guard now SCANS it (SCOPES =
+    REGISTRY_ROOTS + instance + workspaces). A planted instance-namespaced `x-*` lexicon
+    (a client house lexicon) is caught by PATH — proof the root is INSIDE the content scan,
+    not merely covered by the structural check; and the unknown-root check must NOT fire for
+    a now-whitelisted root."""
+    root = tmp_path / "lex-scanned"
+    (root / "lexicons").mkdir(parents=True)
+    (root / "lexicons" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    (root / "lexicons" / "x-acme-house.md").write_text(
+        "# synthetic client lexicon - never real\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LEAK[x-file] lexicons/x-acme-house.md" in proc.stdout
+    assert "unknown-registry-root" not in proc.stdout
+
+
+def test_lexicons_non_framework_entry_is_default_denied(tmp_path):
+    """A non-framework lexicon entry (no `provenance: framework`) in the now-scanned
+    `lexicons/` root is default-denied by the content scan — the same missing-provenance
+    class every registry root gets, now that the whitelist edit brought lexicons into
+    scope."""
+    root = tmp_path / "lex-deny"
+    (root / "lexicons").mkdir(parents=True)
+    (root / "lexicons" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    (root / "lexicons" / "house.md").write_text(
+        "# synthetic lexicon with no provenance line\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LEAK[missing-provenance] lexicons/house.md" in proc.stdout
+
+
+def test_lexicons_framework_entry_passes(tmp_path):
+    """The shipped shape: a co-located `_schema.yaml` (exempt, framework mechanism) plus a
+    `provenance: framework` lexicon entry stays green — mirrors the real
+    `lexicons/house-standard.md` DR-2 C1 ships."""
+    root = tmp_path / "lex-ok"
+    (root / "lexicons").mkdir(parents=True)
+    (root / "lexicons" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    (root / "lexicons" / "house-standard.md").write_text(
+        "---\nprovenance: framework\n---\n# synthetic framework lexicon\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK:" in proc.stdout
+    assert "LEAK[" not in proc.stdout
 
 
 def test_whitelisted_registry_root_with_schema_and_entry_passes(tmp_path):
