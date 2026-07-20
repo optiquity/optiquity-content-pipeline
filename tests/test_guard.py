@@ -264,6 +264,76 @@ def test_all_mode_scans_symlinks(tmp_path):
 
 
 # -----------------------------------------------------------------------------------
+# GAP-4a: unknown-registry-root coverage check (docs/known-issues.md GAP-4)
+# -----------------------------------------------------------------------------------
+
+
+def test_unwhitelisted_registry_root_fails_loudly(tmp_path):
+    """GAP-4a: a brand-new top-level registry root (registry SHAPE = a co-located
+    `_schema.yaml`, the SV4 marker) that is NOT in REGISTRY_ROOTS must FAIL the guard
+    instead of passing UNSCANNED. This is the exact leak surface DR-2's `lexicons/` root
+    would create — a corporate lexicon there would otherwise escape the content scan."""
+    root = tmp_path / "new-root"
+    (root / "lexicons").mkdir(parents=True)
+    (root / "lexicons" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    # An entry with NO provenance + client-looking content: proof it escapes the content
+    # scan (lexicons/ is outside $SCOPES, so the file loop never sees it) — only the
+    # structural coverage check catches the dir.
+    (root / "lexicons" / "acme-house-lexicon.md").write_text(
+        "# synthetic corporate lexicon - never real\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LEAK[unknown-registry-root] lexicons" in proc.stdout
+    # The message must name the dir AND instruct the maintainer to whitelist it.
+    assert "REGISTRY_ROOTS" in proc.stdout
+    # It is the ONLY finding — the un-scanned entry file itself never fires a content leak
+    # (that is the whole GAP-4a hazard); the structural check is what makes it non-silent.
+    leaks = [line for line in proc.stdout.splitlines() if line.startswith("LEAK[")]
+    assert len(leaks) == 1, proc.stdout
+
+
+def test_whitelisted_registry_root_with_schema_and_entry_passes(tmp_path):
+    """Regression: a registry root that IS whitelisted scans normally — a co-located
+    `_schema.yaml` (exempt, framework mechanism) plus a populated `provenance: framework`
+    entry stays green. Proves the GAP-4a check does not disturb known roots, and mirrors
+    what a future `lexicons/` looks like ONCE DR-2 adds it to REGISTRY_ROOTS."""
+    root = tmp_path / "known-root"
+    (root / "recipes").mkdir(parents=True)
+    (root / "recipes" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    (root / "recipes" / "example.md").write_text(
+        "---\nprovenance: framework\n---\n# synthetic framework recipe\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK:" in proc.stdout
+    assert "LEAK[" not in proc.stdout
+
+
+def test_nested_schema_manifest_is_not_a_top_level_registry_root(tmp_path):
+    """The coverage check keys on TOP-LEVEL registry shape only: a `_schema.yaml` nested
+    DEEPER than `<dir>/_schema.yaml` (here under an unknown, non-registry-shaped top-level
+    dir) is not a top-level registry root and must not trip the unknown-root check. The
+    deeper file is also outside $SCOPES, so the content scan never touches it — the tree is
+    clean. (Tracked-mode depth filtering, where git's `*` spans '/', is covered by the
+    real-repo run in test_current_repo_passes_in_default_tracked_mode: the tracked
+    tests/fixtures/**/_schema.yaml markers are filtered and never flagged.)"""
+    root = tmp_path / "nested"
+    (root / "vendor" / "data").mkdir(parents=True)
+    # No `vendor/_schema.yaml` — vendor is NOT registry-shaped at the top level.
+    (root / "vendor" / "data" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LEAK[" not in proc.stdout
+
+
+# -----------------------------------------------------------------------------------
 # CLI contract
 # -----------------------------------------------------------------------------------
 

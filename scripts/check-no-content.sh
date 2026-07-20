@@ -61,6 +61,10 @@
 # this guard is the grep-level tracked-file boundary scan that pairs with it.
 set -euo pipefail
 
+# REGISTRY_ROOTS is the hardcoded whitelist of registry roots the content scan covers. It is
+# self-enforcing: the GAP-4a coverage check below fails the guard if any top-level dir has
+# registry SHAPE (the SV4 `<dir>/_schema.yaml` marker) but is missing from this list — so a
+# new registry root (e.g. a future `lexicons/`) can never ship UNSCANNED. Add a new root here.
 REGISTRY_ROOTS="topics personas formats voices goals platforms languages output-types presentations content-kinds sources render-targets recipes folio-types"
 SCOPES="$REGISTRY_ROOTS instance workspaces"
 
@@ -128,11 +132,53 @@ list_files() {
   fi
 }
 
+# GAP-4a (docs/known-issues.md): every TOP-LEVEL directory that carries the SV4
+# registry-root marker (a co-located `<dir>/_schema.yaml`). The caller uses this to catch
+# an UNKNOWN registry root — one outside the REGISTRY_ROOTS whitelist, hence outside $SCOPES
+# and NEVER scanned by list_files above. Emits candidate `<dir>/_schema.yaml` paths (git
+# `*` spans '/', so nested markers appear too; the caller filters to depth-1). Honors --mode
+# exactly like list_files — tracked = committed markers only (a local uncommitted scratch
+# dir never false-positives), all = markers on disk.
+list_schema_roots() {
+  if [ "$MODE" = "tracked" ]; then
+    git ls-files -- '*/_schema.yaml'
+  else
+    for s in */_schema.yaml; do
+      if [ -f "$s" ]; then
+        printf '%s\n' "$s"
+      fi
+    done
+  fi
+}
+
 fail=0
 leak() { # $1=class  $2=path  $3=message
   echo "LEAK[$1] $2: $3"
   fail=1
 }
+
+# GAP-4a — REGISTRY-ROOT COVERAGE CHECK (docs/known-issues.md GAP-4): the file scan below
+# only covers $SCOPES (the hardcoded REGISTRY_ROOTS whitelist + instance/ + workspaces/). A
+# brand-new top-level registry root OUTSIDE that whitelist would therefore pass UNSCANNED —
+# a silent client-content leak surface (e.g. a future `lexicons/` holding a corporate
+# lexicon). Fail LOUDLY on any top-level directory that has REGISTRY SHAPE (the SV4 marker: a
+# co-located `<dir>/_schema.yaml`) yet is not already a scanned scope, so no new registry
+# root can ship without a CONSCIOUS decision to whitelist (and thus scan) it here. This is an
+# ADDITIVE structural check — it never alters the content scan of the existing roots.
+while IFS= read -r schema; do
+  [ -n "$schema" ] || continue
+  case "$schema" in
+    */*/*) continue ;;            # deeper than <dir>/_schema.yaml — not a top-level root marker
+    */_schema.yaml) : ;;
+    *) continue ;;
+  esac
+  root_dir="${schema%/_schema.yaml}"
+  case " $SCOPES " in
+    *" $root_dir "*) continue ;;  # already scanned (a whitelisted root, or instance/workspaces)
+  esac
+  leak unknown-registry-root "$root_dir" \
+    "registry-shaped directory (SV4 marker: a co-located ${root_dir}/_schema.yaml) is NOT in REGISTRY_ROOTS, so its contents are NEVER scanned by this guard — add '${root_dir}' to REGISTRY_ROOTS in scripts/check-no-content.sh so the public-boundary scan covers it (GAP-4a)"
+done < <(list_schema_roots)
 
 while IFS= read -r f; do
   [ -n "$f" ] || continue
