@@ -62,8 +62,9 @@ ops-coder (initial) → ops-reviewer
     (a bare `git diff` misses untracked files);
   - then `git apply --check <patch>` → `git apply <patch>` in the main checkout → run the gate →
     review → commit; finally `git worktree remove --force <wt> && git branch -D worktree-agent-<id>`.
-  - For a **small** change the main session may make the edit directly in the main checkout instead
-    (the main session is not Edit-blocked) — still coder-quality + reviewed before commit.
+  - **The main session never makes code/doc edits directly** — even a small change is built by a
+    spawned ops-coder in its worktree; the main session only transfers the diff, runs the gate,
+    reviews (via an ops-reviewer), and commits.
 - **Never reuse** a spawned agent — always spawn fresh for clean, uncontaminated context. Reuse only
   with explicit maintainer permission.
 - **Kill sessions only when a feature's implementation cycle is done.** Keep the whole per-feature
