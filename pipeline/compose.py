@@ -120,6 +120,7 @@ __all__ = [
     "build_writer_prompt",
     "compose_artifact",
     "parse_writer_output",
+    "project_references",
 ]
 
 #: The writer prompt-template name (`pipeline/prompts/writer.md`, §15 contract; T9).
@@ -292,6 +293,81 @@ def build_grounding_ledger(
 
 
 # ---------------------------------------------------------------------------
+# DR-5 C2: project `references` from the ledger's DISTINCT pool sources (the machinery half of
+# D1's (b)-PROJECTED model, forced by NO-GO #5). The writer NEVER authors `references`; they are
+# MACHINERY-projected HERE from the grounding ledger's real per-source metadata, so every citation
+# is structurally forced to point at a work the pipeline actually grounded — this closes the §6.5
+# fabrication leak by CONSTRUCTION. `references` is body-blind + not an identity input (§7.2/C1),
+# so projecting from the ledger moves no artifact-id.
+# ---------------------------------------------------------------------------
+
+#: The Pandoc citation sentinel: a citation opens `[@key]`. The C2 gate is a CHEAP presence check
+#: for this marker over the composed leaf body/bodies — NOT a pandoc parse. C4 adds the
+#: authoritative pandoc-`Cite` AST resolution (`[@key]` ⊆ the projected id set) and may refine it.
+_CITATION_MARKER = "[@"
+
+
+def project_references(ledger: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Project the §15 grounding ledger's DISTINCT pool sources into a `references` list (DR-5 C2).
+
+    ONE CSL-JSON citation item per DISTINCT `source_instance_id` across the ledger, in SORTED
+    instance-id order — mirroring `build_grounding_ledger`'s fact ordering (which sorts by
+    `instance_id` first), so the projection is stable + reproducible regardless of ledger iteration
+    order. Each item's citation key (`id`) is the ordinal `s0`, `s1`, … — mirroring the ledger's own
+    `f0`/`f1` fact-id idiom (design ambiguity 4). That key is UNIQUE by construction (C1's
+    `_validate_references` REFUSES a duplicate `id`), deterministic, and short enough for the C3
+    writer to cite as `[@s0]` (C3 receives exactly this projected id set; C4 checks `[@key]` ⊆ it).
+
+    The descriptor is HONEST, per-source metadata ONLY — the writer supplies none (NO-GO #5):
+      * `type` = `software` — the graphed pool source IS a code repo pinned at a commit;
+      * `title` = the `source_instance_id` — the source's own name (a stable, real label);
+      * `note` = `repo@commit` — the exact locator; just the repo when the adapter is commitless
+        (`source_commit` is null, legal per the §15 ledger). Not a `URL`: `source_repo` is a repo
+        SLUG (`github.com/acme/widget`), not a scheme-bearing dereferenceable URL — labelling it
+        `URL` would be dishonest, so the locator rides the free-form `note`.
+    The per-span `traceability_anchor` is deliberately NOT projected: it is FINER than per-source
+    (many facts → many anchors per instance), so pinning one fact's anchor onto a source-level
+    reference would misrepresent its granularity — anchors stay in the ledger where each fact owns
+    its own. The non-`id` keys stay OPEN (C1's open CSL-JSON descriptor), so this shape is
+    one-file-upgradeable (a `URL`/`author`/`issued` field can be added later without a schema bump).
+    """
+    sources: dict[str, dict[str, Any]] = {}
+    for entry in ledger.values():
+        instance_id = entry["source_instance_id"]
+        if instance_id not in sources:
+            sources[instance_id] = {
+                "repo": entry["source_repo"],
+                "commit": entry.get("source_commit"),
+            }
+    references: list[dict[str, Any]] = []
+    for index, instance_id in enumerate(sorted(sources)):
+        repo = sources[instance_id]["repo"]
+        commit = sources[instance_id]["commit"]
+        references.append(
+            {
+                "id": f"s{index}",
+                "type": "software",
+                "title": instance_id,
+                "note": f"{repo}@{commit}" if commit else repo,
+            }
+        )
+    return references
+
+
+def _body_has_citation(writer_out: Mapping[str, Any]) -> bool:
+    """True iff the composed FLAT body (or ANY part body) carries a Pandoc citation marker `[@`
+    (the DR-5 C2 gate). A cheap presence check over the leaf CONTENT — NOT a pandoc parse (C4 adds
+    the authoritative `Cite`-AST resolution). At C2 the writer is NOT yet taught to cite, so NO
+    composed body cites → this is False for every existing (citation-clean) artifact → `references`
+    attaches to NOTHING → the golden compose corpus stays BYTE-IDENTICAL. Handles both the flat
+    (`{"body": …}`) and the parts (`{"parts": {role: …}}`) envelopes `parse_writer_output` returns.
+    """
+    if "body" in writer_out:
+        return _CITATION_MARKER in writer_out["body"]
+    return any(_CITATION_MARKER in body for body in writer_out["parts"].values())
+
+
+# ---------------------------------------------------------------------------
 # The writer prompt (§15 contract): template + grounded facts + effective values +
 # Format part structure + the roster context slot (§9.6 — context, never identity).
 # ---------------------------------------------------------------------------
@@ -458,8 +534,17 @@ def _assemble_ir(
     """Assemble + validate the full IR from the writer's content (compose owns structure).
 
     Any grounding/tier/binding defect surfaces here as an `ir.IRError` (the caller re-asks).
-    The `metadata` bag rides through (§11.3); an empty bag is omitted."""
+    The `metadata` bag rides through (§11.3); an empty bag is omitted.
+
+    DR-5 C2: `references` is MACHINERY-projected from the ledger's DISTINCT pool sources
+    (`project_references`) and threaded into `build_ir` ONLY when the composed body actually carries
+    a citation marker (`_body_has_citation` — the C2 gate). At C2 the writer is not yet taught to
+    cite, so no body cites → `references=None` (OMIT-WHEN-ABSENT, C1) → the golden compose corpus is
+    byte-identical. The projection is body-BLIND and reads only the ledger (not an identity input,
+    §7.2), so it moves NO artifact-id."""
     metadata = dict(request.metadata) if request.metadata else None
+    # C2 gate: attach the projection ONLY when the composed body cites (else None → byte-identical).
+    references = project_references(ledger) if _body_has_citation(writer_out) else None
     if request.is_flat:
         return ir.build_ir(
             artifact_id=request.artifact_id,
@@ -467,6 +552,7 @@ def _assemble_ir(
             grounding=ledger,
             body=writer_out["body"],
             metadata=metadata,
+            references=references,
         )
     parts = [
         {
@@ -483,6 +569,7 @@ def _assemble_ir(
         grounding=ledger,
         parts=parts,
         metadata=metadata,
+        references=references,
     )
 
 

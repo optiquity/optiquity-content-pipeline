@@ -39,6 +39,7 @@ from pipeline.compose import (
     build_outline_ir,
     build_writer_prompt,
     compose_artifact,
+    project_references,
 )
 from pipeline.grounding import GroundedFact
 from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id, parse_id
@@ -129,6 +130,7 @@ def make_fact(
     claim="runs in linear time",
     tier="EXTRACTED",
     instance="acme-graph",
+    commit=COMMIT_SHA,
     attestation=None,
 ):
     return GroundedFact(
@@ -136,7 +138,7 @@ def make_fact(
         claim=claim,
         instance_id=instance,
         adapter="graphify",
-        commit=COMMIT_SHA,
+        commit=commit,
         base_tier=tier,
         tier=tier,
         corroboration=0,
@@ -993,3 +995,180 @@ class TestBaseStructuralGate:
             compose_artifact(request, store=store, claims=claims, runner=never)
         assert never.calls == 0
         assert not store.output_path(request.artifact_id).exists()
+
+
+# --- DR-5 C2: `references` projected from the ledger's DISTINCT pool sources -----------------
+
+
+class TestProjectReferences:
+    """DR-5 C2: `project_references` maps the grounding ledger's DISTINCT `source_instance_id`s to
+    CSL-JSON `references`. The writer authors NONE (D1 is (b)-PROJECTED, forced by NO-GO #5) — every
+    entry is MACHINERY-minted from real per-source metadata, with a UNIQUE, deterministic citation
+    key (`s0`/`s1`…, mirroring the ledger's own `f0`/`f1` idiom) the C3 writer can cite as `[@s0]`.
+    Built from the REAL `build_grounding_ledger` (never a hand-rolled ledger dict)."""
+
+    def _ledger(self, facts, repos):
+        ledger, _ = build_grounding_ledger(facts, source_repos=repos)
+        return ledger
+
+    def test_distinct_sources_map_to_distinct_ordinal_ids(self):
+        ledger = self._ledger(
+            (make_fact(instance="z-graph"), make_fact(instance="a-graph")),
+            {"z-graph": "github.com/z/z", "a-graph": "github.com/a/a"},
+        )
+        refs = project_references(ledger)
+        # sorted instance-id order (mirrors the fact ordering): a-graph → s0, z-graph → s1.
+        assert [r["id"] for r in refs] == ["s0", "s1"]
+        assert len({r["id"] for r in refs}) == 2  # UNIQUE keys — C1 refuses duplicates
+        assert [r["title"] for r in refs] == ["a-graph", "z-graph"]
+
+    def test_single_source_ledger_projects_one_entry(self):
+        refs = project_references(self._ledger((make_fact(),), {"acme-graph": "github.com/acme/w"}))
+        assert len(refs) == 1 and refs[0]["id"] == "s0"
+
+    def test_multiple_facts_from_one_source_collapse_to_one_reference(self):
+        # Two FACTS, ONE instance → two ledger entries but ONE reference (per DISTINCT source).
+        ledger = self._ledger(
+            (make_fact(claim="c1"), make_fact(claim="c2")),
+            {"acme-graph": "github.com/acme/widget"},
+        )
+        assert len(ledger) == 2  # per-fact ledger entries
+        refs = project_references(ledger)
+        assert len(refs) == 1 and refs[0]["title"] == "acme-graph"
+
+    def test_descriptor_is_honest_per_source_metadata(self):
+        ledger = self._ledger((make_fact(),), {"acme-graph": "github.com/acme/widget"})
+        (ref,) = project_references(ledger)
+        assert ref == {
+            "id": "s0",
+            "type": "software",
+            "title": "acme-graph",  # the source's own name
+            "note": f"github.com/acme/widget@{COMMIT_SHA}",  # repo@commit — the exact locator
+        }
+
+    def test_commitless_source_note_is_the_bare_repo(self):
+        # A commitless adapter (`source_commit` null, legal per §15) → the note is the repo alone.
+        ledger = self._ledger((make_fact(commit=None),), {"acme-graph": "github.com/acme/widget"})
+        (ref,) = project_references(ledger)
+        assert ref["note"] == "github.com/acme/widget"
+
+    def test_order_is_deterministic_regardless_of_input_ordering(self):
+        repos = {
+            "a-graph": "github.com/a/a",
+            "m-graph": "github.com/m/m",
+            "z-graph": "github.com/z/z",
+        }
+        forward = project_references(
+            self._ledger(
+                (
+                    make_fact(instance="a-graph"),
+                    make_fact(instance="m-graph"),
+                    make_fact(instance="z-graph"),
+                ),
+                repos,
+            )
+        )
+        reverse = project_references(
+            self._ledger(
+                (
+                    make_fact(instance="z-graph"),
+                    make_fact(instance="m-graph"),
+                    make_fact(instance="a-graph"),
+                ),
+                repos,
+            )
+        )
+        assert forward == reverse  # sorted instance-id order — input order is irrelevant
+        assert [r["title"] for r in forward] == ["a-graph", "m-graph", "z-graph"]
+
+
+class TestReferencesProjectionGate:
+    """DR-5 C2 gate: `references` attaches ONLY when the composed body carries a citation marker
+    `[@`. At C2 the writer is NOT yet taught to cite, so NO body cites → `references` attaches to
+    NOTHING → every existing golden compose is byte-identical (the omit-when-absent key is absent).
+    A citing body (simulated) gets the projection, and it VALIDATES under C1's rule (the real
+    `build_ir` runs `_validate_references`). Both the flat and the parts envelopes are covered."""
+
+    def test_flat_citationless_body_omits_references(self, store, claims):
+        request = make_request()
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        assert "references" not in persisted  # nothing cites → omit-when-absent → byte-identical
+        assert "references" not in outcome.ir
+
+    def test_flat_citing_body_attaches_and_validates_references(self, store, claims):
+        request = make_request()
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@s0].'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        validate_ir(persisted)  # the projected references pass C1's _validate_references
+        assert [r["id"] for r in persisted["references"]] == ["s0"]
+        assert persisted["references"][0]["title"] == "acme-graph"
+
+    def test_parts_citationless_body_omits_references(self, store, claims):
+        request = make_request(format_parts=("slides", "presenter-notes"))
+        runner = ScriptedRunner(
+            [
+                writer_ok(
+                    {
+                        "parts": {
+                            "slides": '# Deck\n\n- [linear time]{.EXTRACTED data-fact="f0"}',
+                            "presenter-notes": "Speaker notes, ungrounded prose.",
+                        }
+                    }
+                )
+            ]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        assert "references" not in persisted  # no part cites → byte-identical
+
+    def test_parts_citing_body_attaches_and_validates_references(self, store, claims):
+        # A citation marker in ANY part body trips the gate.
+        request = make_request(format_parts=("slides", "presenter-notes"))
+        runner = ScriptedRunner(
+            [
+                writer_ok(
+                    {
+                        "parts": {
+                            "slides": '# Deck\n\n- [linear time]{.EXTRACTED data-fact="f0"} [@s0]',
+                            "presenter-notes": "Speaker notes, ungrounded prose.",
+                        }
+                    }
+                )
+            ]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        validate_ir(persisted)
+        assert [r["id"] for r in persisted["references"]] == ["s0"]
+
+    def test_projected_references_validate_through_the_real_build_ir(self):
+        # The projection wired straight through the REAL build_ir with a citing body validates —
+        # N distinct sources → N entries with distinct ids, resolvable by a later `[@key]` (C4).
+        request = make_request(
+            grounded_facts=(make_fact(instance="a-graph"), make_fact(instance="b-graph")),
+            source_repos={"a-graph": "github.com/a/a", "b-graph": "github.com/b/b"},
+        )
+        ledger, _ = build_grounding_ledger(
+            request.grounded_facts, source_repos=request.source_repos
+        )
+        refs = project_references(ledger)
+        doc = build_ir(
+            artifact_id=request.artifact_id,
+            preimage=request.preimage,
+            grounding=ledger,
+            body='A [claim]{.EXTRACTED data-fact="f0"} — see [@s0] and [@s1].',
+            references=refs,
+        )
+        validate_ir(doc)  # no raise — unique ids, each with a non-empty-string id (C1)
+        assert [r["id"] for r in doc["references"]] == ["s0", "s1"]
