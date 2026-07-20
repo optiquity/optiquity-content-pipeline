@@ -100,11 +100,18 @@ Log = Callable[[str], None]
 def _deferred_asset_loader(path: str) -> bytes:
     """The production-path Presentation asset loader (B1) — a DEFERRED, loud no-op.
 
-    `presentation.presentation_from_entry` invokes this ONLY for an entry declaring a
-    `css`/`template`/`reference_doc` asset lever. No framework entry declares any (only
-    `plain.md` ships), so it is NEVER called on any existing or MVP path; raising here (vs the
-    old `lower_plain` silent lever-drop) is strictly more honest (§3.1). Shipping a real
-    filesystem asset loader (the asset-path resolution convention) is §17/step-29 scope."""
+    `presentation.presentation_from_entry` invokes this for any entry declaring a FILE-BACKED asset
+    lever — `css`/`template`/`reference_doc` AND (DR-5 C7/C11) `csl`. That last note is now RELAXED:
+    the three shipped journal looks (`presentations/journal-*-look.md`) DO declare a `csl` path
+    (`presentations/assets/csl/*.csl`), so this loader IS reachable on the production generate-next
+    path for a CITING journal deliverable (a non-citing render never lowers a style to bytes it
+    would use, but `presentation_from_entry` still resolves the path here). It remains a DEFERRED,
+    loud raise: production asset-LOWERING — resolving a declared asset path to bytes, `csl` INCLUDED
+    — rides the SAME §17/step-29 filesystem loader as css/reference_doc (one asset-path resolution
+    convention, not a per-lever special case); raising here (vs the old `lower_plain` silent
+    lever-drop) is strictly more honest (§3.1). The DR-5 C11 citation-style e2e injects its OWN
+    `load_asset` (reading the shipped `.csl` bytes), so it validates the real styles WITHOUT this
+    deferred loader; shipping the real filesystem resolver is §17/step-29 scope."""
     raise _presentation.PresentationError(
         "presentation-error: asset levers (css/template/reference_doc) are not yet lowerable on "
         f"the production generate-next path — deferred to §17/step-29; an entry declares a "

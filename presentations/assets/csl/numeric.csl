@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+provenance: framework
+optiquity-content-pipeline — generic framework CSL style (DR-5 C11). No client content.
+
+A NUMERIC citation style (design §5.3 PD2 `csl`): in-text citations are bracketed ORDINALS
+(`[1]`, `[2]`, …) and the bibliography is a NUMBERED, second-field-aligned list. Generic and
+venue-agnostic — it impersonates no real journal. Presentation-asset path convention:
+`presentations/assets/csl/<style>.csl` (production path-resolution is the deferred §17/step-29
+loader; see pipeline/driver.py `_deferred_asset_loader`). Because the pipeline PROJECTS
+references from the grounding ledger's pool sources (DR-5 C2), the only populated CSL-JSON
+variables are `title` (the source label) and `note` (the repo@commit locator); the ordinal is
+CSL's own `citation-number`.
+-->
+<style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0" default-locale="en-US">
+  <info>
+    <title>Framework Numeric (generic)</title>
+    <id>urn:optiquity:csl:framework-numeric</id>
+    <category citation-format="numeric"/>
+    <updated>2026-01-01T00:00:00+00:00</updated>
+  </info>
+  <citation collapse="citation-number">
+    <layout prefix="[" suffix="]" delimiter="; ">
+      <text variable="citation-number"/>
+    </layout>
+  </citation>
+  <bibliography second-field-align="flush">
+    <layout suffix=".">
+      <text variable="citation-number" prefix="[" suffix="] "/>
+      <group delimiter=". ">
+        <text variable="title"/>
+        <text variable="note"/>
+      </group>
+    </layout>
+  </bibliography>
+</style>

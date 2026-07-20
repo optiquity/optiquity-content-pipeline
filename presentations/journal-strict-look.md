@@ -7,6 +7,7 @@ variables:
   fontsize: 11pt
   linestretch: 1.15
 highlight_style: pygments
+csl: presentations/assets/csl/numeric.csl
 ---
 
 # journal-strict-look — Presentation entry (framework default)
@@ -24,6 +25,15 @@ Levers set (all ride inside `variables` per PD2, plus the one dedicated highligh
   `--variable=key=value` flag and is snapshotted into the serialize-inputs preimage (§17 FR7.1).
 - **`highlight_style: pygments`** — Pandoc's default syntax-highlighting palette, a neutral
   choice for the occasional code or data listing.
+- **`csl: presentations/assets/csl/numeric.csl`** — the per-venue citation STYLE (DR-5 C7/C11):
+  this strict, print-journal venue numbers its references (`[1]`, `[2]`, …) with a numbered
+  bibliography — the compact, rigid Vancouver/IEEE convention that suits it. `csl` is a citation
+  STYLE override, NOT a citeproc toggle: `--citeproc` is CONTENT-driven (it fires whenever the AST
+  cites, §17 R-4 family / C6), so a non-citing render through this look emits no `--csl` and is
+  byte-identical to the `plain` floor (C7 S4); a citing render resolves every `[@key]` under this
+  numbered style instead of pandoc's default author-date. The `.csl` is a hashed Presentation asset
+  whose content hash rides the serialize preimage only when citeproc ran (§17 FR7.1); production
+  path-resolution of the declared path is the deferred §17/step-29 loader.
 
 Do not edit this entry to restyle output (extend-don't-edit, §10 rule 5): author a new
 presentation entry (or an instance `x-*` entry) and select it.

@@ -20,6 +20,18 @@ compose -> reconcile -> serialize path with the SHIPPED registry entries:
   equals its stored digest — NO spurious drift — because `DefaultCurrencyResolver` now re-derives
   the SD-5 `section_attr_transform_version` flag from the stored bundle before rebuilding.
 
+DR-5 COMMIT C11 closes the DR-5 driving example ON TOP of this DR-4 structure: the three journal
+looks now each declare a per-venue `csl` citation STYLE (strict → numeric `[1]`, structured →
+author-date `(source)`, concise → note/footnote), shipped under `presentations/assets/csl/*.csl`.
+`test_one_ast_three_venues_differ_by_citation_style_only` composes ONE citing `academic-paper` IR
+(references PROJECTED from a two-source grounding ledger, C2/C4 — no fabrication) and renders it to
+the three journal deliverables FROM ONE AST, asserting their bibliographies differ by STYLE only,
+while `plain` resolves under pandoc's DEFAULT author-date CSL. The pre-existing citing tests now
+render through a csl-declaring look (`journal-strict-look` → numeric), an EXPECTED style change;
+non-citing renders through a csl-set look stay byte-identical to the `plain` floor (C7 S4), and the
+looks' `.csl` is loaded by an INJECTED `load_asset` (the deferred §17/step-29 production loader),
+so the e2e validates the actual shipped `.csl` bytes.
+
 Hermetic (REC-3): a tmp world with the REAL framework registries + a tmp workspace; the compose
 writer TRANSPORT is faked (a `ProcessOutcome` in-process — NO child `claude`, NO subscription
 spend, no `ANTHROPIC_API_KEY`), so this passes `scripts/check-no-content.sh`. Only the
@@ -69,6 +81,25 @@ _L2_DEFAULTS = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 #: The three shipped C10 venue profiles + what each TIGHTENS on `academic-paper`.
 VENUES = ("journal-strict", "journal-structured", "journal-concise")
 _PANDOC_AVAILABLE = pandoc_available()
+
+#: DR-5 C11 — the SHIPPED per-venue citation STYLE each journal look declares (its `csl` frontmatter
+#: path, repo-root-relative). The venue→style map: strict → numeric (`[1]`), structured →
+#: author-date (`(source)`), concise → note (footnote). Generic framework `.csl` files under
+#: `presentations/assets/csl/` (no real-journal impersonation, no client content).
+LOOK_CSL = {
+    "journal-strict-look": "presentations/assets/csl/numeric.csl",
+    "journal-structured-look": "presentations/assets/csl/author-date.csl",
+    "journal-concise-look": "presentations/assets/csl/note.csl",
+}
+
+
+def _load_shipped_asset(path: str) -> bytes:
+    """The INJECTED Presentation `load_asset` (DR-5 C11): read a SHIPPED framework asset (a `.csl`
+    style) by its declared repo-root-relative path. It stands in for the deferred §17/step-29
+    PRODUCTION loader (`driver._deferred_asset_loader`, which raises loudly), so the e2e validates
+    the ACTUAL shipped `.csl` bytes — a citing render through a csl-set look resolves under the real
+    style, and its content hash rides the serialize preimage (§17 FR7.1)."""
+    return (REPO_ROOT / path).read_bytes()
 
 
 def _requires_pandoc() -> None:
@@ -267,6 +298,91 @@ def _citing_paper_ir() -> dict:
     )
 
 
+# ---------------------------------------------------------------------------
+# DR-5 C11: genuinely COMPOSE a conforming, CITING academic-paper whose `references` are PROJECTED
+# (C2) from a TWO-source grounding ledger and whose `[@key]`s RESOLVE against that projection (C4) —
+# no fabrication. The conforming skeleton fits all three venues, so ONE composed AST renders to
+# three journal deliverables that differ ONLY by the look's citation STYLE.
+# ---------------------------------------------------------------------------
+
+#: A conforming academic-paper skeleton (no acks, a discussion, a short abstract → fits every venue)
+#: that CITES both projected pool sources `[@s0]`/`[@s1]` in Results (and grounds two EXTRACTED
+#: facts via `data-fact` spans). The ONE composed body the three looks render to three STYLES.
+_CITING_CONFORMING = (
+    "## Abstract {#abstract}\n\nA short, scannable abstract well under the concise cap.\n\n"
+    "## Methods {#methods}\n\nWhat we did, in reproducible detail.\n\n"
+    '## Results {#results}\n\nWe observed a [linear-time result]{.EXTRACTED data-fact="f0"} '
+    'and a [constant-space result]{.EXTRACTED data-fact="f1"}; prior work established the '
+    "bounds; see [@s0] and [@s1].\n\n"
+    "## Discussion {#discussion}\n\nWhat the result means, and the limits of the evidence."
+)
+
+
+def _beta_fact() -> GroundedFact:
+    """The SECOND pool source (beta-graph) — a DISTINCT `instance_id`, so `project_references` emits
+    a second reference `s1` (the sorted-instance ordinal), giving the composed body two RESOLVABLE
+    `[@key]`s tied to real graphed sources (never fabricated)."""
+    return GroundedFact(
+        subject="cache",
+        claim="uses constant space",
+        instance_id="beta-graph",
+        adapter="graphify",
+        commit=COMMIT,
+        base_tier="EXTRACTED",
+        tier="EXTRACTED",
+        corroboration=0,
+        agreeing_instances=("beta-graph",),
+        anchors=(Anchor(kind="file-line", value="src/cache.py:7"),),
+        citable=True,
+        as_of=datetime.date(2026, 6, 1),
+        scores={"trusted": 5, "review_status": "merged", "freshness": datetime.date(2026, 6, 1)},
+        weight=1.0,
+        attestation=None,
+    )
+
+
+def _citing_paper_preimage() -> dict:
+    """The `academic-paper` preimage for the C11 citing driving example — TWO pool sources in the
+    subset (acme-graph + beta-graph), so the projected reference set is exactly {s0, s1}."""
+    return build_artifact_preimage(
+        topic=EntryBinding("x-parsing-study"),
+        persona=EntryBinding("technical-evaluator"),
+        format=EntryBinding("academic-paper"),
+        voice=EntryBinding("clear-explainer"),
+        goals=[EntryBinding("explain")],
+        source_subset=["acme-graph", "beta-graph"],
+        source_commit={"acme-graph": COMMIT, "beta-graph": COMMIT},
+    )
+
+
+def _compose_citing_paper_ir(root: Path) -> dict:
+    """Genuinely compose ONE conforming, CITING `academic-paper` IR over the REAL compose path (a
+    faked writer, real IR mint + grounding validation + the C2 projection + the C4 `[@key]`→
+    projection resolution gate). Its `references` are MACHINERY-projected from the TWO-source ledger
+    (C2), and every `[@key]` in the body resolves against exactly that projected set (C4) — no
+    fabrication. Returns the validated canonical IR (references == the projection; body cites)."""
+    store = WorkspaceStore(root / "workspaces" / WS)
+    store.ensure_layout()
+    claims = registry_for(store)
+    preimage = _citing_paper_preimage()
+    request = ComposeRequest(
+        artifact_id=mint_artifact_id(preimage),
+        preimage=preimage,
+        format_parts=(),
+        effective_values={"voice": {"tone": "clear"}, "persona": {"knowledge_level": 3}},
+        grounded_facts=(_grounded_fact(), _beta_fact()),
+        source_repos={
+            "acme-graph": "github.com/acme/parser",
+            "beta-graph": "github.com/beta/graph",
+        },
+    )
+    outcome = compose_artifact(
+        request, store=store, claims=claims, runner=_WriterRunner(_CITING_CONFORMING)
+    )
+    assert outcome.status == "ok" and outcome.ir is not None, outcome
+    return outcome.ir
+
+
 def _reconcile_at(env: CascadeEnv, canonical_ir: dict, platform: str):
     """Reconcile ONE canonical IR at ONE venue over the REAL path, reading the SHIPPED entry's
     `format_structural` + `hard_limits` through the production driver seams (M2-EXCLUDED reads).
@@ -364,18 +480,20 @@ def _serialize_html(env: CascadeEnv, fitted_ir: dict, presentation: str):
     """Serialize a fitted IR to the `html` public writer through the REAL serialize leg — the SAME
     threaded sequence `driver._run_deliverable` uses (serialize_fitted -> dispatch ->
     serialize_inputs_preimage(section_attr_transformed=dout.section_attr_transformed,
-    citeproc_enabled=dout.citeproc_enabled))."""
+    citeproc_enabled=dout.citeproc_enabled, csl=render_inputs.csl)).
+
+    DR-5 C11: the looks now declare a `csl` STYLE asset, so `load_asset` is the SHIPPED-asset reader
+    (`_load_shipped_asset`) — NOT an assert-never no-op — mirroring the deferred §17/step-29
+    production loader. The `csl` labeled field is threaded into the preimage EXACTLY as the driver
+    does; `serialize_inputs_preimage` adds it to the `render_inputs` component ONLY when citeproc
+    ran (a non-citing render through a csl-set look stays byte-identical to the floor, C7 S4)."""
     ast = serialize_fitted(fitted_ir)[0].ast
     target_values = driver._render_target_values(env, "html")
     target = render_target_from_entry(target_values)
     pentry = env.resolver.resolve("presentations", presentation)
-
-    def _no_asset(*_a, **_k):  # these looks set no css/template/reference-doc assets
-        raise AssertionError("no asset should be loaded for a variables-only look")
-
     pres = presentation_from_entry(
         {**pentry.defaults(), **pentry.effective, "id": pentry.id},
-        load_asset=_no_asset,
+        load_asset=_load_shipped_asset,
         defaults=pentry.defaults(),
     )
     render_inputs = lower(pres, target.writer, "html", target_engine=target.engine)
@@ -385,6 +503,7 @@ def _serialize_html(env: CascadeEnv, fitted_ir: dict, presentation: str):
         render_inputs=render_inputs_to_mapping(render_inputs),
         section_attr_transformed=dout.section_attr_transformed,
         citeproc_enabled=dout.citeproc_enabled,
+        csl=render_inputs.csl,
     )
     return dout, serialize_preimage
 
@@ -414,13 +533,20 @@ def test_fitted_typed_deliverable_renders_valid_public_bytes(tmp_path):
     assert 'id="abstract"' in text
 
 
-def test_two_phase_render_engine_records_the_typed_version(tmp_path):
+def test_two_phase_render_engine_records_the_typed_version(monkeypatch, tmp_path):
     """RT: `DefaultRenderEngine.serialize_preimage` runs BEFORE dispatch (two-phase), so it
     computes the SD-5 flag from the fitted AST itself (gated by `should_strip`). A TYPED
     deliverable's preimage therefore records `section_attr_transform_version` — the SAME conclusion
     dispatch reaches — so a typed standalone-API render mints an id matching its bytes."""
     _requires_pandoc()
+    from pipeline.api import render as render_api
     from pipeline.api.render import DefaultRenderEngine, SerializeLeg
+
+    # DR-5 C11: `journal-strict-look` now declares `csl`, which the render engine's OWN deferred
+    # asset loader (`render._deferred_asset_loader`) raises on. Inject the shipped-asset reader (the
+    # deferred §17/step-29 production loader) so the two-phase engine lowers the real style; the
+    # deliverable is NON-citing, so csl never enters the preimage (this test still probes SD-5).
+    monkeypatch.setattr(render_api, "_deferred_asset_loader", _load_shipped_asset)
 
     root = _build_root(tmp_path)
     env = CascadeEnv(root, workspace=WS)
@@ -555,16 +681,28 @@ def test_fitted_citing_deliverable_resolves_bibliography_and_records_version(tmp
     assert "[@s0]" not in text and "[@s1]" not in text
     assert 'id="refs"' in text
     assert 'id="ref-s0"' in text and 'id="ref-s1"' in text
+    # DR-5 C11 — EXPECTED, NOT a regression: `journal-strict-look` now declares `csl = numeric.csl`,
+    # so this citing render emits `--citeproc --csl=<numeric>` and resolves under the NUMBERED style
+    # (`[1]`/`[2]`), not pandoc's default author-date. The csl STYLE asset therefore rides the
+    # serialize preimage's render_inputs (citeproc ran → the S3×S4 identity gate opened, §17 FR7.1).
+    assert "[1]" in text and "[2]" in text  # the numbered in-text citations of the numeric style
+    assert preimage["render_inputs"]["csl"][0] == LOOK_CSL["journal-strict-look"]
 
 
-def test_two_phase_render_engine_records_the_citeproc_version(tmp_path):
+def test_two_phase_render_engine_records_the_citeproc_version(monkeypatch, tmp_path):
     """RT: `DefaultRenderEngine.serialize_preimage` runs BEFORE dispatch (two-phase), so it computes
     the C6 citeproc flag from the fitted AST itself — UNCONDITIONALLY (content-driven, not
     writer-gated). A CITING deliverable's preimage therefore records `citeproc_enablement_version`
     — the SAME conclusion dispatch reaches — so a citing standalone-API render mints an id matching
     its resolved bytes (the twin of the SD-5 two-phase parity test)."""
     _requires_pandoc()
+    from pipeline.api import render as render_api
     from pipeline.api.render import DefaultRenderEngine, SerializeLeg
+
+    # DR-5 C11: `journal-strict-look` now declares `csl`; inject the shipped-asset reader so the
+    # render engine's own deferred loader does not raise (the §17/step-29 production loader). This
+    # deliverable CITES, so the csl STYLE asset also enters the preimage's render_inputs.
+    monkeypatch.setattr(render_api, "_deferred_asset_loader", _load_shipped_asset)
 
     root = _build_root(tmp_path)
     env = CascadeEnv(root, workspace=WS)
@@ -586,6 +724,8 @@ def test_two_phase_render_engine_records_the_citeproc_version(tmp_path):
     )
     preimage = DefaultRenderEngine().serialize_preimage(leg)
     assert "citeproc_enablement_version" in preimage["tool_bundle"]
+    # DR-5 C11 (S3×S4): the csl STYLE asset rides the preimage's render_inputs (citeproc ran).
+    assert preimage["render_inputs"]["csl"][0] == LOOK_CSL["journal-strict-look"]
 
 
 def test_stored_citing_deliverable_reports_no_spurious_drift(tmp_path):
@@ -606,7 +746,7 @@ def test_stored_citing_deliverable_reports_no_spurious_drift(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (C) The three journal looks load + lower cleanly (VISUAL only — variables + highlight_style).
+# (C) The three journal looks load + lower cleanly (variables + highlight_style + C11 csl style).
 # ---------------------------------------------------------------------------
 
 
@@ -619,18 +759,107 @@ def test_journal_looks_load_and_lower_to_valid_render_inputs(tmp_path, look):
     env = CascadeEnv(root, workspace=WS)
     pentry = env.resolver.resolve("presentations", look)
 
-    def _no_asset(*_a, **_k):  # pragma: no cover — the looks declare no file assets
-        raise AssertionError("no asset should be loaded for a variables-only look")
-
     pres = presentation_from_entry(
         {**pentry.defaults(), **pentry.effective, "id": pentry.id},
-        load_asset=_no_asset,
+        load_asset=_load_shipped_asset,  # DR-5 C11: the looks now declare a `csl` STYLE asset
         defaults=pentry.defaults(),
     )
     render_inputs = lower(pres, "html5", "html", target_engine="")
     mapping = render_inputs_to_mapping(render_inputs)
-    # VISUAL-only: the look sets fonts (inside `variables`) + a highlight style, and NEVER a
+    # VISUAL: the look sets fonts (inside `variables`) + a highlight style, and NEVER a
     # render-target field — a `--variable=…` flag per scalar and one `--highlight-style=…` flag.
     assert any(f.startswith("--variable=mainfont=") for f in mapping["flags"])
     assert any(f.startswith("--highlight-style=") for f in mapping["flags"])
-    assert mapping["assets"] == []  # a variables-only look pins no css/template/reference-doc
+    # DR-5 C11: `csl` is the α LABELED field — it pins NO css/template/reference-doc asset (so
+    # `assets` stays empty) and emits NO `--csl` flag in `lower` (dispatch content-gates it WITH
+    # `--citeproc`); `render_inputs_to_mapping` OMITS it (it enters the preimage only when citeproc
+    # ran). The lowered `RenderInputs.csl` labeled field carries the style this look declares.
+    assert mapping["assets"] == []  # a csl-set look still pins no css/template/reference-doc asset
+    assert "csl" not in mapping  # the labeled field is omitted from the base render_inputs mapping
+    assert render_inputs.csl is not None
+    assert render_inputs.csl[0] == LOOK_CSL[look]  # the venue→style map, resolved from the entry
+
+
+# ---------------------------------------------------------------------------
+# (D) DR-5 C11 — the driving example CLOSED: ONE composed citing AST → THREE journal deliverables
+# that differ ONLY by citation STYLE (numeric / author-date / note) + `plain`'s default author-date.
+# ---------------------------------------------------------------------------
+
+
+def test_one_ast_three_venues_differ_by_citation_style_only(tmp_path):
+    """DR-5 C11 (the driving example): ONE composed `academic-paper` IR — references PROJECTED from
+    a two-source grounding ledger (C2), every `[@key]` resolved against that projection (C4), NO
+    fabrication — reconciles + serializes to the THREE shipped journal deliverables whose
+    bibliographies DIFFER by STYLE only (strict → numeric `[1]`, structured → author-date, concise
+    → note/footnote), FROM ONE AST; `plain` resolves under pandoc's DEFAULT author-date CSL. The
+    `.csl` styles are the ACTUAL shipped framework files (injected `load_asset`). Real pandoc."""
+    _requires_pandoc()
+    root = _build_root(tmp_path)
+    env = CascadeEnv(root, workspace=WS)
+
+    composed = _compose_citing_paper_ir(root)
+
+    # C2/C4 — NO fabrication: the composed `references` ARE exactly the projected pool-source set,
+    # each an HONEST per-source descriptor (a graphed pool source titled by its instance-id, not an
+    # authored citation) — so every `[@key]` the body cites points at a work the pipeline grounded.
+    refs = {r["id"]: r for r in composed["references"]}
+    assert set(refs) == {"s0", "s1"}  # exactly the two DISTINCT projected pool sources
+    assert refs["s0"]["title"] == "acme-graph" and refs["s1"]["title"] == "beta-graph"
+    assert all(r["type"] == "software" for r in refs.values())  # projected descriptor, not authored
+
+    # ONE composed AST → three journal deliverables (one per look) + the `plain` floor. The
+    # conforming skeleton fits every venue (pass strategy), so all four render from structurally
+    # IDENTICAL ASTs; the ONLY per-venue difference is the look's `csl` citation STYLE.
+    renders: dict[str, str] = {}
+    csl_hashes: dict[str, str] = {}
+    for venue, look in (
+        ("journal-strict", "journal-strict-look"),
+        ("journal-structured", "journal-structured-look"),
+        ("journal-concise", "journal-concise-look"),
+    ):
+        fit = _reconcile_at(env, composed, venue)
+        assert fit.status == "ok" and fit.fitted_ir is not None, (venue, fit.status)
+        dout, preimage = _serialize_html(env, fit.fitted_ir, look)
+        assert dout.citeproc_enabled is True  # content-driven: the body cites (C6)
+        renders[look] = dout.output_bytes.decode("utf-8")
+        # each look rides its OWN csl STYLE asset; its content hash enters the preimage (citeproc
+        # ran, so the S3×S4 identity gate opened) — a citing journal id differs by the presentation
+        # slug + this csl hash (§17 FR7.1).
+        assert preimage["render_inputs"]["csl"][0] == LOOK_CSL[look]
+        csl_hashes[look] = preimage["render_inputs"]["csl"][1]
+
+    # `plain` (the floor): no csl → pandoc's DEFAULT author-date CSL resolves the SAME projection.
+    fit_plain = _reconcile_at(env, composed, "journal-strict")
+    dout_plain, preimage_plain = _serialize_html(env, fit_plain.fitted_ir, "plain")
+    renders["plain"] = dout_plain.output_bytes.decode("utf-8")
+    assert "csl" not in preimage_plain["render_inputs"]  # the floor pins no style
+
+    strict = renders["journal-strict-look"]  # numeric
+    structured = renders["journal-structured-look"]  # author-date
+    concise = renders["journal-concise-look"]  # note
+    plain = renders["plain"]  # pandoc default author-date
+
+    # EVERY `[@key]` RESOLVED to a PROJECTED reference at EVERY venue — no unresolved marker
+    # survives, and BOTH projected refs render — the SAME AST + SAME projection, four styles.
+    for text in (strict, structured, concise, plain):
+        assert "[@s0]" not in text and "[@s1]" not in text
+        assert 'id="ref-s0"' in text and 'id="ref-s1"' in text
+
+    # The THREE journal deliverables DIFFER by citation STYLE only:
+    #  · strict = NUMERIC: bracketed ordinals `[1]`/`[2]`, no footnotes.
+    assert "[1]" in strict and "[2]" in strict
+    assert "footnote-ref" not in strict
+    #  · structured = AUTHOR-DATE: parenthetical source labels, no numbered brackets, no footnotes.
+    assert "(acme-graph)" in structured and "(beta-graph)" in structured
+    assert "[1]" not in structured and "footnote-ref" not in structured
+    #  · concise = NOTE: superscript footnote markers + an end-of-document footnotes section.
+    assert 'class="footnote-ref"' in concise and 'id="footnotes"' in concise
+    #  · plain = pandoc's DEFAULT author-date CSL: "n.d." (no projected date) — distinct from ours.
+    assert "n.d." in plain
+
+    # From ONE AST, the four rendered documents are pairwise DISTINCT — the citation STYLE is the
+    # sole axis of difference (the looks' fonts/highlight ride template variables a fragment
+    # `-t html5` render does not apply, so ONLY the csl-driven citation markup varies)…
+    assert len({strict, structured, concise, plain}) == 4
+    # …and the three journal styles are three DISTINCT shipped `.csl` files (distinct hashes).
+    assert len(set(csl_hashes.values())) == 3

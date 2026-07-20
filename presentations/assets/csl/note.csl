@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+provenance: framework
+optiquity-content-pipeline — generic framework CSL style (DR-5 C11). No client content.
+
+A NOTE citation style (design §5.3 PD2 `csl`): `class="note"`, so each in-text citation renders
+as a FOOTNOTE reference (a superscript marker) that pandoc turns into an end-of-document footnote,
+keeping the running text uncluttered; a bibliography is also emitted. Generic and venue-agnostic —
+it impersonates no real journal. Presentation-asset path convention:
+`presentations/assets/csl/<style>.csl` (production path-resolution is the deferred §17/step-29
+loader; see pipeline/driver.py `_deferred_asset_loader`). Because the pipeline PROJECTS references
+from the grounding ledger's pool sources (DR-5 C2), the only populated CSL-JSON variables are
+`title` (the source label) and `note` (the repo@commit locator); this style renders both.
+-->
+<style xmlns="http://purl.org/net/xbiblio/csl" class="note" version="1.0" default-locale="en-US">
+  <info>
+    <title>Framework Note (generic)</title>
+    <id>urn:optiquity:csl:framework-note</id>
+    <category citation-format="note"/>
+    <updated>2026-01-01T00:00:00+00:00</updated>
+  </info>
+  <citation>
+    <layout suffix=".">
+      <group delimiter=", ">
+        <text variable="title"/>
+        <text variable="note"/>
+      </group>
+    </layout>
+  </citation>
+  <bibliography>
+    <layout suffix=".">
+      <group delimiter=". ">
+        <text variable="title"/>
+        <text variable="note"/>
+      </group>
+    </layout>
+  </bibliography>
+</style>
