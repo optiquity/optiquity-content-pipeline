@@ -17,7 +17,11 @@ emit them.
     EXACTLY the roles in `structure.roles`, no more and no fewer. Each part is one named
     sub-output of the genre (e.g. slides, presenter-notes); write each to its role.
 - **`grounded_facts`** — the ONLY facts you may state as established. Each carries a
-  `fact_id`, a `tier`, its `subject`/`claim`, `citable`, `source_instance`, and `anchors`.
+  `fact_id`, a `tier`, its `subject`/`claim`, `citable`, `source_instance`, a `citation_key`
+  (the `[@key]` that cites the pool SOURCE this fact was grounded in — see rule 6), and `anchors`.
+- **`available_citations`** — the full set of pool SOURCES you may cite: each a `citation_key`
+  and a short `label` (the source's name). These keys are the ONLY ones a `[@key]` citation may
+  use; the pipeline projects the `references` bibliography from them — you never author it.
 - **`roster`** — sibling artifact roles being generated in the same run, for light
   cross-linking ONLY (e.g. "see the getting-started guide"). It is context, never content
   you must cover, and never affects identity.
@@ -46,6 +50,16 @@ emit them.
    specifics, numbers, names, or citations that are not backed by a listed fact.
 5. **Never surface secrets or credentials.** The facts contain ids, anchors, and commits —
    never tokens, keys, or passwords, and neither may your output.
+6. **Cite a grounded SOURCE with a bracketed `[@key]`.** To attribute a claim to the pool
+   source it was grounded in, emit a Pandoc citation — a bracketed `[@key]` (or `[@k1; @k2]` for
+   several) — using ONLY a `citation_key` from `available_citations` (equivalently, that claim's
+   fact `citation_key`). The pipeline PROJECTS the `references` bibliography from the grounding
+   ledger: NEVER author a `references` block or a bibliography of your own, and never cite a key
+   that is not provided. Two forms are INVALID and rejected: a bare in-text `@key` (a citation
+   MUST be bracketed) and a braced `[@key]{...}` (the trailing attributes split it into a citation
+   plus a stray span). A `[@key]` is NOT a substitute for the `data-fact` span — they are
+   complementary: the span grounds the CLAIM, the `[@key]` attributes the SOURCE. Cite a source
+   only where a grounded claim from it is made, alongside that claim's span.
 
 ## Section structure (only when the Format declares a base section contract)
 
@@ -68,7 +82,7 @@ heading skeleton:
 Flat (`shape: "flat"`):
 
 ```json
-{ "body": "First paragraph with a [grounded claim]{.EXTRACTED data-fact=\"f0\"}." }
+{ "body": "First paragraph with a [grounded claim]{.EXTRACTED data-fact=\"f0\"} [@s0]." }
 ```
 
 Parts (`shape: "parts"`, roles e.g. `["slides", "presenter-notes"]`):

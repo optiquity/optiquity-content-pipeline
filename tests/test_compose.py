@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -39,11 +40,12 @@ from pipeline.compose import (
     build_outline_ir,
     build_writer_prompt,
     compose_artifact,
+    parse_writer_output,
     project_references,
 )
 from pipeline.grounding import GroundedFact
 from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id, parse_id
-from pipeline.ir import SecretShapedValueError, build_ir, validate_ir
+from pipeline.ir import SchemaViolation, SecretShapedValueError, build_ir, validate_ir
 from pipeline.outline import normalize_outline, outline_digest
 from pipeline.store import WorkspaceStore
 from pipeline.transport import ProcessOutcome, ProcessRequest
@@ -350,20 +352,22 @@ class TestRosterIsContextNotIdentity:
 
     def test_roster_rides_the_prompt(self):
         request = make_request(roster=("getting-started", "architecture"))
-        _, entries = build_grounding_ledger(
+        ledger, entries = build_grounding_ledger(
             request.grounded_facts, source_repos=request.source_repos
         )
-        prompt = build_writer_prompt(request, entries)
+        prompt = build_writer_prompt(request, entries, ledger)
         assert "getting-started" in prompt and "architecture" in prompt
         assert '"fact_id": "f0"' in prompt and "EXTRACTED" in prompt
         assert "business" in prompt  # effective values ride the prompt too
 
     def test_reask_note_is_appended_on_correction(self):
         request = make_request()
-        _, entries = build_grounding_ledger(
+        ledger, entries = build_grounding_ledger(
             request.grounded_facts, source_repos=request.source_repos
         )
-        prompt = build_writer_prompt(request, entries, reask_note="prior output was rejected")
+        prompt = build_writer_prompt(
+            request, entries, ledger, reask_note="prior output was rejected"
+        )
         assert "Correction required" in prompt and "prior output was rejected" in prompt
 
 
@@ -1172,3 +1176,159 @@ class TestReferencesProjectionGate:
         )
         validate_ir(doc)  # no raise — unique ids, each with a non-empty-string id (C1)
         assert [r["id"] for r in doc["references"]] == ["s0", "s1"]
+
+
+# --- DR-5 C3: the writer is TAUGHT the projected citation keys + FORBIDDEN from authoring refs ---
+
+#: Anchored on the exact heading `build_writer_prompt` appends (the template itself carries
+#: illustrative ```json fences, so a bare fence match would grab the wrong block).
+_CTX_RE = re.compile(r"## Compose context \(JSON\)\s*```json\s*\n(.*?)\n```", re.DOTALL)
+
+
+def _compose_context(prompt: str) -> dict:
+    """Extract the writer prompt's JSON compose-context block (facts + available_citations)."""
+    match = _CTX_RE.search(prompt)
+    assert match is not None, "the writer prompt must carry a ## Compose context (JSON) block"
+    return json.loads(match.group(1))
+
+
+class TestWriterCitationContext:
+    """DR-5 C3: the writer prompt HANDS the writer the projected citation keys — each fact's
+    `citation_key` + the top-level `available_citations` set — SINGLE-SOURCED with C2's
+    `project_references`, so the writer cites EXACTLY the ids C4 later resolves `[@key]` against.
+    Prompt CONTEXT only: it never enters identity (`references` is body-blind, C1/C2)."""
+
+    def _context(self, request):
+        ledger, entries = build_grounding_ledger(
+            request.grounded_facts, source_repos=request.source_repos
+        )
+        return _compose_context(build_writer_prompt(request, entries, ledger)), ledger
+
+    def test_each_fact_carries_its_source_citation_key(self):
+        # Two facts from two sources → each fact's citation_key is that source's projected id.
+        request = make_request(
+            grounded_facts=(make_fact(instance="a-graph"), make_fact(instance="z-graph")),
+            source_repos={"a-graph": "github.com/a/a", "z-graph": "github.com/z/z"},
+        )
+        context, ledger = self._context(request)
+        projected = {r["title"]: r["id"] for r in project_references(ledger)}
+        for fact in context["grounded_facts"]:
+            assert fact["citation_key"] == projected[fact["source_instance"]]
+
+    def test_available_citations_slot_lists_the_projected_set(self):
+        request = make_request(
+            grounded_facts=(make_fact(instance="a-graph"), make_fact(instance="z-graph")),
+            source_repos={"a-graph": "github.com/a/a", "z-graph": "github.com/z/z"},
+        )
+        context, ledger = self._context(request)
+        refs = project_references(ledger)
+        assert context["available_citations"] == [
+            {"citation_key": r["id"], "label": r["title"]} for r in refs
+        ]
+        # the keys the writer sees are EXACTLY C2's projected ids (C4's [@key] ⊆ set).
+        assert [c["citation_key"] for c in context["available_citations"]] == ["s0", "s1"]
+
+    def test_citation_key_is_single_sourced_with_the_c2_projection(self):
+        # The prompt's fact `citation_key` equals `project_references`' id for that source — proving
+        # the s{n} derivation is defined ONCE, never forked (a fork would make C4 reject cites).
+        request = make_request()
+        context, ledger = self._context(request)
+        (ref,) = project_references(ledger)
+        (fact,) = context["grounded_facts"]
+        assert fact["citation_key"] == ref["id"] == "s0"
+
+    def test_citation_key_and_slot_never_reach_the_persisted_ir(self, store, claims):
+        # The prompt carries citation keys; a citation-LESS compose persists NONE of it — the keys
+        # are LLM-facing context, not identity (`references` is body-blind, C1/C2).
+        request = make_request()
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        assert "citation_key" not in json.dumps(outcome.ir)
+        assert "available_citations" not in json.dumps(outcome.ir)
+
+
+class TestWriterMayNotAuthorReferences:
+    """DR-5 C3 / NO-GO #5: the writer emits `[@key]` markers ONLY and NEVER authors the
+    `references` block — the pipeline PROJECTS it (C2). Enforcement is the EXISTING strict shape
+    check in `parse_writer_output`: a flat output must be EXACTLY `{"body"}` and a parts output
+    EXACTLY `{"parts"}`, so a surplus `references` key is REFUSED as a `SchemaViolation`. No new
+    code — the shape check already covers #5; these tests PROVE it."""
+
+    def test_flat_output_with_a_references_key_is_refused(self):
+        request = make_request()
+        writer_supplied = json.dumps(
+            {"body": "A claim.", "references": [{"id": "s0", "type": "software", "title": "x"}]}
+        )
+        with pytest.raises(SchemaViolation):
+            parse_writer_output(writer_supplied, request)
+
+    def test_parts_output_with_a_references_key_is_refused(self):
+        request = make_request(format_parts=("slides", "presenter-notes"))
+        writer_supplied = json.dumps(
+            {
+                "parts": {"slides": "# Deck", "presenter-notes": "Notes."},
+                "references": [{"id": "s0", "type": "software", "title": "x"}],
+            }
+        )
+        with pytest.raises(SchemaViolation):
+            parse_writer_output(writer_supplied, request)
+
+    def test_writer_authored_references_is_never_persisted_end_to_end(self, store, claims):
+        # End-to-end: a writer that persistently supplies `references` is caught by the shape check,
+        # re-asked to the bound, and returned as compose-contract-violation — NEVER persisted (#5).
+        request = make_request()
+        runner = ScriptedRunner(
+            [
+                writer_ok(
+                    {
+                        "body": 'A [claim]{.EXTRACTED data-fact="f0"}.',
+                        "references": [{"id": "s0", "type": "software", "title": "x"}],
+                    }
+                )
+            ]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "error" and outcome.code == CODE_CONTRACT_VIOLATION
+        assert not store.output_path(request.artifact_id).exists()
+
+
+class TestC3CitationCompose:
+    """DR-5 C3 round-trip through the REAL build_grounding_ledger + parse_writer_output + build_ir
+    (via `compose_artifact`): a `[@key]`-citing body persists the C2-projected `references` with the
+    cited key among the projected ids (C4's `[@key]` ⊆ set); a citation-LESS body composes
+    BYTE-IDENTICAL to the pre-DR-5 envelope (prompt changes are LLM-facing, not persisted)."""
+
+    def test_citing_body_persists_projected_references_with_the_key_in_the_set(self, store, claims):
+        request = make_request()
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@s0].'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        validate_ir(persisted)
+        projected_ids = {r["id"] for r in persisted["references"]}
+        assert "s0" in projected_ids  # the cited [@s0] ⊆ projected ids (C4 will enforce this)
+
+    def test_citationless_flat_body_composes_byte_identical_to_pre_dr5(self, store, claims):
+        request = make_request()
+        body = 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = store.output_path(request.artifact_id).read_bytes()
+        # pre-DR-5 = the SAME IR built with NO `references` key (omit-when-absent, C1).
+        ledger, _ = build_grounding_ledger(
+            request.grounded_facts, source_repos=request.source_repos
+        )
+        pre_dr5 = build_ir(
+            artifact_id=request.artifact_id,
+            preimage=request.preimage,
+            grounding=ledger,
+            body=body,
+        )
+        assert persisted == canonical_json_bytes(pre_dr5)
+        assert "references" not in json.loads(persisted)

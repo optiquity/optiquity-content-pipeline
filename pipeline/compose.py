@@ -307,16 +307,32 @@ def build_grounding_ledger(
 _CITATION_MARKER = "[@"
 
 
+def _source_citation_keys(ledger: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    """The SINGLE-SOURCED `source_instance_id -> citation_key` derivation (DR-5 C2/C3).
+
+    ONE key `s0`, `s1`, … per DISTINCT `source_instance_id` across the ledger, in SORTED
+    instance-id order — the SAME ordering `project_references` emits, so a fact's handed key is
+    EXACTLY the `id` of that source's projected reference. Both the C2 reference projection
+    (`project_references`) AND the C3 writer context (`_fact_context` / `_available_citations`)
+    read their keys from HERE — the `s{n}` logic is defined ONCE, so the keys the writer cites with
+    can NEVER drift from the projected id set C4 resolves `[@key]` against (a drift would make C4
+    reject valid citations)."""
+    distinct = sorted({entry["source_instance_id"] for entry in ledger.values()})
+    return {instance_id: f"s{index}" for index, instance_id in enumerate(distinct)}
+
+
 def project_references(ledger: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Project the §15 grounding ledger's DISTINCT pool sources into a `references` list (DR-5 C2).
 
     ONE CSL-JSON citation item per DISTINCT `source_instance_id` across the ledger, in SORTED
     instance-id order — mirroring `build_grounding_ledger`'s fact ordering (which sorts by
     `instance_id` first), so the projection is stable + reproducible regardless of ledger iteration
-    order. Each item's citation key (`id`) is the ordinal `s0`, `s1`, … — mirroring the ledger's own
-    `f0`/`f1` fact-id idiom (design ambiguity 4). That key is UNIQUE by construction (C1's
-    `_validate_references` REFUSES a duplicate `id`), deterministic, and short enough for the C3
-    writer to cite as `[@s0]` (C3 receives exactly this projected id set; C4 checks `[@key]` ⊆ it).
+    order. Each item's citation key (`id`) comes from `_source_citation_keys` — the ordinal `s0`,
+    `s1`, … mirroring the ledger's own `f0`/`f1` fact-id idiom (design ambiguity 4), SINGLE-SOURCED
+    so the C3 writer context hands the writer EXACTLY these keys. That key is UNIQUE by construction
+    (C1's `_validate_references` REFUSES a duplicate `id`), deterministic, and short enough for the
+    C3 writer to cite as `[@s0]` (C3 receives exactly this projected id set; C4 checks `[@key]`
+    ⊆ it).
 
     The descriptor is HONEST, per-source metadata ONLY — the writer supplies none (NO-GO #5):
       * `type` = `software` — the graphed pool source IS a code repo pinned at a commit;
@@ -331,6 +347,7 @@ def project_references(ledger: Mapping[str, Mapping[str, Any]]) -> list[dict[str
     its own. The non-`id` keys stay OPEN (C1's open CSL-JSON descriptor), so this shape is
     one-file-upgradeable (a `URL`/`author`/`issued` field can be added later without a schema bump).
     """
+    keys = _source_citation_keys(ledger)  # SINGLE-SOURCED s{n} derivation (shared with C3)
     sources: dict[str, dict[str, Any]] = {}
     for entry in ledger.values():
         instance_id = entry["source_instance_id"]
@@ -340,12 +357,12 @@ def project_references(ledger: Mapping[str, Mapping[str, Any]]) -> list[dict[str
                 "commit": entry.get("source_commit"),
             }
     references: list[dict[str, Any]] = []
-    for index, instance_id in enumerate(sorted(sources)):
+    for instance_id in sorted(sources):
         repo = sources[instance_id]["repo"]
         commit = sources[instance_id]["commit"]
         references.append(
             {
-                "id": f"s{index}",
+                "id": keys[instance_id],
                 "type": "software",
                 "title": instance_id,
                 "note": f"{repo}@{commit}" if commit else repo,
@@ -373,7 +390,11 @@ def _body_has_citation(writer_out: Mapping[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _fact_context(fact_id: str, fact: GroundedFact) -> dict[str, Any]:
+def _fact_context(fact_id: str, fact: GroundedFact, citation_key: str) -> dict[str, Any]:
+    """One grounded-fact context row for the writer prompt. `citation_key` (DR-5 C3) is the
+    projected `[@key]` that cites the pool SOURCE this fact was grounded in — SINGLE-SOURCED via
+    `_source_citation_keys`, so it is EXACTLY the `id` of that source's projected reference (C2).
+    Prompt CONTEXT only, never identity (`references` is body-blind, C1/C2)."""
     return {
         "fact_id": fact_id,
         "tier": fact.tier,
@@ -381,8 +402,19 @@ def _fact_context(fact_id: str, fact: GroundedFact) -> dict[str, Any]:
         "claim": fact.claim,
         "citable": fact.citable,
         "source_instance": fact.instance_id,
+        "citation_key": citation_key,
         "anchors": _anchor_strings(fact),
     }
+
+
+def _available_citations(ledger: Mapping[str, Mapping[str, Any]]) -> list[dict[str, str]]:
+    """The DR-5 C3 available-citations context slot: the C2-projected reference `id` (the citation
+    key) + a short human `label` (the source's own name) for EACH distinct pool source — the FULL
+    citable set the writer draws `[@key]` from. The analog of `grounded_facts`: compose CONTEXT,
+    never identity (`references` is body-blind, C1/C2). Built THROUGH `project_references`, so the
+    keys are EXACTLY the projected ids C4 resolves `[@key]` against."""
+    refs = project_references(ledger)
+    return [{"citation_key": ref["id"], "label": ref["title"]} for ref in refs]
 
 
 def _structure_context(request: ComposeRequest) -> dict[str, Any]:
@@ -426,19 +458,29 @@ def _outline_brief_blocks(brief: str) -> list[str]:
 def build_writer_prompt(
     request: ComposeRequest,
     entries: Sequence[tuple[str, GroundedFact]],
+    ledger: Mapping[str, Mapping[str, Any]],
     *,
     reask_note: str | None = None,
 ) -> str:
     """Assemble the writer prompt: the versioned `writer.md` contract + one JSON context
     block (effective values, the Format part structure, the grounded facts with their
-    fact-ids + tiers, and the sibling roster). The roster is compose CONTEXT only (§9.6);
-    it rides the prompt, never identity. On a re-ask, the correction note is appended."""
+    fact-ids + tiers, the sibling roster, and — DR-5 C3 — each fact's `citation_key` plus the
+    top-level `available_citations` set the writer may draw `[@key]` from). The roster and the
+    citation keys are compose CONTEXT only (§9.6 / C1); they ride the prompt, never identity —
+    `references` is projected from the ledger, never authored. The keys are SINGLE-SOURCED via
+    `_source_citation_keys` (the same derivation C2's `project_references` uses), so the writer is
+    handed EXACTLY the projected id set C4 resolves `[@key]` against. On a re-ask, the correction
+    note is appended."""
     template = load_template(WRITER_TEMPLATE).text
+    citation_keys = _source_citation_keys(ledger)  # SINGLE-SOURCED, identical to C2's projection
     context = {
         "artifact_id": request.artifact_id,
         "effective_values": request.effective_values,
         "structure": _structure_context(request),
-        "grounded_facts": [_fact_context(fid, fact) for fid, fact in entries],
+        "grounded_facts": [
+            _fact_context(fid, fact, citation_keys[fact.instance_id]) for fid, fact in entries
+        ],
+        "available_citations": _available_citations(ledger),
         "roster": list(request.roster),
     }
     # json (not canonical): the prompt is LLM-facing TEXT, so `default=str` may soften a
@@ -914,7 +956,7 @@ def compose_artifact(
     try:
         for attempt in range(1, max_attempts + 1):
             note = _reask_note(violations, last_failure_code) if violations else None
-            prompt = build_writer_prompt(request, entries, reask_note=note)
+            prompt = build_writer_prompt(request, entries, ledger, reask_note=note)
             transport = invoke_headless(prompt, cwd=scratch, runner=runner, model=model, **extra)
             last_transport = transport
             if transport.status != "ok":
