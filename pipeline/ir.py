@@ -186,10 +186,11 @@ _ATTESTATION_KEYS = frozenset({"primary", "anchor", "relation"})
 ATTESTATION_RELATIONS = frozenset({"wasQuotedFrom"})
 
 #: The closed top-level envelope key set. `parts`/`body` are mutually exclusive (§15
-#: flat-body collapse); `metadata` (§11.3) and `section_conformance` (§15/DR-4 C4) are
-#: ADDITIVE-OPTIONAL keys — a fresh IR carrying neither is byte-identical to a pre-DR-4
-#: envelope (NO `ir_version`/`KNOWN_IR_VERSIONS` bump; `validate_ir` accepts them via `keys
-#: <= TOP_LEVEL_KEYS`, mirroring `LEDGER_OPTIONAL`'s `attestation`). Anything else is refused.
+#: flat-body collapse); `metadata` (§11.3), `section_conformance` (§15/DR-4 C4), and
+#: `references` (a list of CSL-JSON citation items, DR-5 C1) are ADDITIVE-OPTIONAL keys — a
+#: fresh IR carrying none of them is byte-identical to a pre-DR-4 envelope (NO
+#: `ir_version`/`KNOWN_IR_VERSIONS` bump; `validate_ir` accepts them via `keys <=
+#: TOP_LEVEL_KEYS`, mirroring `LEDGER_OPTIONAL`'s `attestation`). Anything else is refused.
 TOP_LEVEL_KEYS = frozenset(
     {
         "ir_version",
@@ -200,6 +201,7 @@ TOP_LEVEL_KEYS = frozenset(
         "body",
         "metadata",
         "section_conformance",
+        "references",
     }
 )
 
@@ -589,6 +591,59 @@ def _validate_attestation(value: Any, loc: str) -> None:
     )
 
 
+def _validate_references(value: Any, loc: str) -> None:
+    """Validate the OPTIONAL top-level `references` block — a list of CSL-JSON-shaped citation
+    items recorded on the envelope for per-venue citation styling (DR-5 C1 foundation; nothing
+    consumes it yet — C2 projects it from the ledger, C3+ teach `[@key]`).
+
+    `references` is CSL-JSON-shaped like `attestation.primary` (§15 RI3) but a DISTINCT, STRICTER
+    schema: every item is CITABLE (a later `[@key]` must resolve to exactly one entry), so each
+    entry MUST carry a non-empty-string `id` (the citation key) — where `attestation.primary`
+    requires NO `id`. The NON-`id` keys stay OPEN (CSL-JSON descriptor fields — `type`, `title`,
+    `author`, `issued`, `DOI`, `container-title`, … — accepted without closing the set), so the
+    descriptor is one-file-upgradeable (checklist #8, the same open-descriptor rule
+    `attestation.primary` uses). `id`s MUST be UNIQUE across the list: a duplicate key is an
+    ambiguous `[@key]` target (C4), refused LOUDLY. A non-list, a non-Mapping entry, a bare-string
+    entry, or a missing/empty/non-string `id` is a typed `SchemaViolation`.
+
+    Unlike `attestation` (nested INSIDE the already-scanned `grounding` ledger), `references` is a
+    NEW top-level key, so the §3.3 recursive no-secrets scan is added here — a `references` entry
+    can never smuggle a secret-shaped value past persistence. OMIT-WHEN-ABSENT + NOT an identity
+    input — recorded OUTSIDE `binding.preimage`, so it moves NO artifact-id (body-blind).
+    """
+    _require(
+        isinstance(value, list),
+        f"{loc} must be a list of CSL-JSON citation items (DR-5 C1), never a bare "
+        f"{type(value).__name__}",
+    )
+    _require(
+        len(value) >= 1,
+        f"{loc} is present but empty — an artifact with no citations OMITS the key entirely "
+        "(never []/null); only a real list of citation items is recorded (DR-5 C1)",
+    )
+    seen: set[str] = set()
+    for index, entry in enumerate(value):
+        item = f"{loc}[{index}]"
+        _require(
+            isinstance(entry, Mapping),
+            f"{item} must be a CSL-JSON-shaped citation item (a Mapping), never a bare string "
+            f"(DR-5 C1), got {type(entry).__name__}",
+        )
+        _require(
+            _nonempty_str(entry.get("id")),
+            f"{item} must carry a non-empty string `id` citation key (DR-5 C1 — STRICTER than "
+            "attestation.primary; every reference is citable by `[@key]`)",
+        )
+        cite_key = entry["id"]
+        _require(
+            cite_key not in seen,
+            f"{item}.id {cite_key!r} is a DUPLICATE citation key — every `references` id must be "
+            "unique so a later `[@key]` resolves to exactly one item (DR-5 C1)",
+        )
+        seen.add(cite_key)
+    _scan_no_secrets(value, loc)
+
+
 def validate_grounding_ledger(ledger: Any, *, where: str = "grounding") -> None:
     """Validate one §15 grounding ledger: closed entry schema + the §3.3 no-secrets scan.
 
@@ -924,9 +979,10 @@ def validate_ir(doc: Any) -> None:
     full digest (§15 RI4/§7.4); the grounding ledger's closed schema + no-secrets scan
     (§15 RI3/§3.3); the metadata bag (optional, secret-scanned, never interpreted, §11.3);
     the OPTIONAL `section_conformance` resolved base schema (validated against the C2
-    vocabulary when present, OMIT-WHEN-ABSENT, DR-4 C4); and the `parts` XOR flat-`body`
-    structure with every inline grounded reference known and tier-honest (§15 RI2,
-    §6.5/§16). Raises a typed `IRError` on the first defect.
+    vocabulary when present, OMIT-WHEN-ABSENT, DR-4 C4); the OPTIONAL `references` CSL-JSON
+    citation block (a list of items each with a unique `id`, secret-scanned, OMIT-WHEN-ABSENT,
+    DR-5 C1); and the `parts` XOR flat-`body` structure with every inline grounded reference
+    known and tier-honest (§15 RI2, §6.5/§16). Raises a typed `IRError` on the first defect.
     """
     _require(isinstance(doc, Mapping), "an IR envelope is a JSON object (§15 RI1)")
     keys = set(doc)
@@ -957,6 +1013,8 @@ def validate_ir(doc: Any) -> None:
         _scan_no_secrets(doc["metadata"], "metadata")
     if "section_conformance" in doc:
         _validate_section_conformance(doc["section_conformance"])
+    if "references" in doc:  # DR-5 C1 optional CSL-JSON block — validated only when present
+        _validate_references(doc["references"], "references")
 
     has_parts = "parts" in doc
     has_body = "body" in doc
@@ -1022,6 +1080,7 @@ def build_ir(
     body: str | None = None,
     metadata: Mapping[str, Any] | None = None,
     section_conformance: Sequence[Mapping[str, Any]] | None = None,
+    references: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble one IR-canonical envelope and validate it (§15 RI1–RI4).
 
@@ -1035,6 +1094,11 @@ def build_ir(
     for audit. It is OMIT-WHEN-ABSENT (a floor `[]`/`None` records NO key) and is NOT an
     identity input — it is recorded OUTSIDE `binding.preimage`, so the artifact-id/digest are
     byte-identical whether or not it is present.
+
+    `references` (optional, DR-5 C1) records a list of CSL-JSON citation items (each with a unique
+    `id` key) for per-venue citation styling. Like `section_conformance` it is OMIT-WHEN-ABSENT
+    (`None`/empty records NO key), BODY-BLIND, and NOT an identity input — recorded OUTSIDE
+    `binding.preimage`, so the artifact-id/digest are byte-identical with or without it.
     """
     if (parts is None) == (body is None):
         raise SchemaViolation(
@@ -1070,5 +1134,7 @@ def build_ir(
         doc["metadata"] = dict(metadata)
     if section_conformance:  # OMIT-WHEN-ABSENT: a floor [] (or None) records NO key (DR-4 C4).
         doc["section_conformance"] = [dict(rule) for rule in section_conformance]
+    if references:  # OMIT-WHEN-ABSENT: None/empty records NO key (body-blind, DR-5 C1).
+        doc["references"] = [dict(item) for item in references]
     validate_ir(doc)
     return doc

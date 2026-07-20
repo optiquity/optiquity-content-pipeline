@@ -855,3 +855,186 @@ class TestSectionConformanceField:
         # The field never leaks into the preimage (the identity SSOT).
         assert "section_conformance" not in with_field["binding"]["preimage"]
         assert mint_artifact_id(with_field["binding"]["preimage"]) == artifact_id
+
+
+# --- DR-5 C1: the OPTIONAL `references` CSL-JSON block (additive-optional; body-blind) -----------
+
+
+def valid_references() -> list[dict]:
+    """A well-formed `references` block: a list of >= 2 CSL-JSON citation items, each with a
+    DISTINCT non-empty `id` and OPEN descriptor fields (type/title/author/issued/DOI/…)."""
+    return [
+        {
+            "id": "smith2020",
+            "type": "article-journal",
+            "title": "On Linear-Time Parsing",
+            "author": [{"family": "Smith", "given": "A."}],
+            "issued": {"date-parts": [[2020]]},
+            "DOI": "10.1000/xyz123",
+        },
+        {
+            "id": "jones2021",
+            "type": "book",
+            "title": "Compilers in Practice",
+            "container-title": "MIT Press",
+        },
+    ]
+
+
+class TestReferencesBlock:
+    """DR-5 C1: the OPTIONAL top-level `references` CSL-JSON citation block — additive-optional,
+    OMIT-WHEN-ABSENT, BODY-BLIND (recorded OUTSIDE binding.preimage, moves NO artifact-id). Nothing
+    consumes it yet (C2 projects it from the ledger, C3+ teach `[@key]`); C1 is envelope + validator
+    + build_ir wiring only. Modeled on TestSectionConformanceField (the DR-4 C4 additive analog)."""
+
+    def test_references_is_a_declared_top_level_key(self):
+        # The additive-optional key joined the closed top-level set (mirrors section_conformance).
+        assert "references" in TOP_LEVEL_KEYS
+
+    def test_no_ir_version_bump(self):
+        # The block rides `keys <= TOP_LEVEL_KEYS`, NOT a generation bump — versions untouched.
+        assert IR_VERSION == 2 and KNOWN_IR_VERSIONS == frozenset({1, 2})
+
+    def test_envelope_without_references_still_validates(self, preimage, artifact_id):
+        # BACK-COMPAT: a fresh IR carrying NO references validates unchanged and adds NO key — the
+        # whole pre-C1 corpus (references absent) is untouched (green golden suite proves byte-id).
+        doc = build_ir(
+            artifact_id=artifact_id,
+            preimage=preimage,
+            grounding=one_fact_ledger(),
+            body='The parser runs in [linear time]{.EXTRACTED data-fact="f0"}.',
+        )
+        assert "references" not in doc
+        validate_ir(doc)  # no raise
+        baseline = build_ir(  # a second identical build is byte-for-byte the same (determinism)
+            artifact_id=artifact_id,
+            preimage=preimage,
+            grounding=one_fact_ledger(),
+            body='The parser runs in [linear time]{.EXTRACTED data-fact="f0"}.',
+        )
+        assert doc == baseline
+
+    def test_well_formed_references_validates_and_round_trips(self, preimage, artifact_id):
+        refs = valid_references()
+        doc = build_ir(
+            artifact_id=artifact_id,
+            preimage=preimage,
+            grounding={},
+            body="Body text.",
+            references=refs,
+        )
+        assert doc["references"] == refs  # recorded verbatim
+        assert [r["id"] for r in doc["references"]] == ["smith2020", "jones2021"]
+        validate_ir(doc)  # idempotent — build_ir already validated
+
+    def test_well_formed_references_validates_on_a_v1_envelope(self, preimage, artifact_id):
+        # additive-optional across BOTH read generations, not v2-only.
+        doc = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+            references=valid_references(),
+        )
+        doc["ir_version"] = 1
+        validate_ir(doc)  # no raise
+
+    def test_open_descriptor_keys_are_accepted(self, preimage, artifact_id):
+        # The NON-`id` keys stay OPEN (CSL-JSON is one-file-upgradeable) — a novel descriptor field
+        # rides through unrefused, exactly like attestation.primary's open key set (checklist #8).
+        doc = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+            references=[{"id": "x", "publisher-place": "Cambridge", "custom-field": "ok"}],
+        )
+        validate_ir(doc)  # no raise
+
+    def test_entry_missing_id_is_refused(self, preimage, artifact_id):
+        # STRICTER than attestation.primary: every citation item MUST carry a citation key.
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.")
+        doc["references"] = [{"type": "book", "title": "No Key"}]  # no `id`
+        with pytest.raises(SchemaViolation) as exc:
+            validate_ir(doc)
+        assert exc.value.code == "ir-schema-invalid"
+
+    @pytest.mark.parametrize("bad_id", ["", "   ", 7, None])
+    def test_empty_or_nonstring_id_is_refused(self, preimage, artifact_id, bad_id):
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.")
+        doc["references"] = [{"id": bad_id, "title": "Bad Key"}]
+        with pytest.raises(SchemaViolation):
+            validate_ir(doc)
+
+    def test_bare_string_entry_is_refused(self, preimage, artifact_id):
+        # A CSL item is a Mapping, never a bare "Smith 2020" string (mirrors attestation.primary).
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.")
+        doc["references"] = ["Smith 2020"]
+        with pytest.raises(SchemaViolation) as exc:
+            validate_ir(doc)
+        assert exc.value.code == "ir-schema-invalid"
+
+    @pytest.mark.parametrize("bad", ["not-a-list", {"id": "x"}, []])
+    def test_non_list_or_empty_references_is_refused(self, preimage, artifact_id, bad):
+        # A bare string / a Mapping / a present-but-EMPTY list are each refused: a str IS a Sequence
+        # and a Mapping is iterable, so the list gate is explicit; [] violates OMIT-WHEN-ABSENT (an
+        # artifact with no citations DROPS the key, never []/null).
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.")
+        doc["references"] = bad
+        with pytest.raises(SchemaViolation):
+            validate_ir(doc)
+
+    def test_duplicate_ids_are_refused(self, preimage, artifact_id):
+        # C4 `[@key]` resolution needs a UNIQUE key per item — a duplicate is an ambiguous target.
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.")
+        doc["references"] = [
+            {"id": "dup", "title": "First"},
+            {"id": "dup", "title": "Second"},
+        ]
+        with pytest.raises(SchemaViolation) as exc:
+            validate_ir(doc)
+        assert exc.value.code == "ir-schema-invalid"
+
+    def test_build_ir_refuses_a_malformed_references(self, preimage, artifact_id):
+        # build_ir validates before returning, so a malformed block can never be built.
+        with pytest.raises(SchemaViolation):
+            build_ir(
+                artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+                references=[{"title": "no id"}],
+            )
+
+    def test_omit_when_absent_none_and_empty(self, preimage, artifact_id):
+        # None or an empty list records NO key — never []/null on the envelope.
+        none = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+            references=None,
+        )
+        empty = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.",
+            references=[],
+        )
+        assert "references" not in none
+        assert "references" not in empty
+
+    def test_planted_secret_in_a_reference_is_refused(self, preimage, artifact_id):
+        # The §3.3 no-secrets scan reaches a `references` descriptor value: `references` is a NEW
+        # top-level key (NOT nested under the already-scanned grounding/metadata), so the scan is
+        # added in _validate_references — a secret-shaped value can never reach persistence.
+        doc = build_ir(artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body.")
+        doc["references"] = [{"id": "leak", "note": "ghp_0123456789abcdefghij0123456789"}]
+        with pytest.raises(SecretShapedValueError):
+            validate_ir(doc)
+
+    def test_references_is_identity_neutral(self, preimage, artifact_id):
+        # THE identity test: two build_ir with the SAME preimage/body, one WITH and one WITHOUT
+        # references, mint the SAME artifact_id and byte-identical binding — references is
+        # body-blind (recorded OUTSIDE binding.preimage), so it can never move identity.
+        without = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body text."
+        )
+        with_refs = build_ir(
+            artifact_id=artifact_id, preimage=preimage, grounding={}, body="Body text.",
+            references=valid_references(),
+        )
+        assert "references" in with_refs and "references" not in without
+        # Same id, same full digest, byte-identical binding (incl. its preimage).
+        assert with_refs["binding"]["artifact_id"] == without["binding"]["artifact_id"]
+        assert with_refs["binding"]["digest"] == without["binding"]["digest"]
+        assert with_refs["binding"] == without["binding"]
+        # The block never leaks into the preimage (the identity SSOT).
+        assert "references" not in with_refs["binding"]["preimage"]
+        assert mint_artifact_id(with_refs["binding"]["preimage"]) == artifact_id
