@@ -604,6 +604,9 @@ def _run_deliverable(
         render_inputs=render_inputs_view,
         section_attr_transformed=dout.section_attr_transformed,
         citeproc_enabled=dout.citeproc_enabled,
+        # C7 (S3×S4): the csl asset (path, hash) — labeled on RenderInputs, kept OUT of the manual
+        # `render_inputs_view` above. It enters the preimage's render_inputs ONLY when citeproc ran.
+        csl=render_inputs.csl,
     )
     render_binding = build_render_binding(
         fitted_id=fitted_id,

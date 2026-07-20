@@ -151,7 +151,11 @@ class Presentation:
     in the id, §17 FR7.1). `variables`/`variable_defaults` drive the delta-vs-floor snapshot
     (PD5 zero-churn); `highlight_style` is the `--highlight-style` lever; `templates` and
     `reference_docs` are per-writer asset maps (keyed by writer); `css` is the ORDERED html/epub
-    stylesheet list; `pdf` is `{engine?, options?}`.
+    stylesheet list; `pdf` is `{engine?, options?}`. `csl` is the DR-5 C7 per-venue citation-STYLE
+    asset (a single writer-AGNOSTIC `.csl`, content-hashed like `reference_docs`) — it OVERRIDES the
+    default author-date style ONLY when citeproc is already enabled (content-driven, §17 R-4 / C6);
+    it never toggles citeproc and lowers to a LABELED `RenderInputs.csl` field, adding NO asset to
+    `RenderInputs.assets` (the α labeled-field seam).
     """
 
     presentation_id: str = "plain"
@@ -162,6 +166,7 @@ class Presentation:
     reference_docs: Mapping[str, PresentationAsset] = field(default_factory=dict)
     css: Sequence[PresentationAsset] = ()
     pdf: Mapping[str, Any] = field(default_factory=dict)
+    csl: PresentationAsset | None = None
 
 
 def plain_presentation() -> Presentation:
@@ -204,12 +209,17 @@ def lower(
       - **reference_doc** (`reference_docs[writer]`, docx/pptx/odt) → `--reference-doc=<path>`
         flag + asset;
       - **pdf** (output-type pdf or the `pdf` writer) → `engine` (presentation engine over the
-        target's, PD2) + `--pdf-engine-opt=<opt>` flags.
+        target's, PD2) + `--pdf-engine-opt=<opt>` flags;
+      - **csl** (DR-5 C7) → the LABELED `RenderInputs.csl = (path, content-hash)` field (or None).
+        It emits NO `--csl` flag here and adds NOTHING to `RenderInputs.assets` — the α labeled-
+        field seam: dispatch content-gates `--csl` WITH `--citeproc` (never a standalone toggle),
+        and the csl asset-hash enters the serialize preimage only when citeproc ran (§17 R-4 / C6).
 
     Assets fold into `RenderInputs.assets` as `(path, content-hash)` in SORTED order (a stable
-    preimage digest; the render-order semantics live in the ordered `flags`). The `plain` floor
-    (no lever set) returns `RenderInputs(engine=target_engine)` — byte-identical to step 27's
-    minimal lowering, so the floor causes ZERO id churn (PD5).
+    preimage digest; the render-order semantics live in the ordered `flags`); `csl` rides its OWN
+    labeled field, disjoint from `assets`. The `plain` floor (no lever set) returns
+    `RenderInputs(engine=target_engine)` (with `csl=None`) — byte-identical to step 27's minimal
+    lowering, so the floor causes ZERO id churn (PD5).
     """
     if not isinstance(writer, str) or not writer:
         raise PresentationError(
@@ -261,11 +271,18 @@ def lower(
             for opt in presentation.pdf.get("options", ()):
                 flags.append(f"--pdf-engine-opt={opt}")
 
+    # csl (DR-5 C7): the α LABELED field — a `(path, content-hash)` on `RenderInputs.csl`, or None.
+    # NO `--csl` flag is emitted here and NOTHING is added to `assets`: dispatch content-gates the
+    # `--csl` WITH `--citeproc`, and the csl hash enters the serialize preimage only when citeproc
+    # ran (the S3×S4 identity gate). A csl-less presentation → `csl=None` → byte-identical to plain.
+    csl = (presentation.csl.path, presentation.csl.content_hash) if presentation.csl else None
+
     return RenderInputs(
         flags=tuple(flags),
         variables=dict(var_delta),
         assets=tuple(sorted(assets)),
         engine=engine,
+        csl=csl,
     )
 
 
@@ -274,7 +291,12 @@ def render_inputs_to_mapping(render_inputs: RenderInputs) -> dict[str, Any]:
     of the serialize-inputs preimage (§17 FR7.1). Tuples become lists so the value is JSON-pure
     and byte-stable under a canonical round-trip (`serialize.serialize_inputs_preimage` reads it).
     The `plain` floor maps to `{flags: [], variables: {}, assets: [], engine: ""}` — exactly the
-    step-27 skeleton input, so the deliverable-id is byte-identical (zero id churn, PD5)."""
+    step-27 skeleton input, so the deliverable-id is byte-identical (zero id churn, PD5).
+
+    C7: `RenderInputs.csl` is DELIBERATELY OMITTED from this base mapping — it is gated into the
+    preimage's `render_inputs` component by `serialize_inputs_preimage` ONLY when `citeproc_enabled`
+    (the S3×S4 identity gate). A csl-set-but-citation-less render therefore maps byte-identically to
+    the same render without a csl (== `plain`), so no spurious id churn (S4)."""
     return {
         "flags": list(render_inputs.flags),
         "variables": dict(render_inputs.variables),
@@ -315,12 +337,12 @@ def presentation_from_entry(
     """Build a resolved `Presentation` from a §5.3 PD2 registry entry's effective values.
 
     `entry` carries the PD2 attributes (`variables`, `highlight_style`, `template`,
-    `reference_doc`, `css`, `pdf`); `defaults` is the schema-default floor for the variables
-    delta (PD5); `load_asset` reads each css/template/reference-doc PATH into its bytes (the
-    only I/O). The `template`/`reference_doc` maps are per-writer (keyed by writer name, PD2);
-    `css` is an ORDERED path list. `presentation_id` rides `entry['id']` (a coordinate, not an
-    identity input). Absent levers stay at their floor — so a `plain`-shaped entry yields the
-    empty lowering (zero id churn, PD5)."""
+    `reference_doc`, `css`, `pdf`) plus the DR-5 C7 `csl`; `defaults` is the schema-default floor
+    for the variables delta (PD5); `load_asset` reads each css/template/reference-doc/csl PATH into
+    its bytes (the only I/O). The `template`/`reference_doc` maps are per-writer (keyed by writer
+    name, PD2); `css` is an ORDERED path list; `csl` is a SINGLE writer-agnostic `.csl` path (C7).
+    `presentation_id` rides `entry['id']` (a coordinate, not an identity input). Absent levers stay
+    at their floor — so a `plain`-shaped entry yields the empty lowering (zero id churn, PD5)."""
     if not isinstance(entry, Mapping):
         raise PresentationError(
             f"presentation-error: a presentation entry must be a mapping, got "
@@ -350,6 +372,16 @@ def presentation_from_entry(
     pdf = entry.get("pdf", {})
     if not isinstance(pdf, Mapping):
         raise PresentationError("presentation-error: `pdf` must be a map {engine?, options?} (PD2)")
+    # csl (DR-5 C7): a SINGLE writer-agnostic `.csl` path (NOT a per-writer map), loaded as a hashed
+    # asset. Empty/absent → None (the floor). A non-string here is the map-shape mistake — loud.
+    csl_path = entry.get("csl", "")
+    if csl_path and not isinstance(csl_path, str):
+        raise PresentationError(
+            "presentation-error: `csl` must be a single writer-agnostic .csl path string, not "
+            "the per-writer map shape of template/reference_doc (DR-5 C7), got "
+            f"{type(csl_path).__name__}"
+        )
+    csl = _asset("csl", csl_path, load_asset) if csl_path else None
 
     return Presentation(
         presentation_id=str(entry.get("id", "plain")),
@@ -360,4 +392,5 @@ def presentation_from_entry(
         reference_docs=reference_docs,
         css=css,
         pdf=dict(pdf),
+        csl=csl,
     )

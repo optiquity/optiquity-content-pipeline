@@ -259,3 +259,114 @@ def test_citing_vs_non_citing_delta_proves_the_gate_fired():
     plain = D.dispatch(D.RenderTarget(writer="plain", side="internal"), _plain_ast())
     assert citing.citeproc_enabled is True and plain.citeproc_enabled is False
     assert "(Acme, n.d.)" in citing.output_bytes.decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# C7: the `csl` STYLE override — content-gated `--csl` WITH `--citeproc` (the α seam). `--csl` rides
+# ONLY alongside `--citeproc`; a citation-less render (or csl=None) emits neither. Identity-clean.
+# ---------------------------------------------------------------------------
+
+#: A minimal VALID CSL 1.0 numeric style — resolves citations to `[1]`/`[2]` (not the default
+#: author-date `(Acme, n.d.)`), so a `--csl` override visibly changes the resolved bytes.
+_MIN_CSL = """<?xml version="1.0" encoding="utf-8"?>
+<style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0">
+  <info>
+    <title>Minimal Numeric</title>
+    <id>minimal-numeric</id>
+    <updated>2020-01-01T00:00:00+00:00</updated>
+  </info>
+  <citation>
+    <layout prefix="[" suffix="]" delimiter=", ">
+      <text variable="citation-number"/>
+    </layout>
+  </citation>
+  <bibliography>
+    <layout>
+      <text variable="citation-number" prefix="[" suffix="] "/>
+      <text variable="title"/>
+    </layout>
+  </bibliography>
+</style>
+"""
+
+
+def _spy_run_pandoc_bytes(monkeypatch):
+    """Monkeypatch `dispatch.run_pandoc_bytes` to CAPTURE the invocation args (no real writer run) —
+    the arg-level gate needs no pandoc. Returns the list of captured arg-tuples."""
+    from pipeline.serialize import PandocBytesOutcome
+
+    captured: list[tuple[str, ...]] = []
+
+    def _spy(args, stdin_bytes, *, binary=D.PANDOC_BINARY_DEFAULT):
+        captured.append(args)
+        return PandocBytesOutcome(0, b"", "")
+
+    monkeypatch.setattr(D, "run_pandoc_bytes", _spy)
+    return captured
+
+
+def test_citing_csl_set_appends_citeproc_and_csl(monkeypatch):
+    # citation-bearing + csl-set → the writer args carry BOTH `--citeproc` and `--csl=<path>` (from
+    # csl[0]); `--csl` rides AFTER `--citeproc` and is never a RenderInputs.flags member.
+    captured = _spy_run_pandoc_bytes(monkeypatch)
+    ri = D.RenderInputs(csl=("styles/ieee.csl", "deadbeefcafe"))
+    out = D.dispatch(
+        D.RenderTarget(writer="html5", side="internal"), _citing_ast(), render_inputs=ri
+    )
+    assert out.citeproc_enabled is True
+    args = captured[0]
+    assert "--citeproc" in args
+    assert "--csl=styles/ieee.csl" in args
+    assert args.index("--csl=styles/ieee.csl") > args.index("--citeproc")  # rides WITH citeproc
+
+
+def test_citation_less_csl_set_emits_neither_flag(monkeypatch):
+    # citation-LESS + csl-set → NO `--csl` (and no `--citeproc`): the α seam is content-gated, so a
+    # csl-set presentation over a non-citing body is byte-identical to `plain` — standalone `--csl`
+    # is NEVER emitted (C0 leg e: pandoc ignores it).
+    captured = _spy_run_pandoc_bytes(monkeypatch)
+    ri = D.RenderInputs(csl=("styles/ieee.csl", "deadbeefcafe"))
+    out = D.dispatch(
+        D.RenderTarget(writer="html5", side="internal"), _plain_ast(), render_inputs=ri
+    )
+    assert out.citeproc_enabled is False
+    args = captured[0]
+    assert "--citeproc" not in args
+    assert not any(a.startswith("--csl=") for a in args)
+
+
+def test_csl_none_never_emits_csl_even_when_citing(monkeypatch):
+    # A citing render with NO csl (csl=None) → `--citeproc` but NO `--csl` (pandoc's default
+    # author-date CSL) — the C6 baseline is unchanged by C7.
+    captured = _spy_run_pandoc_bytes(monkeypatch)
+    out = D.dispatch(D.RenderTarget(writer="html5", side="internal"), _citing_ast())  # csl=None
+    assert out.citeproc_enabled is True
+    args = captured[0]
+    assert "--citeproc" in args
+    assert not any(a.startswith("--csl=") for a in args)
+
+
+def test_csl_style_override_changes_the_resolved_bytes(tmp_path):
+    # REAL pandoc: dispatch over a citing AST with a csl-set RenderInputs emits EXACTLY
+    # `--citeproc --csl=<path>` (bytes EQUAL the manual run) and the venue style ACTUALLY alters the
+    # resolved bytes (they DIFFER from the default author-date `--citeproc`-only run).
+    from pipeline.canonical import canonical_json_bytes
+    from pipeline.filters.provenance_strip import strip_provenance
+    from pipeline.filters.section_attr_validity import strip_section_attrs
+    from pipeline.serialize import run_pandoc_bytes
+
+    csl_path = tmp_path / "min.csl"
+    csl_path.write_text(_MIN_CSL)
+    ast = _citing_ast()
+    ri = D.RenderInputs(csl=(str(csl_path), "hash-ignored-by-dispatch"))
+    out = D.dispatch(D.RenderTarget(writer="html5", side="internal"), ast, render_inputs=ri)
+    assert out.citeproc_enabled is True
+    render_ast, _ = strip_section_attrs(strip_provenance(ast))
+    payload = canonical_json_bytes(render_ast)
+    with_csl = run_pandoc_bytes(
+        ("-f", "json", "-t", "html5", "--citeproc", f"--csl={csl_path}"), payload
+    ).stdout
+    default = run_pandoc_bytes(("-f", "json", "-t", "html5", "--citeproc"), payload).stdout
+    assert out.output_bytes == with_csl  # dispatch appended exactly `--citeproc --csl=<path>`
+    assert out.output_bytes != default  # the style override altered the resolved bytes
+    assert b"(Acme, n.d.)" not in out.output_bytes  # the default author-date is gone (numeric)

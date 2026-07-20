@@ -107,12 +107,20 @@ class RenderTarget:
 @dataclass(frozen=True)
 class RenderInputs:
     """The lowered Presentation struct (PD3): one flat set of writer inputs. `plain` lowers to
-    the empty struct — no flags, variables, or assets. Full PD3 lowering is step 29."""
+    the empty struct — no flags, variables, assets, or csl. Full PD3 lowering is step 29.
+
+    `csl` (DR-5 C7) is the α LABELED citation-style field — `(path, content-hash)` or None. It is
+    NOT an unlabeled `assets` member and carries NO `--csl` in `flags`: dispatch content-gates
+    `--csl` WITH `--citeproc` (never a standalone style toggle, since pandoc ignores a `--csl`
+    without `--citeproc`), and its content hash enters the serialize preimage ONLY when citeproc
+    ran. A cycle-safe `(path, content-hash)` tuple — NOT a `PresentationAsset` — because dispatch
+    must not import `pipeline.presentation` (presentation → dispatch already, an import cycle)."""
 
     flags: tuple[str, ...] = ()
     variables: dict[str, Any] = field(default_factory=dict)
     assets: tuple[tuple[str, str], ...] = ()  # (path, content-hash)
     engine: str = ""
+    csl: tuple[str, str] | None = None  # (path, content-hash); labeled, NOT an `assets` member
 
 
 def render_target_from_entry(entry: dict[str, Any]) -> RenderTarget:
@@ -208,6 +216,15 @@ def dispatch(
     a dispatch-appended ARG, never a `RenderInputs.flags` member (a pinned behavior, not a
     presentation input → no double-count in the serialize preimage). The strip never touches `Cite`
     nodes, so post-strip == pre-strip — `has_citations(render_ast)` equals reading `ast`.
+
+    C7 (§17 R-4 family): the `csl` Presentation STYLE override rides ON TOP of C6 — when
+    `--citeproc` is appended AND `render_inputs.csl` is set, dispatch ALSO appends `--csl=<path>`
+    (the labeled `csl[0]`), so the citation resolves under the venue's style instead of the default
+    author-date. `--csl` is content-gated WITH `--citeproc` and NEVER emitted alone (a standalone
+    `--csl` pandoc ignores, C0 leg e) — so a citation-LESS render under a csl-set presentation emits
+    neither flag → byte-identical to `plain`. Like `--citeproc`, `--csl` is a dispatch-appended ARG,
+    never a `flags`/`assets` member; the csl content hash enters the serialize preimage only when
+    citeproc ran (`serialize_inputs_preimage(..., citeproc_enabled=True, csl=...)`, the S3×S4 gate).
     """
     capability_check(target)
     inputs = render_inputs if render_inputs is not None else RenderInputs()
@@ -249,6 +266,8 @@ def dispatch(
     args = ("-f", "json", "-t", target.writer, *inputs.flags)
     if citeproc_enabled:  # C6: content-driven — the resolution ARG rides here, not in inputs.flags
         args = (*args, "--citeproc")
+        if inputs.csl is not None:  # C7: the STYLE override rides WITH --citeproc, never alone
+            args = (*args, f"--csl={inputs.csl[0]}")
     try:
         outcome = run_pandoc_bytes(args, canonical_json_bytes(render_ast), binary=binary)
     except PandocUnavailableError:

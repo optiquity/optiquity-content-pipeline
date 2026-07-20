@@ -576,6 +576,119 @@ def test_citing_render_records_and_differs_from_non_citing_e2e():
 
 
 # ---------------------------------------------------------------------------
+# C7: the `csl` STYLE asset rides the preimage's render_inputs OMIT-WHEN-ABSENT — present ONLY when
+# citeproc ran (the S3×S4 identity gate). Non-citing → absent → byte-identical to plain (S4); a
+# citing render records the (path, hash) so an edited csl churns the digest (§17 FR7.1). It rides
+# render_inputs (a Presentation ASSET), NOT tool_bundle (the pinned-version surface).
+# ---------------------------------------------------------------------------
+
+_CSL = ("styles/ieee.csl", "0011223344556677")
+_CSL_EDITED = ("styles/ieee.csl", "aabbccddeeff0011")  # SAME path, edited bytes → a new hash
+
+
+def test_serialize_preimage_omits_csl_when_not_citing():
+    # S4: a csl set but citeproc NOT enabled → the csl key is ABSENT → the preimage is
+    # byte-identical to the same render without a csl (== plain). A csl-set-but-citation-less never
+    # spuriously churns its id.
+    baseline = serialize_inputs_preimage(render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS)
+    csl_not_citing = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=False, csl=_CSL
+    )
+    assert "csl" not in csl_not_citing["render_inputs"]
+    assert csl_not_citing == baseline
+    assert serialize_digest(csl_not_citing) == serialize_digest(baseline)
+
+
+def test_serialize_preimage_records_csl_when_citing():
+    # A CITING render WITH a csl → render_inputs carries the (path, hash) AND mints a digest that
+    # DIFFERS from the same citing render WITHOUT a csl (the style override is byte-determining).
+    cite_no_csl = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=True
+    )
+    cite_csl = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=True, csl=_CSL
+    )
+    assert cite_csl["render_inputs"]["csl"] == [_CSL[0], _CSL[1]]
+    assert "csl" not in cite_csl["tool_bundle"]  # a Presentation ASSET → render_inputs, not pins
+    assert serialize_digest(cite_csl) != serialize_digest(cite_no_csl)
+
+
+def test_edited_csl_churns_the_digest_only_for_citing_renders():
+    # §17 FR7.1: an edited csl (same path, new content hash) churns the render digest — but ONLY for
+    # a CITING render. A citation-less render is byte-identical regardless of the csl edit (S4).
+    citing_a = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=True, csl=_CSL
+    )
+    citing_b = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET,
+        render_inputs=_RENDER_INPUTS,
+        citeproc_enabled=True,
+        csl=_CSL_EDITED,
+    )
+    assert serialize_digest(citing_a) != serialize_digest(citing_b)  # citing: the edit churns
+    non_citing_a = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=False, csl=_CSL
+    )
+    non_citing_b = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET,
+        render_inputs=_RENDER_INPUTS,
+        citeproc_enabled=False,
+        csl=_CSL_EDITED,
+    )
+    assert serialize_digest(non_citing_a) == serialize_digest(non_citing_b)  # non-citing: no churn
+
+
+def test_csl_default_none_reproduces_the_pre_c7_preimage():
+    # Floor: the new `csl` kwarg DEFAULTS to None → the preimage is byte-identical to the pre-C7
+    # form on BOTH the citing and non-citing axes → zero golden render-digest churn.
+    for cite in (False, True):
+        with_kwarg = serialize_inputs_preimage(
+            render_target=_RENDER_TARGET,
+            render_inputs=_RENDER_INPUTS,
+            citeproc_enabled=cite,
+            csl=None,
+        )
+        without = serialize_inputs_preimage(
+            render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=cite
+        )
+        assert with_kwarg == without
+        assert serialize_digest(with_kwarg) == serialize_digest(without)
+
+
+def test_csl_preimage_gate_tracks_dispatch_citeproc_e2e():
+    # e2e (S3×S4): a REAL citing AST → dispatch reports citeproc_enabled True → its preimage carries
+    # the csl; the SAME csl-set presentation over a citation-LESS AST → citeproc_enabled False → the
+    # preimage OMITS the csl → byte-identical to plain. (The `json` passthrough writer takes no
+    # writer file, so the csl path need not exist; real `--csl` bytes are proven in test_dispatch.)
+    citing_ast = serialize_fitted(_citing_fitted())[0].ast
+    plain_ast = serialize_fitted(_citationless_fitted())[0].ast
+    ri = D.RenderInputs(csl=_CSL)
+    tgt = D.RenderTarget(writer="json", side="internal")
+    d_cite = D.dispatch(tgt, citing_ast, render_inputs=ri)
+    d_plain = D.dispatch(tgt, plain_ast, render_inputs=ri)
+    assert d_cite.citeproc_enabled is True and d_plain.citeproc_enabled is False
+
+    citing_pre = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET,
+        render_inputs=_RENDER_INPUTS,
+        citeproc_enabled=d_cite.citeproc_enabled,
+        csl=_CSL,
+    )
+    plain_pre = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET,
+        render_inputs=_RENDER_INPUTS,
+        citeproc_enabled=d_plain.citeproc_enabled,
+        csl=_CSL,
+    )
+    no_csl_baseline = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS
+    )
+    assert citing_pre["render_inputs"]["csl"] == [_CSL[0], _CSL[1]]  # citing → csl recorded
+    assert plain_pre == no_csl_baseline  # citation-less csl render == plain (S4)
+    assert serialize_digest(citing_pre) != serialize_digest(no_csl_baseline)
+
+
+# ---------------------------------------------------------------------------
 # The pinned parse: api-version verification (RI13).
 # ---------------------------------------------------------------------------
 

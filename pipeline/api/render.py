@@ -577,7 +577,7 @@ class DefaultRenderEngine:
         from pipeline.filters.provenance_strip import should_strip
         from pipeline.filters.section_attr_validity import strip_section_attrs
 
-        target_values, render_inputs_view, _render_inputs = self._serialize_inputs(leg)
+        target_values, render_inputs_view, render_inputs = self._serialize_inputs(leg)
         # RT: BOTH serialize-filter versions (§17 R-4 family) are derived from the fitted AST HERE,
         # BEFORE dispatch (two-phase), from ONE `_fitted_units` read — the memo makes it a single
         # pinned-pandoc reader shell that `mint_deliverable` reuses. Each OMIT-WHEN-ABSENT version
@@ -593,11 +593,17 @@ class DefaultRenderEngine:
         section_attr_transformed = False
         if should_strip(render_target_from_entry(target_values).writer):
             section_attr_transformed = any(strip_section_attrs(unit.ast)[1] for unit in units)
+        # C7 (S3×S4): thread the lowered `RenderInputs.csl` labeled field (kept OUT of the
+        # `render_inputs_view` by `render_inputs_to_mapping`). It enters the preimage's
+        # render_inputs ONLY when `citeproc_enabled` — so a citation-less csl-set render matches
+        # `plain` (S4), and `mint_deliverable` dispatches the SAME `render_inputs` (its `--csl` and
+        # this hash agree).
         return serialize.serialize_inputs_preimage(
             render_target=target_values,
             render_inputs=render_inputs_view,
             section_attr_transformed=section_attr_transformed,
             citeproc_enabled=citeproc_enabled,
+            csl=render_inputs.csl,
         )
 
     def mint_deliverable(

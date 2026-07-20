@@ -12,6 +12,13 @@
 # fields, PD8/§17), and the html5/epub3 provenance-strip filter is serialize-owned — no
 # Presentation lever can disable it (PD3).
 #
+# DR-5 C7 adds `csl` (a per-venue citation-STYLE file) ADDITIVE-AT-FLOOR — mirroring
+# `highlight_style`: a single `text` path at default `""`, `definition_version: 1`, NO
+# schema_version bump (an entry that omits it IS `plain`). It is a content-gated STYLE
+# override that rides ON TOP of the CONTENT-driven `--citeproc` (§17 R-4 family / C6),
+# NEVER a toggle FOR it: dispatch emits `--csl` only alongside `--citeproc`, and the csl
+# asset-hash enters the serialize preimage only when citeproc actually ran.
+#
 # Application (PD4): deterministic style at serialize, on the persisted AST — one
 # writer call, no LLM; the cheapest regeneration tier (§18). One interface (PD3):
 # lower(presentation, writer, output-type) -> RenderInputs{flags, variables,
@@ -42,6 +49,22 @@ attributes:
       Syntax-highlighting style name handed to the writer (the --highlight-style
       lever, PD2). Empty means the pinned Pandoc default — the `plain` floor look
       (PD7).
+    definition_version: 1
+  csl:
+    type: text
+    default: ""
+    definition: >-
+      Per-venue citation-STYLE file — a `.csl` path handed to the writer as
+      `--csl=<path>` so journals differ in citation style from ONE IR (DR-5 C7). A
+      single `text` path, NOT the per-writer `map` of `template`/`reference_doc`: a
+      CSL style is writer-AGNOSTIC. Empty means pandoc's default author-date style —
+      the `plain` floor (PD7). `--citeproc` is CONTENT-driven (it fires whenever the
+      AST cites, §17 R-4 family / C6) and is NEVER gated on this lever — `csl` only
+      OVERRIDES the default style when citeproc is already enabled; a `csl` set on a
+      citation-less render emits nothing (a standalone `--csl` pandoc ignores). The
+      csl is a hashed asset: its content hash rides the serialize preimage ONLY when
+      citeproc ran, so an edited style churns the render digest for citing renders
+      only (§17 FR7.1).
     definition_version: 1
   template:
     type:

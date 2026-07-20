@@ -699,6 +699,7 @@ def serialize_inputs_preimage(
     render_target_defaults: Mapping[str, Any] | None = None,
     section_attr_transformed: bool = False,
     citeproc_enabled: bool = False,
+    csl: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the COMPLETE canonical serialize-inputs preimage (§17 FR7.1).
 
@@ -733,7 +734,14 @@ def serialize_inputs_preimage(
        With no floor supplied every effective value enters literally (the step-27 skeleton form).
     3. **the lowered Presentation `RenderInputs`** (`presentation.render_inputs_to_mapping`): the
        flags, the delta-vs-floor variables snapshot, `engine`, and **every asset by CONTENT
-       hash** — an edited css file churns the digest even when no schema version moved (§17).
+       hash** — an edited css file churns the digest even when no schema version moved (§17). The
+       DR-5 C7 `csl` STYLE asset (a `(path, content-hash)` passed via the `csl` kwarg) joins this
+       component OMIT-WHEN-ABSENT: it is added as `render_inputs["csl"]` ONLY when
+       `citeproc_enabled` (the style resolved). A citation-LESS render — even under a csl-set look —
+       omits it, so its preimage is byte-identical to the same render without a csl (== `plain`,
+       the S3×S4 identity gate); a citing render includes it, so an edited csl churns the digest for
+       citing renders only. It is a Presentation ASSET, so it rides `render_inputs`, NOT the
+       `tool_bundle` version surface (the SIBLING gate of `citeproc_enablement_version`).
 
     The `render-inputs` **exclusion set** — the inputs that are deliberately NOT part of the
     serialize-inputs IDENTITY (§17 FR7.1) — is:
@@ -780,10 +788,22 @@ def serialize_inputs_preimage(
     # independently, and either present alone still leaves every other pin literal.
     if citeproc_enabled:
         tool_bundle["citeproc_enablement_version"] = CITEPROC_ENABLEMENT_VERSION
+    # C7 (S3×S4, §17 FR7.1): the `csl` Presentation STYLE asset — a `(path, content-hash)` — enters
+    # the `render_inputs` component ONLY when citeproc actually ran (`citeproc_enabled`). It is the
+    # OMIT-WHEN-ABSENT SIBLING of `citeproc_enablement_version`, but a Presentation ASSET (a content
+    # hash), so it rides `render_inputs` (the asset surface), not `tool_bundle` (the pinned-version
+    # surface). Gating on `citeproc_enabled` discharges the identity obligation both ways: a
+    # citation-LESS render under a csl-set presentation OMITS it → byte-identical to the same render
+    # without a csl (== `plain`, S4, no spurious id churn); a citing render INCLUDES it → an edited
+    # csl churns the digest (§17 FR7.1) — for citing renders ONLY. `csl=None` / a non-citing render
+    # leaves `render_inputs` untouched → byte-identical to the pre-C7 preimage (zero golden churn).
+    render_inputs_component = dict(render_inputs)
+    if citeproc_enabled and csl is not None:
+        render_inputs_component["csl"] = [csl[0], csl[1]]
     preimage = {
         "tool_bundle": tool_bundle,
         "render_target": target_values,
-        "render_inputs": dict(render_inputs),
+        "render_inputs": render_inputs_component,
     }
     # Round-trip through canonical JSON so the returned value is itself canonical pure-JSON —
     # exactly what the render-binding records and the S0 preimage check read back.

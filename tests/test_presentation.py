@@ -248,6 +248,51 @@ def test_asset_content_must_be_bytes():
 
 
 # ---------------------------------------------------------------------------
+# C7: the `csl` citation-STYLE lever — the α LABELED field (NOT an `assets` member, NO flag).
+# ---------------------------------------------------------------------------
+
+
+def test_csl_lowers_to_the_labeled_field_and_adds_nothing_to_assets():
+    style = PresentationAsset("csl", "ieee.csl", b"<style/>")
+    ri = lower(Presentation(presentation_id="ieee", csl=style), "html5", "html")
+    assert ri.csl == ("ieee.csl", style.content_hash)  # the LABELED (path, content-hash)
+    assert ri.assets == ()  # NOTHING added to assets (the α labeled-field point)
+    assert not any(f.startswith("--csl") for f in ri.flags)  # NO --csl flag from lowering
+    # render_inputs_to_mapping deliberately OMITS csl (gated into the preimage downstream, S3×S4)
+    assert "csl" not in render_inputs_to_mapping(ri)
+
+
+def test_csl_less_presentation_lowers_to_csl_none():
+    assert lower(Presentation(), "html5", "html").csl is None
+    assert lower(plain_presentation(), "html5", "html").csl is None
+
+
+def test_csl_is_writer_agnostic():
+    # a CSL style is writer-AGNOSTIC (unlike template/reference_doc): the SAME labeled csl lowers
+    # regardless of the writer — html5, docx, plain all carry it (dispatch gates the FLAG, not it).
+    style = PresentationAsset("csl", "apa.csl", b"<style/>")
+    pres = Presentation(csl=style)
+    for writer, output in (("html5", "html"), ("docx", "docx"), ("plain", "plain-text")):
+        assert lower(pres, writer, output).csl == ("apa.csl", style.content_hash)
+
+
+def test_presentation_from_entry_loads_csl_via_the_loader():
+    files = {"ieee.csl": b"<style>IEEE</style>"}
+    pres = presentation_from_entry({"id": "ieee", "csl": "ieee.csl"}, load_asset=files.__getitem__)
+    want = PresentationAsset("csl", "ieee.csl", files["ieee.csl"]).content_hash
+    assert lower(pres, "html5", "html").csl == ("ieee.csl", want)
+    # an entry with NO csl → csl=None (the floor)
+    plainish = presentation_from_entry({"id": "plain"}, load_asset=lambda p: b"")
+    assert lower(plainish, "html5", "html").csl is None
+
+
+def test_from_entry_refuses_a_map_shaped_csl():
+    # `csl` is a SINGLE writer-agnostic path (NOT the per-writer map of template/reference_doc).
+    with pytest.raises(PresentationError):
+        presentation_from_entry({"id": "x", "csl": {"docx": "a.csl"}}, load_asset=lambda p: b"")
+
+
+# ---------------------------------------------------------------------------
 # INV-CORRECTNESS: presentation imports no SSOT.
 # ---------------------------------------------------------------------------
 
