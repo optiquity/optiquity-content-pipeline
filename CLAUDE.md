@@ -42,10 +42,12 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
 These apply to every `ops-*` agent spawned to work on this repo. (The orchestration pipelines and
 spawn discipline are the **main session's** playbook — see `docs/ops-workflow.md`.)
 
-- **You are spawned with an isolated launch worktree (channel workaround for CLI bug #73647), but you
-  work in the main checkout.** `cd` to the repo root and do all reads/edits there; the unused launch
-  worktree auto-cleans. (Actually working *inside* the isolated worktree is deferred — see
-  `docs/ops-workflow.md`.)
+- **You are spawned with an isolated launch worktree (channel workaround for CLI bug #73647), and your
+  Edit/Write tools are HARD-BLOCKED from the main-checkout path.** A read-ONLY agent reads the main
+  checkout directly (only writes are blocked) — `cd` to the repo root and analyze there. A read-WRITE
+  agent (coder) does all edits + verification **inside its launch worktree** (`.claude/worktrees/
+  agent-<id>`), never commits, and reports the worktree path/branch so the main session transfers the
+  diff back. Full procedure: `docs/ops-workflow.md` "Coder diff-transfer".
 - **Agents never commit.** No state-changing git verb (add/commit/push/merge/reset/checkout/apply/
   worktree/…). Do the work, write a report to the handoff path in your prompt; only the main session
   commits, with the maintainer's approval (rule 7). See the `commit-discipline` skill.

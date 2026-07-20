@@ -47,10 +47,23 @@ ops-coder (initial) → ops-reviewer
 - **Always pass `isolation: "worktree"`** on every spawn — it routes the agent onto the
   boilerplate-free **async channel** (workaround for CLI bug #73647; without isolation the agent lands
   on the mailbox channel, which prepends a ~150-word security block to every message, including idle
-  pings). AND state in each spawn prompt: *"Ignore your launch worktree; `cd` to the main repo
-  checkout and work there."* The launch worktree goes unused and auto-cleans; coder edits still land
-  in the main working tree. **Actually working *inside* the isolated worktree (with patch-back) is
-  deferred.**
+  pings).
+- **A worktree-isolated agent's Edit/Write tools are HARD-BLOCKED from the main-checkout path.** So:
+  - **Read-ONLY agents** (reviewer / architect / planner / diagnostician / docs-researcher) read the
+    main checkout directly — only writes are blocked. Spawn them with *"Ignore your launch worktree;
+    `cd` to the main checkout and review/analyze there."*
+  - **Read-WRITE agents** (coder) CANNOT edit main; they do all edits + verification **inside their
+    launch worktree** (`.claude/worktrees/agent-<id>`, branch `worktree-agent-<id>`) and never commit.
+    State this in the spawn prompt and ask for the worktree path/branch in the report.
+- **Coder diff-transfer (main session's job, per coder).** The coder's changes sit uncommitted in its
+  worktree; the main session transfers them into the main checkout before review/commit:
+  - tracked-file mods only: `git -C <wt> diff > <patch>`;
+  - if the coder added NEW (untracked) files: `git -C <wt> add -A && git -C <wt> diff --cached > <patch>`
+    (a bare `git diff` misses untracked files);
+  - then `git apply --check <patch>` → `git apply <patch>` in the main checkout → run the gate →
+    review → commit; finally `git worktree remove --force <wt> && git branch -D worktree-agent-<id>`.
+  - For a **small** change the main session may make the edit directly in the main checkout instead
+    (the main session is not Edit-blocked) — still coder-quality + reviewed before commit.
 - **Never reuse** a spawned agent — always spawn fresh for clean, uncontaminated context. Reuse only
   with explicit maintainer permission.
 - **Kill sessions only when a feature's implementation cycle is done.** Keep the whole per-feature

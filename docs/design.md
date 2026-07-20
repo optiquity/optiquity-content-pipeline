@@ -1021,9 +1021,14 @@ no id churns.
 
 ### §11.2 Versions & stamps
 
-- **One global `schema_version`** (SV2) — a single integer, bumped per framework release that
-  changes any schema. One number pins one released, coherent schema snapshot: atomic revert lands
-  on a state that actually existed; a run pins one number, not a vector (§21.8).
+- **One global `schema_version`** (SV2) — a single integer, bumped ONLY at a deliberate framework
+  RELEASE that changes a schema, **never mid-development**. In-development schema evolution (a new
+  registry attribute, a widened type) is shipped **additive-at-floor** — a new attribute rides its L0
+  floor so every existing entry stays valid and every id/digest is byte-identical — which needs NO
+  bump (the version-equality lint keeps all co-located `_schema.yaml` at one number; a per-schema bump
+  mid-stream would fail it). The bump is a coordinated, all-at-once release step, deferred until then.
+  One number pins one released, coherent schema snapshot: atomic revert lands on a state that actually
+  existed; a run pins one number, not a vector (§21.8).
 - **`definition_version` is valued in the `schema_version` number-space** (SV1): it records the
   global version at which that attribute's *meaning* last changed. Drift detection is one integer
   comparison — `definition_version > entry.schema_version` AND the entry sets that attribute — so
