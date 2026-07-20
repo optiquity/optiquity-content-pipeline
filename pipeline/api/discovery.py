@@ -205,12 +205,22 @@ class DefaultCurrencyResolver:
                 isinstance(stored_tool, Mapping)
                 and "section_attr_transform_version" in stored_tool
             )
+            # DR-5 C6 carry-forward (the EXACT twin of the SD-5 line above): a CITING deliverable's
+            # stored `tool_bundle` carries the `citeproc_enablement_version` key OMIT-WHEN-ABSENT.
+            # The rebuild must re-derive that flag from the stored bundle and thread it through — or
+            # the rebuilt bundle omits the key, the digest differs, and a stable citing deliverable
+            # reads as SPURIOUS drift (the same bug the SD-5/C10 discovery fix closed).
+            citeproc_enabled = (
+                isinstance(stored_tool, Mapping)
+                and "citeproc_enablement_version" in stored_tool
+            )
             # Rebuild with the CURRENT pinned tool bundle (serialize_inputs_preimage sources the
             # pins from the live module constants); the stored render_target/inputs are kept.
             rebuilt = serialize.serialize_inputs_preimage(
                 render_target=render_target,
                 render_inputs=render_inputs,
                 section_attr_transformed=section_attr_transformed,
+                citeproc_enabled=citeproc_enabled,
             )
             return serialize.serialize_digest(rebuilt)
         except Exception:  # noqa: BLE001 — no detectable drift on a config-read failure

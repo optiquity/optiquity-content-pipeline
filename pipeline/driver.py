@@ -603,6 +603,7 @@ def _run_deliverable(
         render_target=target_values,
         render_inputs=render_inputs_view,
         section_attr_transformed=dout.section_attr_transformed,
+        citeproc_enabled=dout.citeproc_enabled,
     )
     render_binding = build_render_binding(
         fitted_id=fitted_id,
@@ -644,6 +645,7 @@ def _run_deliverable(
             "side": target.side,
             "stripped": dout.stripped,
             "section_attr_transformed": dout.section_attr_transformed,
+            "citeproc_enabled": dout.citeproc_enabled,
         },
         preimage=serialize_preimage,
         advance=ssot.advance_hook("rendered"),

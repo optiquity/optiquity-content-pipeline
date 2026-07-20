@@ -337,6 +337,69 @@ class TestGetDetail:
         ctx = _get(store, "deliverables", did)["results"][0]["context"]
         assert ctx["path"].endswith(".md") and ctx["side"] == "internal"
 
+
+# ---------------------------------------------------------------------------
+# DR-5 C6 carry-forward: the REAL currency resolver re-derives the OMIT-WHEN-ABSENT
+# `citeproc_enablement_version` flag from the stored tool_bundle so a CITING deliverable reports NO
+# spurious drift (the EXACT twin of the SD-5 `section_attr_transform_version` derivation).
+# ---------------------------------------------------------------------------
+
+
+_C6_RT = {"writer": "html5", "engine": "", "reference_doc": ""}
+_C6_RI = {"flags": [], "variables": {}, "assets": [], "engine": ""}
+
+
+class TestC6CiteprocCurrencyCarryForward:
+    def test_stored_citing_deliverable_reports_no_spurious_drift(self, tmp_path):
+        resolver = discovery.DefaultCurrencyResolver()
+        # A CITING stored preimage (`--citeproc` resolved a bibliography, altering bytes) mints a
+        # DIFFERENT digest than the same inputs non-citing — so a rebuild MUST re-derive the flag.
+        citing = serialize.serialize_inputs_preimage(
+            render_target=_C6_RT, render_inputs=_C6_RI, citeproc_enabled=True
+        )
+        non_citing = serialize.serialize_inputs_preimage(
+            render_target=_C6_RT, render_inputs=_C6_RI, citeproc_enabled=False
+        )
+        assert "citeproc_enablement_version" in citing["tool_bundle"]
+        assert serialize.serialize_digest(citing) != serialize.serialize_digest(non_citing)
+
+        # The live resolver re-derives the flag from the stored bundle → the citing deliverable
+        # reports NO spurious drift (a pre-fix rebuild would omit the key and drift).
+        current = resolver.current_serialize_digest(
+            root=tmp_path, workspace=WS, deliverable_id="citing", stored_preimage=citing
+        )
+        assert current == serialize.serialize_digest(citing)
+
+    def test_non_citing_deliverable_still_reports_no_drift(self, tmp_path):
+        # Control: the fix is additive — a non-citing deliverable (no citeproc key) is unperturbed.
+        resolver = discovery.DefaultCurrencyResolver()
+        non_citing = serialize.serialize_inputs_preimage(
+            render_target=_C6_RT, render_inputs=_C6_RI, citeproc_enabled=False
+        )
+        assert "citeproc_enablement_version" not in non_citing["tool_bundle"]
+        current = resolver.current_serialize_digest(
+            root=tmp_path, workspace=WS, deliverable_id="plain", stored_preimage=non_citing
+        )
+        assert current == serialize.serialize_digest(non_citing)
+
+    def test_citeproc_and_section_attr_flags_both_carry_forward(self, tmp_path):
+        # A deliverable that is BOTH typed AND citing carries both keys; the resolver re-derives
+        # BOTH → no drift (the two carry-forwards are independent and compose).
+        resolver = discovery.DefaultCurrencyResolver()
+        both = serialize.serialize_inputs_preimage(
+            render_target=_C6_RT,
+            render_inputs=_C6_RI,
+            section_attr_transformed=True,
+            citeproc_enabled=True,
+        )
+        assert {"section_attr_transform_version", "citeproc_enablement_version"} <= set(
+            both["tool_bundle"]
+        )
+        current = resolver.current_serialize_digest(
+            root=tmp_path, workspace=WS, deliverable_id="both", stored_preimage=both
+        )
+        assert current == serialize.serialize_digest(both)
+
     def test_get_nonresolving_id_is_isolation_fatal(self, store):
         # `get`'s id is Gate-3-isolated: a non-resolving id is refused envelope-fatally by the
         # invoke gate BEFORE the handler (the honest contract — never a masked not-found).

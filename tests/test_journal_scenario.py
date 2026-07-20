@@ -250,6 +250,23 @@ def _variant_ir(body: str) -> dict:
     )
 
 
+def _citing_paper_ir() -> dict:
+    """A flat-body `academic-paper` IR that CITES — built through the SAME `ir.build_ir` primitive,
+    carrying two `[@key]` citations + the CSL-JSON `references` they resolve against (DR-5 C6). Its
+    serialized AST carries `Cite` nodes + `meta.references`; dispatch appends `--citeproc`."""
+    preimage = _paper_preimage()
+    return ir.build_ir(
+        artifact_id=mint_artifact_id(preimage),
+        preimage=preimage,
+        grounding={},
+        body="Prior work established the bound; see [@s0] and [@s1].",
+        references=[
+            {"title": "Acme Graph", "id": "s0", "type": "webpage", "author": [{"literal": "Acme"}]},
+            {"id": "s1", "type": "webpage", "title": "Beta Graph", "author": [{"literal": "Beta"}]},
+        ],
+    )
+
+
 def _reconcile_at(env: CascadeEnv, canonical_ir: dict, platform: str):
     """Reconcile ONE canonical IR at ONE venue over the REAL path, reading the SHIPPED entry's
     `format_structural` + `hard_limits` through the production driver seams (M2-EXCLUDED reads).
@@ -346,7 +363,8 @@ def test_one_paper_three_journals_block_fit_set_and_siblings_continue(tmp_path):
 def _serialize_html(env: CascadeEnv, fitted_ir: dict, presentation: str):
     """Serialize a fitted IR to the `html` public writer through the REAL serialize leg — the SAME
     threaded sequence `driver._run_deliverable` uses (serialize_fitted -> dispatch ->
-    serialize_inputs_preimage(section_attr_transformed=dout.section_attr_transformed))."""
+    serialize_inputs_preimage(section_attr_transformed=dout.section_attr_transformed,
+    citeproc_enabled=dout.citeproc_enabled))."""
     ast = serialize_fitted(fitted_ir)[0].ast
     target_values = driver._render_target_values(env, "html")
     target = render_target_from_entry(target_values)
@@ -366,6 +384,7 @@ def _serialize_html(env: CascadeEnv, fitted_ir: dict, presentation: str):
         render_target=target_values,
         render_inputs=render_inputs_to_mapping(render_inputs),
         section_attr_transformed=dout.section_attr_transformed,
+        citeproc_enabled=dout.citeproc_enabled,
     )
     return dout, serialize_preimage
 
@@ -512,6 +531,78 @@ def test_default_currency_resolver_threads_the_section_attr_flag(tmp_path):
         root=tmp_path, workspace=WS, deliverable_id="untyped", stored_preimage=untyped
     )
     assert current_untyped == serialize_digest(untyped)
+
+
+# ---------------------------------------------------------------------------
+# (C6) A fitted CITING deliverable resolves a real bibliography + records the OMIT-WHEN-ABSENT
+# `citeproc_enablement_version` (driver thread + two-phase parity + discovery no-drift, e2e).
+# ---------------------------------------------------------------------------
+
+
+def test_fitted_citing_deliverable_resolves_bibliography_and_records_version(tmp_path):
+    _requires_pandoc()
+    root = _build_root(tmp_path)
+    env = CascadeEnv(root, workspace=WS)
+
+    # The driver's threaded sequence (serialize_fitted -> dispatch -> serialize_inputs_preimage)
+    # over a CITING fitted IR: dispatch appends `--citeproc`, the flag threads into the preimage.
+    dout, preimage = _serialize_html(env, _citing_paper_ir(), "journal-strict-look")
+    assert dout.citeproc_enabled is True
+    assert "citeproc_enablement_version" in preimage["tool_bundle"]  # OMIT-WHEN-ABSENT → present
+
+    text = dout.output_bytes.decode("utf-8")
+    # C6: the `[@key]` markers are RESOLVED (fixing C5's unresolved Cites) into a bibliography Div.
+    assert "[@s0]" not in text and "[@s1]" not in text
+    assert 'id="refs"' in text
+    assert 'id="ref-s0"' in text and 'id="ref-s1"' in text
+
+
+def test_two_phase_render_engine_records_the_citeproc_version(tmp_path):
+    """RT: `DefaultRenderEngine.serialize_preimage` runs BEFORE dispatch (two-phase), so it computes
+    the C6 citeproc flag from the fitted AST itself — UNCONDITIONALLY (content-driven, not
+    writer-gated). A CITING deliverable's preimage therefore records `citeproc_enablement_version`
+    — the SAME conclusion dispatch reaches — so a citing standalone-API render mints an id matching
+    its resolved bytes (the twin of the SD-5 two-phase parity test)."""
+    _requires_pandoc()
+    from pipeline.api.render import DefaultRenderEngine, SerializeLeg
+
+    root = _build_root(tmp_path)
+    env = CascadeEnv(root, workspace=WS)
+    citing_ir = _citing_paper_ir()
+
+    # dispatch (the reference) confirms this deliverable cites and appends `--citeproc`:
+    dout, _driver_preimage = _serialize_html(env, citing_ir, "journal-strict-look")
+    assert dout.citeproc_enabled is True
+
+    # the two-phase engine, WITHOUT running dispatch, must reach the SAME conclusion and record it:
+    leg = SerializeLeg(
+        root=root,
+        workspace=WS,
+        store=WorkspaceStore(root / "workspaces" / WS),
+        fitted_id=citing_ir["binding"]["artifact_id"] + ".journal-strict.en",
+        fitted_ir=citing_ir,
+        output_type="html",
+        presentation="journal-strict-look",
+    )
+    preimage = DefaultRenderEngine().serialize_preimage(leg)
+    assert "citeproc_enablement_version" in preimage["tool_bundle"]
+
+
+def test_stored_citing_deliverable_reports_no_spurious_drift(tmp_path):
+    """(C6 carry-forward) end-to-end: the render-binding preimage of a REAL citing deliverable
+    reports NO spurious drift through the live `DefaultCurrencyResolver` — the resolver re-derives
+    the `citeproc_enablement_version` flag from the stored bundle on the rebuild."""
+    _requires_pandoc()
+    root = _build_root(tmp_path)
+    env = CascadeEnv(root, workspace=WS)
+    _dout, serialize_preimage = _serialize_html(env, _citing_paper_ir(), "journal-strict-look")
+    assert "citeproc_enablement_version" in serialize_preimage["tool_bundle"]  # citing
+
+    resolver = discovery.DefaultCurrencyResolver()
+    current = resolver.current_serialize_digest(
+        root=root, workspace=WS, deliverable_id="d", stored_preimage=serialize_preimage
+    )
+    assert current == serialize_digest(serialize_preimage)  # NO spurious drift
 
 
 # ---------------------------------------------------------------------------

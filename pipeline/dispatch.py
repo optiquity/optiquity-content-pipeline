@@ -42,6 +42,7 @@ from typing import Any, Literal
 
 from pipeline import review
 from pipeline.canonical import canonical_json_bytes
+from pipeline.filters.citeproc_enablement import has_citations
 from pipeline.filters.provenance_strip import should_strip, strip_provenance
 from pipeline.filters.section_attr_validity import strip_section_attrs
 from pipeline.review import ReviewOutcome
@@ -166,13 +167,17 @@ class DispatchOutcome:
     provenance-strip filter ran for this render (§17 R-4); `section_attr_transformed` records
     whether the SD-5 section-attr validity strip actually removed a bare `type=`/`role=` heading
     kv on this render (True only on a public writer over a typed heading — the signal that keys
-    the serialize preimage's transform-version record, §17 FR7.1)."""
+    the serialize preimage's transform-version record, §17 FR7.1). `citeproc_enabled` records
+    whether the AST carried a citation (`Cite` node) so `--citeproc` was appended (C6, the
+    CONTENT-driven twin of `section_attr_transformed`: True for ANY writer over a citing AST — the
+    signal that keys the preimage's `citeproc_enablement_version` record, §17 R-4 family)."""
 
     side: str
     writer: str
     code: str
     stripped: bool
     section_attr_transformed: bool
+    citeproc_enabled: bool
     output_bytes: bytes | None = None
     payload_ast: dict[str, Any] | None = None
 
@@ -195,6 +200,14 @@ def dispatch(
     `pandoc -f json -t <writer>` produces layer-2 bytes; `side: external` → the (possibly stripped)
     AST is returned for persistence + hand-off, deferred in v1 (gate step 3). `render_inputs` is
     the lowered Presentation struct (plain in step 27); its flags are appended to the invocation.
+
+    C6 (§17 R-4 family): citeproc enablement is CONTENT-driven — `--citeproc` is appended to the
+    internal-writer invocation whenever the AST carries a citation (`has_citations`), regardless of
+    the writer or any `csl` lever, so a `[@key]`-bearing body resolves against `meta.references`
+    under the writer's default author-date CSL (fixing the broken `plain` default). `--citeproc` is
+    a dispatch-appended ARG, never a `RenderInputs.flags` member (a pinned behavior, not a
+    presentation input → no double-count in the serialize preimage). The strip never touches `Cite`
+    nodes, so post-strip == pre-strip — `has_citations(render_ast)` equals reading `ast`.
     """
     capability_check(target)
     inputs = render_inputs if render_inputs is not None else RenderInputs()
@@ -206,6 +219,11 @@ def dispatch(
         render_ast = ast
         section_attr_transformed = False
 
+    # C6: CONTENT-driven citeproc enablement (§17 R-4 family) — the twin of the section-attr flag,
+    # UNGATED by the writer. The strip leaves `Cite` nodes intact, so reading `render_ast` matches
+    # reading `ast`. False for every non-citing render → no `--citeproc` appended → byte-identical.
+    citeproc_enabled = has_citations(render_ast)
+
     if target.side == "external":
         return DispatchOutcome(
             side="external",
@@ -213,6 +231,7 @@ def dispatch(
             code=EXTERNAL_DEFERRED,
             stripped=strip,
             section_attr_transformed=section_attr_transformed,
+            citeproc_enabled=citeproc_enabled,
             payload_ast=render_ast,
         )
 
@@ -223,10 +242,13 @@ def dispatch(
             code="ok",
             stripped=strip,
             section_attr_transformed=section_attr_transformed,
+            citeproc_enabled=citeproc_enabled,
             output_bytes=canonical_json_bytes(render_ast),
         )
 
     args = ("-f", "json", "-t", target.writer, *inputs.flags)
+    if citeproc_enabled:  # C6: content-driven — the resolution ARG rides here, not in inputs.flags
+        args = (*args, "--citeproc")
     try:
         outcome = run_pandoc_bytes(args, canonical_json_bytes(render_ast), binary=binary)
     except PandocUnavailableError:
@@ -242,6 +264,7 @@ def dispatch(
         code="ok",
         stripped=strip,
         section_attr_transformed=section_attr_transformed,
+        citeproc_enabled=citeproc_enabled,
         output_bytes=outcome.stdout,
     )
 

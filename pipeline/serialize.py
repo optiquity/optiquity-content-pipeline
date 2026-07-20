@@ -56,6 +56,7 @@ from typing import Any, Literal
 from pipeline import ids
 from pipeline.canonical import canonical_json_str, digest_hex12
 from pipeline.claims import AcquireOutcome, ClaimRegistry
+from pipeline.filters.citeproc_enablement import CITEPROC_ENABLEMENT_VERSION
 from pipeline.filters.provenance_strip import STRIP_FILTER_VERSION
 from pipeline.filters.section_attr_validity import SECTION_ATTR_TRANSFORM_VERSION
 from pipeline.ids import IdError, PreimageError, deliverable_id, delta_vs_floor
@@ -697,6 +698,7 @@ def serialize_inputs_preimage(
     render_inputs: Mapping[str, Any],
     render_target_defaults: Mapping[str, Any] | None = None,
     section_attr_transformed: bool = False,
+    citeproc_enabled: bool = False,
 ) -> dict[str, Any]:
     """Build the COMPLETE canonical serialize-inputs preimage (§17 FR7.1).
 
@@ -715,7 +717,14 @@ def serialize_inputs_preimage(
        whole existing render-digest corpus. This is UNLIKE `strip_filter_version` (an always-present
        v0 pin): a new always-present key would re-mint every existing binding for zero byte
        difference, so this one is omit-when-absent — present only when it has teeth (a typed render,
-       or a future SD-5 rule change that re-mints the version), absent otherwise.
+       or a future SD-5 rule change that re-mints the version), absent otherwise. The C6 citeproc-
+       enablement version (`citeproc_enablement_version`) is the CONTENT-driven TWIN and joins the
+       bundle the SAME OMIT-WHEN-ABSENT way: present ONLY when `citeproc_enabled is True` — when the
+       render cited and `--citeproc` resolved it against `meta.references`, altering the published
+       bytes. On every NON-CITING render (`citeproc_enabled=False`) the key is ABSENT,
+       so the bundle bytes are BYTE-IDENTICAL to the pre-C6 form — zero churn across the existing
+       corpus. The two keys are DISJOINT and INDEPENDENT (section-attr is writer-gated, citeproc is
+       content-driven), so a render may carry neither, one, or both.
     2. **the render-target's byte-determining effective values, DELTA-VS-FLOOR** (`writer`,
        `engine`, `reference_doc`, writer options — the output-type *slug* is a coordinate and
        excluded via `_TARGET_PREIMAGE_EXCLUDED`; `side` is dispatch routing and excluded). The
@@ -763,6 +772,14 @@ def serialize_inputs_preimage(
     # bundle bytes are byte-identical to pre-SD-5 → the golden render-digest corpus is unchanged.
     if section_attr_transformed:
         tool_bundle["section_attr_transform_version"] = SECTION_ATTR_TRANSFORM_VERSION
+    # OMIT-WHEN-ABSENT (C6, §17 R-4 family): the EXACT twin of the SD-5 line above — record the
+    # citeproc-enablement version ONLY when the render actually resolved citations (`--citeproc`
+    # appended over a `Cite`-bearing AST). Absent for every NON-CITING render → the bundle bytes are
+    # byte-identical to pre-C6 → the golden render-digest corpus is unchanged. Disjoint from the
+    # section-attr key (citeproc is content-driven, section-attr is writer-gated); the two ride
+    # independently, and either present alone still leaves every other pin literal.
+    if citeproc_enabled:
+        tool_bundle["citeproc_enablement_version"] = CITEPROC_ENABLEMENT_VERSION
     preimage = {
         "tool_bundle": tool_bundle,
         "render_target": target_values,

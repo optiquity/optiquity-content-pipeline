@@ -573,25 +573,31 @@ class DefaultRenderEngine:
 
     def serialize_preimage(self, leg: SerializeLeg) -> Mapping[str, Any]:
         from pipeline.dispatch import render_target_from_entry
+        from pipeline.filters.citeproc_enablement import has_citations
         from pipeline.filters.provenance_strip import should_strip
         from pipeline.filters.section_attr_validity import strip_section_attrs
 
         target_values, render_inputs_view, _render_inputs = self._serialize_inputs(leg)
-        # RT: the SD-5 section-attr strip runs at dispatch on public writers (§17 C9); its
-        # OMIT-WHEN-ABSENT version must ride the preimage so a TYPED deliverable's id matches the
-        # bytes mint_deliverable emits (and `current_serialize_digest` reports no spurious drift).
-        # Two-phase: this preimage precedes dispatch, so compute the flag the SAME way dispatch
-        # does: `strip_section_attrs` on the fitted AST, gated by `should_strip`. (The provenance
-        # strip is order-independent for type/role detection, so it need not run here.) A floor or
-        # non-typed render yields False, so the key is omitted: byte-identical to the pre-RT corpus.
+        # RT: BOTH serialize-filter versions (§17 R-4 family) are derived from the fitted AST HERE,
+        # BEFORE dispatch (two-phase), from ONE `_fitted_units` read — the memo makes it a single
+        # pinned-pandoc reader shell that `mint_deliverable` reuses. Each OMIT-WHEN-ABSENT version
+        # rides the preimage so the deliverable's id matches the bytes dispatch emits (and
+        # `current_serialize_digest` reports no spurious drift). The SD-5 section-attr strip is
+        # WRITER-GATED (`should_strip`, public writers only); C6 citeproc is CONTENT-driven (any
+        # writer whose AST carries a `Cite`), so it reads the units UNCONDITIONALLY. A non-typed /
+        # non-citing render yields False for its flag → the key is omitted → byte-identical to the
+        # pre-C6/pre-RT corpus. (The provenance strip is order-independent for both detections, so
+        # it need not run here.)
+        units = self._fitted_units(leg)
+        citeproc_enabled = any(has_citations(unit.ast) for unit in units)
         section_attr_transformed = False
         if should_strip(render_target_from_entry(target_values).writer):
-            units = self._fitted_units(leg)
             section_attr_transformed = any(strip_section_attrs(unit.ast)[1] for unit in units)
         return serialize.serialize_inputs_preimage(
             render_target=target_values,
             render_inputs=render_inputs_view,
             section_attr_transformed=section_attr_transformed,
+            citeproc_enabled=citeproc_enabled,
         )
 
     def mint_deliverable(

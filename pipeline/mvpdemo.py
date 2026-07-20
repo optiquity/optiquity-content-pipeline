@@ -282,6 +282,7 @@ def _mint_external(store: WorkspaceStore, env: CascadeEnv, *, fitted_id: str) ->
         render_target=target_values,
         render_inputs=render_inputs_view,
         section_attr_transformed=dout.section_attr_transformed,
+        citeproc_enabled=dout.citeproc_enabled,
     )
     render_binding = serialize.build_render_binding(
         fitted_id=fitted_id,

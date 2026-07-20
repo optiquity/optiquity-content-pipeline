@@ -26,6 +26,10 @@ from pathlib import Path
 import pytest
 
 from pipeline import dispatch as D
+from pipeline.filters.citeproc_enablement import (
+    CITEPROC_ENABLEMENT_VERSION,
+    has_citations,
+)
 from pipeline.filters.provenance_strip import STRIP_FILTER_VERSION, strip_provenance
 from pipeline.filters.section_attr_validity import (
     SECTION_ATTR_TRANSFORM_VERSION,
@@ -463,6 +467,112 @@ def test_non_typed_render_is_byte_identical_on_both_axes():
     baseline = serialize_inputs_preimage(render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS)
     assert "section_attr_transform_version" not in pre["tool_bundle"]  # (b)
     assert pre == baseline and serialize_digest(pre) == serialize_digest(baseline)
+
+
+# ---------------------------------------------------------------------------
+# C6: the citeproc-enablement version rides the preimage OMIT-WHEN-ABSENT — the CONTENT-driven twin
+# of the SD-5 section-attr version. Non-citing → key absent → byte-identical → zero golden churn.
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_preimage_omits_citeproc_version_when_absent():
+    # OMIT-WHEN-ABSENT: the default (and every NON-CITING render) leaves the key ABSENT → the
+    # preimage is byte-identical to the pre-C6 form → the golden render-digest corpus is unchanged.
+    pre_default = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS
+    )
+    pre_false = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=False
+    )
+    assert "citeproc_enablement_version" not in pre_default["tool_bundle"]
+    assert pre_default == pre_false  # the new kwarg's default reproduces the pre-C6 preimage
+    assert serialize_digest(pre_default) == serialize_digest(pre_false)
+
+
+def test_serialize_preimage_records_citeproc_version_when_citing():
+    # Obligation 2: a CITING render carries the version AND mints a DIFFERENT digest (a loud re-mint
+    # the moment `--citeproc` resolves a bibliography, never a silent one — §17 R-4 family).
+    pre_false = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=False
+    )
+    pre_true = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=True
+    )
+    assert pre_true["tool_bundle"]["citeproc_enablement_version"] == CITEPROC_ENABLEMENT_VERSION
+    assert "citeproc_enablement_version" not in pre_false["tool_bundle"]
+    assert serialize_digest(pre_true) != serialize_digest(pre_false)
+
+
+def test_citeproc_and_section_attr_versions_are_disjoint_and_independent():
+    # Obligation 4: citeproc + section-attr are DISJOINT independent filter-versions; adding one
+    # never perturbs the other, and `strip_filter_version` (the always-present v1 pin) is untouched.
+    assert STRIP_FILTER_VERSION == 1 and SECTION_ATTR_TRANSFORM_VERSION == 1
+    neither = serialize_inputs_preimage(render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS)
+    cite_only = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=True
+    )
+    attr_only = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, section_attr_transformed=True
+    )
+    both = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET,
+        render_inputs=_RENDER_INPUTS,
+        section_attr_transformed=True,
+        citeproc_enabled=True,
+    )
+    # each key rides independently; the disjoint provenance-strip pin is present + unchanged in all.
+    assert "citeproc_enablement_version" not in attr_only["tool_bundle"]
+    assert "section_attr_transform_version" not in cite_only["tool_bundle"]
+    assert set(both["tool_bundle"]) == set(neither["tool_bundle"]) | {
+        "section_attr_transform_version",
+        "citeproc_enablement_version",
+    }
+    for pre in (neither, cite_only, attr_only, both):
+        assert pre["tool_bundle"]["strip_filter_version"] == 1
+    # the four states mint four DISTINCT digests — neither flag masks the other.
+    digests = {serialize_digest(p) for p in (neither, cite_only, attr_only, both)}
+    assert len(digests) == 4
+
+
+def test_non_citing_render_is_byte_identical_on_both_axes():
+    # Obligation 1 (golden): a NON-CITING render is byte-identical to pre-C6 on BOTH axes —
+    #   (a) the AST fed to the writer carries NO `Cite` node (dispatch → citeproc_enabled False),
+    #   (b) the serialize preimage (the citeproc key is absent → the digest is unchanged).
+    ast = serialize_fitted(_flat_fitted())[0].ast  # claim spans, NO citations
+    assert has_citations(ast) is False  # (a)
+    dout = D.dispatch(D.RenderTarget(writer="html5", side="internal"), ast)
+    assert dout.citeproc_enabled is False
+    pre = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET,
+        render_inputs=_RENDER_INPUTS,
+        citeproc_enabled=dout.citeproc_enabled,
+    )
+    baseline = serialize_inputs_preimage(render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS)
+    assert "citeproc_enablement_version" not in pre["tool_bundle"]  # (b)
+    assert pre == baseline and serialize_digest(pre) == serialize_digest(baseline)
+
+
+def test_citing_render_records_and_differs_from_non_citing_e2e():
+    # Obligation 2 (e2e): a REAL citing fitted IR → serialize_fitted → dispatch resolves the
+    # bibliography (citeproc_enabled True) → its serialize preimage carries the version and mints a
+    # DIFFERENT digest than the SAME render without citations.
+    citing_ast = serialize_fitted(_citing_fitted())[0].ast
+    assert has_citations(citing_ast) is True
+    # the layer-3 AST record keeps UNRESOLVED Cites + NO bibliography (C5's contract; C6 never
+    # mutates the record — it resolves only at the writer step):
+    assert _collect_cites(citing_ast["blocks"], []) == ["s0", "s1"]
+    assert _has_bibliography_div(citing_ast["blocks"]) is False
+    dout = D.dispatch(D.RenderTarget(writer="html5", side="internal"), citing_ast)
+    assert dout.citeproc_enabled is True
+    assert b'id="refs"' in dout.output_bytes  # the RESOLVED bibliography Div in the html bytes
+
+    citing_pre = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=True
+    )
+    non_citing_pre = serialize_inputs_preimage(
+        render_target=_RENDER_TARGET, render_inputs=_RENDER_INPUTS, citeproc_enabled=False
+    )
+    assert serialize_digest(citing_pre) != serialize_digest(non_citing_pre)
 
 
 # ---------------------------------------------------------------------------
