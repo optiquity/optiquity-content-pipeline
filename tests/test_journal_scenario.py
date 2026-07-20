@@ -426,6 +426,38 @@ def test_two_phase_render_engine_records_the_typed_version(tmp_path):
     assert "section_attr_transform_version" in preimage["tool_bundle"]
 
 
+def test_render_engine_memoizes_serialize_fitted_by_fitted_id(monkeypatch, tmp_path):
+    """The two-phase seam (serialize_preimage then mint_deliverable) must shell the pinned pandoc
+    reader ONCE per fitted artifact, not twice — DefaultRenderEngine memoizes `serialize_fitted` by
+    fitted-id (RT double-read fix). No pandoc here: `serialize_fitted` is spied."""
+    from pipeline.api import render as render_api
+
+    calls: list[int] = []
+    sentinel = ["units"]  # a stand-in for the SerializedUnit list
+
+    def _spy(fitted_ir):
+        calls.append(id(fitted_ir))
+        return sentinel
+
+    monkeypatch.setattr(render_api.serialize, "serialize_fitted", _spy)
+    engine = render_api.DefaultRenderEngine()
+    store = WorkspaceStore(tmp_path)  # unused by _fitted_units, required by the dataclass
+
+    def _leg(fitted_id: str, body: str):
+        return render_api.SerializeLeg(
+            root=tmp_path, workspace=WS, store=store, fitted_id=fitted_id,
+            fitted_ir={"body": body}, output_type="html", presentation="plain",
+        )
+
+    leg_a = _leg("fitted-A", "x")
+    assert engine._fitted_units(leg_a) is sentinel
+    assert engine._fitted_units(leg_a) is sentinel  # cache HIT — no second reader shell
+    assert len(calls) == 1
+    # a DIFFERENT fitted-id reads afresh (the key is the fitted artifact, not the engine):
+    assert engine._fitted_units(_leg("fitted-B", "y")) is sentinel
+    assert len(calls) == 2
+
+
 def test_stored_typed_deliverable_reports_no_spurious_drift(tmp_path):
     """(A) end-to-end: the render-binding preimage of a REAL fitted typed deliverable reports NO
     spurious drift through the live `DefaultCurrencyResolver` — the C9 carry-forward fix threads

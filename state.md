@@ -163,9 +163,10 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     `compose` nor `api.results` (purity restored, comment corrected). **RT** (`aaa4d44`) render-site
     version threading — `mvpdemo.py` (dispatch-first) + `api/render.py::serialize_preimage` (two-phase;
     computes the flag via `strip_section_attrs` on the fitted AST as dispatch does); non-typed corpus
-    byte-identical. *Optional open:* cache the fitted AST across the preimage→mint seam (non-blocking).
-  - **Gate:** final `uv run pytest -q` = **2379 passed** (post R1+RT); ruff + content guard clean.
-    Reports: `ops-handoff/dr4-build/`.
+    byte-identical. The double pandoc-reader read is now ELIMINATED — `DefaultRenderEngine` memoizes
+    `serialize_fitted` by fitted-id (frozen-dataclass cache field).
+  - **Gate:** final `uv run pytest -q` = **2380 passed** (post R1+RT+AST-cache); ruff + content guard
+    clean. Reports: `ops-handoff/dr4-build/`.
   - **NEXT in the build order:** `DR-5 (style placement) → DR-2 (style guides)` — await maintainer direction.
 
 - **Folder adapter — compose-capable + registered (2026-07-18).** Discovered while standing up

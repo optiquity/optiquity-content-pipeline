@@ -497,9 +497,10 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     `dout.section_attr_transformed` (dispatch-first); `pipeline/api/render.py` `serialize_preimage`
     (two-phase) computes the flag the SAME way dispatch does — `strip_section_attrs` on the fitted AST
     gated by `should_strip` — so a TYPED standalone-API render mints an id matching its bytes.
-    Behavior-neutral (non-typed corpus byte-identical). *Optional, still-open:* cache the fitted AST
-    across the preimage→mint seam to avoid the double pandoc-reader read (non-blocking).
-- **Gate:** final `uv run pytest -q` = **2379 passed** (post R1+RT); `ruff check .` clean;
+    Behavior-neutral (non-typed corpus byte-identical). The RT double pandoc-reader read is now
+    **ELIMINATED**: `DefaultRenderEngine` memoizes `serialize_fitted` by fitted-id (a frozen-dataclass
+    `field(init=False, compare=False)` cache), so the two-phase seam shells the reader once, not twice.
+- **Gate:** final `uv run pytest -q` = **2380 passed** (post R1+RT+AST-cache); `ruff check .` clean;
   `scripts/check-no-content.sh` OK. Coder/reviewer reports under `ops-handoff/dr4-build/`.
 
 ### DR-5 — Compose-vs-render placement of style; per-output style variation from one IR (reopens DR-2) — design problem

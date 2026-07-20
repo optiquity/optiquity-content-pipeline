@@ -33,7 +33,7 @@ blast-radius/idempotency/force paths are exercised hermetically.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -537,6 +537,24 @@ class DefaultRenderEngine:
     inputs injects its own engine."""
 
     model: str | None = None
+    #: Memoizes `serialize_fitted(leg.fitted_ir)` by fitted-id so the two-phase seam shells the
+    #: pinned pandoc reader ONCE per fitted artifact — `serialize_preimage` (RT: it reads the AST to
+    #: compute the SD-5 flag) and `mint_deliverable` consult the SAME units. `init=False` /
+    #: `compare=False` keep the frozen dataclass's value-semantics; the dict is MUTATED in place
+    #: (allowed on a frozen instance), never reassigned.
+    _fitted_units_cache: dict[str, Any] = field(
+        default_factory=dict, init=False, compare=False, repr=False
+    )
+
+    def _fitted_units(self, leg: SerializeLeg) -> list[Any]:
+        """The `serialize_fitted` units for this leg's fitted IR, memoized by fitted-id (§17). The
+        two-phase seam consults it in `serialize_preimage` and again in `mint_deliverable`, so the
+        pinned pandoc reader runs once, not twice, on the typed standalone-render path."""
+        units = self._fitted_units_cache.get(leg.fitted_id)
+        if units is None:
+            units = serialize.serialize_fitted(leg.fitted_ir)
+            self._fitted_units_cache[leg.fitted_id] = units
+        return units
 
     def reconcile_preimage(self, leg: FitLeg) -> Mapping[str, Any]:
         request = self._reconcile_request(leg)
@@ -568,7 +586,7 @@ class DefaultRenderEngine:
         # non-typed render yields False, so the key is omitted: byte-identical to the pre-RT corpus.
         section_attr_transformed = False
         if should_strip(render_target_from_entry(target_values).writer):
-            units = serialize.serialize_fitted(leg.fitted_ir)
+            units = self._fitted_units(leg)
             section_attr_transformed = any(strip_section_attrs(unit.ast)[1] for unit in units)
         return serialize.serialize_inputs_preimage(
             render_target=target_values,
@@ -584,7 +602,7 @@ class DefaultRenderEngine:
         # B1: the SAME lowered `render_inputs` the preimage was built from (`_serialize_inputs`)
         # drives the dispatch flags — one lowering, so flags and preimage cannot diverge.
         target_values, _render_inputs_view, render_inputs = self._serialize_inputs(leg)
-        units = serialize.serialize_fitted(leg.fitted_ir)
+        units = self._fitted_units(leg)
         if len(units) != 1:
             raise _EngineError(
                 f"standalone render expects one serialized document, got {len(units)}"
