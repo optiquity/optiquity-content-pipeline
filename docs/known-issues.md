@@ -32,14 +32,22 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
 - **Source:** step-34 review HARD GATE.
 
 ### GAP-4 — CI guards: two functional halves not yet wired
-- **Status:** Open
+- **Status:** Partially resolved (a hardened — F-b; b still open)
 - **Severity:** Low
 - **Symptom:** (a) a brand-new top-level registry directory is outside the content-guard's known-root
   whitelist and passes silently; (b) the SV11 schema-lint PR-base diff clauses only activate on a PR
   event, and the repo has no PRs yet, so that wiring is unverified end-to-end.
-- **Proposed fix:** tighten `scripts/check-no-content.sh` to fail on an unknown registry root; verify
-  the SV11 PR-base wiring in `.github/workflows` once the repo gains PRs.
-- **Source:** step-13 review, deferred through step 40.
+  **→ (a) RESOLVED (F-b, `6b196a6`):** `scripts/check-no-content.sh` no longer passes silently — an
+  ADDITIVE registry-root coverage check now HARD-FAILS (`LEAK[unknown-registry-root]`, exit 1) on any
+  top-level directory carrying the SV4 registry marker (a co-located `<dir>/_schema.yaml`) that is not
+  in `REGISTRY_ROOTS`, so a new registry root can no longer ship UNSCANNED. **FULL closure of (a) for
+  DR-2 arrives when DR-2 ships `lexicons/` and adds `lexicons` to `REGISTRY_ROOTS`** (whitelisting =
+  scanning) — the guard now FORCES that as a conscious decision (CI fails until it does). **(b) is
+  unchanged — still OPEN.**
+- **Proposed fix:** (a) tighten `scripts/check-no-content.sh` to fail on an unknown registry root —
+  **DONE (F-b, `6b196a6`)**; (b) verify the SV11 PR-base wiring in `.github/workflows` once the repo
+  gains PRs — **still open** (verifiable only end-to-end once the repo has PRs).
+- **Source:** step-13 review, deferred through step 40; (a) hardened by F-b (`6b196a6`).
 
 ### GAP-5 — Optional hardening (defense-in-depth, not required by design)
 - **Status:** Open
