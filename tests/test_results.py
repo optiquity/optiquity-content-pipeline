@@ -1,10 +1,11 @@
 """Step-32 tests: the typed result contract + the CONSOLIDATED §21.7/§22.6 code taxonomy.
 
 The load-bearing test here is the LITERAL code-list (§21.7 + §22.6): `ALL_CODES` must equal
-exactly the design's enumeration — every code present, no extras, no omissions. The 28
+exactly the design's enumeration — every code present, no extras, no omissions. The 29
 strings below are transcribed straight from `docs/design.md` §21.7 (generation + contract
-tiers), §22.6 (parallel-path tier), the DR-6 §6.5/§19 `grounding-uncovered` abstain, and the
-DR-4 §15/§16 `section-conformance-violation` typed-section gate; a
+tiers), §22.6 (parallel-path tier), the DR-6 §6.5/§19 `grounding-uncovered` abstain, the
+DR-4 §15/§16 `section-conformance-violation` typed-section gate, and the DR-5 C4 §15/§16
+`citation-unresolved` `[@key]`→projected-`references` compose gate; a
 drift check then proves the consolidation is
 faithful to the codes the producing modules already emit (`reconcile`, `drift`, `grounding`,
 `fit_resolution`, `serialize`, `migration`, `folios`, `overrides`, `dispatch`, `transport`).
@@ -38,6 +39,7 @@ GENERATION = {
     "ambiguous-migration-decisions",
     "grounding-uncovered",
     "section-conformance-violation",
+    "citation-unresolved",
 }
 # §21.7 contract tier.
 CONTRACT = {
@@ -69,7 +71,7 @@ class TestCodeTaxonomy:
         # The literal-list pin (§21.7 + §22.6): exact set equality — no extras, no omissions.
         assert results.ALL_CODES == EXPECTED_CODES
         assert set(results.CODES) == EXPECTED_CODES
-        assert len(results.ALL_CODES) == 28
+        assert len(results.ALL_CODES) == 29
 
     def test_forbidden_codes_are_absent(self):
         assert results.ALL_CODES.isdisjoint(FORBIDDEN_CODES)
@@ -102,6 +104,9 @@ class TestCodeTaxonomy:
     def test_canonical_statuses_match_the_design(self):
         # Spot-check the design's status rulings for representative codes.
         assert results.CODES["hard-limit-exceeded"].statuses == ("block",)
+        # DR-5 C4: the citation compose gate blocks (never persisted), GENERATION-tier.
+        assert results.CODES["citation-unresolved"].statuses == ("block",)
+        assert results.CODES["citation-unresolved"].tier == results.TIER_GENERATION
         assert results.CODES["re-reconciled"].statuses == ("ok",)
         assert results.CODES["re-serialized"].statuses == ("ok",)
         assert results.CODES["member-updated"].statuses == ("warn",)

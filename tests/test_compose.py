@@ -32,10 +32,12 @@ from pipeline.adapters.base import Anchor
 from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.claims import ClaimRegistry
 from pipeline.compose import (
+    CODE_CITATION_UNRESOLVED,
     CODE_CONTRACT_VIOLATION,
     CODE_SECTION_CONFORMANCE_VIOLATION,
     ComposeError,
     ComposeRequest,
+    _citation_resolution_note,
     build_grounding_ledger,
     build_outline_ir,
     build_writer_prompt,
@@ -47,11 +49,41 @@ from pipeline.grounding import GroundedFact
 from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id, parse_id
 from pipeline.ir import SchemaViolation, SecretShapedValueError, build_ir, validate_ir
 from pipeline.outline import normalize_outline, outline_digest
+from pipeline.serialize import (
+    PANDOC_API_VERSION,
+    PandocOutcome,
+    is_ci,
+    pandoc_available,
+    pandoc_gate,
+)
 from pipeline.store import WorkspaceStore
 from pipeline.transport import ProcessOutcome, ProcessRequest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMIT_SHA = "9f3c07d21b44e8aa9f3c07d21b44e8aa9f3c07d2"
+
+_PANDOC_AVAILABLE = pandoc_available()
+
+
+def _requires_pandoc() -> None:
+    """DR-5 C4 (D-cite-locus = COMPOSE): a CITING compose parses through the pinned reader, so it
+    needs pandoc. Absent + CI ⇒ fail loudly; absent locally ⇒ skip; present ⇒ run (PA-12). The
+    non-citing corpus never parses (gated on the `[@` marker), so it needs no pandoc."""
+    decision = pandoc_gate(available=_PANDOC_AVAILABLE, ci=is_ci())
+    if decision == "fail":
+        pytest.fail(
+            "pandoc absent under CI=true — the DR-5 C4 `[@key]`→references proof MUST run in CI "
+            "(PA-12)",
+            pytrace=False,
+        )
+    if decision == "skip":
+        pytest.skip("pandoc not installed; the C4 `[@key]`→references resolution needs the reader")
+
+
+def _forbidden_pandoc_runner(args, stdin_text):
+    """A `PandocRunner` that must NEVER be called — proves the `[@` marker gate skips the parse for
+    a non-citing (or lone-bare-`@`) body, so that corpus stays parse-free + byte-identical."""
+    raise AssertionError("pandoc must not be invoked for a body with no `[@` citation marker")
 
 
 # --- the mocked transport seam -------------------------------------------------------------
@@ -1105,6 +1137,7 @@ class TestReferencesProjectionGate:
         assert "references" not in outcome.ir
 
     def test_flat_citing_body_attaches_and_validates_references(self, store, claims):
+        _requires_pandoc()  # DR-5 C4: a citing body now parses through the pinned reader
         request = make_request()
         runner = ScriptedRunner(
             [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@s0].'})]
@@ -1137,6 +1170,7 @@ class TestReferencesProjectionGate:
 
     def test_parts_citing_body_attaches_and_validates_references(self, store, claims):
         # A citation marker in ANY part body trips the gate.
+        _requires_pandoc()  # DR-5 C4: the citing part body now parses through the pinned reader
         request = make_request(format_parts=("slides", "presenter-notes"))
         runner = ScriptedRunner(
             [
@@ -1302,6 +1336,7 @@ class TestC3CitationCompose:
     BYTE-IDENTICAL to the pre-DR-5 envelope (prompt changes are LLM-facing, not persisted)."""
 
     def test_citing_body_persists_projected_references_with_the_key_in_the_set(self, store, claims):
+        _requires_pandoc()  # DR-5 C4: the citing body now parses through the pinned reader
         request = make_request()
         runner = ScriptedRunner(
             [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@s0].'})]
@@ -1311,7 +1346,7 @@ class TestC3CitationCompose:
         persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
         validate_ir(persisted)
         projected_ids = {r["id"] for r in persisted["references"]}
-        assert "s0" in projected_ids  # the cited [@s0] ⊆ projected ids (C4 will enforce this)
+        assert "s0" in projected_ids  # the cited [@s0] ⊆ projected ids (C4 now enforces this)
 
     def test_citationless_flat_body_composes_byte_identical_to_pre_dr5(self, store, claims):
         request = make_request()
@@ -1332,3 +1367,222 @@ class TestC3CitationCompose:
         )
         assert persisted == canonical_json_bytes(pre_dr5)
         assert "references" not in json.loads(persisted)
+
+
+# --- DR-5 C4: the HARD `[@key]`→projected-`references` resolution at the COMPOSE locus ----------
+
+
+class TestC4CitationResolution:
+    """DR-5 C4 (ratified D-cite-locus = COMPOSE): the authoritative `[@key]`→`references`
+    resolution runs post-mint, PRE-persist, INSIDE the bounded re-ask — so an unresolvable citation
+    is structurally impossible to ship (the analog of the shipped `data-fact`→ledger check, closing
+    the §6.5 fabrication leak with teeth). Because C2 PROJECTS `references` and C3 hands the writer
+    EXACTLY those keys, an unresolved `[@key]` is a writer BUG this gate catches. Resolution reads
+    pandoc's `Cite` AST via the SINGLE pinned reader — robust against EVERY citation form, NO regex
+    (S1). REAL pandoc, gated (`_requires_pandoc`); the unit-level marker-gate proof needs none."""
+
+    def _ledger_two_sources(self):
+        # Two DISTINCT sources → the projection is {s0: a-graph, s1: b-graph} (sorted instance-id).
+        ledger, _ = build_grounding_ledger(
+            (make_fact(instance="a-graph"), make_fact(instance="b-graph")),
+            source_repos={"a-graph": "github.com/a/a", "b-graph": "github.com/b/b"},
+        )
+        return ledger
+
+    def _ledger_one_source(self):
+        ledger, _ = build_grounding_ledger(
+            (make_fact(),), source_repos={"acme-graph": "github.com/acme/widget"}
+        )
+        return ledger  # projects {s0: acme-graph}
+
+    # -- the resolution note (unit) over REAL pandoc: every VALID citation FORM resolves ⊆ projected
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "See [@s0].",  # normal single-key
+            "See [@s0; @s1].",  # multi-key
+            "See [@s0, p. 5].",  # locator/suffix
+            "See [see @s0].",  # prefix
+            "See [-@s0].",  # suppressed-author
+            "See [@s0] and separately [@s1].",  # two separate cites
+        ],
+    )
+    def test_valid_forms_resolve_via_the_ast(self, body):
+        _requires_pandoc()
+        # Every citation FORM with a PROJECTED key resolves through the `Cite` AST → no re-ask note.
+        assert _citation_resolution_note({"body": body}, self._ledger_two_sources()) is None
+
+    def test_unresolved_key_yields_a_note_naming_it(self):
+        _requires_pandoc()
+        # `[@zzz]` is a valid FORM but an UNPROJECTED key — the anti-fabrication core catches it.
+        note = _citation_resolution_note({"body": "See [@zzz]."}, self._ledger_two_sources())
+        assert note is not None and "zzz" in note
+
+    def test_braced_and_cooccurring_bare_forms_are_caught(self):
+        _requires_pandoc()
+        ledger = self._ledger_two_sources()  # s0, s1 projected → isolates the FORM check
+        # A braced `[@s0]{…}` contains `[@` (trips the marker) and parses to an AuthorInText `Cite`.
+        assert _citation_resolution_note({"body": "See [@s0]{.foo}."}, ledger) is not None
+        # A bare `@s0` CO-OCCURRING with a bracketed `[@s1]` is reached by the running parse.
+        assert _citation_resolution_note({"body": "See [@s1] and @s0 too."}, ledger) is not None
+
+    def test_lone_bare_citation_does_not_trip_the_marker_gate(self):
+        # DOCUMENTED LIMITATION (flagged for follow-up): a bare `@key` with NO bracketed `[@` does
+        # not trip the cheap `[@` marker gate, so it is NOT parsed and NOT caught. The forbidden
+        # runner proves NO parse fires. Widening the marker to a bare `@` would force a pandoc parse
+        # across the whole (email/handle-bearing) non-citing corpus, breaking the byte-identical /
+        # no-subprocess cost containment (D-cite-locus) — a maintainer call, not self-decided here.
+        note = _citation_resolution_note(
+            {"body": "@s0 stands alone, no brackets."},
+            self._ledger_one_source(),
+            runner=_forbidden_pandoc_runner,
+        )
+        assert note is None
+
+    def test_citation_and_data_fact_span_do_not_cross_contaminate(self):
+        _requires_pandoc()
+        # A `[@s0]` cite ALONGSIDE a `[claim]{.EXTRACTED data-fact="f0"}` span: the span is NOT a
+        # `Cite` (it never enters the cited set) and the cite resolves — both clean, note is None.
+        body = 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"} — see [@s0].'
+        assert _citation_resolution_note({"body": body}, self._ledger_one_source()) is None
+
+    def test_non_citing_body_returns_none_without_pandoc(self):
+        # The cost-containment gate: NO `[@` marker → None with NO pandoc parse (forbidden runner
+        # never called) → the whole non-citing corpus runs exactly as pre-C4 (byte-identical).
+        body = 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+        note = _citation_resolution_note(
+            {"body": body}, self._ledger_one_source(), runner=_forbidden_pandoc_runner
+        )
+        assert note is None
+
+    # -- end-to-end through compose_artifact (REAL pandoc): re-ask → block, never persisted --------
+
+    def test_unresolvable_citation_reasks_then_blocks_and_never_persists(self, store, claims):
+        _requires_pandoc()
+        request = make_request()  # single source → projects s0 ONLY; `[@zzz]` cannot resolve
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@zzz].'})]
+        )
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=runner, max_attempts=3
+        )
+        assert outcome.status == "error"
+        assert outcome.code == CODE_CITATION_UNRESOLVED  # the NEW never-persisted sibling code
+        assert outcome.code == "citation-unresolved"
+        assert outcome.ir is None
+        assert outcome.attempts == 3 and runner.calls == 3  # re-asked (attempts > 1) then blocked
+        assert len(outcome.violations) == 3 and all("zzz" in v for v in outcome.violations)
+        # NEVER persisted — the sibling of compose-contract-violation / section-conformance.
+        assert not store.output_path(request.artifact_id).exists()
+        assert not store.artifacts_dir.joinpath(request.artifact_id).exists()
+        # the corrective citation note rode the re-ask prompt (machine-derived from the contract).
+        assert "available_citations" in runner.requests[1].stdin_text
+
+    def test_valid_citation_composes_and_persists(self, store, claims):
+        _requires_pandoc()
+        request = make_request()  # projects s0
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@s0].'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert (outcome.status, outcome.code, outcome.attempts) == ("ok", "ok", 1)
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        validate_ir(persisted)
+        assert [r["id"] for r in persisted["references"]] == ["s0"]  # cited [@s0] ⊆ projected
+
+    def test_reask_recovers_from_an_unresolvable_citation_within_the_bound(self, store, claims):
+        _requires_pandoc()
+        request = make_request()
+        bad = writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@zzz].'})
+        good = writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@s0].'})
+        runner = ScriptedRunner([bad, good])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert (outcome.status, outcome.attempts) == ("ok", 2)
+        assert len(outcome.violations) == 1 and "zzz" in outcome.violations[0]
+        assert store.output_path(request.artifact_id).exists()
+
+    def test_braced_form_blocks_end_to_end(self, store, claims):
+        _requires_pandoc()
+        # A braced `[@s0]{…}` (s0 IS projected) renders invalidly — caught as a FORM breach and
+        # blocked as citation-unresolved, never persisted.
+        request = make_request()
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@s0]{.foo}.'})]
+        )
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=runner, max_attempts=2
+        )
+        assert outcome.status == "error" and outcome.code == "citation-unresolved"
+        assert not store.output_path(request.artifact_id).exists()
+
+    def test_multi_part_citing_body_resolves_and_persists(self, store, claims):
+        _requires_pandoc()
+        # A `[@s0]` in ANY part body trips the gate; a projected key resolves → composes + persists.
+        request = make_request(format_parts=("slides", "presenter-notes"))
+        runner = ScriptedRunner(
+            [
+                writer_ok(
+                    {
+                        "parts": {
+                            "slides": '# Deck\n\n- [linear time]{.EXTRACTED data-fact="f0"} [@s0]',
+                            "presenter-notes": "Speaker notes, ungrounded prose.",
+                        }
+                    }
+                )
+            ]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        assert [r["id"] for r in persisted["references"]] == ["s0"]
+
+    def test_injected_pandoc_runner_drives_the_gate(self, store, claims):
+        # The pandoc seam is INJECTABLE (mirrors serialize.parse_to_ast's `runner`): a fake runner
+        # returning a canned, api-version-pinned AST with an UNPROJECTED `Cite` id blocks WITHOUT
+        # the real binary — so a compose test can drive the C4 gate with no pandoc installed.
+        request = make_request()  # projects s0 only
+        fake_ast = {
+            "pandoc-api-version": list(PANDOC_API_VERSION),
+            "meta": {},
+            "blocks": [
+                {
+                    "t": "Para",
+                    "c": [
+                        {
+                            "t": "Cite",
+                            "c": [
+                                [
+                                    {
+                                        "citationId": "nope",
+                                        "citationPrefix": [],
+                                        "citationSuffix": [],
+                                        "citationMode": {"t": "NormalCitation"},
+                                        "citationNoteNum": 1,
+                                        "citationHash": 0,
+                                    }
+                                ],
+                                [{"t": "Str", "c": "[@nope]"}],
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        def pandoc_runner(args, stdin_text):
+            return PandocOutcome(returncode=0, stdout=json.dumps(fake_ast), stderr="")
+
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'A [claim]{.EXTRACTED data-fact="f0"} — see [@s0].'})]
+        )
+        outcome = compose_artifact(
+            request,
+            store=store,
+            claims=claims,
+            runner=runner,
+            pandoc_runner=pandoc_runner,
+            max_attempts=1,
+        )
+        assert outcome.status == "error" and outcome.code == "citation-unresolved"
+        assert not store.output_path(request.artifact_id).exists()

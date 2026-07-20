@@ -64,6 +64,7 @@ __all__ = [
     "CODE_ADVISORY_CONSTRAINT_OVERRIDDEN",
     "CODE_AMBIGUOUS_MIGRATION_DECISIONS",
     "CODE_CAPABILITY_INFEASIBLE",
+    "CODE_CITATION_UNRESOLVED",
     "CODE_DRIFT_BLOCK",
     "CODE_EMPTY_POOL",
     "CODE_GROUNDING_UNCOVERED",
@@ -154,6 +155,7 @@ CODE_MEMBER_UPDATED = "member-updated"  # warn, §21.2
 CODE_AMBIGUOUS_MIGRATION_DECISIONS = "ambiguous-migration-decisions"  # needs-input, §11.6
 CODE_GROUNDING_UNCOVERED = "grounding-uncovered"  # block, §6.5/§19
 CODE_SECTION_CONFORMANCE_VIOLATION = "section-conformance-violation"  # block, §15/§16 (DR-4)
+CODE_CITATION_UNRESOLVED = "citation-unresolved"  # block, §15/§16 (DR-5 C4)
 
 # --- contract tier (§21.7) --------------------------------------------------
 CODE_UNKNOWN_VERB = "unknown-verb"  # block (envelope-fatal), §21.1
@@ -289,6 +291,13 @@ CODES: dict[str, CodeSpec] = {
             "A composed (or reconciled) body persistently violated its typed-section conformance "
             "contract (base required/forbidden/order) across the bounded re-ask; blocked, never "
             "persisted (DR-4).",
+            remediation_action=None,
+        ),
+        _spec(
+            CODE_CITATION_UNRESOLVED, TIER_GENERATION, ("block",), "§15/§16",
+            "A composed body cited a `[@key]` that does not resolve to a projected reference (or "
+            "used an invalid bare/braced citation form) and persisted the failure across the "
+            "bounded re-ask; blocked, never persisted (DR-5 C4).",
             remediation_action=None,
         ),
         # contract tier (§21.7)

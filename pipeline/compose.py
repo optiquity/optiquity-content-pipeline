@@ -80,8 +80,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pipeline import ir, review
-from pipeline.api.results import CODE_SECTION_CONFORMANCE_VIOLATION
+from pipeline import ir, review, serialize
+from pipeline.api.results import CODE_CITATION_UNRESOLVED, CODE_SECTION_CONFORMANCE_VIOLATION
 from pipeline.canonical import canonical_json_bytes
 from pipeline.claims import ClaimRegistry
 from pipeline.grounding import GroundedFact
@@ -108,6 +108,7 @@ from pipeline.store import AlreadyMaterializedError, WorkspaceStore, is_done, wr
 from pipeline.transport import Runner, TransportResult, invoke_headless
 
 __all__ = [
+    "CODE_CITATION_UNRESOLVED",
     "CODE_CONTRACT_VIOLATION",
     "CODE_SECTION_CONFORMANCE_VIOLATION",
     "DEFAULT_MAX_ATTEMPTS",
@@ -385,6 +386,104 @@ def _body_has_citation(writer_out: Mapping[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# DR-5 C4: the HARD `[@key]`→projected-`references` resolution at the COMPOSE locus (the ratified
+# D-cite-locus = COMPOSE — the authoritative resolution runs PRE-persist, so an unresolvable
+# citation is structurally impossible to ship). Because C2 PROJECTS `references` from the ledger and
+# C3 hands the writer EXACTLY those keys, an unresolved `[@key]` is a writer BUG: this gate is the
+# analog of the shipped `data-fact`→ledger structural check, closing the §6.5 fabrication leak with
+# teeth. The resolution reads pandoc's `Cite` AST (via `serialize.parse_to_ast`, the SINGLE pinned
+# reader) — robust against EVERY citation form (multi-key `[@a; @b]`, locator `[@a, p. 5]`, prefix
+# `[see @a]`, suppressed-author `[-@a]`) with NO regex (S1). The parse fires ONLY for a CITING body
+# (gated on the `[@` marker), so the non-citing corpus runs BYTE-IDENTICAL to pre-C4 with no pandoc
+# subprocess — the accepted D-cite-locus cost lands only on citing composes.
+# ---------------------------------------------------------------------------
+
+#: The VALID bracketed-citation modes pandoc assigns a `[@key]` / `[-@key]`: `NormalCitation`
+#: (`[@k]`, `[@a; @b]`, `[@a, p. 5]`, `[see @a]`) and `SuppressAuthor` (`[-@k]`). A bare in-text
+#: `@key` — and the `Cite` inside a braced `[@key]{…}` span — is `AuthorInText`, i.e. an INVALID
+#: form that renders wrong (#5a/N1); those are HARD-caught below via this mode set.
+_VALID_CITATION_MODES = frozenset({"NormalCitation", "SuppressAuthor"})
+
+
+def _doc_leaf_bodies(doc: Mapping[str, Any]) -> list[str]:
+    """The composed leaf bodies of an assembled IR (`doc`): the flat `body`, or each part's `body`
+    (Format order). The exact CONTENT the `[@`-marker gate scans and — when it fires — the pinned
+    reader parses; mirrors `_body_has_citation`'s flat/parts split over the IR shape."""
+    if "body" in doc:
+        return [doc["body"]]
+    return [part["body"] for part in doc["parts"]]
+
+
+def _iter_citations(node: Any) -> list[tuple[str, str | None]]:
+    """Every Pandoc `Cite` in the AST subtree as `(citation_id, citation_mode)`, at ANY nesting
+    depth (a `Cite` inside a Span/Emph/list — the braced form nests one — is still reached). The AST
+    is WALKED, never regex-matched (S1): a `Cite` node is `{"t":"Cite","c":[[citation-objs],
+    inlines]}`, each citation-obj carrying `citationId` + `citationMode.t` (C0 leg f)."""
+    found: list[tuple[str, str | None]] = []
+    if isinstance(node, dict):
+        if node.get("t") == "Cite":
+            citations = node.get("c", [[]])
+            for cite in citations[0] if citations else []:
+                mode = cite.get("citationMode")
+                found.append(
+                    (cite.get("citationId"), mode.get("t") if isinstance(mode, dict) else None)
+                )
+        for value in node.values():
+            found.extend(_iter_citations(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(_iter_citations(value))
+    return found
+
+
+def _citation_resolution_note(
+    doc: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    *,
+    runner: serialize.PandocRunner | None = None,
+    binary: str = serialize.PANDOC_BINARY_DEFAULT,
+) -> str | None:
+    """The DR-5 C4 gate: return a re-ask correction note when the composed body cites a `[@key]`
+    that is NOT in the projected reference set (anti-fabrication — the MUST) or uses an INVALID
+    bare/braced form; None when every citation resolves cleanly (or the body carries no citation).
+
+    Cost containment (D-cite-locus): a body with NO `[@` marker returns None with NO pandoc parse,
+    so the whole non-citing corpus is byte-identical to pre-C4. Only a CITING body is parsed through
+    the SINGLE pinned reader (`serialize.parse_to_ast`), and every `Cite` id is checked ⊆
+    `set(_source_citation_keys(ledger).values())` — the SAME `s{n}` keys C2 projects and C3 hands
+    the writer, so a compliant writer never trips this and a fabricated citation ALWAYS does. NEVER
+    mutates `doc` (it parses the leaf bodies, not a persisted copy)."""
+    leaves = _doc_leaf_bodies(doc)
+    if not any(_CITATION_MARKER in body for body in leaves):
+        return None  # no citation marker → NO pandoc parse → non-citing corpus byte-identical
+    projected = set(_source_citation_keys(ledger).values())
+    cited: set[str] = set()
+    invalid_form: set[str] = set()
+    for body in leaves:
+        ast = serialize.parse_to_ast(body, runner=runner, binary=binary)
+        for citation_id, mode in _iter_citations(ast):
+            if not citation_id:
+                continue  # a `Cite` with no id is not a resolvable reference — skip
+            cited.add(citation_id)
+            if mode not in _VALID_CITATION_MODES:
+                invalid_form.add(citation_id)
+    unresolved = sorted(cited - projected)
+    if unresolved:  # the CORE anti-fabrication guarantee: cited-id ⊆ projected
+        return (
+            f"cited reference key(s) {unresolved} do NOT resolve — they are not in the projected "
+            f"reference set {sorted(projected)}. Every `[@key]` must name a projected "
+            "`available_citations` key (the pipeline projects the reference list; you may not "
+            "invent one)."
+        )
+    if invalid_form:  # the cleanly AST-detectable invalid FORMS: bare `@key` / braced `[@key]{…}`
+        return (
+            f"citation(s) {sorted(invalid_form)} use an INVALID form (a bare in-text `@key` or a "
+            "braced `[@key]{…}`) — write EVERY citation as a plain bracketed `[@key]`."
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # The writer prompt (§15 contract): template + grounded facts + effective values +
 # Format part structure + the roster context slot (§9.6 — context, never identity).
 # ---------------------------------------------------------------------------
@@ -657,6 +756,8 @@ def _reask_note(violations: Sequence[str], failure_code: str) -> str:
     latest = violations[-1] if violations else "unspecified"
     if failure_code == CODE_SECTION_CONFORMANCE_VIOLATION:
         return _base_structural_reask_note(latest)
+    if failure_code == CODE_CITATION_UNRESOLVED:
+        return _citation_reask_note(latest)
     return (
         f"Your previous output was REJECTED by the IR contract: {latest}. Return ONLY the "
         "JSON object in the exact shape the compose context's `structure.output_contract` "
@@ -664,6 +765,19 @@ def _reask_note(violations: Sequence[str], failure_code: str) -> str:
         'data-fact="fN"}` using ONLY the fact-ids and tiers listed under `grounded_facts` — '
         "an unknown fact-id or a promoted tier (e.g. asserting an INFERRED lead as EXTRACTED) "
         "is rejected again."
+    )
+
+
+def _citation_reask_note(latest: str) -> str:
+    """The corrective note for a DR-5 C4 citation derail: the specific breach + the citation
+    contract. Machine-derived from `available_citations` — it invents NO new requirement (§3.1):
+    cite ONLY a projected key, as a plain bracketed `[@key]`, never a bare/braced form."""
+    return (
+        f"Your previous output had an UNRESOLVED or malformed citation: {latest}. Cite ONLY a "
+        "`citation_key` listed under `available_citations` in the compose context, written as a "
+        "plain bracketed Pandoc citation `[@key]` (e.g. `[@s0]`) — NEVER a bare in-text `@key`, "
+        "NEVER a braced `[@key]{…}`, and NEVER a key absent from `available_citations` (the "
+        "pipeline PROJECTS the reference list; you may not invent one). Return the SAME JSON shape."
     )
 
 
@@ -850,6 +964,7 @@ def compose_artifact(
     advance: AdvanceHook | None = None,
     cwd: Path | str | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    pandoc_runner: serialize.PandocRunner | None = None,
     model: str | None = None,
     timeout_seconds: float | None = None,
     review_runner: Runner | None = None,
@@ -867,6 +982,14 @@ def compose_artifact(
     own code; a CONTRACT violation re-asks up to `max_attempts`, and a persistently-violating
     writer is returned as `compose-contract-violation` and NEVER persisted. A valid IR is
     persisted via a spine claim on the artifact-id (§22.3).
+
+    **DR-5 C4 citation gate (D-cite-locus = COMPOSE).** Post-mint, INSIDE the bounded re-ask, a
+    CITING body's `[@key]`s are resolved against the projected reference set via pandoc's `Cite`
+    AST — an unresolvable key (or an invalid bare/braced form) feeds the SAME re-ask and, on
+    exhaustion, blocks as the never-persisted `citation-unresolved`. The parse fires ONLY for a
+    citing body (gated on the `[@` marker), so the non-citing corpus is byte-identical and needs no
+    pandoc. `pandoc_runner` is the pinned-reader process seam (injectable for tests, mirroring
+    `serialize.parse_to_ast`'s `runner`); None = the real pinned pandoc binary.
 
     **Review 1 wiring (§19, PA-10).** When `review_advance` is supplied, the ADVISORY artifact
     review runs POST-mint (on both the fresh and the idempotent paths — ONCE per artifact by
@@ -996,6 +1119,19 @@ def compose_artifact(
                     violations.append(base_note)
                     last_failure_code = CODE_SECTION_CONFORMANCE_VIOLATION
                     continue  # bounded re-ask (§21.9 / D-2)
+            # DR-5 C4: the HARD `[@key]`→projected-`references` resolution (D-cite-locus = COMPOSE),
+            # post-mint, PRE-persist, INSIDE the bounded re-ask. A CITING body is parsed through the
+            # SINGLE pinned reader and every `Cite` id is checked ⊆ the projected reference set (the
+            # SAME `s{n}` keys C2 projects + C3 hands the writer); an unresolvable `[@key]` — or an
+            # invalid bare/braced form — feeds the SAME re-ask, and a PERSISTENT failure blocks as
+            # the NEW never-persisted `citation-unresolved` (a SIBLING of the contract violation),
+            # closing the §6.5 fabrication leak with teeth. GATED on the `[@` marker: a non-citing
+            # body never parses (byte-identical, no pandoc subprocess). NEVER mutates `doc`.
+            cite_note = _citation_resolution_note(doc, ledger, runner=pandoc_runner)
+            if cite_note is not None:
+                violations.append(cite_note)
+                last_failure_code = CODE_CITATION_UNRESOLVED
+                continue  # bounded re-ask (§21.9)
             result = _persist(
                 doc, request, store=store, claims=claims, advance=advance, lookup=lookup
             )
@@ -1011,8 +1147,9 @@ def compose_artifact(
                 review=maybe_review(doc),  # §19: Review 1, post-mint, on the fresh IR
             )
         # Re-ask bound exhausted: caught, and NEVER persisted (§21.9). The exhaustion CODE is the
-        # LAST derail's kind — `section-conformance-violation` when the terminal failure was the
-        # DR-4 base structural gate, else `compose-contract-violation` (the IR/grounding contract).
+        # LAST derail's kind — `section-conformance-violation` (DR-4 base structural gate),
+        # `citation-unresolved` (DR-5 C4 citation gate), else `compose-contract-violation` (the
+        # IR/grounding contract).
         return ComposeOutcome(
             status="error",
             code=last_failure_code,
