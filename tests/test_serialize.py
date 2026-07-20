@@ -31,7 +31,8 @@ from pipeline.filters.section_attr_validity import (
     SECTION_ATTR_TRANSFORM_VERSION,
     strip_section_attrs,
 )
-from pipeline.ir import PANDOC_API_VERSION, extract_fact_refs
+from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id
+from pipeline.ir import PANDOC_API_VERSION, build_ir, extract_fact_refs
 from pipeline.serialize import (
     READER_PIN,
     PandocOutcome,
@@ -40,6 +41,7 @@ from pipeline.serialize import (
     SerializeError,
     build_render_binding,
     emit_claim_span,
+    emit_document_markdown,
     emit_fitted_markdown,
     enrich_leaf,
     escape_span_text,
@@ -595,3 +597,202 @@ class TestExtensionFor:
     def test_dotted_or_hyphenated_unmapped_slug_fails_loud(self):
         with pytest.raises(SerializeError):
             extension_for("no-such-type")
+
+
+# ---------------------------------------------------------------------------
+# DR-5 C5: `references` → AST-`meta` threading at serialize (D2 = FRONTMATTER). A references-
+# bearing fitted IR gains a canonical YAML frontmatter block so the single pinned parse lands it
+# at `ast["meta"]["references"]` (C0 leg b); a citation-less IR is BYTE-IDENTICAL to pre-C5.
+# RI7 stays `--citeproc`-free — the body keeps UNRESOLVED `Cite` nodes; NO bibliography resolves.
+# ---------------------------------------------------------------------------
+
+_C5_COMMIT_SHA = "9f3c07d21b44e8aa9f3c07d21b44e8aa9f3c07d2"
+
+#: A projected-shaped `references` block (DR-5 C2 shape): unique `id` citation keys + honest
+#: per-source descriptor fields. Keys are given in NON-sorted order on purpose — the canonical
+#: emitter must sort them, so the frontmatter is deterministic regardless of construction order.
+_C5_REFERENCES = [
+    {"title": "acme-graph", "id": "s0", "type": "webpage"},
+    {"id": "s1", "type": "webpage", "title": "beta-graph"},
+]
+
+
+def _c5_preimage():
+    """A canonical §7.2 artifact preimage (mirrors tests/test_ir.py::make_preimage)."""
+    return build_artifact_preimage(
+        topic=EntryBinding("topic-x"),
+        persona=EntryBinding("hiring-manager"),
+        format=EntryBinding("readme"),
+        voice=EntryBinding("business"),
+        goals=[EntryBinding("explain")],
+        source_subset=["acme-graph"],
+        source_commit={"acme-graph": _C5_COMMIT_SHA},
+    )
+
+
+def _citing_fitted(references=_C5_REFERENCES):
+    """A FLAT-body fitted IR that cites — built through the REAL `build_ir(references=…)` so it is a
+    faithful C1 envelope (unique-id references, body-blind, OMIT-WHEN-ABSENT). The body carries a
+    grounded EXTRACTED span (f0) AND two `[@key]` citations, the driving academic-paper shape."""
+    preimage = _c5_preimage()
+    return build_ir(
+        artifact_id=mint_artifact_id(preimage),
+        preimage=preimage,
+        grounding=_LEDGER,
+        body='The limit is [100 req/s]{.EXTRACTED data-fact="f0"} — see [@s0] and [@s1].',
+        references=references,
+    )
+
+
+def _citationless_fitted():
+    """The SAME flat body WITHOUT citations — `references` omitted (OMIT-WHEN-ABSENT, C1/C2)."""
+    preimage = _c5_preimage()
+    return build_ir(
+        artifact_id=mint_artifact_id(preimage),
+        preimage=preimage,
+        grounding=_LEDGER,
+        body='The limit is [100 req/s]{.EXTRACTED data-fact="f0"} holds.',
+    )
+
+
+def _collect_cites(node, out):
+    """Every Pandoc `Cite` citationId in a subtree (an UNRESOLVED citation stays a `Cite`)."""
+    if isinstance(node, dict):
+        if node.get("t") == "Cite":
+            for cite in node["c"][0]:
+                out.append(cite["citationId"])
+        for value in node.values():
+            _collect_cites(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_cites(value, out)
+    return out
+
+
+def _meta_reference_ids(meta):
+    """The `id` of each entry in `meta.references` (a MetaList of MetaMaps whose `id` is a
+    MetaInlines `[Str]`) — the C0-leg-b landing shape pandoc's YAML→meta normalization produces."""
+    refs = meta["references"]
+    assert refs["t"] == "MetaList", refs["t"]
+    ids = []
+    for item in refs["c"]:
+        assert item["t"] == "MetaMap", item["t"]
+        ids.append(item["c"]["id"]["c"][0]["c"])
+    return ids
+
+
+def _has_bibliography_div(blocks):
+    """True iff a citeproc-style bibliography `Div` (`#refs` / `.references`) exists — proof that
+    citeproc RAN. C5 must NOT run it (RI7 is `--citeproc`-free; C6 resolves the bibliography)."""
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("t") == "Div":
+                ident, classes, _ = node["c"][0]
+                if ident == "refs" or "references" in classes:
+                    found.append(True)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(blocks)
+    return bool(found)
+
+
+def test_c5_references_land_in_meta_and_body_keeps_unresolved_cites():
+    # A references-bearing fitted IR → serialize_fitted → the unit AST's `meta` carries
+    # `references` matching the IR's, AND the body carries UNRESOLVED `Cite` nodes (RI7 is
+    # `--citeproc`-free: no bibliography is resolved at this step).
+    units = serialize_fitted(_citing_fitted())
+    assert len(units) == 1  # flat body → one physical document (RI9)
+    ast = units[0].ast
+    assert "references" in ast["meta"]
+    assert _meta_reference_ids(ast["meta"]) == ["s0", "s1"]  # matches the IR's references ids
+    assert _collect_cites(ast["blocks"], []) == ["s0", "s1"]  # body Cites, unresolved
+    assert not _has_bibliography_div(ast["blocks"])  # no bibliography → citeproc did NOT run
+
+
+def test_c5_citationless_serialize_is_byte_identical_to_pre_c5():
+    # A citation-less IR carries no `references` → NO frontmatter → the emitted Markdown AND AST
+    # are byte-identical to the pre-C5 (reference-free) emission: zero golden serialize churn.
+    fitted = _citationless_fitted()
+    (plan,) = plan_documents(fitted)
+    ledger = fitted["grounding"]
+    pre_c5_markdown = emit_document_markdown(plan, ledger)  # the reference-free default path
+    unit = serialize_fitted(fitted)[0]
+    assert unit.markdown == pre_c5_markdown  # byte-identical Markdown
+    assert not unit.markdown.startswith("---")  # no YAML frontmatter block
+    assert "references:" not in unit.markdown
+    assert "references" not in unit.ast["meta"]  # no meta.references for a non-citing artifact
+    # the reference-free AST is exactly what the pre-C5 path parsed
+    assert unit.ast == parse_to_ast(pre_c5_markdown)
+
+
+def test_c5_default_none_references_emits_no_frontmatter():
+    # The added kwarg DEFAULTS to no-frontmatter: emit_document_markdown with references absent /
+    # None / empty reproduces the pre-C5 bytes exactly (the identity default).
+    (plan,) = plan_documents(_citationless_fitted())
+    base = emit_document_markdown(plan, _LEDGER)
+    assert emit_document_markdown(plan, _LEDGER, references=None) == base
+    assert emit_document_markdown(plan, _LEDGER, references=[]) == base
+
+
+def test_c5_references_frontmatter_is_canonical_and_deterministic():
+    # Same IR → byte-identical Markdown across runs, and the canonical emitter SORTS map keys so a
+    # different construction order yields byte-identical frontmatter (no wall-clock, determinism).
+    md_a = serialize_fitted(_citing_fitted())[0].markdown
+    md_b = serialize_fitted(_citing_fitted())[0].markdown
+    assert md_a == md_b
+    assert md_a.startswith('---\nreferences: [{"id":"s0",')  # canonical: sorted keys, compact
+    # a reference list whose maps carry keys in a DIFFERENT insertion order emits the SAME bytes
+    reordered = [
+        {"type": "webpage", "id": "s0", "title": "acme-graph"},
+        {"title": "beta-graph", "type": "webpage", "id": "s1"},
+    ]
+    md_reordered = serialize_fitted(_citing_fitted(references=reordered))[0].markdown
+    assert md_reordered == md_a
+
+
+def test_c5_citing_serialize_is_byte_deterministic_ast():
+    # RI7 determinism holds WITH the frontmatter: same IR + same pins → byte-identical AST.
+    a = serialize_fitted(_citing_fitted())
+    b = serialize_fitted(_citing_fitted())
+    assert [json.dumps(u.ast, sort_keys=True) for u in a] == [
+        json.dumps(u.ast, sort_keys=True) for u in b
+    ]
+
+
+def test_c5_frontmatter_is_scoped_to_the_flat_body_single_document():
+    # N3: the references frontmatter is prepended ONLY on the flat body (`plan.part_ids == ()`).
+    # A composite (parts) plan carries part-ids, so it gets NO frontmatter — the multi-document
+    # per-document-meta path is REGISTERED, not built (a multi-doc citing artifact is out of scope).
+    preimage = _c5_preimage()
+    aid = mint_artifact_id(preimage)  # part-ids are the composite handle (artifact-id, role)
+    parts_ir = build_ir(
+        artifact_id=aid,
+        preimage=preimage,
+        grounding=_LEDGER,
+        parts=[
+            {
+                "part-id": f"{aid}~intro",
+                "role": "intro",
+                "packaging_hint": "in-document",
+                "body": 'Rate [100 req/s]{.EXTRACTED data-fact="f0"} — see [@s0].',
+            },
+            {
+                "part-id": f"{aid}~appendix",
+                "role": "appendix",
+                "packaging_hint": "in-document",
+                "body": 'See [the note]{.INFERRED data-fact="f1"}.',
+            },
+        ],
+        references=_C5_REFERENCES,
+    )
+    (plan,) = plan_documents(parts_ir)  # all in-document → one document, but part_ids non-empty
+    assert plan.part_ids  # not a flat body
+    markdown = emit_document_markdown(plan, parts_ir["grounding"], references=_C5_REFERENCES)
+    assert not markdown.startswith("---")  # N3: no frontmatter for the composite (registered-only)
+    assert "references:" not in markdown

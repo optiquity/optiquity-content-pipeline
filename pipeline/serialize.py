@@ -518,18 +518,59 @@ def plan_documents(fitted_ir: Mapping[str, Any]) -> list[DocumentPlan]:
     return documents
 
 
-def emit_document_markdown(plan: DocumentPlan, ledger: Mapping[str, Any]) -> str:
+def _references_frontmatter(references: Sequence[Mapping[str, Any]]) -> str:
+    """The canonical YAML frontmatter block carrying the CSL-JSON `references` (DR-5 C5, D2).
+
+    The value is emitted as CANONICAL JSON — a strict subset of YAML — so the single pinned
+    reader's native YAML→meta normalization lands it at `ast["meta"]["references"]` (C0 leg b)
+    with NO extra tool and NO `--citeproc`. `canonical_json_str` (sorted keys, compact separators,
+    raw UTF-8, NO wall-clock) makes the block byte-deterministic — same IR ⇒ byte-identical
+    markdown ⇒ byte-identical AST (the RI7 determinism invariant) — and its full quoting prevents
+    the YAML parser from type-coercing a scalar such as a `true`/`123`/`null`-valued descriptor
+    field. `references` is a list (the C1 schema), rendered as a single-line YAML flow sequence.
+    """
+    yaml_value = canonical_json_str([dict(item) for item in references])
+    return f"---\nreferences: {yaml_value}\n---\n\n"
+
+
+def emit_document_markdown(
+    plan: DocumentPlan,
+    ledger: Mapping[str, Any],
+    *,
+    references: Sequence[Mapping[str, Any]] | None = None,
+) -> str:
     """Emit one document's fully-annotated Pandoc-Markdown (fenced Divs + enriched Spans).
 
     Deterministic: leaves are concatenated in plan order, each claim Span enriched from the
     ledger, no wall-clock, stable kv ordering. This is the exact byte input to the single
     pinned parse.
+
+    **`references` → frontmatter (DR-5 C5, D2 = FRONTMATTER).** When the fitted IR carries a
+    NON-EMPTY CSL-JSON `references` block (present ONLY when the artifact cites — the C2 gate), it
+    is PREPENDED as a canonical YAML frontmatter block so `serialize_fitted`'s single pinned
+    `parse_to_ast` lands it at `ast["meta"]["references"]` (C0 leg b) — exactly what pandoc
+    citeproc RESOLVES at C6. This step stays `--citeproc`-free (PD5: the AST is presentation-
+    independent — citeproc runs at the C6 writer step): the body keeps its UNRESOLVED `Cite`
+    nodes and NO bibliography is resolved here; C5 only makes `meta.references` PRESENT.
+
+    **N3 — scoped to the FLAT-BODY / single-document render.** The frontmatter is prepended ONLY
+    for the flat body (`plan.part_ids == ()` — the driving academic-paper case, one
+    `plan_documents` entry). A composite/standalone plan carries part-ids, so it gets NO
+    frontmatter: the MULTI-document per-document-meta partitioning (which document's `references`
+    ride which physical AST) is REGISTERED here but NOT built — a multi-document citing artifact is
+    out of scope for C5 and none occurs yet (the C2 gate + the flat driving example).
+
+    `references=None`/empty ⇒ NO frontmatter ⇒ byte-identical to pre-C5 for every citation-less
+    artifact (the whole existing render corpus parses to the identical AST; zero golden churn).
     """
     chunks: list[str] = []
     for part, sequence, body in plan.leaves:
         enriched = enrich_leaf(body, ledger)
         chunks.append(enriched if part is None else emit_part_div(part, sequence, enriched))
-    return "\n\n".join(chunks) + "\n"
+    document = "\n\n".join(chunks) + "\n"
+    if references and not plan.part_ids:  # N3: flat-body single document only (see docstring)
+        return _references_frontmatter(references) + document
+    return document
 
 
 def emit_fitted_markdown(fitted_ir: Mapping[str, Any]) -> str:
@@ -539,10 +580,16 @@ def emit_fitted_markdown(fitted_ir: Mapping[str, Any]) -> str:
     determinism test; the packaging-aware N-document path is `plan_documents` +
     `emit_document_markdown`. When `standalone` parts exist this returns their concatenation
     too, in stable plan order — a faithful whole-artifact rendering, not the per-file split.
+
+    DR-5 C5: threads the fitted IR's `references` to each document so the flat-body single
+    document gains the canonical `references` frontmatter (`emit_document_markdown`'s N3 scope);
+    a citation-less IR carries no `references`, so this is byte-identical to pre-C5.
     """
     ledger = fitted_ir.get("grounding", {})
+    references = fitted_ir.get("references")
     return "\n\n".join(
-        emit_document_markdown(plan, ledger).rstrip("\n") for plan in plan_documents(fitted_ir)
+        emit_document_markdown(plan, ledger, references=references).rstrip("\n")
+        for plan in plan_documents(fitted_ir)
     ) + "\n"
 
 
@@ -602,11 +649,19 @@ def serialize_fitted(
     Emits annotated Markdown per the packaging plan, parses each through the single pinned
     reader, and returns one `SerializedUnit` per physical document. Deterministic: same
     IR-fitted + same pinned reader ⇒ byte-identical Markdown ⇒ byte-identical ASTs.
+
+    DR-5 C5: threads the fitted IR's CSL-JSON `references` (present only when the artifact cites —
+    the C2 gate) to the emission point, so the flat-body single document's markdown gains the
+    canonical `references` frontmatter and this parse lands it at `ast["meta"]["references"]`
+    (`emit_document_markdown`'s N3 scope). Stays `--citeproc`-free (C6 resolves the bibliography):
+    the AST carries UNRESOLVED `Cite` nodes plus a PRESENT `meta.references`. A citation-less IR
+    carries no `references` ⇒ no frontmatter ⇒ byte-identical Markdown/AST to pre-C5.
     """
     ledger = fitted_ir.get("grounding", {})
+    references = fitted_ir.get("references")
     units: list[SerializedUnit] = []
     for plan in plan_documents(fitted_ir):
-        markdown = emit_document_markdown(plan, ledger)
+        markdown = emit_document_markdown(plan, ledger, references=references)
         ast = parse_to_ast(markdown, runner=runner, binary=binary)
         units.append(SerializedUnit(plan.label, plan.part_ids, markdown, ast))
     return units
