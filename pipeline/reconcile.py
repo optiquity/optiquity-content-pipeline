@@ -111,6 +111,7 @@ from pipeline.sections import (
 from pipeline.transport import Runner, TransportResult, invoke_headless
 
 __all__ = [
+    "CODE_CITATION_NOT_PRESERVED",
     "CODE_FIDELITY_VIOLATION",
     "CODE_HARD_LIMIT_EXCEEDED",
     "CODE_SECTION_CONFORMANCE_VIOLATION",
@@ -122,6 +123,7 @@ __all__ = [
     "RECONCILE_INPUT_EXCLUSIONS",
     "RECONCILE_STRATEGIES",
     "RECONCILE_STRATEGY_FLOOR",
+    "CitationPreservationViolation",
     "FidelityViolation",
     "ReconcileError",
     "ReconcileOutcome",
@@ -135,6 +137,7 @@ __all__ = [
     "parse_reconciler_output",
     "reconcile",
     "reconcile_inputs_preimage",
+    "validate_citation_preservation",
     "validate_fidelity",
     "validate_structural_preservation",
 ]
@@ -210,6 +213,19 @@ CODE_FIDELITY_VIOLATION = "fit-fidelity-violation"
 #: fitted).
 CODE_STRUCTURE_NOT_PRESERVED = "structure-not-preserved"
 
+#: DR-5 C8 — a §16 preserve-citation-keys breach: the fit MINTED an inline Pandoc `[@key]` absent
+#: from the composed body (a new key) OR MANGLED an existing key into a different one (`[@key]`→
+#: `[@keytypo]`) — either ships an UNRESOLVABLE citation. The citation analog of C7's
+#: `CODE_STRUCTURE_NOT_PRESERVED`; the fabrication half (an unresolvable `[@key]` against the
+#: projected reference set) is C4's COMPOSE-locus job. A DISTINCT code from both C7's
+#: `structure-not-preserved` (the section-key preserve) and `CODE_FIDELITY_VIOLATION` (the
+#: coverage/echo contract): all three ride the SAME bounded fidelity re-ask (an `ir.IRError`); a
+#: persistent breach exhausts the bound and surfaces as `CODE_FIDELITY_VIOLATION`, never on a
+#: `ReconcileOutcome.code` and never a `pipeline.api.results` taxonomy code (this pure fit core
+#: imports no §21.7 taxonomy module). Per D7 = SUBSET-only (S5) a citation DROP (fitted ⊆ composed)
+#: is PERMITTED — a benign orphaned reference; only a fitted key NOT in the composed set breaches.
+CODE_CITATION_NOT_PRESERVED = "citation-not-preserved"
+
 #: `default_measure`'s single hard-limit key — total leaf-body character length. A caller
 #: injects a richer measurer (per-platform limits) without touching the gate.
 DEFAULT_CHAR_LIMIT_KEY = "max_chars"
@@ -247,6 +263,20 @@ class StructuralPreservationViolation(ir.IRError):
     `section-conformance-violation` block-and-report layer over this same distinct code."""
 
     code = CODE_STRUCTURE_NOT_PRESERVED
+
+
+class CitationPreservationViolation(ir.IRError):
+    """A §16/DR-5 C8 preserve-citation-keys breach: the reshape introduced an inline Pandoc `[@key]`
+    NOT in the composed body's citation set — a MINT of a new key or a MANGLE of an existing key
+    into a different (unresolvable) one. Per D7 = SUBSET-only (S5) a citation DROP is PERMITTED
+    (fitted ⊆ composed — a benign orphaned reference); only `fitted ⊄ composed` breaches. A subclass
+    of `ir.IRError` — a DISTINCT `code` from `FidelityViolation`/`StructuralPreservationViolation` —
+    so a breach rides the SAME bounded fidelity re-ask (§16); a persistent breach exhausts the bound
+    and is NEVER fitted (surfacing as `CODE_FIDELITY_VIOLATION`). The citation analog of C7's
+    `StructuralPreservationViolation`; the fabrication half (an unresolvable key against the
+    projected reference set) is C4's COMPOSE-locus resolution, not this reshape-preserve check."""
+
+    code = CODE_CITATION_NOT_PRESERVED
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +698,83 @@ def validate_structural_preservation(
                 "MINTED in the fit (absent at compose) — the reconciler may DROP or PRESERVE a "
                 "schema-satisfying section but NEVER invent one from ungrounded content (GAP-2)"
             )
+
+
+# ---------------------------------------------------------------------------
+# The preserve-citation-keys contract (§16 / DR-5 C8) — the CITATION analog of C7's section-key
+# preserve-through. The reshape swaps WHOLE leaf bodies, so a composed inline `[@key]` is NOT
+# mechanically preserved: a reshape that MANGLES `[@key]`→`[@keytypo]` or MINTS a `[@newkey]` would
+# ship an UNRESOLVABLE citation. Per D7 = SUBSET-only (S5): a DROP is PERMITTED (a benign orphaned
+# reference), a fitted key ABSENT from the composed set is a breach. TEXT-level (NO pandoc — the
+# authoritative `[@key]`→`references` AST resolution stays at the C4 COMPOSE locus; the fabrication
+# half is C4's job, this is the reshape-preservation half). INERT for a citation-less body.
+# ---------------------------------------------------------------------------
+
+#: A bracketed Pandoc citation group: `[...]` carrying an `@` citation marker (DR-5 C8). Covers each
+#: pinned bracketed form — `[@key]`, multi-key `[@a; @b]`, locator `[@k, p. 5]`, prefix `[see @k]`,
+#: suppressed-author `[-@k]` — with NO nested brackets, so the grounded-fact spans
+#: `[claim]{.TIER data-fact="…"}` (which carry NO `@`) never match. A TEXT scan, no pandoc.
+_CITE_BRACKET_RE = re.compile(r"\[[^\[\]]*@[^\[\]]*\]")
+
+#: One Pandoc citation KEY inside a bracketed citation: an `@` NOT preceded by a word char (so a
+#: bare `repo@commit`/e-mail never registers) then the key — a leading word char plus Pandoc's
+#: internal-punctuation charset. Applied SYMMETRICALLY to the composed and the fitted sets, so any
+#: extractor imprecision cancels across the SUBSET comparison (an over/under-capture hits both).
+_CITE_KEY_RE = re.compile(r"(?<!\w)@([\w][\w:.#$%&+?<>~/-]*)")
+
+
+def _iter_cite_keys(body: str) -> set[str]:
+    """Every Pandoc citation KEY carried by a Markdown body's BRACKETED citation forms (DR-5 C8).
+
+    A TEXT-level scan (NO pandoc): find each bracketed group carrying an `@` citation marker
+    (`[@key]`, `[@a; @b]`, `[@k, p. 5]`, `[see @k]`, `[-@k]`) and pull every `@key` inside. This is
+    the SINGLE-SOURCED extractor — the SAME function feeds BOTH the composed and the fitted key sets
+    in `validate_citation_preservation`, so a minor quirk (a permissive key charset, a bracket edge
+    case) affects both sides equally and the SUBSET comparison stays robust. INERT on a body with no
+    `[@` citation (returns an empty set → the check is a pure no-op). The authoritative
+    `[@key]`→`references` resolution is C4's COMPOSE-locus AST parse, not this preservation scan."""
+    keys: set[str] = set()
+    for bracket in _CITE_BRACKET_RE.findall(body):
+        for match in _CITE_KEY_RE.finditer(bracket):
+            keys.add(match.group(1))
+    return keys
+
+
+def validate_citation_preservation(
+    request: ReconcileRequest, fitted_ir: Mapping[str, Any]
+) -> None:
+    """The §16/DR-5 C8 preserve-citation-keys contract on an ALREADY-fidelity-valid fitted IR.
+
+    The reshape swaps WHOLE leaf bodies, so a composed inline `[@key]` is NOT mechanically preserved
+    — a reshape that MANGLES `[@key]`→`[@keytypo]` or MINTS a `[@newkey]` would ship an UNRESOLVABLE
+    citation (the citation analog of C7's section-key preserve-through). Per **D7 = SUBSET-only
+    (S5)**: the reconciler MAY DROP a citation (a benign orphaned reference — fitted ⊆ composed with
+    fewer keys is NO breach), but a fitted key NOT in the composed set (a mint OR a mangle) IS a
+    breach.
+
+    Composed set = ∪ `_iter_cite_keys` over the canonical leaves; fitted set = ∪ over the fitted
+    leaves — the SAME single-sourced text extractor on both sides, so an extractor imprecision
+    cancels across the SUBSET test. If `fitted ⊄ composed`, raise `CitationPreservationViolation`
+    (an `ir.IRError`, a DISTINCT code) so a breach rides the SAME bounded fidelity re-ask (§16); a
+    persistent breach exhausts the bound and is NEVER fitted (as `CODE_FIDELITY_VIOLATION`).
+    INERT — a byte-unchanged no-op — when neither body carries `[@` (no keys → a pure pass; every
+    citation-less reconcile path stays byte-identical). This is the reshape-preservation half;
+    the anti-fabrication half (an `[@key]` that names no projected reference) is C4's COMPOSE-locus
+    resolution — a read-only check, it NEVER inspects the fitted-id/preimage nor writes identity."""
+    composed_keys: set[str] = set()
+    for _where, body in _iter_leaves(request.canonical_ir):
+        composed_keys |= _iter_cite_keys(body)
+    fitted_keys: set[str] = set()
+    for _where, body in _iter_leaves(fitted_ir):
+        fitted_keys |= _iter_cite_keys(body)
+    minted = fitted_keys - composed_keys
+    if minted:
+        raise CitationPreservationViolation(
+            f"citation-not-preserved: the fit introduced inline citation key(s) {sorted(minted)} "
+            "absent from the composed body — a reshape MAY DROP a citation but NEVER invent a new "
+            "key nor MANGLE an existing one into a different key (an unresolvable citation, "
+            "§16/DR-5 C8)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1175,6 +1282,10 @@ def reconcile(
                     # DR-4 C7 preserve-through + no-mint (a distinct `ir.IRError` code); first
                     # remediated by this SAME bounded re-ask, then C8's terminal gate blocks.
                     validate_structural_preservation(request, candidate)
+                    # DR-5 C8 preserve-citation-keys: a fitted inline `[@key]` not in the composed
+                    # set (a mint/mangle → an unresolvable citation) rides the SAME bounded re-ask
+                    # (a distinct `ir.IRError` code); a DROP is permitted (D7 = SUBSET-only).
+                    validate_citation_preservation(request, candidate)
                 except ir.IRError as exc:
                     violations.append(f"[{exc.code}] {exc}")
                     continue  # bounded fidelity re-ask (§16)

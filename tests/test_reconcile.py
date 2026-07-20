@@ -34,20 +34,25 @@ from pipeline.ids import (
     part_id,
 )
 from pipeline.reconcile import (
+    CODE_CITATION_NOT_PRESERVED,
     CODE_FIDELITY_VIOLATION,
     CODE_HARD_LIMIT_EXCEEDED,
     CODE_SECTION_CONFORMANCE_VIOLATION,
     CODE_STRUCTURE_NOT_PRESERVED,
     RECONCILE_INPUT_COMPONENTS,
     RECONCILE_INPUT_EXCLUSIONS,
+    CitationPreservationViolation,
     ReconcileError,
     ReconcileRequest,
     StructuralPreservationViolation,
+    _assemble_fitted_ir,
+    _iter_cite_keys,
     breached_limits,
     build_reconciler_prompt,
     fit_digest,
     reconcile,
     reconcile_inputs_preimage,
+    validate_citation_preservation,
     validate_structural_preservation,
 )
 from pipeline.transport import ProcessOutcome, ProcessRequest
@@ -1085,3 +1090,208 @@ class TestTerminalStructuralGate:
         request = make_request(canonical_ir=ci, strategy="pass", format_structural=bad)
         with pytest.raises(ReconcileError):
             reconcile(request, runner=NeverRunner())
+
+
+# --- DR-5 C8: preserve the inline `[@key]` markers (SUBSET, D7 = S5) -------------------------
+#
+# The reshape swaps WHOLE leaf bodies, so a composed inline `[@key]` is NOT mechanically preserved
+# — a reshape that MANGLES `[@key]`→`[@keytypo]` or MINTS a `[@newkey]` ships an UNRESOLVABLE
+# citation. C8 is the CITATION analog of C7's section-key preserve-through: it rides the SAME
+# bounded fidelity re-ask under a DISTINCT `ir.IRError` code. Per D7 = SUBSET-only (S5) a DROP is
+# PERMITTED (fitted ⊆ composed — a benign orphaned reference); only a fitted key NOT in the composed
+# set breaches. TEXT-level (no pandoc — the authoritative `[@key]`→`references` resolution is C4's
+# COMPOSE locus). INERT on a citation-less body (byte-identical reconcile paths).
+
+
+def make_citing_ir(*, body, references=None) -> dict:
+    """A valid §15 IR-canonical envelope that CITES — a grounded `data-fact` span (f0) PLUS one+
+    Pandoc `[@key]` citation, with the CSL-JSON `references` it resolves against (DR-5 C1/C8). Built
+    through the SAME `ir.build_ir` primitive the citing journal scenario uses."""
+    preimage = make_preimage()
+    if references is None:
+        references = [
+            {"id": "s0", "type": "software", "title": "acme-graph",
+             "note": f"github.com/acme/widget@{COMMIT_SHA}"},
+        ]
+    return ir.build_ir(
+        artifact_id=mint_artifact_id(preimage),
+        preimage=preimage,
+        grounding={"f0": ledger_entry()},
+        body=body,
+        references=references,
+    )
+
+
+_CITING_BODY = 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}; see [@s0].'
+_MANGLED_BODY = 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}; see [@s0typo].'
+_TWO_CITE_BODY = (
+    'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}; see [@s0] and [@s1].'
+)
+_TWO_CITE_REFERENCES = [
+    {"id": "s0", "type": "software", "title": "acme-graph", "note": "github.com/acme/widget@a"},
+    {"id": "s1", "type": "software", "title": "beta-graph", "note": "github.com/beta/gadget@b"},
+]
+
+
+class TestPreserveCitationKeys:
+    """C8 through the REAL reconcile loop (transport MOCKED): a mangle/mint rides the bounded
+    fidelity re-ask and is NEVER fitted on exhaustion; a drop fits (SUBSET-only)."""
+
+    def test_a_mangled_citation_key_is_caught_and_never_fitted(self):
+        # The fit MANGLES [@s0] -> [@s0typo] (a typo key ∉ the composed set) — a subset breach. f0
+        # stays re-anchored so fidelity passes and ONLY the citation rule fires; on exhaustion the
+        # fit is NEVER produced (CODE_FIDELITY_VIOLATION), never a mangled deliverable.
+        request = make_request(canonical_ir=make_citing_ir(body=_CITING_BODY), strategy="adapt")
+        out = reconcile(request, runner=ScriptedRunner([reconciler_ok({"body": _MANGLED_BODY})]),
+                        max_attempts=2)
+        assert out.status == "error" and out.code == CODE_FIDELITY_VIOLATION
+        assert out.fitted_ir is None and out.attempts == 2
+        assert any(CODE_CITATION_NOT_PRESERVED in v for v in out.violations)
+        assert any("s0typo" in v for v in out.violations)
+
+    def test_dropping_a_citation_is_permitted(self):
+        # The fit DROPS [@s1] (keeps [@s0]) — fitted {s0} ⊆ composed {s0, s1}: a benign orphaned
+        # reference, PERMITTED (D7 = SUBSET-only). No re-ask, a clean fit.
+        composed = make_citing_ir(body=_TWO_CITE_BODY, references=_TWO_CITE_REFERENCES)
+        request = make_request(canonical_ir=composed, strategy="adapt")
+        drop = reconciler_ok({"body": _CITING_BODY})  # only [@s0] survives
+        out = reconcile(request, runner=ScriptedRunner([drop]))
+        assert out.status == "ok" and out.attempts == 1
+        assert "[@s0]" in out.fitted_ir["body"] and "[@s1]" not in out.fitted_ir["body"]
+
+    def test_a_minted_citation_key_is_caught(self):
+        # The fit MINTS [@snew] (∉ compose) alongside the kept [@s0] — a subset breach.
+        request = make_request(canonical_ir=make_citing_ir(body=_CITING_BODY), strategy="adapt")
+        mint = reconciler_ok({"body": (
+            'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}; see [@s0] and [@snew].'
+        )})
+        out = reconcile(request, runner=ScriptedRunner([mint]), max_attempts=1)
+        assert out.status == "error" and out.code == CODE_FIDELITY_VIOLATION
+        assert out.fitted_ir is None
+        assert any("snew" in v for v in out.violations)
+
+    def test_a_self_healing_fit_re_pins_the_mangled_key_within_the_bound(self):
+        # attempt 1 mangles [@s0] (citation breach → re-ask); attempt 2 restores it → fitted.
+        request = make_request(canonical_ir=make_citing_ir(body=_CITING_BODY), strategy="adapt")
+        runner = ScriptedRunner([
+            reconciler_ok({"body": _MANGLED_BODY}),  # mangle → citation breach
+            reconciler_ok({"body": _CITING_BODY}),   # restore [@s0] → fit
+        ])
+        out = reconcile(request, runner=runner, max_attempts=3)
+        assert out.status == "ok" and out.attempts == 2
+        assert any(CODE_CITATION_NOT_PRESERVED in v for v in out.violations)
+
+
+class TestValidateCitationPreservationUnit:
+    """The pure `validate_citation_preservation` (direct, no transport)."""
+
+    def _fitted(self, body: str) -> dict:
+        preimage = make_preimage()
+        return ir.build_ir(
+            artifact_id=mint_artifact_id(preimage),
+            preimage=preimage,
+            grounding={"f0": ledger_entry()},
+            body=body,
+        )
+
+    def test_passes_when_every_fitted_key_is_in_the_composed_set(self):
+        request = make_request(canonical_ir=make_citing_ir(body=_CITING_BODY))
+        fitted = self._fitted('Reshaped [linear]{.EXTRACTED data-fact="f0"}; cf. [@s0].')
+        assert validate_citation_preservation(request, fitted) is None
+
+    def test_a_dropped_key_is_a_subset_and_passes(self):
+        composed = make_citing_ir(body=_TWO_CITE_BODY, references=_TWO_CITE_REFERENCES)
+        request = make_request(canonical_ir=composed)
+        fitted = self._fitted('Only [linear]{.EXTRACTED data-fact="f0"} [@s0] survives.')
+        assert validate_citation_preservation(request, fitted) is None
+
+    def test_a_minted_key_raises_the_distinct_code(self):
+        request = make_request(canonical_ir=make_citing_ir(body=_CITING_BODY))
+        fitted = self._fitted('A [linear]{.EXTRACTED data-fact="f0"} [@snew] appeared.')
+        with pytest.raises(CitationPreservationViolation) as exc:
+            validate_citation_preservation(request, fitted)
+        assert exc.value.code == CODE_CITATION_NOT_PRESERVED
+        assert "snew" in str(exc.value)
+
+    def test_a_mangled_key_raises(self):
+        request = make_request(canonical_ir=make_citing_ir(body=_CITING_BODY))
+        with pytest.raises(CitationPreservationViolation):
+            validate_citation_preservation(request, self._fitted(_MANGLED_BODY))
+
+    def test_inert_when_the_composed_body_carries_no_citation(self):
+        # No composed [@ marker → the check is a no-op even for an unrelated fitted body.
+        composed = make_canonical_ir(body='## Intro\n\nA [c]{.EXTRACTED data-fact="f0"}.')
+        request = make_request(canonical_ir=composed)
+        fitted = self._fitted('A [c]{.EXTRACTED data-fact="f0"}.')
+        assert validate_citation_preservation(request, fitted) is None
+
+
+class TestCiteKeyExtractor:
+    """`_iter_cite_keys` — the SINGLE-SOURCED text-level bracketed-cite extractor (no pandoc)."""
+
+    def test_every_pinned_bracketed_form_is_extracted(self):
+        assert _iter_cite_keys("see [@k]") == {"k"}
+        assert _iter_cite_keys("[@a; @b]") == {"a", "b"}  # multi-key
+        assert _iter_cite_keys("[@k, p. 5]") == {"k"}      # locator (suffix is not the key)
+        assert _iter_cite_keys("[see @k]") == {"k"}        # prefix
+        assert _iter_cite_keys("[-@k]") == {"k"}           # suppressed-author
+
+    def test_a_grounded_fact_span_is_not_a_citation(self):
+        # A `[claim]{.TIER data-fact="…"}` span carries NO @ inside its bracket → no key.
+        assert _iter_cite_keys('[runs in linear time]{.EXTRACTED data-fact="f0"}') == set()
+
+    def test_a_bare_at_outside_brackets_is_not_a_citation(self):
+        # A bare `repo@commit` (the ledger locator idiom) is NOT a bracketed citation.
+        assert _iter_cite_keys("built at github.com/acme/widget@abc123") == set()
+        assert _iter_cite_keys("plain prose, no citations at all") == set()
+
+
+class TestCitationEnvelopeAndIdentity:
+    """The `references` envelope survives the reshape; the check is INERT + identity-read-only."""
+
+    def test_the_references_envelope_survives_the_reshape_unchanged(self):
+        # `_assemble_fitted_ir` copies every non-body/parts key → the `references` ENVELOPE (and the
+        # binding + grounding) rides the reshape UNCHANGED (C8 adds NO code for this, only a proof).
+        ci = make_citing_ir(body=_CITING_BODY)
+        reshaped = {"body": 'Reshaped [runs in linear time]{.EXTRACTED data-fact="f0"}; [@s0].'}
+        fitted = _assemble_fitted_ir(reshaped, ci)
+        assert fitted["references"] == ci["references"]
+        assert fitted["binding"] == ci["binding"] and fitted["grounding"] == ci["grounding"]
+
+    def test_a_citing_adapt_fit_carries_the_references_through_end_to_end(self):
+        ci = make_citing_ir(body=_CITING_BODY)
+        request = make_request(canonical_ir=ci, strategy="adapt")
+        reshaped = 'Reshaped [runs in linear time]{.EXTRACTED data-fact="f0"}; cf. [@s0].'
+        out = reconcile(request, runner=ScriptedRunner([reconciler_ok({"body": reshaped})]))
+        assert out.status == "ok"
+        assert out.fitted_ir["references"] == ci["references"]
+
+    def test_a_citation_less_ir_reconciles_byte_identically(self):
+        # INERT: a citation-less pass never fires the check → a byte-identical passthrough.
+        ci = make_canonical_ir()  # default body carries no [@ marker
+        out = reconcile(make_request(canonical_ir=ci, strategy="pass"), runner=NeverRunner())
+        assert out.status == "ok" and out.is_noop
+        assert canonical_json_bytes(out.fitted_ir) == canonical_json_bytes(ci)
+
+    def test_the_check_reads_identity_never_writes_it(self):
+        # The preimage/fit_digest a citing fit RECORDS equal the ones computed from the request
+        # BEFORE the check runs → the citation check reads, never perturbs, identity.
+        ci = make_citing_ir(body=_CITING_BODY)
+        request = make_request(canonical_ir=ci, strategy="adapt")
+        pre = reconcile_inputs_preimage(request)
+        reshaped = 'Reshaped [runs in linear time]{.EXTRACTED data-fact="f0"}; cf. [@s0].'
+        out = reconcile(request, runner=ScriptedRunner([reconciler_ok({"body": reshaped})]))
+        assert out.status == "ok"
+        assert out.preimage == pre and out.digest == fit_digest(pre)
+
+    def test_citations_are_body_blind_identity_inputs(self):
+        # A citing IR and a citation-less IR with IDENTICAL reconcile inputs mint a BYTE-IDENTICAL
+        # reconcile-inputs preimage + fit_digest → citations (like `references`) never touch id.
+        citing = make_request(canonical_ir=make_citing_ir(body=_CITING_BODY), strategy="adapt")
+        plain = make_request(canonical_ir=make_canonical_ir(), strategy="adapt")
+        assert canonical_json_bytes(reconcile_inputs_preimage(citing)) == canonical_json_bytes(
+            reconcile_inputs_preimage(plain)
+        )
+        assert fit_digest(reconcile_inputs_preimage(citing)) == fit_digest(
+            reconcile_inputs_preimage(plain)
+        )
