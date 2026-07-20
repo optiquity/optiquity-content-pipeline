@@ -167,7 +167,48 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     `serialize_fitted` by fitted-id (frozen-dataclass cache field).
   - **Gate:** final `uv run pytest -q` = **2380 passed** (post R1+RT+AST-cache); ruff + content guard
     clean. Reports: `ops-handoff/dr4-build/`.
-  - **NEXT in the build order:** `DR-5 (style placement) → DR-2 (style guides)` — await maintainer direction.
+  - **NEXT in the build order:** DR-5 DONE (see the DR-5 bullet below) → NEXT **DR-2 (style guides)** —
+    its `lexicons/` root needs the **F-b / GAP-4 content-guard** known-root fix FIRST (the DR-2 NO-GO);
+    await maintainer direction.
+
+- **DR-5 (style placement: per-output citation style from one IR) — BUILT (D1 = (b)-PROJECTED;
+  three-journals-one-paper; gate green).** 11 gated commits **C1–C8, C10–C12** (**C9/SF-6 deferred**;
+  the plan-number is intentionally skipped), each coder → reviewer → (fix) → commit under the standing
+  cadence; the **C0** citeproc round-trip parity proof at pinned pandoc 3.10 gated the build.
+  - `0f9be37` **C1** `ir.py` — the `references` CSL-JSON block on the IR envelope (additive-optional,
+    omit-when-absent, body-blind / OUT of `binding.preimage`). · `1bbf4c1` **C2** `compose.py` —
+    `project_references(ledger)`: `references` MACHINERY-projected from the ledger's distinct pool
+    sources (deterministic `s0`/`s1` ids), gated on a citing body.
+  - `fdc0817` **C3** `compose.py`+`writer.md` — the writer emits `[@key]` ONLY (never authors
+    `references`, #5). · `15b6a44` **C4** `compose.py`+`results.py` — HARD `[@key]`→projected-
+    `references` resolution at COMPOSE via the pandoc `Cite` AST; new block code `citation-unresolved`.
+  - `61fb1de` **C5** `serialize.py` — `references`→AST-`meta` frontmatter (D2; RI7 stays citeproc-free).
+    · `a2fdbc5` **C6** `dispatch.py`+`filters/citeproc_enablement.py` — CONTENT-driven citeproc
+    enablement (the SD-5 identity twin) fixing the broken `plain` default.
+  - `3c0776e` **C7** `presentations/_schema.yaml`+`presentation.py`+`dispatch.py` — the `csl`
+    Presentation lever (α labeled field; content-gated `--csl`; csl-hash in the preimage gated on
+    `citeproc_enabled`). · `467e5d9` **C8** `reconcile.py`+`reconciler.md` — inline-`[@key]` preservation
+    on the fidelity re-ask (SUBSET/S5; `citation-not-preserved`).
+  - `915ec07` **C10** `payload.py` — the RI14 external payload carries the citeproc requirement + `csl`
+    (omit-when-absent). · `73155bf` **C11** `presentations/journal-*-look.md` + 3 `.csl` + the e2e —
+    three journals differ ONLY in citation style from one IR (proven via an injected loader). ·
+    **C12** (this) — docs + SSOT sync + the MN-2 strip-invariant docstring.
+  - **Ratified decisions:** D1 = **(b)-projected** · D-cite-locus = **compose** · D-csl-seam = **α**
+    (labeled field) · D-citeproc-version = **record-now** (omit-when-absent) · D2 = **frontmatter** ·
+    D7 = **SUBSET-only** citation preservation.
+  - **Identity discipline:** `references` body-blind; the `csl` asset-hash + `citeproc_enablement_version`
+    BOTH omit-when-absent (present only when citeproc ran/fired); **ZERO new `artifact-id` preimage
+    component**; **no `schema_version` bump, no `ir_version` bump** — a non-citing render (even under a
+    csl-set look) is byte-identical to pre-DR-5 (== `plain`).
+  - **Driving example:** three journals (`journal-strict`/`structured`/`concise`), three citation styles
+    (numeric / author-date / footnote) from ONE IR.
+  - **Deferrals (registered, not blanket-resolved — see `docs/known-issues.md` DR-5):** C9/SF-6
+    output-type↔style WARN; the lone-bare-`@key` escape (accepted v1); out-of-pool external literature →
+    DR-6 scenario-2; the production Presentation asset loader → §17/step-29 (both `_deferred_asset_loader`s
+    still raise); plus the json-passthrough note, GAP-1 determinism gate, non-`.md` provenance convention,
+    `pin_bundle`-csl, and #5a(N1)/#6/#7(N2)/N3.
+  - **Gate:** final `uv run pytest -q` = **2497 passed**; ruff + content guard clean. Reports:
+    `ops-handoff/dr5-build/`.
 
 - **Folder adapter — compose-capable + registered (2026-07-18).** Discovered while standing up
   `~/Developer/OptiquityTrader` (a non-Graphify Swift repo, READ-ONLY) as a folder-adapter source for the

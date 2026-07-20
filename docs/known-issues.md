@@ -545,6 +545,116 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   chose warn over error, 2026-07-17). ZERO new identity component. **The citation *grounding* concern is
   NOT citation-specific — generalized to DR-6**; only the citation *formatting* per venue is DR-5 (the
   `csl` / Presentation path above).
+- **Build status (2026-07-20) — DR-5 BUILT (per-output citation style from one IR; three-journals
+  driving example; gate green).** The ratified DR-5 shipped as **11 gated commits (C1–C8, C10–C12)**,
+  each coder → reviewer → (where needed) fix-coder → re-review to CLEAN, under the standing commit
+  approval. **C9 is intentionally skipped** (SF-6, DEFERRED — below). **C0** is the gate — a
+  citeproc round-trip parity proof at the pinned pandoc 3.10 (`ops-handoff/dr5-build/C0-parity-finding.md`),
+  verified before any code. **D1 = (b)-PROJECTED** (the citation is a projection of the grounding
+  ledger, honoring NO-GO **#5** — the writer emits `[@key]` markers ONLY, never a free bibliography —
+  and NO-GO **#8** — a CSL-JSON-shaped descriptor). Commits:
+  - `0f9be37` **C1** `pipeline/ir.py` — the top-level `references` CSL-JSON block on the IR envelope
+    (additive-optional via `keys ⊆ TOP_LEVEL_KEYS`, OMIT-WHEN-ABSENT, body-blind / recorded OUTSIDE
+    `binding.preimage` → identity-neutral, no `ir_version` bump; a NEW top-level key so it gets its
+    own §3.3 recursive no-secrets scan).
+  - `1bbf4c1` **C2** `pipeline/compose.py` — `project_references(ledger)`: `references` is
+    MACHINERY-projected from the grounding ledger's DISTINCT pool sources — one CSL-JSON item per
+    `source_instance_id` under a deterministic `s0`/`s1`… key (single-sourced, `_source_citation_keys`),
+    gated on a body that actually cites (`_body_has_citation`) — so a citation is grounded by
+    construction, closing the §6.5 fabrication leak.
+  - `fdc0817` **C3** `pipeline/compose.py` + `pipeline/prompts/writer.md` — the writer emits `[@key]`
+    markers ONLY and is FORBIDDEN to self-author a `references`/bibliography (#5); it cites solely the
+    projected `available_citations` keys handed to it (single-sourced with C2's `s{n}` derivation).
+  - `15b6a44` **C4** `pipeline/compose.py` + `pipeline/api/results.py` — the HARD
+    `[@key]`→projected-`references` resolution at the COMPOSE locus (ratified D-cite-locus = COMPOSE):
+    a citing body is parsed through the SINGLE pinned pandoc reader and every `Cite` id checked ⊆ the
+    projected set (robust across multi-key / locator / prefix / suppressed-author, NO regex); an
+    unresolved key or invalid bare/braced form re-asks, then blocks as the never-persisted new code
+    `citation-unresolved` (`ALL_CODES` +1). A non-citing body is never parsed → non-citing corpus
+    byte-identical.
+  - `61fb1de` **C5** `pipeline/serialize.py` — thread `references` into the AST `meta` as canonical
+    YAML frontmatter (D2 = frontmatter), so the same single pinned parse lands it at
+    `ast["meta"]["references"]`; RI7 stays `--citeproc`-free (citeproc runs at the writer, C6). Scoped
+    to the FLAT single-document render (the N3 gap, registered below).
+  - `a2fdbc5` **C6** `pipeline/dispatch.py` + `pipeline/filters/citeproc_enablement.py` (+ discovery /
+    render / driver / serialize / mvpdemo) — CONTENT-driven citeproc enablement: `--citeproc` fires
+    whenever the AST carries a `Cite` node (the SD-5 identity twin), keyed off neither the writer nor
+    any `csl` lever, fixing the broken default `plain` render; the OMIT-WHEN-ABSENT
+    `CITEPROC_ENABLEMENT_VERSION` joins the serialize preimage ONLY when citeproc fired.
+  - `3c0776e` **C7** `presentations/_schema.yaml` + `pipeline/presentation.py` + `pipeline/dispatch.py`
+    — the `csl` Presentation lever (the α seam: a LABELED `RenderInputs.csl` field, NOT an unlabeled
+    asset; dispatch content-gates `--csl` WITH `--citeproc`, never a standalone toggle; the csl content
+    hash enters the serialize preimage only when `citeproc_enabled` — the S3×S4 identity gate).
+  - `467e5d9` **C8** `pipeline/reconcile.py` + `pipeline/prompts/reconciler.md` — the preserve-inline-
+    `[@key]` obligation on the bounded fidelity re-ask (D7 = SUBSET-only, S5): a citation DROP is
+    permitted, a MINT/MANGLE blocks as `citation-not-preserved` (the citation analog of C7's
+    `structure-not-preserved`); the anti-fabrication resolution stays C4's compose-locus check.
+  - **C9 — DEFERRED** (the SF-6 output-type↔style compatibility WARN; the maintainer chose to defer it
+    as separable pre-existing work — see the deferral register below). The C9 plan-number is
+    intentionally skipped.
+  - `915ec07` **C10** `pipeline/payload.py` — the RI14 external payload carries, for a CITING AST only,
+    a `citeproc` REQUIREMENT block (`enabled` + per-venue `csl` + pinned `pandoc_version`) the external
+    actor honors; OMIT-WHEN-ABSENT (non-citing / citation-less csl-set → byte-identical to pre-C10).
+  - `73155bf` **C11** `presentations/journal-{strict,structured,concise}-look.md` + 3 `.csl` assets
+    (`presentations/assets/csl/{numeric,author-date,note}.csl`) + the e2e — three journals that differ
+    ONLY in citation style (numeric / author-date / footnote) from ONE IR; proven via an INJECTED asset
+    loader (production path-resolution is the deferred §17/step-29 loader).
+  - **C12** (this) — docs + SSOT sync (design.md §5.3/§6.5/§15/§16/§17/§19/§27.4; this entry; state.md)
+    + the MN-2 strip-invariant docstring in `pipeline/filters/provenance_strip.py`. No production logic
+    change; no `schema_version`/`ir_version` bump.
+- **Identity discipline (DR-5):** `references` is body-blind (out of `binding.preimage`); the
+  `csl` asset-hash and the `citeproc_enablement_version` are BOTH omit-when-absent (present only when
+  citeproc actually ran / fired); **ZERO new `artifact-id` preimage component**; **no `schema_version`
+  bump, no `ir_version` bump**. A non-citing render — even under a csl-set look — is byte-identical to
+  pre-DR-5 (== `plain`), so the golden compose / fit / render-digest corpora are unperturbed; only a
+  CITING render adds the components and re-mints its deliverable loudly (§17 FR7.3).
+- **DR-5 tracked follow-ups / deferrals (REGISTERED — each with its status + why; NOT blanket-resolved):**
+  - **C9 / SF-6 output-type↔style compatibility WARN — DEFERRED as separable** (maintainer decision,
+    2026-07-17): a css-only brand → docx should WARN + fall-to-writer-default, with `csl` EXCLUDED from
+    the skin set (S2). Independent of the citation work; pick up as its own item.
+  - **The lone-bare-`@key` escape (C4) — ACCEPTED for v1.** A lone bare `@key` (no bracketed `[@`)
+    escapes the marker-gated resolution — an output BLEMISH, not a fabrication (only a writer.md-non-
+    compliant writer emits it; the braced/bare INVALID forms inside a `[@` body ARE caught). Closing it
+    would force a pandoc parse across the whole non-citing corpus; revisit if/when the `[@` marker gate
+    is widened.
+  - **The `json`-passthrough `citeproc_enabled=True` note (C6) — semantically loose, tighten later.**
+    The raw-AST passthrough writer reports `citeproc_enabled=True` for a citing AST even though citeproc
+    never touches the passthrough bytes; ZERO identity impact. Cosmetic; tighten later.
+  - **GAP-1 citeproc determinism gate (C10, §4.2) — REGISTERED.** Internal (pinned pandoc) vs external
+    (actor toolchain) citation rendering may differ, OUTSIDE the pin boundary. The RI14 payload carries
+    the pandoc version + csl as pins the actor MUST honor; the payload STATES the requirement, it cannot
+    enforce the actor's toolchain.
+  - **Production Presentation asset loader — DEFERRED to §17/step-29 (C11).** The journal looks now
+    DECLARE a `csl` asset, so `driver._deferred_asset_loader` AND `render._deferred_asset_loader` (both
+    still raise) are reachable for a citing journal deliverable on the production path; production
+    asset-lowering (css / reference_doc / csl — one filesystem path-resolution) is §17/step-29. The e2e
+    is proven via an INJECTED loader.
+  - **The non-`.md` asset provenance convention (C11) — RECORDED.** A `provenance: framework` line
+    inside a `.csl` XML comment satisfies the content guard's per-file default-deny for a non-Markdown
+    framework asset; record the convention.
+  - **`pin_bundle` does not surface `csl` (C7) — record-only.** The RI13 pin-bundle MANIFEST projects
+    `assets`/`variables`/`engine`/`reference_doc` but has no dedicated `csl` key; identity /
+    reproducibility is complete via the serialize preimage (which carries the csl hash when citeproc
+    ran). Optional to surface later.
+  - **#5a — the three-context bare-`[@key]` classifier → DR-6 migration (N1). REGISTERED.** The full
+    grounding-span → grounding-cite / `.framing`-span → bibliographic / bare → forbidden classifier is
+    a DR-6 concern (it depends on the `.framing` construct DR-6 did not build); DR-5 ships the HARD
+    in-`[@` invalid-form catch only.
+  - **#6 — grounding at TWO loci over one ledger. REGISTERED.** The DR-5 citation-resolution check (C4,
+    compose-locus) is DR-5-owned; it plus the DR-6 advisory Review-1 audit are two loci over one ledger,
+    not "one chokepoint."
+  - **#7 — the external CSL boundary → scenario-2 for `side: internal` only (N2). REGISTERED for DR-6.**
+    External-side (`side: external`) scenario-2 attribution is compose-fixed literal prose; the DR-5
+    CSL indirect-citation surface extends it only for `side: internal`.
+  - **The multi-document frontmatter gap (N3) — REGISTERED, not built.** C5 scoped the
+    `references`→meta threading to the FLAT / single-document render; per-document meta partitioning for
+    a multi-document deliverable is registered, not built.
+  - **The out-of-pool external-literature citation → DR-6 scenario-2 — DEFERRED.** DR-5 cites IN-POOL
+    works only (the (b)-projected coupling); citing the broader literature via a pool source's secondary
+    attestation is the ratified home of the named scope-limit — DR-6 scenario-2 (the §15 `attestation`
+    carrier is the foundation, its detection/production deferred).
+- **Gate:** final `uv run pytest -q` = **2497 passed**; `ruff check .` clean;
+  `scripts/check-no-content.sh` OK. Coder/reviewer reports under `ops-handoff/dr5-build/`.
 
 ### DR-6 — General grounding enforcement: all published content grounded in source (not just citations) — design problem
 - **Status:** Deferred (not in v1) — **open design problem; generalizes and ABSORBS three per-feature

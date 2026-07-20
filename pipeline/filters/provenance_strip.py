@@ -45,6 +45,13 @@ published provenance for any un-listed public writer, e.g. `revealjs` or bare `e
     left intact even though its `data-part-id` kv is stripped alongside the rest of the `data-` kv.
 The `data-` kv strip is deliberately BROAD: nothing published needs a `data-` attribute, and a
 broad rule cannot be out-flanked by a provenance key we forgot to enumerate (fail-closed, §3.3).
+(citeproc's published `data-cites` attribute is NOT an exception to that invariant, and this
+filter never has to reason about it: this is a PRE-serialize filter that runs on the layer-3 AST
+BEFORE the writer, whereas pandoc's `--citeproc` emits `data-cites` onto resolved citations
+DURING the writer step — content-driven, DR-5 C6, `pipeline.dispatch` runs `strip_provenance`
+then invokes the writer with `--citeproc`. So NO `data-cites` kv EXISTS at strip time; it is
+sanctioned, resolved-citation metadata a downstream tool adds AFTER this filter has run, never a
+provenance marker this filter could — or must — reach.)
 The `sequence` / `packaging-hint` kv are plain (non-`data-`) keys and survive; they carry no
 provenance.
 

@@ -329,6 +329,17 @@ rendering / discrete-registry / single / override-projection **no** (PD1).
   fields, §17). RenderInputs ride the identical channel internally and, for `side: external`, fold
   into the layer-3 contract payload (§17). Fixed-layout EPUB and bespoke PPTX styling are absorbed
   additively via `variables`/`template` keyed by writer — no special-casing.
+- **The DR-5 `csl` citation-style lever (C7).** A per-venue **citation STYLE** file — a single
+  writer-agnostic `.csl` path (NOT the per-writer `template`/`reference_doc` map, because a CSL
+  style is writer-agnostic) that lets journals differ in citation / footnote style from ONE shared
+  IR. It lowers to a **LABELED `RenderInputs.csl`** field (the ratified α seam), never an unlabeled
+  asset: the dispatcher content-gates `--csl` **with** `--citeproc` and never emits it alone (pandoc
+  ignores a standalone `--csl`), so `csl` is a STYLE override riding ON TOP of the content-driven
+  citeproc enablement (§17), **never a toggle for it**. Empty = pandoc's default author-date style
+  (the `plain` floor, PD7). Identity (PD5): the style choice rides the `presentation` coordinate,
+  and the csl asset's content hash joins the serialize-inputs preimage **only when citeproc actually
+  ran** — so a citation-less render under a csl-set look is byte-identical to `plain` (zero id
+  churn), while an edited style churns the digest for citing renders only (§17 FR7.1).
 
 Presentation inherits the standard registry machinery: schema-versioning (SV10), co-located schema
 (SV4), `x-` instance namespacing (SV5), the provenance guard (Q15), schema-lint (SV11).
@@ -508,6 +519,17 @@ deferred (§26) and is never auto-applied.
   fact-asserting sentence carrying no grounding span) and **faithfulness** (a span whose bound
   ledger fact does not support the sentence). Both are `concern`-level, never a block — the
   EXTRACTED floor and tier-honesty stay hard at the IR gate (§15).
+- **DR-5 citations are grounded by construction — the (b)-PROJECTED coupling** (C2/C4). A published
+  `[@key]` citation is publishable only if it resolves to a **ledger-projected pool source**:
+  compose PROJECTS the `references` bibliography from the grounding ledger's distinct pool sources
+  (never author-written — a free bibliography is the fabrication vector, §15) and then HARD-resolves
+  every composed `[@key]` against exactly that projected key set at the compose locus (an unresolved
+  key blocks as `citation-unresolved` into the bounded re-ask, §15/§16). A citation therefore cannot
+  name a source the pipeline did not ground — closing the fabrication leak with teeth, the analog of
+  the `data-fact`→ledger structural check. **Accepted scope-limit (v1):** DR-5 cites **in-pool**
+  works only; citing the broader out-of-pool literature (via a pool source's secondary attestation,
+  the DR-6 two-scenario model + the §15 `attestation` carrier) is DEFERRED to **DR-6 scenario-2**,
+  its ratified home (`docs/known-issues.md`).
 
 ## §7 Identity & lineage
 
@@ -1577,6 +1599,25 @@ LAYER 3  Pandoc AST JSON (persisted, ALWAYS produced)         — the standard i
   `artifact-id` is unchanged (the ledger is not in the identity preimage, §7). This is the v1
   CARRIER only: scenario-2 detection/production + attributability/survivability enforcement are NOT
   built (deferred — `docs/known-issues.md` DR-6).
+- **The optional `references` CSL-JSON block** (RI3, DR-5 C1–C4). When an artifact CITES, the IR
+  envelope carries a top-level **`references`** — a list of CSL-JSON citation items, one per cited
+  pool source. It is **additive-optional** (the same `keys ⊆ TOP_LEVEL_KEYS` bound as
+  `section_conformance`), **OMIT-WHEN-ABSENT** (a non-citing artifact carries no key → the golden
+  compose corpus is byte-identical), and **body-blind** — recorded OUTSIDE `binding.preimage`, so it
+  moves NO `artifact-id` (no `ir_version` bump). As a NEW top-level key it gains its own §3.3
+  recursive no-secrets scan. **It is MACHINERY-projected, never authored (C2):** compose derives
+  `references` from the grounding ledger's DISTINCT pool sources — one CSL-JSON item per
+  `source_instance_id` under a deterministic `s0`/`s1`… key (single-sourced, mirroring the ledger's
+  `f0`/`f1` idiom), gated on a body that actually cites (`_body_has_citation`). **The writer emits
+  `[@key]` markers ONLY (C3):** `writer.md` forbids a self-authored `references`/bibliography (§6.5)
+  and cites solely the projected `available_citations` keys handed to it. **Compose HARD-resolves
+  every `[@key]` (C4) — the ratified D-cite-locus = COMPOSE:** post-mint, inside the existing bounded
+  re-ask, a body carrying the `[@` marker is parsed through the SINGLE pinned pandoc reader and every
+  `Cite` id is checked ⊆ the projected key set (robust across every citation form — multi-key,
+  locator, prefix, suppressed-author — with NO regex); an unresolved key (or an invalid bare/braced
+  form) feeds a correction note and, on exhaustion, **blocks** with the never-persisted
+  `citation-unresolved` (a GENERATION-tier §21.7 block code, sibling of `compose-contract-violation`).
+  A non-citing body is never parsed, so the non-citing corpus runs byte-identical to pre-DR-5.
 - **Composition binding** (RI4): the envelope records the resolved `artifact-id` preimage — topic,
   persona, format, voice, sorted goal-set, source-subset, resolved-overrides delta, and the
   source commit-map (§7.2) — plus the computed `artifact-id` (full digest, §7.4). The IR is self-describing and
@@ -1667,8 +1708,9 @@ format's tightening never churns this fit (the C7→C8 identity obligation).
 
 **The pass-1 fidelity constraint** (RI3-fidelity, extending Q13): because reconcile is an LLM
 rewrite, it MUST preserve **(i) voice and content parameters, (ii) meaning, (iii) the
-per-claim provenance/tier bindings — re-anchored onto the fitted text, and (iv) the outline's
-declared section keys (below).** It must never upgrade an INFERRED lead into asserted fact (tier
+per-claim provenance/tier bindings — re-anchored onto the fitted text, (iv) the outline's
+declared section keys, and (v) the inline `[@key]` citation markers (both preserved below).** It
+must never upgrade an INFERRED lead into asserted fact (tier
 promotion is impossible anywhere downstream of ground, §6.5). Losing (iii) would blind the
 deliverable review's grounding re-check (§19). This constraint binds the product-plane reconcile
 agent's contract (§27.4).
@@ -1685,6 +1727,17 @@ preserve/no-mint breach (`structure-not-preserved`, a DISTINCT code) first-remed
 bounded fidelity re-ask; a persistent breach exhausts the bound and is NEVER fitted (surfacing as
 `fit-fidelity-violation`). This preserve-through is the foundation over which the C8 terminal
 structural gate's block-and-report verdict layers.
+
+**The DR-5 preserve-citation-keys obligation** (C8). Reconcile is likewise citation-key aware:
+because the reshape swaps whole leaf bodies, an inline Pandoc `[@key]` the composed body carried can
+be MINTED anew or MANGLED into a different (unresolvable) key by the rewrite. Per **D7 = SUBSET-only
+(S5)** the fit's inline citation set must be a SUBSET of the composed body's: a citation DROP is
+PERMITTED (an orphaned reference is benign — a silently-lost whole FACT still surfaces as
+`fit-fidelity-violation`), but a MINT or MANGLE — an inline `[@key]` absent from the composed set —
+is BLOCKED as `citation-not-preserved` (a DISTINCT code) via the SAME bounded fidelity re-ask. This
+is the citation analog of C7's `structure-not-preserved` role backstop; the anti-FABRICATION
+resolution (cited ⊆ the PROJECTED reference set) is C4's compose-locus check (§15), not this
+reshape-preserve check — so grounding is enforced at TWO loci over one ledger, never one chokepoint.
 
 **The reconcile-inputs preimage & the fit-binding (FR2).** Reconcile consumes NON-coordinate
 inputs, and they are recorded once, at the level that consumes them. The **canonical
@@ -1761,6 +1814,25 @@ survive. The old never-block text must not re-enter from any archived source.
   non-typed / SAFE render is byte-identical (the golden render-digest corpus is unperturbed); a
   typed render records the version and **re-mints its deliverable loudly** (§7.4; FR7.3). No
   `schema_version` bump; the provenance strip's own pinned version is untouched.
+- **Content-driven citeproc enablement + the `references`→meta threading (DR-5 C5/C6).** When an
+  artifact cites, the fit's CSL-JSON `references` block (§15) is threaded into the AST as
+  **frontmatter**: serialize PREPENDS a canonical `references:` YAML block so the SAME single pinned
+  `pandoc -f markdown -t json` parse lands it at `ast["meta"]["references"]` (C5, D2 = frontmatter) —
+  **RI7 stays `--citeproc`-free and presentation-independent** (the AST keeps its UNRESOLVED `Cite`
+  nodes; one AST still serves every look, PD5). (C5 scopes the frontmatter to the FLAT single-document
+  render; per-document meta for a multi-document deliverable is registered, not built —
+  `docs/known-issues.md`.) The citation is RESOLVED one step later, AT THE WRITER: a **pinned,
+  deterministic serialize-filter enables pandoc's `--citeproc`** — the CONTENT-driven twin of the
+  SD-5 strip — whenever the AST carries a `Cite` node (a pure function of CONTENT, keyed off neither
+  the writer nor any `csl` lever; it is UNGATED and, like the strips, never a Presentation lever), so
+  a `[@key]` body resolves against `meta.references` under the writer's default author-date style
+  (fixing the broken `plain` default), and the C7 `csl` lever, when set, appends `--csl` ON TOP to
+  override the style. Its identity is captured **OMIT-WHEN-ABSENT**: a `citeproc_enablement_version`
+  (the twin of `section_attr_transform_version`) joins the serialize-inputs preimage's tool bundle
+  ONLY when citeproc actually fired, so every non-citing render is byte-identical to pre-DR-5 (zero
+  render-digest churn) and a citing render re-mints its deliverable loudly (FR7.3). The two version
+  keys are DISJOINT and INDEPENDENT (section-attr is writer-gated, citeproc content-driven). No
+  `schema_version` bump.
 - **One AST per physical output document; the pipeline orchestrates N** (RI9): the per-part
   `packaging_hint` decides — `in-document` parts co-render into one file/one AST (slides + notes →
   one pptx); `standalone` parts are N files/N ASTs, each `(artifact-id, part-id)`-addressable. The
@@ -1828,8 +1900,20 @@ survive. The old never-block text must not re-enter from any archived source.
   writer + engine + reference-doc, all pins; (3) the part structure — ordered `part-id`, `role`,
   advisory intra-work `sequence`, packaging hint — so the actor knows how many files to emit and
   can address part 3/7 directly; (4) the opaque `metadata` bag, untouched; (5) the `language`
-  (already localized — the actor never re-localizes). Explicitly excluded: provenance/tier tags as
-  publishable content; any secret.
+  (already localized — the actor never re-localizes). **DR-5 C10 — the citeproc requirement (citing
+  AST only).** The handed-off AST carries UNRESOLVED `Cite` nodes (RI7 is citeproc-free) plus the
+  `meta.references` MetaMap; since the EXTERNAL actor renders with ITS OWN pandoc/citeproc, the
+  sidecar (2) gains a `citeproc` REQUIREMENT block for a citing AST — `enabled`, the per-venue `csl`
+  STYLE (the C7 `(path, content-hash)`, or None for the writer default), and the pinned
+  `pandoc_version` — so the actor runs `--citeproc` (+ `--csl` when set) under the pins. It is
+  OMIT-WHEN-ABSENT (a non-citing payload gains no `citeproc` key → byte-identical to pre-C10; a
+  citation-less csl-set render carries no csl requirement, mirroring dispatch's content-gating of
+  `--csl` WITH `--citeproc`). **GAP-1 determinism gate:** internal targets resolve under the PINNED
+  pandoc, but an external actor's OWN toolchain may render the same paper + csl differently — OUTSIDE
+  the pin boundary. The block carries the pandoc version + csl as pins the actor MUST honor; the
+  payload can STATE the requirement, never enforce the actor's toolchain (registered,
+  `docs/known-issues.md`). Explicitly excluded: provenance/tier tags as publishable content; any
+  secret.
 
 ## §18 Persistence & regeneration
 
@@ -2737,8 +2821,9 @@ RI11-tier-2 × no-replace contradiction — designed and ratified as FR7 (§17, 
 - **Product-plane agents & skills organization.** The generation-stage *contracts* are fixed
   (writer emits the IR §15; reconcile agent honors §16's fidelity constraint — grown by DR-4 so the
   **preserve-section-keys** contract joins the voice/content, provenance/tier, and typed-section
-  obligations; two reviews §19; deterministic render §17) — but the agent/skill packaging for the
-  product plane is open. The
+  obligations, and by DR-5 so the **preserve-citation-keys** obligation (inline `[@key]`, SUBSET-only,
+  C8) joins them too; two reviews §19; deterministic render §17) — but the agent/skill packaging for
+  the product plane is open. The
   **IDEATION stage** (repo + audience → ranked idea queue; §2.1) has **no ratified contract at
   all**: fully open, product-plane. Nothing in this document designs either.
 - Mission §10.4 remainders: **D3** (runtime minimums — decide at install), **D5** (writing-base
