@@ -29,6 +29,22 @@ attributes:
       against the topic registries in scope; unknown or still-empty at generation
       time fails loudly (§11.1) — a recipe generates nothing without a topic.
     definition_version: 1
+  lexicon:
+    type: text
+    default: ""
+    definition: >-
+      The house-style Lexicon entry id this recipe binds — the L5 rung of the DR-2
+      lexicon selection cascade (recipe > workspace default; L6 deferred). Declared as
+      text with an empty floor — not ref — exactly like `topic`: a lexicon carries
+      workspace/recipe-scoped house style (§10) and the framework ships only the generic
+      `house-standard` worked example, so the honest floor is "unset — no lexicon" (the
+      `platforms.default_output_type`/`topic` empty-floor precedent, which the ref slug
+      alphabet cannot express). A non-empty value resolves at M2-compose against the
+      `lexicons` registry (`Resolver.resolve`), loud on an unknown id (§11.1); the empty
+      floor imposes NO lexicon and churns no artifact id (§7.2). A set lexicon enters the
+      `artifact-id` as its resolved `{entry, delta}` over ATTRIBUTES (never the entry
+      body) and supplies the prompt-only compose house-style block (DR-2 §2.2).
+    definition_version: 1
   persona:
     type: ref
     default: technical-evaluator

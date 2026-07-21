@@ -174,6 +174,12 @@ class ComposeRequest:
     #: skeleton / emphasis / order) and is bound to identity by the compose digest-fidelity
     #: guard. None -> no drive block -> the prompt is byte-identical to the pre-DR-3 assembly.
     outline_brief: str | None = None
+    #: DR-2 house-style: the RESOLVED lexicon ATTRIBUTES (a Mapping — NOT the EntryBinding,
+    #: NOT the entry body) the driver passes from the SINGLE `ComposeResolution.lexicon`
+    #: resolution. When set it inserts an attribute-ONLY, byte-STABLE house-style block into
+    #: the writer prompt (prompt-only application, §2.2). None -> no block -> the compose
+    #: context is byte-identical to the pre-DR-2 assembly (the omit-when-absent posture).
+    lexicon: Mapping[str, Any] | None = None
 
     @property
     def is_flat(self) -> bool:
@@ -516,6 +522,22 @@ def _available_citations(ledger: Mapping[str, Mapping[str, Any]]) -> list[dict[s
     return [{"citation_key": ref["id"], "label": ref["title"]} for ref in refs]
 
 
+def _lexicon_context(lexicon: Mapping[str, Any]) -> dict[str, Any]:
+    """The DR-2 house-style compose-context slot: the RESOLVED lexicon ATTRIBUTES
+    (`preferred_terms`/`banned_terms`/`proper_names`/`spelling`/`mechanical`) the writer
+    APPLIES to its wording + mechanics (prompt-only application, §2.2). Modeled on the DR-5
+    `available_citations` context slot — compose CONTEXT, never identity (the identity input
+    is the SAME lexicon's `{entry, delta}` in the artifact preimage, minted separately).
+
+    P1 (attribute-ONLY): built from the resolved ATTRIBUTES the driver passed, NEVER the
+    entry body — a lexicon whose body differs but attributes match yields a byte-IDENTICAL
+    slot. P2 (byte-STABLE): a deterministic pass-through of the canonical resolved
+    attributes (map keys sort via `json.dumps(sort_keys=True)`; set values arrive
+    canonicalized sorted+deduped from M1) — the SAME resolved lexicon -> the byte-identical
+    slot."""
+    return dict(lexicon)
+
+
 def _structure_context(request: ComposeRequest) -> dict[str, Any]:
     if request.is_flat:
         return {
@@ -582,6 +604,9 @@ def build_writer_prompt(
         "available_citations": _available_citations(ledger),
         "roster": list(request.roster),
     }
+    if request.lexicon:  # DR-2: the house-style slot fires ONLY when a lexicon is selected —
+        # absent -> the context is byte-identical to the pre-DR-2 assembly (omit-when-absent).
+        context["lexicon"] = _lexicon_context(request.lexicon)
     # json (not canonical): the prompt is LLM-facing TEXT, so `default=str` may soften a
     # date/set in the effective-value view without failing — never a persisted record.
     context_json = json.dumps(context, indent=2, sort_keys=True, ensure_ascii=False, default=str)

@@ -950,6 +950,162 @@ def test_artifact_preimage_threads_the_lexicon(tmp_path: Path) -> None:
 
 
 # ------------------------------------------------------------------------------------
+# DR-2 C3: the house-style Lexicon SELECTION cascade (L5>L3) + supply into identity (F4a)
+# ------------------------------------------------------------------------------------
+
+
+def copy_lexicons(root: Path) -> Path:
+    """Copy the real `lexicons/` registry (schema + `house-standard`) into the test root.
+    `lexicons` is a class-(ii) registry, NOT a matrix REGISTRY_ROOTS axis (C1), so
+    `build_root` does not copy it — a lexicon-driven test opts in explicitly."""
+    lexdir = root / "lexicons"
+    if not lexdir.exists():
+        shutil.copytree(REPO_ROOT / "lexicons", lexdir)
+    return lexdir
+
+
+def write_lexicon(
+    root: Path, entry_id: str, frontmatter: str = "", *, body: str = "Lexicon doc body."
+) -> None:
+    copy_lexicons(root)
+    provenance = "instance" if entry_id.startswith("x-") else "framework"
+    (root / "lexicons" / f"{entry_id}.md").write_text(
+        f"---\nid: {entry_id}\nprovenance: {provenance}\nschema_version: 1\n"
+        f"{frontmatter}---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def test_lexicon_from_recipe_slot_L5(tmp_path: Path) -> None:
+    root = build_root(tmp_path)
+    copy_lexicons(root)
+    write_entry(root, "recipes", "x-lex", "extends: explainer-post\nlexicon: house-standard\n")
+    compose = resolve_compose(make_env(root), dc_replace(SEL, recipe="x-lex"))
+    assert compose.lexicon is not None
+    assert compose.lexicon.entry_id == "house-standard"
+    # The binding carries the lexicon's resolved ATTRIBUTES (never the entry body).
+    assert compose.lexicon.effective["preferred_terms"] == {"utilize": "use", "leverage": "use"}
+
+
+def test_lexicon_from_workspace_default_L3(tmp_path: Path) -> None:
+    root = build_root(tmp_path, l3="lexicon: house-standard\n")
+    copy_lexicons(root)  # must exist before env construction validates the L3 default
+    compose = resolve_compose(make_env(root), SEL)
+    assert compose.lexicon is not None and compose.lexicon.entry_id == "house-standard"
+
+
+def test_lexicon_recipe_L5_beats_workspace_L3(tmp_path: Path) -> None:
+    # Most-local-wins: the recipe slot (L5) beats the workspace default (L3).
+    root = build_root(tmp_path, l3="lexicon: x-ws-lex\n")
+    write_lexicon(root, "x-ws-lex", "spelling: uk\n")  # the L3 default
+    write_entry(root, "recipes", "x-lex", "extends: explainer-post\nlexicon: house-standard\n")
+    compose = resolve_compose(make_env(root), dc_replace(SEL, recipe="x-lex"))
+    assert compose.lexicon.entry_id == "house-standard"
+
+
+def test_no_lexicon_default_none_is_byte_identical(tmp_path: Path) -> None:
+    # The golden-corpus floor: no recipe/workspace lexicon -> compose.lexicon is None and the
+    # preimage carries NO `lexicon` key (byte-identical to the pre-DR-2 preimage; zero id churn).
+    root = build_root(tmp_path)
+    copy_lexicons(root)  # the registry is PRESENT but UNSELECTED -> still inert
+    compose = resolve_compose(make_env(root), SEL)
+    assert compose.lexicon is None
+    preimage = compose.artifact_preimage(source_subset=["x-src"], source_commit={"x-src": "abc123"})
+    assert "lexicon" not in preimage
+
+
+def test_selected_lexicon_supplies_the_preimage_and_is_consistent(tmp_path: Path) -> None:
+    # One-resolution consistency + coherent id churn: the SAME resolved binding feeds compose
+    # AND the preimage, so preimage["lexicon"]["entry"] == compose.lexicon.entry_id; a selected
+    # lexicon mints a DISTINCT id vs the identical resolution without one.
+    root = build_root(tmp_path)
+    copy_lexicons(root)
+    write_entry(root, "recipes", "x-lex", "extends: explainer-post\nlexicon: house-standard\n")
+    env = make_env(root)
+    subset, commits = ["x-src"], {"x-src": "abc123"}
+    plain = resolve_compose(env, SEL)  # explainer-post: no lexicon
+    styled = resolve_compose(env, dc_replace(SEL, recipe="x-lex"))  # + lexicon only
+    # Mirror the plan.py caller: thread the resolution's OWN binding into the preimage.
+    pre_plain = plain.artifact_preimage(
+        source_subset=subset, source_commit=commits, lexicon=plain.lexicon
+    )
+    pre_styled = styled.artifact_preimage(
+        source_subset=subset, source_commit=commits, lexicon=styled.lexicon
+    )
+    assert "lexicon" not in pre_plain
+    assert pre_styled["lexicon"]["entry"] == "house-standard"
+    assert pre_styled["lexicon"]["entry"] == styled.lexicon.entry_id  # one-resolution consistency
+    assert ids.mint_artifact_id(pre_styled) != ids.mint_artifact_id(pre_plain)  # coherent churn
+    # The compose block consumer (what the driver hands ComposeRequest.lexicon) is the SAME
+    # binding's resolved ATTRIBUTES — so both consumers agree on the entry (one resolution, two
+    # consumers): the preimage delta and the block attrs range over the identical attribute set.
+    # driver: ComposeRequest.lexicon = compose.lexicon.effective
+    block_attrs = styled.lexicon.effective
+    assert set(pre_styled["lexicon"]["delta"]) == set(block_attrs)
+    assert block_attrs["preferred_terms"] == {"utilize": "use", "leverage": "use"}
+
+
+def test_lexicon_identity_and_block_are_body_inert(tmp_path: Path) -> None:
+    # P1: rewriting a lexicon's BODY (documentation) — the SAME entry, SAME attributes — churns
+    # NEITHER the artifact id NOR the compose block. The body is never compose-consumed (§7.3);
+    # both the identity delta and the block range over ATTRIBUTES only.
+    root = build_root(tmp_path)
+    write_entry(root, "recipes", "x-lex", "extends: explainer-post\nlexicon: x-lx\n")
+    subset, commits = ["x-src"], {"x-src": "abc123"}
+
+    def resolve_with_body(body: str):
+        write_lexicon(root, "x-lx", "spelling: us\n", body=body)  # SAME id + attrs, new BODY
+        return resolve_compose(make_env(root), dc_replace(SEL, recipe="x-lex"))  # fresh re-read
+
+    c1 = resolve_with_body("Body ONE — one documentation prose.")
+    c2 = resolve_with_body("Body TWO — a wholly different documentation prose.")
+    id1 = ids.mint_artifact_id(
+        c1.artifact_preimage(source_subset=subset, source_commit=commits, lexicon=c1.lexicon)
+    )
+    id2 = ids.mint_artifact_id(
+        c2.artifact_preimage(source_subset=subset, source_commit=commits, lexicon=c2.lexicon)
+    )
+    assert id1 == id2  # the body churns no artifact id (identity delta over attrs only)
+    # The BLOCK source is body-inert too: both bindings expose the identical resolved attributes
+    # (the driver's ComposeRequest.lexicon), so the writer house-style block is byte-identical.
+    assert c1.lexicon.effective == c2.lexicon.effective == {"spelling": "us"}
+
+
+def test_unknown_recipe_lexicon_id_is_loud(tmp_path: Path) -> None:
+    # An unknown lexicon id fails LOUDLY at compose resolution (§11.1) — the unknown-topic path
+    # (a text-slot resolution raises UnknownEntryError).
+    root = build_root(tmp_path)
+    copy_lexicons(root)
+    write_entry(
+        root, "recipes", "x-badlex", "extends: explainer-post\nlexicon: x-no-such-lexicon\n"
+    )
+    with pytest.raises(UnknownEntryError):
+        resolve_compose(make_env(root), dc_replace(SEL, recipe="x-badlex"))
+
+
+def test_unknown_workspace_default_lexicon_is_loud_at_env(tmp_path: Path) -> None:
+    # A workspace-default (L3) lexicon is validated at env construction (§11.1 loud).
+    root = build_root(tmp_path, l3="lexicon: x-no-such-lexicon\n")
+    copy_lexicons(root)  # the collection exists; the id does not
+    with pytest.raises(UnknownEntryError):
+        make_env(root)
+
+
+def test_L2_global_lexicon_is_refused_F4a(tmp_path: Path) -> None:
+    # F4a: `lexicon` rides _WORKSPACE_KEYS ONLY. A set-but-dead L2 GLOBAL default is refused as
+    # an unknown key (the closed T10 global vocabulary), NEVER silently accepted; the WORKSPACE
+    # scope DOES accept it (the positive control).
+    with pytest.raises(ScopeDefaultsError, match="unknown key"):
+        parse_scope_defaults(
+            "lexicon: house-standard\n", scope=GLOBAL_SCOPE, where="instance/defaults.yaml"
+        )
+    ws = parse_scope_defaults(
+        "lexicon: house-standard\n", scope=WORKSPACE_SCOPE, where="workspaces/testws/defaults.yaml"
+    )
+    assert ws.lexicon == "house-standard"
+
+
+# ------------------------------------------------------------------------------------
 # DR-3 build COMMIT 3: the framework `outline` Format entry - a pure §5.4 one-file add
 # ------------------------------------------------------------------------------------
 

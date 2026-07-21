@@ -816,6 +816,12 @@ def _run_artifact(
         grounded_facts=published,
         source_repos=source_repos,
         outline_brief=outline_brief,
+        # DR-2: ONE resolution, TWO consumers. The lexicon `EntryBinding` resolved above
+        # (`compose.lexicon`) fed the artifact preimage at plan time (its id rides
+        # `item.preimage["lexicon"]["entry"]`); HERE the SAME binding's resolved ATTRIBUTES
+        # feed the prompt-only house-style block — so the compose-context lexicon is provably
+        # the same entry whose id is in the preimage. None -> no block (omit-when-absent).
+        lexicon=compose.lexicon.effective if compose.lexicon is not None else None,
     )
     log(f"  compose: LIVE writer call ({len(published)} grounded fact(s))...")
     cout = compose_artifact(

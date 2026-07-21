@@ -158,6 +158,11 @@ class PlanItem:
     #: digest ALSO entered `preimage` via `artifact_preimage(outline_digest=)` — identity
     #: already carries it; this is the driver's convenience handle, NOT a 2nd identity input.
     outline_digest: str | None = None
+    #: DR-2: the applied house-style Lexicon entry id, or None (the `outline_digest` twin).
+    #: Lineage/convenience only — the lexicon ALSO entered `preimage` (its `{entry, delta}`
+    #: via `artifact_preimage(lexicon=)`), so identity carries it; this equals
+    #: `preimage["lexicon"]["entry"]` when set (the one-resolution consistency handle).
+    lexicon: str | None = None
 
 
 @dataclass(frozen=True)
@@ -411,6 +416,9 @@ def resolve_plan(
             source_subset=source_subset,
             source_commit=source_commit,
             outline_digest=outline_digest,
+            # DR-2: the resolved house-style Lexicon binding (C2 param). None when no
+            # lexicon is selected -> the preimage is byte-identical (omit-when-absent).
+            lexicon=compose.lexicon,
         )
         artifact_id = mint_artifact_id(preimage)
         goals = tuple(sorted(goal.entry_id for goal in compose.goals))
@@ -459,6 +467,7 @@ def resolve_plan(
             goals=goals,
             m3=m3,
             outline_digest=outline_digest,
+            lexicon=compose.lexicon.entry_id if compose.lexicon is not None else None,
             deliverables=_resolve_deliverables(
                 env, request, compose, artifact_id, coordinates, log
             ),

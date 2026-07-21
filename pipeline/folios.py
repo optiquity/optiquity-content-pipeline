@@ -94,6 +94,7 @@ __all__ = [
 RECIPE_SLOTS = frozenset(
     {
         "topic",
+        "lexicon",
         "persona",
         "format",
         "voice",

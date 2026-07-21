@@ -174,7 +174,11 @@ _VOICE_FLAG_STRENGTHS = ("a", "b", "c")
 
 #: T10 closed key vocabularies (the ratified template shapes; §12.3 rung table).
 _GLOBAL_KEYS = frozenset({"voice", "language", "output_type", "goals", "presentation", "values"})
-_WORKSPACE_KEYS = _GLOBAL_KEYS | {"topic", "persona", "format", "source_selection"}
+#: `lexicon` is WORKSPACE/recipe-scoped house style (DR-2 D-lexicon-cascade-levels: L3 + L5,
+#: L6 deferred) — it rides `_WORKSPACE_KEYS` (L3) ONLY, never `_GLOBAL_KEYS` (F4a): a lexicon
+#: is never a global L2 default, so a set-but-dead L2 `instance/defaults.yaml` lexicon is
+#: REFUSED here as an unknown global key (the closed T10 vocabulary), never silently accepted.
+_WORKSPACE_KEYS = _GLOBAL_KEYS | {"topic", "persona", "format", "source_selection", "lexicon"}
 
 #: (dimension, attribute) pairs that are NEVER M2 binding targets, with the design
 #: grounding per row (see the module docstring). `platform.hard_limits` carries its own
@@ -370,6 +374,8 @@ class ScopeDefaults:
     topic: str | None = None
     persona: str | None = None
     format: str | None = None
+    #: DR-2 (L3): the workspace-default house-style Lexicon entry id (mirror `topic`).
+    lexicon: str | None = None
     goals: tuple[str, ...] | None = None
     values: tuple[ValueBinding, ...] = ()
     #: M3's workspace-default layer, carried AS AUTHORED (§12.1: M2 never touches
@@ -456,7 +462,9 @@ def parse_scope_defaults(text: str, *, scope: str, where: str) -> ScopeDefaults:
     voice = _parse_voice_default(data["voice"], where) if "voice" in data else None
 
     simple: dict[str, str | None] = {}
-    simple_keys = ("language", "output_type", "presentation", "topic", "persona", "format")
+    simple_keys = (
+        "language", "output_type", "presentation", "topic", "persona", "format", "lexicon"
+    )
     for key in simple_keys:
         simple[key] = _require_id(data[key], key, where) if key in data else None
 
@@ -496,6 +504,7 @@ def parse_scope_defaults(text: str, *, scope: str, where: str) -> ScopeDefaults:
         topic=simple["topic"],
         persona=simple["persona"],
         format=simple["format"],
+        lexicon=simple["lexicon"],
         goals=goals,
         values=parse_value_bindings(data.get("values"), where=where),
         source_selection=source_selection,
@@ -594,6 +603,12 @@ class ComposeResolution:
     #: Which §12.3 chain slot selected the voice (test/report surface).
     voice_selected_by: str
     m3_inputs: M3Inputs
+    #: DR-2: the resolved house-style Lexicon binding (L5>L3), or None when none is
+    #: selected. This ONE binding feeds BOTH consumers — the artifact preimage (its
+    #: `{entry, delta}` over ATTRIBUTES, via `artifact_preimage(lexicon=)`) AND the
+    #: prompt-only compose house-style block (its resolved attributes) — so the block is
+    #: provably the SAME entry whose id rides identity (one-resolution consistency).
+    lexicon: EntryBinding | None = None
     warnings: tuple[ResolutionWarning, ...] = ()
 
     def deltas(self) -> dict[str, Any]:
@@ -734,6 +749,9 @@ class CascadeEnv:
             ("topics", defaults.topic),
             ("personas", defaults.persona),
             ("formats", defaults.format),
+            # DR-2 (L3): a workspace-default lexicon resolves against the `lexicons`
+            # registry — an unknown id is LOUD here at config-collection time (§11.1).
+            ("lexicons", defaults.lexicon),
         ]
         for collection, entry_id in selections:
             if entry_id is not None:
@@ -986,6 +1004,21 @@ def resolve_compose(env: CascadeEnv, selection: RunSelection) -> ComposeResoluti
     voice_id, voice_selected_by = _select_voice(env, persona, recipe, selection, warnings)
     voice = env.resolver.resolve("voices", voice_id)
 
+    # DR-2 house-style Lexicon (D-lexicon-cascade-levels: L5>L3, L6 DEFERRED). Mirror the
+    # topic block: recipe slot (L5) beats the workspace default (L3); `""`/None -> no
+    # lexicon (NO selection/global read for v1 — the run selection carries no `lexicon`).
+    # An unknown id is LOUD via M1 (§11.1). The resolved binding rides `ComposeResolution`
+    # as the SINGLE resolution both the artifact preimage and the compose block consume.
+    lexicon_id = _nonempty(recipe.effective.get("lexicon")) or env.workspace_defaults.lexicon
+    lexicon: EntryBinding | None = None
+    if lexicon_id is not None:
+        lexicon_entry = env.resolver.resolve("lexicons", lexicon_id)
+        lexicon = EntryBinding(
+            entry_id=lexicon_entry.id,
+            effective=lexicon_entry.effective,
+            defaults=lexicon_entry.defaults(),
+        )
+
     if env.overrides.for_dimension("goal") and not goal_entries:
         raise OverrideError(
             "invalid-override: goal.* overrides with an empty goal-set — an override "
@@ -1023,6 +1056,7 @@ def resolve_compose(env: CascadeEnv, selection: RunSelection) -> ComposeResoluti
         goals=goals_bound,
         voice_selected_by=voice_selected_by,
         m3_inputs=m3_inputs,
+        lexicon=lexicon,
         warnings=tuple(warnings),
     )
 

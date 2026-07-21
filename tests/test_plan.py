@@ -768,3 +768,53 @@ def test_outline_less_plan_is_byte_identical_to_no_outlines_arg(tmp_path: Path) 
         recipe="explainer-post", topics=["x-t-alpha"], platforms=["github"], outlines={}
     )
     assert plan_for(root, r).plan_hash == plan_for(root, r_empty).plan_hash
+
+
+# ------------------------------------------------------------------------------------
+# DR-2 C3: the house-style Lexicon threads through the plan (identity + lineage)
+# ------------------------------------------------------------------------------------
+
+
+def _copy_lexicons(root: Path) -> None:
+    """Copy the real `lexicons/` registry into the test root (class-(ii), not a matrix axis)."""
+    if not (root / "lexicons").exists():
+        shutil.copytree(REPO_ROOT / "lexicons", root / "lexicons")
+
+
+def test_plan_item_carries_the_lexicon_and_it_matches_the_preimage(tmp_path: Path) -> None:
+    # One-resolution consistency at the plan level: the SINGLE `resolve_compose` per item feeds
+    # BOTH the artifact preimage (identity) AND the PlanItem lineage carrier — so they agree.
+    root = build_root(tmp_path)
+    _copy_lexicons(root)
+    write_entry(root, "recipes", "x-lex", "extends: explainer-post\nlexicon: house-standard\n")
+    plan = plan_for(
+        root, SelectionRequest(recipe="x-lex", topics=["x-t-alpha"], platforms=["github"])
+    )
+    (item,) = plan.items
+    assert item.lexicon == "house-standard"  # the lineage carrier (the outline_digest twin)
+    assert item.preimage["lexicon"]["entry"] == "house-standard"  # identity
+    assert item.lexicon == item.preimage["lexicon"]["entry"]  # one-resolution consistency
+
+
+def test_plan_without_lexicon_is_byte_identical(tmp_path: Path) -> None:
+    # The golden-corpus floor: a recipe with no lexicon slot -> no `lexicon` key in the preimage,
+    # None lineage carrier, and the artifact-id/plan_hash are byte-identical to a plan built with
+    # the lexicons registry ENTIRELY ABSENT (its mere presence perturbs nothing).
+    with_reg = build_root(tmp_path, name="with")
+    _copy_lexicons(with_reg)
+    without_reg = build_root(tmp_path, name="without")
+    req = SelectionRequest(recipe="explainer-post", topics=["x-t-alpha"], platforms=["github"])
+    plan_with = plan_for(with_reg, req)
+    plan_without = plan_for(without_reg, req)
+    (item,) = plan_with.items
+    assert item.lexicon is None
+    assert "lexicon" not in item.preimage
+    assert plan_with.plan_hash == plan_without.plan_hash  # id + plan_hash unperturbed
+
+
+def test_unknown_recipe_lexicon_is_loud_through_resolve_plan(tmp_path: Path) -> None:
+    root = build_root(tmp_path)
+    _copy_lexicons(root)
+    write_entry(root, "recipes", "x-badlex", "extends: explainer-post\nlexicon: x-no-such\n")
+    with pytest.raises(UnknownEntryError):
+        plan_for(root, SelectionRequest(recipe="x-badlex", topics=["x-t-alpha"]))

@@ -1284,6 +1284,71 @@ class TestWriterCitationContext:
         assert "available_citations" not in json.dumps(outcome.ir)
 
 
+class TestWriterLexiconContext:
+    """DR-2 C3: the writer prompt carries the RESOLVED house-style lexicon ATTRIBUTES as a
+    prompt-only, attribute-ONLY (P1), byte-STABLE (P2) context slot the writer APPLIES (§2.2).
+    Present ONLY when a lexicon is selected; absent -> the compose context is byte-identical to
+    the pre-DR-2 assembly (omit-when-absent). Never identity: the lexicon's IDENTITY input is
+    its `{entry, delta}` in the artifact preimage, minted separately."""
+
+    LEX = {
+        "preferred_terms": {"utilize": "use"},
+        "banned_terms": ["irregardless"],
+        "proper_names": {"github": "GitHub"},
+        "spelling": "us",
+        "mechanical": {"oxford_comma": True},
+    }
+
+    def test_slot_lists_the_resolved_attributes(self):
+        request = make_request(lexicon=self.LEX)
+        context = _compose_context(build_writer_prompt(*self._ledger(request)))
+        assert context["lexicon"] == self.LEX  # exactly the resolved attributes, nothing else
+
+    def test_no_lexicon_no_slot(self):
+        # Omit-when-absent: a lexicon-LESS request carries NO `lexicon` context key.
+        request = make_request()  # no lexicon
+        context = _compose_context(build_writer_prompt(*self._ledger(request)))
+        assert "lexicon" not in context
+
+    def test_block_is_attribute_only_P1(self):
+        # P1: the slot is a PURE function of `request.lexicon` (the resolved ATTRIBUTES) — nothing
+        # else (no body, no facts, no roster) reaches it. Two requests with the SAME lexicon attrs
+        # but DIFFERENT grounded facts (the "body" analog) yield the byte-IDENTICAL lexicon slot.
+        r1 = make_request(lexicon=self.LEX, grounded_facts=(make_fact(claim="alpha claim"),))
+        r2 = make_request(
+            lexicon=self.LEX, grounded_facts=(make_fact(claim="a wholly other claim"),)
+        )
+        c1 = _compose_context(build_writer_prompt(*self._ledger(r1)))
+        c2 = _compose_context(build_writer_prompt(*self._ledger(r2)))
+        assert c1["lexicon"] == c2["lexicon"] == self.LEX
+
+    def test_block_is_byte_stable_P2(self):
+        # P2: the SAME resolved lexicon -> the byte-IDENTICAL prompt, INDEPENDENT of dict insertion
+        # order (json.dumps sort_keys canonicalizes; set values arrive canonical sorted from M1).
+        reordered = {k: self.LEX[k] for k in reversed(list(self.LEX))}
+        p1 = build_writer_prompt(*self._ledger(make_request(lexicon=dict(self.LEX))))
+        p2 = build_writer_prompt(*self._ledger(make_request(lexicon=reordered)))
+        assert p1 == p2
+
+    def test_slot_never_reaches_the_persisted_ir(self, store, claims):
+        # Prompt-only: a lexicon-context compose persists NONE of the house-style slot into the IR
+        # (the make_request preimage carries no lexicon key -> the IR is lexicon-free).
+        request = make_request(lexicon=self.LEX)
+        runner = ScriptedRunner(
+            [writer_ok({"body": 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        assert "irregardless" not in json.dumps(outcome.ir)  # the banned-term slot never persisted
+
+    @staticmethod
+    def _ledger(request):
+        ledger, entries = build_grounding_ledger(
+            request.grounded_facts, source_repos=request.source_repos
+        )
+        return request, entries, ledger
+
+
 class TestWriterMayNotAuthorReferences:
     """DR-5 C3 / NO-GO #5: the writer emits `[@key]` markers ONLY and NEVER authors the
     `references` block — the pipeline PROJECTS it (C2). Enforcement is the EXISTING strict shape

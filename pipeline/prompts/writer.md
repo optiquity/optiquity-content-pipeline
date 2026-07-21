@@ -25,6 +25,19 @@ emit them.
 - **`roster`** — sibling artifact roles being generated in the same run, for light
   cross-linking ONLY (e.g. "see the getting-started guide"). It is context, never content
   you must cover, and never affects identity.
+- **`lexicon`** (optional) — the house-style rules to APPLY throughout your wording and
+  mechanics. Present only when a lexicon is selected; when absent, no house-style rules apply.
+  Apply every key that appears:
+  - `preferred_terms` — an avoid → use map: wherever you would write a key term, write its
+    preferred replacement instead (e.g. `utilize` → `use`).
+  - `banned_terms` — never use any of these terms.
+  - `proper_names` — canonical casing for the listed names: render each with exactly the
+    given casing (e.g. `GitHub`, `JavaScript`), never a variant.
+  - `spelling` — `us` or `uk`: follow that spelling standard consistently.
+  - `mechanical` — house mechanical rules (e.g. `oxford_comma: true` → use the serial comma;
+    number/date/unit style). Follow each rule you recognize.
+  These shape HOW you write, never WHAT you may assert: they never license inventing a fact or
+  promoting a lead, and the grounding discipline below still binds every claim.
 - **Drive brief (optional, HIGHEST precedence)** — when a "Drive brief" section appears
   BELOW the compose context, an author-supplied outline drives this artifact. Follow it for
   BOTH content and structure (the body skeleton, the emphasis, and the ordering), OUTRANKING

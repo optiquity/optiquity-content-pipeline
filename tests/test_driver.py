@@ -277,6 +277,7 @@ class TestOutlineBriefLoad:
                 format=SimpleNamespace(values={}, entry_id="f"),
                 voice=SimpleNamespace(values={}, entry_id="v"),
                 goals=(),
+                lexicon=None,  # DR-2: the real ComposeResolution.lexicon (None = no lexicon)
             ),
         )
 
