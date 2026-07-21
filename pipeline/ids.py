@@ -617,6 +617,7 @@ def build_artifact_preimage(
     source_subset: Iterable[str],
     source_commit: Mapping[str, str],
     outline_digest: str | None = None,
+    lexicon: EntryBinding | None = None,
 ) -> dict[str, Any]:
     """Construct the canonical §7.2 artifact preimage (the FROZEN shape — see module doc).
 
@@ -644,6 +645,16 @@ def build_artifact_preimage(
           digest is of a SEPARATE input, an ordinary content-address input in the SAME
           category as `source-commit` — NOT an R4 exception. A drive-path digest on a
           non-outline artifact must therefore never be misread as a body-in-preimage breach.
+
+    `lexicon` is the OPTIONAL DR-2 §7.2 house-style extension, OMIT-WHEN-ABSENT and shaped
+    like a DIMENSION (`{entry, delta}` where the delta ranges over the lexicon's ATTRIBUTES
+    only — never the entry BODY, which is documentation and inert to compose, §7.3): when
+    `None` (the default — the value every non-lexicon-driven coordinate passes; DR-2 C3
+    supplies a real binding) nothing is added, so the returned object is byte-IDENTICAL and
+    every existing artifact-id re-mints unchanged — the zero-churn guarantee. When supplied
+    it enters as a single top-level `lexicon` key `{"entry": <id>, "delta": <delta-vs-floor>}`
+    built INTERNALLY exactly like a content dimension (F7): a house-style rule edit changes
+    the delta → a NEW artifact-id (RI11); an identical `(entry, delta)` → the same id.
     """
     dimensions: dict[str, Any] = {}
     for name, binding in (
@@ -717,6 +728,21 @@ def build_artifact_preimage(
     # stays the byte-identical 4-key preimage and every existing artifact-id is unchanged.
     if outline_digest is not None:
         preimage["outline-digest"] = _require_outline_digest(outline_digest)
+    # DR-2 §7.2 lexicon extension, OMIT-WHEN-ABSENT and shaped like a DIMENSION built
+    # INTERNALLY (F7 — the resolved `{entry, delta}` over the lexicon's ATTRIBUTES, never
+    # the body, §7.3): `None` adds nothing, so the object stays byte-identical and every
+    # existing artifact-id is unchanged; when supplied, a house-style rule edit churns the
+    # delta → a NEW id (RI11) and identical rules → the same id.
+    if lexicon is not None:
+        if not isinstance(lexicon, EntryBinding):
+            raise PreimageError(
+                f"invalid-preimage: lexicon must be an EntryBinding, got {type(lexicon).__name__}"
+            )
+        _require_entry_id(lexicon.entry_id, "lexicon")
+        preimage["lexicon"] = {
+            "entry": lexicon.entry_id,
+            "delta": delta_vs_floor(lexicon.effective, lexicon.defaults, where="lexicon"),
+        }
     # Total-construction guarantee: every input above was vetted, so this cannot fail;
     # the round-trip makes the returned preimage its own canonical pure-JSON value.
     return json.loads(canonical_json_str(preimage))
@@ -792,22 +818,39 @@ def _require_artifact_preimage_shape(preimage: Any) -> None:
     Depth: the top level plus one level down — dimension `{entry, delta}` maps, goal
     `[goal-entry-id, delta]` pairs, the subset list, the commit map — with delta-map
     KEYS checked against the §7.3 exclusions (attr-name positions only; values are data).
-    The OPTIONAL top-level `outline-digest` (DR-3 §7.2) is accepted in ADDITION to the four
-    required keys — still refusing a missing required key or a 6th unknown key — and, when
-    present, asserted to be a `str` (D-8) so a nested mapping cannot smuggle a §7.3 key.
+    Two OPTIONAL top-level extensions are accepted in ADDITION to the four required keys —
+    still refusing a missing required key or an unknown extra key: the `outline-digest`
+    (DR-3 §7.2), asserted to be a `str` (D-8) so a nested mapping cannot smuggle a §7.3 key;
+    and the `lexicon` (DR-2 §7.2), a `{entry, delta}` map validated with the SAME DIMENSION
+    machinery as the four content dimensions (F7 — `_require_entry_id` on the entry,
+    `_require_delta_map_shape` on the delta), NOT the outline-digest `str` check.
     """
     expected = {"dimensions", "goals", "source-subset", "source-commit"}
-    if not isinstance(preimage, Mapping) or set(preimage) - {"outline-digest"} != expected:
+    if (
+        not isinstance(preimage, Mapping)
+        or set(preimage) - {"outline-digest", "lexicon"} != expected
+    ):
         raise PreimageError(
             "invalid-preimage: an artifact preimage carries EXACTLY "
             "dimensions/goals/source-subset/source-commit — plus an OPTIONAL top-level "
-            "outline-digest (§7.2/§7.3, DR-3) — construct it with build_artifact_preimage"
+            "outline-digest (§7.2/§7.3, DR-3) and/or lexicon (§7.2, DR-2) — construct it "
+            "with build_artifact_preimage"
         )
     if "outline-digest" in preimage and not isinstance(preimage["outline-digest"], str):
         raise PreimageError(
             "invalid-preimage: outline-digest must be a string (§7.2 D-8) — a nested "
             "mapping must not smuggle a §7.3 exclusion past the attr-name-position scan"
         )
+    if "lexicon" in preimage:
+        lexicon = preimage["lexicon"]
+        if not isinstance(lexicon, Mapping) or set(lexicon) != {"entry", "delta"}:
+            raise PreimageError(
+                "invalid-preimage: lexicon must be the "
+                "{'entry': ..., 'delta': ...} map (§7.2) — construct it with "
+                "build_artifact_preimage"
+            )
+        _require_entry_id(lexicon["entry"], "lexicon")
+        _require_delta_map_shape(lexicon["delta"], "lexicon")
     dimensions = preimage["dimensions"]
     if not isinstance(dimensions, Mapping) or set(dimensions) != set(CONTENT_DIMENSIONS):
         raise PreimageError(

@@ -613,6 +613,7 @@ class ComposeResolution:
         source_subset: Any,
         source_commit: Mapping[str, str],
         outline_digest: str | None = None,
+        lexicon: EntryBinding | None = None,
     ) -> dict[str, Any]:
         """The canonical §7.2 artifact preimage — `ids.build_artifact_preimage`
         verbatim; mint with `ids.mint_artifact_id`.
@@ -620,6 +621,10 @@ class ComposeResolution:
         `outline_digest` defaults to `None` → the pre-DR-3 4-key preimage, byte-identical
         (the omit-when-absent zero-churn guarantee); a digest is threaded through only on
         the (later) outline drive/emit paths so the default resolution stays unchanged.
+
+        `lexicon` is the DR-2 §7.2 twin — it too defaults to `None`, adding nothing so the
+        default resolution stays byte-identical; a resolved lexicon `{entry, delta}` binding
+        is threaded through only once DR-2 C3 wires the lexicon SELECTION and SUPPLIES it.
         """
         return build_artifact_preimage(
             topic=self.topic.binding(),
@@ -630,6 +635,7 @@ class ComposeResolution:
             source_subset=source_subset,
             source_commit=source_commit,
             outline_digest=outline_digest,
+            lexicon=lexicon,
         )
 
 

@@ -980,3 +980,82 @@ def test_mint_refuses_a_non_string_outline_digest() -> None:
 def test_invalid_outline_digest_values_are_refused_at_construction(bad: object) -> None:
     with pytest.raises(PreimageError, match="outline-digest must be"):
         _preimage(outline_digest=bad)
+
+
+# ---------------------------------------------------------------------------
+# DR-2 §7.2 lexicon preimage extension (class-(ii) house style; zero-churn; RI11).
+# The exact twin of the outline-digest tests above, but shaped like a DIMENSION
+# (`{entry, delta}`) and guarded with the DIMENSION machinery (F7), not a `str` check.
+# ---------------------------------------------------------------------------
+
+#: A resolved C1 `house-standard` lexicon with one house-style rule off its floor
+#: (`preferred_terms` default `{}`) — the delta ranges over ATTRIBUTES, never the body.
+LEXICON = EntryBinding(
+    "house-standard",
+    effective={"preferred_terms": {"utilize": "use"}},
+    defaults={"preferred_terms": {}},
+)
+#: The SAME entry with a DIFFERENT preferred_terms mapping — a house-style rule edit.
+OTHER_LEXICON = EntryBinding(
+    "house-standard",
+    effective={"preferred_terms": {"utilize": "leverage"}},
+    defaults={"preferred_terms": {}},
+)
+
+
+def test_lexicon_absent_is_byte_identical_and_mints_the_same_id() -> None:
+    # RI11 zero-churn thesis: lexicon=None OMITS the key entirely, so the preimage is
+    # byte-identical to the pre-DR-2 4-key object and re-mints the SAME id. Proven against
+    # the existing golden corpus via the _preimage helper (the whole corpus re-mints
+    # unchanged with the param either None OR simply absent).
+    base = _preimage()
+    explicit_none = _preimage(lexicon=None)
+    assert set(base) == {"dimensions", "goals", "source-subset", "source-commit"}
+    assert "lexicon" not in base
+    assert canonical_json_bytes(base) == canonical_json_bytes(explicit_none)
+    assert mint_artifact_id(base) == mint_artifact_id(explicit_none)
+
+
+def test_lexicon_present_adds_exactly_one_top_level_key_and_changes_the_id() -> None:
+    # A SET lexicon enters as EXACTLY one top-level `{entry, delta}` sibling and changes the
+    # id; the delta is over ATTRIBUTES (delta-vs-floor), never the entry body (§7.3).
+    base = _preimage()
+    styled = _preimage(lexicon=LEXICON)
+    assert set(styled) - set(base) == {"lexicon"}
+    assert styled["lexicon"] == {
+        "entry": "house-standard",
+        "delta": {"preferred_terms": {"utilize": "use"}},
+    }
+    assert mint_artifact_id(styled) != mint_artifact_id(base)
+
+
+def test_lexicon_is_idempotent_and_a_rule_edit_mints_a_new_id() -> None:
+    # RI11: the SAME (entry, delta) → the SAME id (idempotent); a DIFFERENT lexicon delta
+    # (a house-style rule edit — a changed preferred_terms mapping) → a NEW id.
+    styled = mint_artifact_id(_preimage(lexicon=LEXICON))
+    assert mint_artifact_id(_preimage(lexicon=LEXICON)) == styled  # idempotent re-mint
+    assert mint_artifact_id(_preimage(lexicon=OTHER_LEXICON)) != styled  # rule edit → new id
+
+
+def test_shape_guard_refuses_an_unknown_top_level_key_alongside_a_lexicon() -> None:
+    # The lexicon is accepted in ADDITION to the four required keys, but a further unknown
+    # 6th top-level key is still refused (EXACTLY the four + the optional extensions).
+    styled = _preimage(lexicon=LEXICON)
+    with pytest.raises(PreimageError, match="EXACTLY"):
+        mint_artifact_id({**styled, "drive-config": ["x"]})
+
+
+def test_shape_guard_runs_the_dimension_machinery_on_the_lexicon_delta() -> None:
+    # F7: the lexicon delta is vetted with the DIMENSION machinery (_require_delta_map_shape),
+    # NOT a `str` check — a §7.3 exclusion smuggled as a delta KEY is caught, proving the
+    # delta-map scan runs on the lexicon delta and a nested mapping cannot slip a §7.3 key in.
+    styled = _preimage(lexicon=LEXICON)
+    smuggled = {**styled, "lexicon": {"entry": "house-standard", "delta": {"schema_version": 2}}}
+    with pytest.raises(PreimageError, match="never an identity input"):
+        mint_artifact_id(smuggled)
+    # A non-{entry, delta} lexicon map is refused with the dimension-shaped message:
+    with pytest.raises(PreimageError, match="entry.*delta.*map"):
+        mint_artifact_id({**styled, "lexicon": {"entry": "house-standard"}})
+    # And a lexicon whose entry is not a §7.4 slug is refused by _require_entry_id:
+    with pytest.raises(PreimageError, match="not a §7.4 slug"):
+        mint_artifact_id({**styled, "lexicon": {"entry": "Bad Id", "delta": {}}})

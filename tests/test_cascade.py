@@ -918,6 +918,37 @@ def test_artifact_preimage_threads_the_outline_digest(tmp_path: Path) -> None:
     assert ids.mint_artifact_id(driven) != ids.mint_artifact_id(base)
 
 
+def test_artifact_preimage_threads_the_lexicon(tmp_path: Path) -> None:
+    # DR-2 §7.2 (the outline_digest twin): the lexicon pass-through. The default (None) path
+    # is byte-identical to the pre-DR-2 preimage; a resolved lexicon `{entry, delta}` binding
+    # flows through to build_artifact_preimage, enters as one top-level key, and changes the id.
+    root = build_root(tmp_path)
+    env = make_env(root)
+    compose = resolve_compose(env, SEL)
+    subset, commits = ["x-src"], {"x-src": "abc123"}
+    base = compose.artifact_preimage(source_subset=subset, source_commit=commits)
+    explicit_none = compose.artifact_preimage(
+        source_subset=subset, source_commit=commits, lexicon=None
+    )
+    assert "lexicon" not in base
+    assert base == explicit_none  # default path unchanged, byte-identical
+    assert ids.mint_artifact_id(base) == ids.mint_artifact_id(explicit_none)
+    lexicon = ids.EntryBinding(
+        "house-standard",
+        effective={"preferred_terms": {"utilize": "use"}},
+        defaults={"preferred_terms": {}},
+    )
+    styled = compose.artifact_preimage(
+        source_subset=subset, source_commit=commits, lexicon=lexicon
+    )
+    assert styled["lexicon"] == {
+        "entry": "house-standard",
+        "delta": {"preferred_terms": {"utilize": "use"}},
+    }
+    assert set(styled) - set(base) == {"lexicon"}  # exactly one top-level sibling added
+    assert ids.mint_artifact_id(styled) != ids.mint_artifact_id(base)
+
+
 # ------------------------------------------------------------------------------------
 # DR-3 build COMMIT 3: the framework `outline` Format entry - a pure §5.4 one-file add
 # ------------------------------------------------------------------------------------
