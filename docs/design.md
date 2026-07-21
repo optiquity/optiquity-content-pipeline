@@ -160,6 +160,11 @@ The nesting `dimension ▸ entry ▸ attribute` is load-bearing; keep the three 
 Definitions here are normative; where a term's old meaning is superseded, the new meaning is stated
 and the old one is dead (Appendix B archives it).
 
+> **Naming note (DR-2, C1-review N2).** This section — "§4 Lexicon", the design's terminology
+> glossary — is DISTINCT from the DR-2 content-side **`lexicons/`** registry (the house-style
+> entries applied at compose, §5.2/§7.2/§12.6). Same word, unrelated constructs; the collision is
+> flagged here, not resolved by a rename.
+
 | Term | Meaning |
 |---|---|
 | **dimension** | One of the nine orthogonal design axes (§5). Content: Topic, Persona, Format, Voice, Goal. Rendering: Platform, Language, Output-type, Presentation. Characterized by facets (§5.1), not by ad-hoc kinds. |
@@ -278,6 +283,15 @@ artifact**: a recipe binds `goals: [...]` and the piece serves the whole set. Ea
 expressed as a list of goal-sets. The goal-set is canonicalized (`sorted`, deduped) into
 `artifact-id` (§7.1). Goal entries may contribute source-selection clauses (§6.3) and weight
 nudges (§12.7).
+
+**The `lexicon` is NOT a content dimension** (DR-2). House-style — preferred/banned terms,
+proper-name casing, spelling variant, and open `mechanical` rules — is carried by the **`lexicons/`**
+registry (§7.2/§12.6) as a **class-(ii) SELECTION input**, resolved over the *existing* cascade at
+**L3 (workspace) + L5 (recipe)** — recipe beats workspace — and applied prompt-only at compose. It
+adds **no new dimension and no new cascade rung**: `CONTENT_DIMENSIONS` stays **4** (topic, persona,
+format, voice) and lexicon rides `_WORKSPACE_KEYS` ONLY — **never global/L2 (F4a)** — with **L6
+(run) DEFERRED**. It nudges *how* prose reads, never *what* it claims (§6.5); its sole identity home
+is the §7.2 `artifact-id` preimage.
 
 ### §5.3 Rendering dimensions
 
@@ -530,6 +544,12 @@ deferred (§26) and is never auto-applied.
   works only; citing the broader out-of-pool literature (via a pool source's secondary attestation,
   the DR-6 two-scenario model + the §15 `attestation` carrier) is DEFERRED to **DR-6 scenario-2**,
   its ratified home (`docs/known-issues.md`).
+- **The DR-2 lexicon shapes WORDING only — it mints NO fact** (C1/C3b). House style
+  (preferred/banned terms, proper-name casing, spelling, `mechanical`) is a *style* transform
+  applied **prompt-only** at compose; it never promotes an INFERRED/AMBIGUOUS lead to published
+  fact and never adds a grounding-ledger entry. The EXTRACTED publish floor and the total-grounding
+  rule (§3.3) hold unchanged — a lexicon changes only *how* a grounded claim is phrased, never
+  *whether* it is grounded.
 
 ## §7 Identity & lineage
 
@@ -627,8 +647,9 @@ components are defined once, here:
   carries the pool and its pinned commit-map; per-fact survivorship and per-fact commits live in
   the ledger.
 
-**The optional `outline-digest` component (DR-3).** The preimage carries a **fifth, OPTIONAL**
-top-level key — the 64-char lowercase-hex SHA-256 of a normalized outline
+**The optional `outline-digest` component (DR-3).** The preimage carries a **fifth** top-level key
+(the FIRST of two OPTIONAL components; the DR-2 `lexicon` below is the sixth) — the 64-char
+lowercase-hex SHA-256 of a normalized outline
 (`pipeline.outline.outline_digest`; a bare content hash, never a §7.4 id root). It is
 **omit-when-absent**: no outline → the key is absent, the preimage is the byte-identical four-key
 shape above, and every non-outline `artifact-id` re-mints unchanged (the zero-churn guarantee).
@@ -640,6 +661,22 @@ identity legitimately depends on its own bytes); on the **drive** path it is the
 SEPARATE input on a NON-outline artifact — an ordinary content-address in the same category as
 `source-commit`, **not** an R4 exception and never a body-in-preimage breach. See
 `docs/known-issues.md` DR-3.
+
+**The optional `lexicon` component (DR-2).** The preimage carries a **sixth, OPTIONAL** top-level
+key — the resolved house-style `lexicon` as an `{entry, delta}` pair (the DR-3 `outline-digest`
+twin, but **dimension-shaped** rather than a bare content hash: it is canonicalized and shape-guarded
+by the SAME F7 dimension machinery that covers a content dimension, not the `outline-digest` string
+check). The `delta` ranges over the lexicon entry's **ATTRIBUTES only** — `preferred_terms` /
+`banned_terms` / `proper_names` / `spelling` / `mechanical`, delta-vs-floor exactly as a content
+dimension is — and **never** the entry BODY, which is documentation only and is never
+compose-consumed (the attributes-only identity invariant: the body cannot move an id because nothing
+reads it). It is **omit-when-absent**: no selected lexicon → the key is absent, the preimage is the
+byte-identical five-or-fewer-key shape above, and every lexicon-less `artifact-id` re-mints unchanged
+(the zero-churn additive posture). The lexicon moves the **`artifact-id` ONLY** — never
+`fitted-id` / `deliverable-id`, and never an `ir_version` bump; the compose-applied wording is a
+*style* transform, so nothing else churns. **RI11:** the same `(entry, delta)` yields the same id,
+and a rule edit (a changed attribute) mints a NEW id — closing the same-id/different-bytes hole a
+silent house-style change would otherwise open. See `docs/known-issues.md` DR-2.
 
 ### §7.3 Identity exclusions
 
@@ -1048,7 +1085,11 @@ no id churns.
   registry attribute, a widened type) is shipped **additive-at-floor** — a new attribute rides its L0
   floor so every existing entry stays valid and every id/digest is byte-identical — which needs NO
   bump (the version-equality lint keeps all co-located `_schema.yaml` at one number; a per-schema bump
-  mid-stream would fail it). The bump is a coordinated, all-at-once release step, deferred until then.
+  mid-stream would fail it). **This exemption is now ENFORCED in the lint** (SV11 clause 1, DR-2 C3a):
+  a new attribute riding its type's empty L0 floor no longer trips
+  `schema-change-without-version-bump`, so the §11.2 policy prose finally has matching enforcement —
+  while removals, meaning/type/default changes, and non-empty-default adds still fire. The bump is a
+  coordinated, all-at-once release step, deferred until then.
   One number pins one released, coherent schema snapshot: atomic revert lands on a state that actually
   existed; a run pins one number, not a vector (§21.8).
 - **`definition_version` is valued in the `schema_version` number-space** (SV1): it records the
@@ -1390,6 +1431,14 @@ bundle would straddle the compose/render identity split). The flag + warning **m
 L2 (gitignored in public), a client brand at that client's L3, **never global** (isolation, §10).
 A named "brand pack" (sugar over a set of flagged instance defaults — never called an "actor") is
 deferred (§26).
+
+**Lexicon brand-lock (DR-2, D-lexicon-brand-lock) — FLAGGED extension, NOT built.** Brand-lock is
+**Voice-only in v1**. The DR-2 `lexicon` ships selectable at **L3/L5** by convention (a): a client's
+house style lives at its workspace L3, which already matches brand-lock's L3-baseline posture — no
+new mechanism. An **`authoritative`-style lexicon-scope-default** (b) — the §12.6 Voice elevation
+generalized so a house lexicon can beat the recipe/run — is a **flagged §12.6 extension, deferred**
+(not built): it would need the same `authoritative` flag + one-time warning on the lexicon
+scope-default schema, which v1 does not ship.
 
 ### §12.7 Constraints & weights
 
@@ -1738,6 +1787,22 @@ is BLOCKED as `citation-not-preserved` (a DISTINCT code) via the SAME bounded fi
 is the citation analog of C7's `structure-not-preserved` role backstop; the anti-FABRICATION
 resolution (cited ⊆ the PROJECTED reference set) is C4's compose-locus check (§15), not this
 reshape-preserve check — so grounding is enforced at TWO loci over one ledger, never one chokepoint.
+
+**The DR-2 lexicon fidelity-preserve obligation — ADVISORY, read from the binding** (C4). Reconcile
+is likewise TOLD to carry the already-applied house style through an `adapt` / `split` / `localize`
+reshape. Recorded HONESTLY: unlike the C7 `structure-not-preserved` and C8 `citation-not-preserved`
+HARD gates, this is a **recommendation in the reconciler prompt, NOT a machine gate** — no
+conformance check, no distinct block code, no re-ask. It reads the applied rules from the ONE record
+that already carries them — `binding.preimage.lexicon.delta` (the §7.2 `{entry, delta}` component) —
+so the reconciler is told exactly what compose applied and nothing is re-derived. It is
+**omit-when-absent** (a lexicon-less IR → no key → a byte-identical prompt) and inert on the `pass`
+strategy (the reconciler is never invoked). It rides the §3.3 **language split**: under `localize`,
+language-invariant rules (proper-name casing, `banned_terms`, `mechanical`) hold, while
+language-specific rules (`spelling`, English-only `preferred_terms`) may not transfer. This advisory
+ceiling is honest about the reshape-undo residual (§2.2/§3.3): a lexicon *change* already re-composes
+via the §7.2 `artifact-id` component, so §16 only preserves what compose applied — the
+`reconcile-inputs preimage` is **UNTOUCHED** (the lexicon never enters it; already covered by the
+`artifact-id`, so every `fit-digest` is byte-identical).
 
 **The reconcile-inputs preimage & the fit-binding (FR2).** Reconcile consumes NON-coordinate
 inputs, and they are recorded once, at the level that consumes them. The **canonical
@@ -2822,8 +2887,10 @@ RI11-tier-2 × no-replace contradiction — designed and ratified as FR7 (§17, 
   (writer emits the IR §15; reconcile agent honors §16's fidelity constraint — grown by DR-4 so the
   **preserve-section-keys** contract joins the voice/content, provenance/tier, and typed-section
   obligations, and by DR-5 so the **preserve-citation-keys** obligation (inline `[@key]`, SUBSET-only,
-  C8) joins them too; two reviews §19; deterministic render §17) — but the agent/skill packaging for
-  the product plane is open. The
+  C8) joins them too, and by DR-2 so the **advisory lexicon-fidelity** preserve (house style carried
+  through a reshape — a recommendation READ FROM THE BINDING, NOT a machine gate, C4) rides alongside
+  as the honest advisory ceiling; two reviews §19; deterministic render §17) — but the agent/skill
+  packaging for the product plane is open. The
   **IDEATION stage** (repo + audience → ranked idea queue; §2.1) has **no ratified contract at
   all**: fully open, product-plane. Nothing in this document designs either.
 - Mission §10.4 remainders: **D3** (runtime minimums — decide at install), **D5** (writing-base

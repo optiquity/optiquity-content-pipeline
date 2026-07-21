@@ -167,9 +167,9 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     `serialize_fitted` by fitted-id (frozen-dataclass cache field).
   - **Gate:** final `uv run pytest -q` = **2380 passed** (post R1+RT+AST-cache); ruff + content guard
     clean. Reports: `ops-handoff/dr4-build/`.
-  - **NEXT in the build order:** DR-5 DONE (see the DR-5 bullet below) → NEXT **DR-2 (style guides)** —
-    its `lexicons/` root needs the **F-b / GAP-4 content-guard** known-root fix FIRST (the DR-2 NO-GO);
-    await maintainer direction.
+  - **Build order — ALL DONE:** DR-5 DONE (see the DR-5 bullet below) → **DR-2 DONE** — BUILT as the
+    compose-time `lexicons/` registry (the `lexicons/` root took the required **F-b / GAP-4
+    content-guard** known-root fix in C1); see the DR-2 bullet below.
 
 - **DR-5 (style placement: per-output citation style from one IR) — BUILT (D1 = (b)-PROJECTED;
   three-journals-one-paper; gate green).** 11 gated commits **C1–C8, C10–C12** (**C9/SF-6 deferred**;
@@ -209,6 +209,46 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
     `pin_bundle`-csl, and #5a(N1)/#6/#7(N2)/N3.
   - **Gate:** final `uv run pytest -q` = **2497 passed**; ruff + content guard clean. Reports:
     `ops-handoff/dr5-build/`.
+
+- **DR-2 (selectable style guides → the compose-time `lexicons/` house-style registry) — BUILT
+  (attributes-only; prompt-applied at compose; artifact-id-only identity; gate green).** 5 gated
+  commits + this docs closeout (C5), each coder → reviewer → (fix) → commit under the standing cadence.
+  The `lexicons/` registry is a **class-(ii) content-side registry** — NOT a §5.4 axis, NOT a content
+  dimension; entries are **attributes-only** and applied **prompt-only at compose**; the entry BODY is
+  documentation only, never compose-consumed. HEAD `6148c64` (C4) + this C5 docs commit.
+  - `13dd6e6` **C1** — stood up `lexicons/` (the 15th registry, `schema_version: 1`): attributes-only
+    schema (`preferred_terms`/`banned_terms`/`proper_names`/`spelling` enum `""|us|uk`/`mechanical`
+    open bare map; all floor-empty) with the load-bearing invariant (body is doc-only, never
+    compose-consumed); generic `house-standard` entry (`provenance: framework`); `check-no-content.sh`
+    `REGISTRY_ROOTS` 14→15 (mandatory — else F-b/GAP-4a hard-fails). No `DIMENSION_COLLECTIONS` edit;
+    `lint.py`'s matrix `REGISTRY_ROOTS` UNCHANGED (class-(ii)).
+  - `b06bfaa` **C2** — threaded the lexicon `{entry, delta}` into the §7.2 artifact preimage
+    (top-level, omit-when-absent; dimension-shaped, F7-guarded; delta over ATTRIBUTES, never the body).
+    Identity: **artifact-id ONLY**; omit-when-absent → byte-identical corpus; **RI11** (rule edit → new
+    id). No `schema_version`/`ir_version` bump.
+  - `1603288` **C3a** (`fix(lint)`) — the **§11.2 additive-at-floor exemption** in SV11 clause 1 (a new
+    attribute at its empty L0 floor needs NO bump — enforcement now matches the ratified policy);
+    removals / meaning-changes / non-empty-default adds still fire.
+  - `9380913` **C3b** — wired `lexicon` selection at **L3 (workspace) + L5 (recipe)**, **L6 DEFERRED**
+    (F4a: `_WORKSPACE_KEYS` only, never global/L2); recipe `lexicon: {type: text, default: ""}`; ONE
+    resolution → TWO consumers (preimage binding + writer block); attribute-only byte-stable prompt
+    block; `folios` `RECIPE_SLOTS += "lexicon"`.
+  - `6148c64` **C4** — the §16 reconcile **ADVISORY** preserve clause (reads
+    `binding.preimage.lexicon`, prompt-only, NOT a machine gate; inert on lexicon-less IRs + the `pass`
+    strategy; the §3.3 language-invariant vs language-specific split for `localize`;
+    `reconcile_inputs_preimage` UNTOUCHED → `fit-digest` byte-identical).
+  - **C5** (this) — docs + SSOT sync (design.md §4/§5.2/§6.5/§7.2/§11.2/§12.6/§16/§27.4 + known-issues
+    DR-2 build status + state.md). No code/test change; no `schema_version`/`ir_version` bump.
+  - **Identity discipline:** the lexicon `{entry, delta}` is the ONLY new preimage component, moving
+    the **artifact-id ONLY**; **no `schema_version` bump** (all 15 registry `_schema.yaml` at 1; the
+    version-equality lint green over the 14 collections it scans) and **no `ir_version` bump**;
+    `CONTENT_DIMENSIONS` stays 4; no new cascade rung; no `style-guides/` dir.
+  - **Honest deferrals (registered):** schema-lint does NOT scan `lexicons/` entries (validated by
+    `tests/test_lexicons.py`, not the CI schema-lint matrix scan — C1-review N1); L6 selection-level
+    deferred; §12.6(b) lexicon-scope-default + brand-lock(b) deferred (brand-lock is Voice-only in v1).
+  - **Gate:** final `uv run pytest -q` = **2546 passed** (C4); ruff + content guard + schema-lint clean
+    (schema-lint's 14-collection matrix; `lexicons/` via `tests/test_lexicons.py`). Reports:
+    `ops-handoff/dr2-build/`. See `docs/known-issues.md` DR-2.
 
 - **Folder adapter — compose-capable + registered (2026-07-18).** Discovered while standing up
   `~/Developer/OptiquityTrader` (a non-Graphify Swift repo, READ-ONLY) as a folder-adapter source for the

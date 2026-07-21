@@ -104,7 +104,7 @@ DR-2) → DR-6 → DR-3 → DR-4 → DR-5 → DR-2`.
 **Build-entry checklist (GO only when every NO-GO is resolved; all integration specs, no redesigns):**
 - **F-a** — `ir_version` bump-to-2 + generation-tolerant (known-compatible-set) validation; ledger →
   `LEDGER_REQUIRED` + `LEDGER_OPTIONAL`. **NO-GO for any IR-envelope edit** (independent foundation).
-- **F-b** — GAP-4 content-guard known-root fix. **NO-GO for DR-2's `lexicons/` root.**
+- **F-b** — GAP-4 content-guard known-root fix. **NO-GO for DR-2's `lexicons/` root.** → RESOLVED at DR-2 C1 (F-b guard-hardening `6b196a6`, consumed by C1 `13dd6e6` adding `lexicons` to `REGISTRY_ROOTS`).
 - **#3** — the F1 sentinel section-grammar + section-constraint vocabulary, built **SHARED** at DR-4
   (consumed by DR-4 conformance AND the deferred DR-3 `constraint?`). **NO-GO for DR-4.**
   **→ RESOLVED at DR-4 (C1/C2, `pipeline/sections.py`; 2026-07-19):** the F1 sentinel section grammar
@@ -178,9 +178,11 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
 - **Source:** maintainer requirement, 2026-07-13 — "needed eventually for other users who use any
   cloud based workflow orchestrator (Make, Zapier, n8n, Google, and others)."
 
-### DR-2 — Selectable style guides (writing-rule presets) — design question, not yet a settled feature
-- **Status:** Deferred (not in v1) — **requirement + open design questions recorded; to be designed by
-  an architect before anything is built.**
+### DR-2 — Selectable style guides (writing-rule presets) → the compose-time `lexicons/` house-style registry — BUILT
+- **Status:** BUILT (2026-07-21) — **shipped as the compose-time `lexicons/` registry (attributes-only
+  house style, prompt-applied at compose): 5 gated commits + this docs closeout (C5). The design
+  questions are resolved; the compose-only placement is SETTLED (DR-5 ratified it); deferrals are
+  registered below.** (The original design-era status is preserved in the design-status note below.)
 - **Need:** a way to select, per request, a named **style guide** that nudges the *writing* of an
   output — prose rules, house conventions, structural preferences — without re-touching the existing
   axes one at a time. There should be **standard** framework guides (e.g. a generic tech-website blog
@@ -224,10 +226,98 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   dimensions (or better templating) already cover it before inventing a new construct.
 - **Design status (2026-07-16):** designed via an architect pass and reconciled to **`lexicons/`
   (compose-time) + a topic-less recipe** (the standalone `style-guides/` overlay + a new cascade rung
-  were dropped as redundant). **Partially reopened by DR-5:** that design places all house-mechanical
-  style at **compose** (baked into the IR), but per-venue style variation from a single shared IR needs
-  some style applied at **render** — so the compose-only placement is now an open question. **Build
-  paused** pending DR-4 / DR-5 scoping.
+  were dropped as redundant). It was briefly **partially reopened by DR-5** (whether some house style
+  must apply at **render** for per-venue variation) — **now SETTLED:** DR-5 ratified the inline
+  mechanics as **compose-baked lexicon, labeled compose-only** (`docs/known-issues.md` DR-5 design
+  status, "no deterministic render path exists; per-venue ⇒ re-compose"; the render-time path DR-5
+  built is the CSL/`csl`-Presentation citation lever, not the lexicon). So the compose-only placement
+  is confirmed and DR-2 shipped compose-only — the "build paused pending DR-4 / DR-5" hold is
+  DISCHARGED.
+- **Build status (2026-07-21) — DR-2 BUILT (compose-time `lexicons/` house-style registry; gate
+  green).** The reconciled design shipped as **5 gated commits** (each: coder → reviewer →, where
+  needed, fix-coder → re-review to CLEAN), under the standing commit approval. The `lexicons/` registry
+  is a **class-(ii) content-side registry** (NOT a §5.4 axis, NOT a content dimension): its entries are
+  **attributes-only** and are applied **prompt-only at compose**; the entry BODY is documentation only
+  and is NEVER compose-consumed. Commits:
+  - `13dd6e6` **C1** — stood up `lexicons/` (the 15th registry, `schema_version: 1`): attributes-only
+    schema — `preferred_terms` / `banned_terms` / `proper_names` / `spelling` (enum `""|us|uk`) /
+    `mechanical` (an OPEN bare map); all floor-empty. The doc-comment states the load-bearing
+    invariant: every compose-consumed rule is an ATTRIBUTE — the entry body is doc-only, never
+    compose-consumed (no `markdown` attribute). Generic `house-standard.md` entry (`provenance:
+    framework`; editorial hygiene + public tech-name casing only, no client content).
+    `scripts/check-no-content.sh` `REGISTRY_ROOTS` 14→15 (+`lexicons`) — **mandatory**, else the F-b /
+    GAP-4a additive-registry-root guard hard-fails on `lexicons/_schema.yaml`. Resolver works off the
+    co-located SV4 schema with **no `DIMENSION_COLLECTIONS` edit**; `lint.py`'s matrix `REGISTRY_ROOTS`
+    is UNCHANGED (class-(ii), not a §5.4 axis).
+  - `b06bfaa` **C2** — threaded the resolved lexicon `{entry, delta}` into the §7.2 artifact preimage
+    as a **top-level, omit-when-absent** component (the DR-3 `outline-digest` twin, but
+    **dimension-shaped**: built with `_require_entry_id` + `delta_vs_floor` over ATTRIBUTES, shape-
+    guarded by the **F7 dimension machinery**, never the body). `_require_artifact_preimage_shape`
+    top-level set extended to `{"outline-digest","lexicon"}`. Identity: **`artifact-id` ONLY** (never
+    `fitted_id`/`deliverable_id`); omit-when-absent → byte-identical corpus; **RI11** (same
+    `(entry, delta)` → same id; a rule edit → a new id). No `schema_version` / `ir_version` bump.
+  - `1603288` **C3a** (`fix(lint)`) — implemented the **§11.2 additive-at-floor exemption** in SV11
+    clause 1: a new attribute riding its type's empty L0 floor needs **NO version bump** (the
+    enforcement now MATCHES the ratified §11.2 policy — the exemption was described but never
+    implemented). `_is_empty_floor_default` + `_is_additive_at_floor` (exempt ONLY when every shared
+    spec is byte-identical AND every new attribute rides its empty floor). Removals, meaning/type/
+    default changes, and non-empty-default adds **still fire**; adversarially reviewed for holes.
+  - `9380913` **C3b** — wired the `lexicon` selection at **L3 (workspace) + L5 (recipe)** (recipe
+    beats workspace), **L6 DEFERRED** (F4a: `lexicon` in `_WORKSPACE_KEYS` ONLY, **never global/L2**;
+    zero L6 surface — no `SelectionRequest`/`RunSelection`/fanout field). Recipe schema:
+    `lexicon: {type: text, default: ""}` (topic-mirror, additive-at-floor — legal without a bump per
+    C3a). **ONE resolution, TWO consumers:** the `EntryBinding` → the artifact preimage (`plan.py`),
+    the resolved attributes → the writer block (`driver.py`); the compose-context lexicon provably
+    equals the preimage `lexicon.entry`. `compose.py` + `writer.md`: an attribute-only, **byte-stable**
+    lexicon context block, **prompt-only** application. `folios` `RECIPE_SLOTS += "lexicon"`.
+  - `6148c64` **C4** — the §16 reconcile **ADVISORY preserve** clause: `build_reconciler_prompt`
+    surfaces `binding.preimage.lexicon`'s `{entry, delta}` into the prompt context, read-only +
+    omit-when-absent (inert on lexicon-less IRs and on the `pass` strategy). `reconciler.md` advisory
+    clause 9 is **loudly marked NOT machine-checked**, with the §3.3 language split (language-invariant
+    rules — proper-name casing, `banned_terms`, `mechanical` — hold under `localize`; language-specific
+    — `spelling`, English `preferred_terms` — may not transfer). `reconcile_inputs_preimage` is
+    **UNTOUCHED** (the lexicon never enters it — already covered by the `artifact-id`, §16-excluded —
+    so every `fit-digest` is byte-identical). No new IR field; no `FidelityViolation`/re-ask.
+  - **C5** (this) — docs + SSOT sync (design.md §4/§5.2/§6.5/§7.2/§11.2/§12.6/§16/§27.4; this entry;
+    state.md). No code / test change; no `schema_version` / `ir_version` bump.
+- **Decisions & corrections (RECORDED):**
+  - **Identity correction — entry-id → `{entry, delta}`.** The preimage carries the FULL `{entry,
+    delta}` pair (dimension-shaped), not just the entry id — so an M1 attribute deviation over a
+    shipped lexicon entry churns the id, closing the same-id/different-bytes hole a bare entry-id would
+    leave open.
+  - **The attributes-only / no-body identity invariant.** Only the schema-declared ATTRIBUTES are
+    compose-consumed and identity-bearing; the entry BODY is documentation and moves no id.
+  - **Prompt-only application (byte-stable block).** House style enters the writer prompt as an
+    attribute-only context block; default-`""` → the plan/compose bytes AND `artifact-id` are
+    byte-identical (every existing recipe rides the floor); a selected lexicon changes bytes AND id
+    together.
+  - **Cascade — L3 (workspace) + L5 (recipe), L6 DEFERRED, never-global (F4a).** No new dimension, no
+    new cascade rung; `CONTENT_DIMENSIONS` stays 4.
+  - **Reconcile-from-binding (advisory).** §16 preservation reads the applied rules from the binding
+    preimage and is a prompt recommendation, NOT a machine gate — contrast the C7/C8 HARD gates.
+  - **The §11.2 additive-at-floor lint exemption (C3a)** — the policy prose now has matching
+    enforcement in SV11 clause 1.
+- **Identity discipline (DR-2):** the lexicon `{entry, delta}` is the ONLY new preimage component and
+  it moves the **`artifact-id` ONLY** (omit-when-absent → every lexicon-less artifact-id byte-
+  unchanged; a selected lexicon re-mints loudly); **no `schema_version` bump** (all 15 registry
+  `_schema.yaml` files stay at 1; the version-equality lint stays green over the 14 collections it
+  scans) and **no `ir_version` bump**; `fit-digest` / `render-digest` corpora unperturbed (the lexicon
+  never enters the reconcile-inputs or serialize preimage).
+- **Honest DEFERRALS (registered, not hidden):**
+  - **Schema-lint does NOT scan `lexicons/` entries** (C1-review N1). `lint.py`'s matrix
+    `REGISTRY_ROOTS` is the 9-axis + 5-named MATRIX (a §5.4 axis surface); the class-(ii) `lexicons/`
+    entries are validated by `tests/test_lexicons.py`, NOT by the CI schema-lint scan. (The CONTENT
+    guard `scripts/check-no-content.sh` DOES scan `lexicons/` — its `REGISTRY_ROOTS` is 14→15 — this
+    deferral is about the SCHEMA lint only.)
+  - **L6 (run) selection-level DEFERRED** — the lexicon has no run-override surface in v1 (F4a keeps it
+    workspace/recipe-scoped); adding L6 is a later additive change.
+  - **§12.6(b) lexicon-scope-default + brand-lock(b) DEFERRED** — brand-lock is Voice-only in v1; the
+    `authoritative`-style lexicon-scope-default (elevate a house lexicon above the recipe/run) is a
+    flagged §12.6 extension, not built.
+- **Gate:** final `uv run pytest -q` = **2546 passed** (C4); `ruff check .` clean;
+  `scripts/check-no-content.sh` OK; `scripts/schema-lint.sh` clean (its 14-collection matrix; the
+  class-(ii) `lexicons/` is validated by `tests/test_lexicons.py`, not this scan). Coder/reviewer
+  reports under `ops-handoff/dr2-build/`.
 
 ### DR-3 — Optional artifact outline (pre-generation; dual output + input; outline-driven precedence) — design question
 - **Status:** Deferred (not in v1) — **requirement + open design questions recorded; to be designed
@@ -538,6 +628,7 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   **full set of per-venue-variable style/design** and place each.
 - **Relationship:** reopens DR-2 (the lexicon's compose-only placement); linked to DR-4 (templates) and
   the Presentations axis; shares the academic-paper driving example. DR-2 build is paused pending this.
+  (→ discharged 2026-07-21 — DR-2 is BUILT compose-only; see the DR-2 entry above.)
 - **Source:** maintainer requirement, 2026-07-16 — the three-journals-one-paper case: same IR, different
   output per journal; fonts = design, footnotes/Oxford comma = style; the reduced style guide
   (lexicon-at-compose) cannot produce per-venue style.
