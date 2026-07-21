@@ -384,6 +384,41 @@ def _covering_step(
     return None
 
 
+def _is_empty_floor_default(spec: AttributeSpec) -> bool:
+    """§11.2: True iff `spec`'s declared default is its type's EMPTY L0 floor — a container's
+    empty (`map` `{}`, `set`/`list` `[]`) or an empty `text`/`markdown` `""`. A scalar default
+    (`enum`/`ref`/`bool`/`number`) is NEVER auto-empty: a non-empty scalar floor can change the
+    rendered value for a pre-existing entry, so those are NOT additive-at-floor and DO need a bump.
+    This is the same "at-floor" notion `ids.delta_vs_floor` uses (effective == default ⇒ omitted),
+    read off the declared type kind."""
+    kind = spec.type.kind
+    if kind == "map":
+        return spec.default == {}
+    if kind in ("set", "list"):
+        return spec.default == []
+    if kind in ("text", "markdown"):
+        return spec.default == ""
+    return False  # enum/ref/bool/number: no empty floor -> not additive-at-floor
+
+
+def _is_additive_at_floor(baseline: Schema, current: Schema) -> bool:
+    """§11.2 (SV2): True iff `current` differs from `baseline` ONLY by NEW attributes, each
+    declared at its type's EMPTY L0 floor — the in-development additive-at-floor evolution that
+    needs NO schema_version bump (every pre-existing entry rides the floor; every id/digest is
+    byte-identical, §7.2). ANY removal, ANY change to a shared attribute's spec, or a NEW attribute
+    at a NON-empty default falls OUTSIDE the exemption — clause 1 (and, for removals/meaning
+    changes, clause 2) still fires."""
+    for name, bspec in baseline.attributes.items():
+        # No removal, and every SHARED attribute's spec must be byte-identical.
+        if current.attributes.get(name) != bspec:
+            return False
+    for name, cspec in current.attributes.items():
+        # Every NEW attribute must be declared at its empty L0 floor.
+        if name not in baseline.attributes and not _is_empty_floor_default(cspec):
+            return False
+    return True
+
+
 def _lint_schema_diff(
     report: LintReport,
     rel_schema: str,
@@ -391,8 +426,9 @@ def _lint_schema_diff(
     current: Schema,
     registry: StepRegistry,
 ) -> None:
-    """Clauses 1–2 against the baseline: any change needs a bump; any meaning change
-    needs a shipped map-or-prompt (MIG-4) at its trigger version."""
+    """Clauses 1–2 against the baseline: any change needs a bump — EXCEPT an in-development
+    additive-at-floor manifest change (§11.2, `_is_additive_at_floor`), which needs none; any
+    meaning change needs a shipped map-or-prompt (MIG-4) at its trigger version."""
     if current.schema_version < baseline.schema_version:
         report.add(
             CODE_VERSION_REGRESSION,
@@ -403,13 +439,19 @@ def _lint_schema_diff(
     elif (
         current.attributes != baseline.attributes
         and current.schema_version == baseline.schema_version
+        # §11.2: an additive-at-floor change (only NEW attributes, each at its empty L0 floor)
+        # is legal in-development with NO bump — the version-equality lint keeps all schemas at
+        # one number, so a per-schema mid-stream bump would itself fail. Removals and shared-spec
+        # changes are NOT additive-at-floor and still require the bump (and clause 2 below).
+        and not _is_additive_at_floor(baseline, current)
     ):
         report.add(
             CODE_CHANGE_WITHOUT_BUMP,
             rel_schema,
-            f"the attribute manifest changed but schema_version is still "
-            f"v{current.schema_version} — any schema change bumps the ONE global version "
-            "(SV11 clause 1; no-op-heavy releases are fine, MIG-3)",
+            f"the attribute manifest changed (a removal, a shared-attribute change, or a new "
+            f"attribute at a NON-empty default) but schema_version is still "
+            f"v{current.schema_version} — a non-additive-at-floor change bumps the ONE global "
+            "version (SV11 clause 1 / §11.2; a purely additive-at-floor change needs none)",
         )
 
     for name, bspec in baseline.attributes.items():

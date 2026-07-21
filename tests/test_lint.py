@@ -335,6 +335,125 @@ def test_wording_only_change_with_bump_is_green(tmp_path):
     assert lint_tree(cur, now=NOW, baseline=baseline_from_dir(base)).ok
 
 
+# -----------------------------------------------------------------------------------
+# §11.2 additive-at-floor exemption to SV11 clause 1 (in-development schema evolution)
+# -----------------------------------------------------------------------------------
+
+#: NEW attributes each declared at its type's EMPTY L0 floor (text "", set [], map {}).
+_ADD_FLOORS = """\
+  note:
+    type: text
+    default: ""
+    definition: An additive text attribute at its empty floor.
+    definition_version: 1
+  tags:
+    type:
+      type: set
+      element: text
+    default: []
+    definition: An additive set attribute at its empty floor.
+    definition_version: 1
+  meta:
+    type: map
+    default: {}
+    definition: An additive map attribute at its empty floor.
+    definition_version: 1
+"""
+
+#: A NEW attribute with a NON-empty scalar default (a number floor of 5, not additive-at-floor).
+_ADD_NONEMPTY = """\
+  rank:
+    type: number
+    default: 5
+    definition: An additive attribute with a NON-empty scalar default.
+    definition_version: 1
+"""
+
+#: A NEW enum attribute defaulting to the empty string — a SCALAR, so NOT auto-empty (conservative
+#: §11.2 rule: only container/text kinds get the auto-empty floor; an enum default must bump).
+_ADD_ENUM_EMPTY = """\
+  mode:
+    type:
+      type: enum
+      values: ["", fast, slow]
+    default: ""
+    definition: A new enum attribute whose default is the empty member.
+    definition_version: 1
+"""
+
+#: SCHEMA_V1 with the `size` attribute REMOVED (a removal is never additive-at-floor).
+_REMOVE_SIZE = """\
+schema_version: 1
+attributes:
+  color:
+    type:
+      type: enum
+      values: [red, green, blue]
+    default: red
+    definition: The example color token.
+    definition_version: 1
+"""
+
+
+def test_additive_at_floor_new_attributes_need_no_bump(tmp_path):
+    # §11.2 (SV2): NEW attributes each at their type's EMPTY L0 floor (text "", set [], map {})
+    # are legal in-development with NO schema_version bump — every pre-existing entry rides the
+    # floor and every id/digest is byte-identical (the recipe `lexicon: text ""` slot is exactly
+    # this shape). The exemption is what keeps DR-2 C3 schema-lint clean without a global bump.
+    base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
+    cur = build_tree(tmp_path / "cur", {"topics/_schema.yaml": SCHEMA_V1 + _ADD_FLOORS})
+    assert lint_tree(cur, now=NOW, baseline=baseline_from_dir(base)).ok
+
+
+def test_additive_new_attribute_with_nonempty_default_still_needs_a_bump(tmp_path):
+    # A NON-empty scalar default is NOT additive-at-floor (it could change output for a pre-existing
+    # entry): clause 1 STILL fires. Enforcement is NOT weakened for the non-floor case.
+    base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
+    cur = build_tree(tmp_path / "cur", {"topics/_schema.yaml": SCHEMA_V1 + _ADD_NONEMPTY})
+    assert codes(lint_tree(cur, now=NOW, baseline=baseline_from_dir(base))) == [
+        CODE_CHANGE_WITHOUT_BUMP
+    ]
+
+
+def test_additive_new_enum_at_empty_member_still_needs_a_bump(tmp_path):
+    # The conservative boundary: an enum default of "" is a SCALAR, NOT the container/text
+    # auto-empty floor — so it is not exempt and clause 1 fires (only text/markdown/map/set/list).
+    base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
+    cur = build_tree(tmp_path / "cur", {"topics/_schema.yaml": SCHEMA_V1 + _ADD_ENUM_EMPTY})
+    assert codes(lint_tree(cur, now=NOW, baseline=baseline_from_dir(base))) == [
+        CODE_CHANGE_WITHOUT_BUMP
+    ]
+
+
+def test_removal_still_needs_a_bump_and_a_migration_step(tmp_path):
+    # A removal is NOT additive-at-floor: clause 1 (version bump) AND clause 2 (the meaning step)
+    # both fire — the exemption does not weaken removal enforcement.
+    base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
+    cur = build_tree(tmp_path / "cur", {"topics/_schema.yaml": _REMOVE_SIZE})
+    found = codes(lint_tree(cur, now=NOW, baseline=baseline_from_dir(base)))
+    assert CODE_CHANGE_WITHOUT_BUMP in found
+    assert CODE_MEANING_WITHOUT_STEP in found
+
+
+def test_shared_attribute_change_is_not_masked_by_an_additive_attribute(tmp_path):
+    # Narrowness proof: even ALONGSIDE a legal additive-at-floor attribute, a SHARED attribute's
+    # spec change is not exempt — clause 1 still fires (the exemption covers ONLY pure additions).
+    base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
+    cur = build_tree(
+        tmp_path / "cur",
+        {"topics/_schema.yaml": SCHEMA_V1.replace("default: red", "default: green") + _ADD_FLOORS},
+    )
+    report = lint_tree(cur, now=NOW, baseline=baseline_from_dir(base))
+    assert CODE_CHANGE_WITHOUT_BUMP in codes(report)
+
+
+def test_no_schema_change_is_clean(tmp_path):
+    # The identity floor: an unchanged schema against its own baseline is clean (no clause fires).
+    base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
+    cur = build_tree(tmp_path / "cur", {"topics/_schema.yaml": SCHEMA_V1})
+    assert lint_tree(cur, now=NOW, baseline=baseline_from_dir(base)).ok
+
+
 def test_schema_version_regression_fails(tmp_path):
     base = build_tree(
         tmp_path / "base",
