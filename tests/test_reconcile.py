@@ -621,6 +621,126 @@ class TestReconcilerPrompt:
         assert "Correction required" in prompt and "prior fit was rejected" in prompt
 
 
+# --- DR-2 C4: preserve the applied lexicon at reconcile (§16, ADVISORY prompt clause) --------
+#
+# A selected lexicon rides `binding.preimage.lexicon = {entry, delta}` (C2/C3). C4 surfaces that
+# `{entry, delta}` read-only into the reconciler prompt context (OMIT-WHEN-ABSENT) so the reshape
+# PRESERVES the already-applied house style. It is a PROMPT input only — NO machine gate, NO new
+# IR field, and NOTHING enters `reconcile_inputs_preimage`/`fit_digest` (the lexicon is already
+# covered by the ARTIFACT-id; §16 excludes it from the reconcile-inputs preimage).
+
+
+def _reconcile_context(prompt: str) -> dict:
+    """Parse the JSON 'Reconcile context' block `build_reconciler_prompt` appends — the exact
+    context the reconciler LLM reads (the surfacing under test, read back byte-faithfully)."""
+    marker = "## Reconcile context (JSON)"
+    body = prompt.split(marker, 1)[1]
+    start = body.index("```json") + len("```json")
+    end = body.index("```", start)
+    return json.loads(body[start:end])
+
+
+#: A resolved house-style lexicon whose delta spans the language-INVARIANT rules (`banned_terms`,
+#: `proper_names` casing, `mechanical` Oxford comma) and the language-SPECIFIC rules (`spelling`,
+#: English `preferred_terms`) — the split clause 9 tells the reconciler to honor selectively.
+_LEXICON_BINDING = EntryBinding(
+    "house-standard",
+    effective={
+        "preferred_terms": {"utilize": "use"},
+        "banned_terms": ["synergy"],
+        "proper_names": {"github": "GitHub"},
+        "spelling": "uk",
+        "mechanical": {"oxford_comma": True},
+    },
+    defaults={
+        "preferred_terms": {},
+        "banned_terms": [],
+        "proper_names": {},
+        "spelling": "us",
+        "mechanical": {},
+    },
+)
+
+
+def make_lexicon_canonical_ir(*, lexicon=_LEXICON_BINDING, body=None, grounding=None) -> dict:
+    """A §15 IR-canonical envelope whose artifact preimage was minted UNDER a house-style lexicon
+    (`build_artifact_preimage(lexicon=)`, C2/C3) — its binding carries `preimage.lexicon =
+    {entry, delta}`, exactly what C4 reads read-only to preserve at reconcile."""
+    preimage = build_artifact_preimage(
+        topic=EntryBinding("topic-x"),
+        persona=EntryBinding("hiring-manager"),
+        format=EntryBinding("readme"),
+        voice=EntryBinding("business"),
+        goals=[EntryBinding("explain")],
+        source_subset=["acme-graph"],
+        source_commit={"acme-graph": COMMIT_SHA},
+        lexicon=lexicon,
+    )
+    if grounding is None:
+        grounding = {"f0": ledger_entry()}
+    if body is None:
+        body = 'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.'
+    return ir.build_ir(
+        artifact_id=mint_artifact_id(preimage),
+        preimage=preimage,
+        grounding=grounding,
+        body=body,
+    )
+
+
+class TestReconcilerLexiconPreservation:
+    @pytest.mark.parametrize("strategy", ["adapt", "split"])
+    def test_reshape_surfaces_the_applied_lexicon_rules_read_from_the_binding(self, strategy):
+        canonical = make_lexicon_canonical_ir()
+        request = make_request(canonical_ir=canonical, strategy=strategy)
+        ctx = _reconcile_context(build_reconciler_prompt(request))
+        # Read FROM the binding: the surfaced context carries EXACTLY binding.preimage.lexicon.
+        assert ctx["lexicon"] == canonical["binding"]["preimage"]["lexicon"]
+        assert ctx["lexicon"]["entry"] == "house-standard"
+        delta = ctx["lexicon"]["delta"]
+        assert delta["preferred_terms"] == {"utilize": "use"}
+        assert delta["proper_names"] == {"github": "GitHub"}
+        assert "synergy" in delta["banned_terms"]
+        assert delta["spelling"] == "uk"
+        assert delta["mechanical"] == {"oxford_comma": True}
+        # The applied rules ride the prompt TEXT the LLM reads.
+        assert "utilize" in build_reconciler_prompt(request)
+
+    def test_lexicon_less_ir_surfaces_no_lexicon_key_and_is_inert(self):
+        # OMIT-WHEN-ABSENT: a lexicon-less IR (no `preimage.lexicon`) adds NO `lexicon` context
+        # key, so the C4 surfacing contributes nothing — the assembled data path is byte-identical
+        # to the pre-C4 context for every existing lexicon-less IR.
+        plain = make_canonical_ir()
+        assert "lexicon" not in plain["binding"]["preimage"]
+        ctx = _reconcile_context(build_reconciler_prompt(make_request(canonical_ir=plain)))
+        assert "lexicon" not in ctx
+
+    def test_lexicon_does_not_enter_the_reconcile_inputs_preimage_or_fit_digest(self):
+        # READ-ONLY PRESERVE: the §16 reconcile-inputs preimage EXCLUDES the lexicon (already
+        # covered by the ARTIFACT-id). A lexicon-bearing IR and a lexicon-less IR with IDENTICAL
+        # reconcile inputs yield the BYTE-IDENTICAL preimage + fit_digest — C4 adds no identity.
+        lex = make_request(canonical_ir=make_lexicon_canonical_ir(), strategy="split",
+                           hard_limits={"max_chars": 500})
+        plain = make_request(canonical_ir=make_canonical_ir(), strategy="split",
+                             hard_limits={"max_chars": 500})
+        lex_preimage = reconcile_inputs_preimage(lex)
+        plain_preimage = reconcile_inputs_preimage(plain)
+        assert "lexicon" not in lex_preimage
+        assert canonical_json_bytes(lex_preimage) == canonical_json_bytes(plain_preimage)
+        assert fit_digest(lex_preimage) == fit_digest(plain_preimage)
+
+    def test_pass_reconcile_of_a_lexicon_bearing_ir_is_bit_identical_with_zero_llm(self):
+        # `pass` is the only never-LLM path: `build_reconciler_prompt` is NEVER called, so the C4
+        # clause is inert here — the fit is a byte-for-byte passthrough with ZERO LLM.
+        canonical = make_lexicon_canonical_ir()
+        request = make_request(canonical_ir=canonical, strategy="pass", hard_limits={})
+        never = NeverRunner()
+        out = reconcile(request, runner=never)
+        assert never.calls == 0
+        assert out.status == "ok" and out.is_noop is True and out.attempts == 0
+        assert canonical_json_bytes(out.fitted_ir) == canonical_json_bytes(canonical)
+
+
 # --- DR-4 C7: preserve-through + no-mint (scoped to schema-referenced section keys) ---------
 #
 # The reshape swaps WHOLE leaf bodies, so a composed section's key is NOT mechanically preserved.

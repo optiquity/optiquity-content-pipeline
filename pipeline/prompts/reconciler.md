@@ -4,9 +4,10 @@ reconcile pass / pass 1). Filled at plan step 25, replacing the step-23 stub in 
 
 This file is the STATIC contract. `pipeline.reconcile.build_reconciler_prompt` appends one
 JSON "Reconcile context" block (the target coordinates, the strategy + hard limits +
-advisory, the grounding ledger to re-anchor, the voice/content parameters to echo, and the
-canonical leaves to reshape) beneath it at invocation time; on a bounded re-ask it also
-appends a "Correction required" block. The loader is content-blind (§21.9) — it never
+advisory, the grounding ledger to re-anchor, the voice/content parameters to echo, the
+canonical leaves to reshape, and — only when the artifact was composed under a house-style
+lexicon — the already-applied house-style rules to preserve) beneath it at invocation time;
+on a bounded re-ask it also appends a "Correction required" block. The loader is content-blind (§21.9) — it never
 interprets this text; the fit machinery owns the fitted-id, the fit-binding, the
 preimage/digest, and the terminal hard-limit gate — you supply reshaped CONTENT only.
 -->
@@ -35,6 +36,11 @@ fitted identity, the fit-binding, and every version stamp. You cannot and must n
   each with its confidence `tier`. This is the provenance you MUST re-anchor (see below).
 - **`canonical_content`** — the leaves to reshape: a flat `body`, or a `parts` map of
   role → Markdown. Return the SAME shape (`structure.output_contract`).
+- **`lexicon`** (present ONLY when the artifact was composed under a house-style lexicon;
+  absent otherwise) — the ALREADY-APPLIED house style: an `entry` id and a `delta` map of the
+  terminology + mechanical rules (`preferred_terms` / `banned_terms` / `proper_names` /
+  `spelling` / `mechanical`) the writer applied at compose. Preserve them through the reshape
+  (ADVISORY — see the house-style clause in the fidelity contract).
 
 ## Reshape strategy (`strategy`)
 
@@ -88,6 +94,19 @@ fitted identity, the fit-binding, and every version stamp. You cannot and must n
    breaks a HARD venue rule is BLOCKED by the pipeline downstream (a `section-conformance-violation`
    block). This is machine-checked from the venue's own schema; never invent a requirement it does
    not state.
+9. **Preserve the applied house-style (lexicon) rules — ADVISORY (a recommendation, NOT a
+   machine-checked gate: unlike clauses 1–8, the pipeline never rejects or re-asks on this).**
+   When a `lexicon` input is present, this artifact was ALREADY composed under a house style — its
+   `delta` records the terminology and mechanical rules the writer applied. You SHOULD carry those
+   already-applied rules through an `adapt` / `split` / `localize` reshape so the reshaped artifact
+   keeps one consistent house voice; a reshape should PRESERVE house style, not silently undo it.
+   Mind the LANGUAGE dimension. Some rules are language-INVARIANT — `proper_names` casing (e.g.
+   `GitHub`), `banned_terms`, and `mechanical` conventions (e.g. the Oxford comma) — and hold even
+   when you localize to another language, so apply them. Others are language-SPECIFIC — `spelling`
+   (`us` / `uk`) and English `preferred_terms` word substitutions — and may NOT transfer when you
+   localize to a different language: apply them where the language still matches, and never force a
+   language-specific rule where it does not apply. This is guidance only — honor it where you can,
+   and never let it override the HARD fidelity rules above.
 
 ## Output shape (return this and only this)
 

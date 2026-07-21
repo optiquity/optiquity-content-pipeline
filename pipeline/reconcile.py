@@ -988,8 +988,10 @@ def build_reconciler_prompt(
 ) -> str:
     """Assemble the reconciler prompt: the versioned `reconciler.md` contract + one JSON
     context block (the target coordinates, the strategy + hard limits + advisory, the
-    grounding ledger to re-anchor, the voice/content params to echo, and the canonical
-    leaves to reshape). On a re-ask the correction note is appended."""
+    grounding ledger to re-anchor, the voice/content params to echo, the canonical leaves
+    to reshape, and — when the artifact was composed under a house-style lexicon — the
+    already-applied house-style rules to preserve, omit-when-absent). On a re-ask the
+    correction note is appended."""
     template = load_template(RECONCILER_TEMPLATE).text
     context = {
         "target": {
@@ -1006,6 +1008,17 @@ def build_reconciler_prompt(
         "canonical_content": _content_view(request.canonical_ir),
         "structure": _structure_context(request.canonical_ir),
     }
+    # DR-2 C4 (§16, ADVISORY): surface the ALREADY-APPLIED house-style (lexicon) rules so the
+    # reconciler PRESERVES them through the reshape. Read-only FROM the binding the artifact
+    # already carries — `binding.preimage.lexicon` is the C2 `{entry, delta}`; its `delta` map
+    # holds the non-floor terminology/mechanical rules C3 applied at compose. OMIT-WHEN-ABSENT:
+    # a lexicon-less IR adds NO key, so the assembled context is byte-identical (the clause is
+    # INERT). PROMPT input ONLY — it NEVER enters `reconcile_inputs_preimage`/`fit_digest`: the
+    # lexicon is already covered by the ARTIFACT-id and §16 EXCLUDES it from the reconcile-inputs
+    # preimage (this is the read-only preserve of §16, not a new identity input).
+    lexicon = request.canonical_ir.get("binding", {}).get("preimage", {}).get("lexicon")
+    if lexicon:
+        context["lexicon"] = lexicon
     # json (not canonical): the prompt is LLM-facing TEXT, so `default=str` may soften a
     # date/set in the context view without failing — this is never a persisted record.
     context_json = json.dumps(context, indent=2, sort_keys=True, ensure_ascii=False, default=str)
