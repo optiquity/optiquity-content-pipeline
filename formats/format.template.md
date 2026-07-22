@@ -11,8 +11,10 @@ Key consequences:
 - Formats carry **no** platform-pairing or persona-exclusion data (Q4, §8): pairing is user-driven;
   the allow-list is emergent from configuration.
 - Word limits are **Platform** `hard_limits`/`advisory_norms` (§5.3), not a Format field.
-- The genre's rhetorical structure/outline is the **entry body prose** (consumed at compose, §15),
-  not a config attribute.
+- The genre's rhetorical structure/outline is the **entry body prose** — human-authoring reference,
+  **not a compose input** (§15): the writer receives only the bound attributes, the
+  `parts`/`section_schema` structure, the grounded facts, and (when set) the DR-3 outline drive brief;
+  the Format body is never threaded. It is a config-free authoring reference, not a config attribute.
 - Two structural attributes. **`parts`** — an ordered list of named intra-genre sub-outputs
   (e.g. `slide-deck → [slides, presenter-notes]`), defined entirely inside this one entry (Q14);
   composing two genres is **two artifacts** grouped by a folio, never a composite. And, for an
@@ -35,5 +37,7 @@ parts: []                        # optional ordered sub-outputs, e.g. [slides, p
 # <id> — Format entry
 
 Prose body: describe the genre's rhetorical structure/outline, hook expectation, and grounding
-depth. This body IS the format contract the writer composes against (§15).
+depth. This body is human-authoring REFERENCE — NOT a compose input: the writer receives only the
+bound attributes, the `parts`/`section_schema` structure, the grounded facts, and (when set) the
+DR-3 outline drive brief; this body is never threaded to the writer (§15).
 ```

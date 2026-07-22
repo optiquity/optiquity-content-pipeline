@@ -13,8 +13,11 @@
 # projections and reconcile-strategy defaults live on Platform entries (§12.3) —
 # homing pair-keyed data here would re-couple Format to platforms, which Q4 deleted.
 #
-# The genre's rhetorical structure is the entry's body prose (consumed at compose,
-# §15); the structural attributes are `parts` (Q14) and `section_schema` (DR-4).
+# The genre's rhetorical structure is the entry's body prose: human-authoring reference,
+# NOT a compose input (§15) — the writer receives only the bound attributes, the
+# `parts`/`section_schema` structure, the grounded facts, and (when set) the DR-3 outline
+# drive brief; the Format body is never threaded. The structural attributes are `parts`
+# (Q14) and `section_schema` (DR-4).
 # Composing two genres is TWO artifacts, grouped by a folio — never a composite (§5.2).
 # Per-part cascade refinement is a deferred slot (§12.3, §26).
 schema_version: 1
