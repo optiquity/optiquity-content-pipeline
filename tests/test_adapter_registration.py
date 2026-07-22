@@ -42,28 +42,28 @@ def make_corpus(root: Path) -> Path:
     return root
 
 
-# --- the production adapter set now registers BOTH adapters at every site --------------------
+# --- the production adapter set now registers ALL THREE adapters at every site ---------------
 
 
 class TestProductionAdapterSet:
-    def test_factory_registers_graphify_and_folder(self):
+    def test_factory_registers_graphify_folder_and_fsast(self):
         # The single registration point (`pipeline.adapters.default_adapters`).
         adapters = default_adapters()
-        assert set(adapters) == {"graphify", "folder"}
+        assert set(adapters) == {"graphify", "folder", "fsast"}
         assert isinstance(adapters["graphify"], GraphifyAdapter)
         assert isinstance(adapters["folder"], FolderAdapter)
         assert all(isinstance(a, SourceAdapter) for a in adapters.values())
         # each adapter is keyed under its own declared name (no mislabeling).
         assert all(k == v.name for k, v in adapters.items())
 
-    def test_session_default_adapters_registers_both(self):
+    def test_session_default_adapters_registers_all_three(self):
         # The API path (`begin-session`/`invoke` resolve adapters from here).
         adapters = session._default_adapters()
-        assert set(adapters) == {"graphify", "folder"}
+        assert set(adapters) == {"graphify", "folder", "fsast"}
         assert isinstance(adapters["folder"], FolderAdapter)
 
     def test_session_resolves_from_the_single_source(self):
-        # session's `_default_adapters` delegates to the ONE factory — a future third
+        # session's `_default_adapters` delegates to the ONE factory — a future
         # adapter is a one-file change, and API + driver never drift apart.
         assert session.default_adapters is default_adapters
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pipeline.adapters.base import SourceAdapter
 from pipeline.adapters.folder import FolderAdapter
+from pipeline.adapters.fsast import FsAstAdapter
 from pipeline.adapters.graphify import GraphifyAdapter
 
 __all__ = ["default_adapters"]
@@ -27,4 +28,8 @@ def default_adapters() -> dict[str, SourceAdapter]:
     providers reachable through the real API + driver. A fresh dict of fresh instances per
     call (adapters are stateless, but callers may mutate the mapping). Register a new adapter
     HERE and every production path picks it up."""
-    return {"graphify": GraphifyAdapter(), "folder": FolderAdapter()}
+    return {
+        "graphify": GraphifyAdapter(),
+        "folder": FolderAdapter(),
+        "fsast": FsAstAdapter(),
+    }
