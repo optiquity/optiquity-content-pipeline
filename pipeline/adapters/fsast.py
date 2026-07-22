@@ -43,6 +43,19 @@ drop the structural facts — so, unlike `folder`'s coarse substring, `fsast` ne
   that caps the TOTAL emitted facts to the first `budget` in the deterministic walk order
   (parent-first, lexicographic). The cap is deterministic and IN-BAND — an over-budget
   tree truncates to the first N; it is NOT an error.
+- **Scope mode (`mode` connection key)** — `both` (the DEFAULT, and what an ABSENT key
+  means) emits the tree(#3) AND signature(#9) families exactly as above; `tree` emits ONLY
+  the #3 directory-tree facts (no signatures); `signatures` emits ONLY the #9 def/class
+  signature facts (no tree). This lets a project-manual cite a repo's real layout (#3) and a
+  clean public-API sample (#9) as SEPARATE, budget-clean bindings without one flooding the
+  other. The mode gates only WHICH fact families are emitted — the walk, pruning, tier, fact
+  shapes, deterministic order, and budget cap are unchanged for whatever a mode does emit.
+  An unknown mode value is a loud `AdapterError`.
+- **Extra prune list (`skip_dirs` connection key)** — an OPTIONAL list/tuple of directory
+  NAMES pruned mid-walk IN ADDITION to the always-pruned `workspaces`/`__pycache__`/dot-dirs/
+  symlinked-dirs (e.g. skip `tests`/`archive` for a repo-root layout binding). Absent → the
+  always-pruned set only (current behavior). Validated as a list of non-empty strings — a
+  non-list or an empty/non-string element is a loud `AdapterError`.
 - **Content-kind tagging (§6.1 SM5):** the kind tag rides the SOURCE INSTANCE, not the
   adapter; the adapter classifies nothing per fact (it has no signal to), so it emits NO
   refinements and the instance's kind defaults ride intact — the same no-overstep posture
@@ -86,6 +99,10 @@ __all__ = [
     "CONNECTION_KEYS",
     "DEFAULT_BUDGET",
     "FsAstAdapter",
+    "MODES",
+    "MODE_BOTH",
+    "MODE_SIGNATURES",
+    "MODE_TREE",
     "PY_SUFFIX",
     "PYCACHE_DIRNAME",
     "REPO_WORKSPACES",
@@ -101,8 +118,21 @@ PY_SUFFIX = ".py"
 #: in walk order. 2000 keeps every adapter's contribution to the writer prompt at one ceiling.
 DEFAULT_BUDGET = 2000
 
-#: The closed connection-key set: the bound directory + its fact budget, nothing else.
-CONNECTION_KEYS = frozenset({"path", "budget"})
+#: Scope-mode values for the optional `mode` connection key. `both` (the default when the key
+#: is ABSENT) emits the tree(#3) AND signature(#9) families exactly as before; `tree` emits
+#: ONLY the #3 directory-tree facts; `signatures` emits ONLY the #9 def/class signature facts.
+#: Lets a manual ground a repo's real layout (#3) and a clean public-API sample (#9) as SEPARATE
+#: budget-clean sources without one flooding the other. Any other value is a loud AdapterError.
+MODE_BOTH = "both"
+MODE_TREE = "tree"
+MODE_SIGNATURES = "signatures"
+MODES = frozenset({MODE_BOTH, MODE_TREE, MODE_SIGNATURES})
+
+#: The closed connection-key set: the bound directory + its fact budget, plus the two OPTIONAL
+#: scoped-grounding keys (`mode`, `skip_dirs`) — nothing else. Both are omit-when-absent: an
+#: absent `mode` is `both` and an absent `skip_dirs` prunes only the always-pruned set, so a
+#: connection carrying neither is byte-identical to the pre-C2b behavior.
+CONNECTION_KEYS = frozenset({"path", "budget", "mode", "skip_dirs"})
 
 #: The directory name that is NEVER walked into (planner-03 R6): client CONTENT lives under
 #: `workspaces/`, grounding SOURCES live outside it. Pruned wherever it is met mid-walk.
@@ -121,10 +151,14 @@ REPO_WORKSPACES = Path(__file__).resolve().parents[2] / "workspaces"
 
 @dataclass(frozen=True)
 class _Connection:
-    """One validated connection: the resolved read-only root + the fact budget."""
+    """One validated connection: the resolved read-only root, the fact budget, the scope
+    `mode` (which fact families to emit — default `both`), and the extra `skip_dirs` names
+    pruned mid-walk on top of the always-pruned set (empty frozenset when the key is absent)."""
 
     root: Path
     budget: int
+    mode: str
+    skip_dirs: frozenset[str]
 
 
 def _validate_connection(connection: Mapping[str, Any]) -> _Connection:
@@ -173,7 +207,30 @@ def _validate_connection(connection: Mapping[str, Any]) -> _Connection:
             f"(deterministic first-N cap on emitted facts, default {DEFAULT_BUDGET}), "
             f"got {budget!r}"
         )
-    return _Connection(root=resolved, budget=budget)
+    mode = connection.get("mode", MODE_BOTH)  # absent -> both (byte-identical to pre-C2b)
+    if mode not in MODES:
+        raise AdapterError(
+            f"adapter-failure: fsast connection mode must be one of {sorted(MODES)!r} "
+            f"({MODE_BOTH!r}=tree #3 + signature #9 facts [default], {MODE_TREE!r}=tree only, "
+            f"{MODE_SIGNATURES!r}=signatures only), got {mode!r}"
+        )
+    raw_skip = connection.get("skip_dirs", ())
+    if not isinstance(raw_skip, (list, tuple)):
+        raise AdapterError(
+            f"adapter-failure: fsast connection skip_dirs must be a list/tuple of directory "
+            f"names to prune mid-walk (in addition to the always-pruned "
+            f"{WORKSPACES_DIRNAME}/{PYCACHE_DIRNAME}/dot-dirs/symlinks), "
+            f"got {type(raw_skip).__name__}"
+        )
+    for name in raw_skip:
+        if not isinstance(name, str) or not name.strip():
+            raise AdapterError(
+                f"adapter-failure: fsast connection skip_dirs entries must be non-empty "
+                f"directory-name strings, got {name!r}"
+            )
+    return _Connection(
+        root=resolved, budget=budget, mode=mode, skip_dirs=frozenset(raw_skip)
+    )
 
 
 def _function_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
@@ -254,17 +311,23 @@ class FsAstAdapter(SourceAdapter):
             )
         conn = _validate_connection(connection)  # query content is deliberately IGNORED (R4)
         facts: list[Fact] = []
-        for fact in self._walk_facts(conn.root):
+        for fact in self._walk_facts(conn):
             facts.append(fact)
             if len(facts) >= conn.budget:
                 break  # first-N cap: in-band truncation, NOT an error (docstring)
         return GroundingResult(facts=tuple(facts), built_at_commit=self._head_commit(conn.root))
 
-    def _walk_facts(self, root: Path) -> Iterator[Fact]:
+    def _walk_facts(self, conn: _Connection) -> Iterator[Fact]:
         """The deterministic fact stream: for each directory (parent-first, lexicographic)
         one tree(#3) fact, then the signature(#9) facts of its `.py` files (sorted). Hidden
-        entries, symlinks, and any `workspaces`/`__pycache__` subdir are pruned (rule 1/2;
-        planner-03 R6 + commit-pin reproducibility)."""
+        entries, symlinks, and any `workspaces`/`__pycache__`/`skip_dirs` subdir are pruned
+        (rule 1/2; planner-03 R6 + commit-pin reproducibility). The scope `mode` gates only
+        WHICH families are yielded — `both` yields tree + signatures (the default, identical
+        to pre-C2b), `tree` yields tree facts only, `signatures` yields signature facts only;
+        the walk, pruning, and per-fact shapes are the same for whatever a mode does emit."""
+        root = conn.root
+        emit_tree = conn.mode in (MODE_BOTH, MODE_TREE)
+        emit_signatures = conn.mode in (MODE_BOTH, MODE_SIGNATURES)
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             here = Path(dirpath)
             kept_dirs = sorted(
@@ -273,6 +336,7 @@ class FsAstAdapter(SourceAdapter):
                 if not name.startswith(".")
                 and name != WORKSPACES_DIRNAME
                 and name != PYCACHE_DIRNAME
+                and name not in conn.skip_dirs  # extra caller-named prunes (in addition to)
                 and not (here / name).is_symlink()
             )
             dirnames[:] = kept_dirs  # prune the walk to the kept, sorted subdirs
@@ -282,7 +346,10 @@ class FsAstAdapter(SourceAdapter):
                 if not name.startswith(".") and not (here / name).is_symlink()
             )
             relpath = here.relative_to(root).as_posix()
-            yield self._tree_fact(here, relpath, kept_dirs, kept_files)
+            if emit_tree:
+                yield self._tree_fact(here, relpath, kept_dirs, kept_files)
+            if not emit_signatures:
+                continue
             for name in kept_files:
                 if not name.endswith(PY_SUFFIX):
                     continue

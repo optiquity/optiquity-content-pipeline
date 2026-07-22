@@ -36,6 +36,10 @@ from pipeline.adapters.base import (
 from pipeline.adapters.fsast import (
     CONNECTION_KEYS,
     DEFAULT_BUDGET,
+    MODE_BOTH,
+    MODE_SIGNATURES,
+    MODE_TREE,
+    MODES,
     PY_SUFFIX,
     REPO_WORKSPACES,
     WORKSPACES_DIRNAME,
@@ -96,6 +100,17 @@ def make_symlinked_tree(tmp_path: Path) -> Path:
     return root
 
 
+def make_skip_tree(root: Path) -> Path:
+    """`make_tree` plus a `skip_dirs` target `foo/` and a NON-skipped sibling `keep/`, each
+    carrying a distinctly-named signature so pruning vs. survival is unambiguous."""
+    make_tree(root)  # pkg/, readme.md, workspaces/ (always pruned), .hidden-dir, .draft.py
+    (root / "foo").mkdir()
+    (root / "foo" / "mod.py").write_text("def foo_fn():\n    return 1\n", encoding="utf-8")
+    (root / "keep").mkdir()
+    (root / "keep" / "kept.py").write_text("def kept_fn():\n    return 2\n", encoding="utf-8")
+    return root
+
+
 def ground_all(root: Path, query: str = ""):
     return FsAstAdapter().ground(connection={"path": str(root)}, query=query)
 
@@ -117,7 +132,7 @@ class TestConnectionValidation:
             FsAstAdapter().ground(connection=[("path", "/x")], query="q")
 
     def test_unknown_key_refused_closed_set(self):
-        assert CONNECTION_KEYS == frozenset({"path", "budget"})
+        assert CONNECTION_KEYS == frozenset({"path", "budget", "mode", "skip_dirs"})
         with pytest.raises(AdapterError, match="CLOSED"):
             FsAstAdapter().ground(connection={"path": "/x", "glob": "*.py"}, query="q")
 
@@ -493,7 +508,7 @@ class TestReadOnlyGitCall:
 
 class TestBudget:
     def test_budget_is_a_connection_key_in_the_closed_set(self):
-        assert CONNECTION_KEYS == frozenset({"path", "budget"})
+        assert CONNECTION_KEYS == frozenset({"path", "budget", "mode", "skip_dirs"})
 
     def test_budget_caps_total_facts_first_n_in_walk_order(self, tmp_path):
         # walk order: root tree, pkg tree, then pkg/core.py signatures (source order).
@@ -519,3 +534,144 @@ class TestBudget:
         root = make_tree(tmp_path / "corpus")
         with pytest.raises(AdapterError, match="budget must be a positive integer"):
             FsAstAdapter().ground(connection={"path": str(root), "budget": bad}, query="")
+
+
+# --- C2b: `mode` — scoped grounding (tree #3 vs. signatures #9 as SEPARATE sources) -----------
+
+
+def ground_mode(root: Path, mode, query: str = "q"):
+    return FsAstAdapter().ground(connection={"path": str(root), "mode": mode}, query=query)
+
+
+class TestScopeMode:
+    def test_mode_constants_and_default(self):
+        assert MODE_BOTH == "both" and MODE_TREE == "tree" and MODE_SIGNATURES == "signatures"
+        assert MODES == frozenset({"both", "tree", "signatures"})
+
+    def test_mode_absent_equals_both_byte_identical(self, tmp_path):
+        # omit-when-absent, no churn: an absent `mode` is byte-identical to `mode: both`.
+        root = make_tree(tmp_path / "corpus")
+        absent = FsAstAdapter().ground(connection={"path": str(root)}, query="q")
+        both = ground_mode(root, MODE_BOTH)
+        assert absent.facts == both.facts and len(absent.facts) > 0
+
+    def test_mode_tree_emits_only_tree_facts(self, tmp_path):
+        root = make_tree(tmp_path / "corpus")
+        result = ground_mode(root, MODE_TREE)
+        assert len(result.facts) >= 1
+        assert all(" contains:" in f.claim for f in result.facts)  # every fact is a #3 tree fact
+        assert all("::" not in f.subject for f in result.facts)  # NO #9 signature fact present
+        # the #3 family is EXACTLY the tree subset `both` emits, same objects, same order
+        both = ground_mode(root, MODE_BOTH)
+        assert result.facts == tuple(f for f in both.facts if " contains:" in f.claim)
+
+    def test_mode_signatures_emits_only_signature_facts(self, tmp_path):
+        root = make_tree(tmp_path / "corpus")
+        result = ground_mode(root, MODE_SIGNATURES)
+        assert len(result.facts) >= 1
+        assert all("::" in f.subject for f in result.facts)  # every fact is a #9 signature
+        assert all(" contains:" not in f.claim for f in result.facts)  # NO #3 tree fact present
+        # the #9 family is EXACTLY the signature subset `both` emits, same objects, same order
+        both = ground_mode(root, MODE_BOTH)
+        assert result.facts == tuple(f for f in both.facts if "::" in f.subject)
+
+    def test_tree_plus_signatures_partition_both(self, tmp_path):
+        # tree + signatures is a clean partition of both: no loss, no overlap, no duplication.
+        root = make_tree(tmp_path / "corpus")
+
+        def keys(mode):
+            return [(f.subject, f.claim) for f in ground_mode(root, mode).facts]
+
+        both, tree, sigs = keys(MODE_BOTH), keys(MODE_TREE), keys(MODE_SIGNATURES)
+        assert set(tree) | set(sigs) == set(both)
+        assert set(tree) & set(sigs) == set()
+        assert len(tree) + len(sigs) == len(both)
+
+    @pytest.mark.parametrize("bad", ["signature", "TREE", "all", "", "sigs", 3, None, True])
+    def test_unknown_mode_is_loud(self, tmp_path, bad):
+        root = make_tree(tmp_path / "corpus")
+        with pytest.raises(AdapterError, match="mode must be one of"):
+            ground_mode(root, bad)
+
+    @pytest.mark.parametrize("mode", [MODE_BOTH, MODE_TREE, MODE_SIGNATURES])
+    def test_query_insensitivity_and_reproducibility_hold_per_mode(self, tmp_path, mode):
+        # R4 + reproducibility survive the scoping: within each mode the query content
+        # NEVER changes the (non-empty) output, and repeat grounding is byte-identical.
+        root = make_tree(tmp_path / "corpus")
+        empty = ground_mode(root, mode, query="")
+        real = ground_mode(root, mode, query="the framework itself")
+        token = ground_mode(root, mode, query="pkg")
+        assert empty.facts == real.facts == token.facts and len(empty.facts) > 0
+        assert ground_mode(root, mode) == ground_mode(root, mode)  # reproducible per mode
+
+
+# --- C2b: `skip_dirs` — extra mid-walk prunes, IN ADDITION to the always-pruned set ------------
+
+
+class TestSkipDirs:
+    def test_skip_dirs_prunes_named_dir_and_sibling_survives(self, tmp_path):
+        root = make_skip_tree(tmp_path / "corpus")
+        result = FsAstAdapter().ground(
+            connection={"path": str(root), "skip_dirs": ["foo"]}, query="q"
+        )
+        blob = " ".join(f"{f.subject} {f.claim} {f.anchors[0].value}" for f in result.facts)
+        assert "foo" not in blob  # planted foo/ pruned everywhere: no tree fact, no listing...
+        assert "foo_fn" not in blob  # ...and no signature grounded from foo/mod.py
+        # the NON-skipped sibling keep/ survives: listed at root, own tree fact, own signature
+        root_listing = by_subject(result)["."].claim
+        assert "keep/" in root_listing and "foo/" not in root_listing
+        assert "keep" in by_subject(result)  # keep/ still gets its own #3 tree fact
+        assert by_subject(result)["keep/kept.py::kept_fn"].claim == "def kept_fn()"
+
+    def test_skip_dirs_adds_to_the_always_pruned_set(self, tmp_path):
+        # skip_dirs is IN ADDITION to workspaces/__pycache__/dot-dirs — all stay pruned.
+        root = make_skip_tree(tmp_path / "corpus")
+        (root / "__pycache__").mkdir()
+        (root / "__pycache__" / "x.cpython-312.pyc").write_bytes(b"\x00")
+        result = FsAstAdapter().ground(
+            connection={"path": str(root), "skip_dirs": ["foo"]}, query="q"
+        )
+        blob = " ".join(f"{f.subject} {f.claim}" for f in result.facts)
+        for pruned in (
+            "foo", WORKSPACES_DIRNAME, "__pycache__", ".hidden-dir",
+            "secret_code", "leaked_symbol",
+        ):
+            assert pruned not in blob
+        assert by_subject(result)["pkg/core.py::build"]  # the ordinary tree still grounds
+
+    def test_skip_dirs_absent_or_empty_is_current_behavior(self, tmp_path):
+        # absent == [] : no extra prune, no churn against pre-C2b behavior.
+        root = make_tree(tmp_path / "corpus")
+        absent = FsAstAdapter().ground(connection={"path": str(root)}, query="q")
+        empty = FsAstAdapter().ground(connection={"path": str(root), "skip_dirs": []}, query="q")
+        assert absent.facts == empty.facts and len(absent.facts) > 0
+
+    def test_skip_dirs_query_insensitive_and_reproducible(self, tmp_path):
+        root = make_skip_tree(tmp_path / "corpus")
+        conn = {"path": str(root), "skip_dirs": ["foo"]}
+        a = FsAstAdapter().ground(connection=conn, query="")
+        b = FsAstAdapter().ground(connection=conn, query="the framework itself")
+        assert a == b and len(a.facts) > 0  # the extra prune is query-insensitive + reproducible
+
+    def test_mode_and_skip_dirs_combine(self, tmp_path):
+        # tree mode + skip_dirs together: only #3 facts, and foo/ still pruned from them.
+        root = make_skip_tree(tmp_path / "corpus")
+        result = FsAstAdapter().ground(
+            connection={"path": str(root), "mode": MODE_TREE, "skip_dirs": ["foo"]}, query="q"
+        )
+        assert len(result.facts) >= 1
+        assert all(" contains:" in f.claim for f in result.facts)  # tree only
+        blob = " ".join(f.claim for f in result.facts)
+        assert "foo" not in blob and "keep/" in by_subject(result)["."].claim
+
+    @pytest.mark.parametrize("bad", ["foo", 7, {"foo"}, True, None])
+    def test_skip_dirs_non_list_is_loud(self, tmp_path, bad):
+        root = make_tree(tmp_path / "corpus")
+        with pytest.raises(AdapterError, match="skip_dirs must be a list"):
+            FsAstAdapter().ground(connection={"path": str(root), "skip_dirs": bad}, query="q")
+
+    @pytest.mark.parametrize("bad", [[""], ["ok", ""], ["   "], [123], ["ok", None], [True]])
+    def test_skip_dirs_bad_element_is_loud(self, tmp_path, bad):
+        root = make_tree(tmp_path / "corpus")
+        with pytest.raises(AdapterError, match="skip_dirs entries must be non-empty"):
+            FsAstAdapter().ground(connection={"path": str(root), "skip_dirs": bad}, query="q")
