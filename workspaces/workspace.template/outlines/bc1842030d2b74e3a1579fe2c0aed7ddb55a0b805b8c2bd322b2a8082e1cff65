@@ -1,0 +1,37 @@
+# <Project> — Manual
+
+## What it is
+What the project does and who it is for, in one orienting paragraph a newcomer can decide from.
+
+## Core concepts
+The mental model and the few key terms a reader must hold to follow everything that follows.
+
+## Requirements
+The prerequisites — runtime, tools, and host-environment assumptions — that must be in place before installing.
+
+## Setup
+The path from nothing to a working install: the install steps and first run, every command grounded in the source repo.
+
+## Usage
+The most common day-to-day tasks, each shown with a short worked example traced to real behavior.
+
+## Repository layout
+The filesystem tree, naming the directories and files a reader will actually open.
+
+## API and CLI surface
+The public entry points — the commands, functions, or endpoints callers depend on — with their signatures.
+
+## Architecture
+How it works internally: the main components and how a request flows through them.
+
+## Configuration and overrides
+The user-configurable surfaces — settings, environment, and flags — and what each one changes.
+
+## Extending it
+How to add a new configurable piece by following the project's existing extension points.
+
+## Known issues and open items
+The current limitations, known rough edges, and work deferred to a later version.
+
+## Glossary
+Short definitions of the domain terms used throughout the manual.
