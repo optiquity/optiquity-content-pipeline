@@ -257,6 +257,22 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
   registers `{graphify, folder}`). Demonstrated live (artifact `a-1ebf747e75ccc422`, grounded in OT's
   `ARCHITECTURE.md`). See `docs/known-issues.md` Resolved. Reports: `ops-handoff/folder-fix/`, `folder-register/`.
 
+### Quick-wins batch (2026-07-23)
+
+Four small, independently-reviewed-CLEAN items, each committed to `main` under the standing cadence.
+Current HEAD `551fc42`. Backlog impact: **GAP-5 → Resolved** and **#3 → documented ATX-only limit**
+(no longer a deferral) in `docs/known-issues.md`.
+
+- `bb51367` **item 1** — corrected the false "consumed at compose" annotation in 8 format entry bodies
+  (§15 accuracy; docs-only, no tracked GAP).
+- `37bd75c` **item 4** — retired the F1-sentinel BROADENING (#3) as a documented **ATX-only limit** (not
+  a deferral): known-issues #3/#3a + `docs/design.md` §5.2 + the `sections.py` docstring.
+- `ddcf593` **item 3** — added the `fsast` opt-in `cli` scope mode (argparse / CLI-flag grounding, MG-2;
+  not tracked in `known-issues.md`).
+- `551fc42` **item 2** — GAP-5 defense-in-depth hardening (all three sub-items, +5 load-bearing tests):
+  (a) payload metadata secret re-scan, (b) `manifest._resolved_row` render-input-mismatch warn on the
+  stale-fit branch, (c) serialize part-Div `#id` uniqueness check → **GAP-5 moved Open → Resolved**.
+
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`
 routes an agent onto the async-task channel (reports arrive in the task-notification, NO boilerplate);

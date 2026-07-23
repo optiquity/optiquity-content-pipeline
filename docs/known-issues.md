@@ -49,16 +49,6 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
   gains PRs — **still open** (verifiable only end-to-end once the repo has PRs).
 - **Source:** step-13 review, deferred through step 40; (a) hardened by F-b (`6b196a6`).
 
-### GAP-5 — Optional hardening (defense-in-depth, not required by design)
-- **Status:** Open
-- **Severity:** Low
-- **Items:** (a) an optional payload-side metadata re-scan in `payload.build_payload` (closes a residual
-  where a caller hand-builds a `fitted_ir` bypassing the IR secret-scan); (b)
-  `manifest._resolved_row` could carry the §21.8 rule-2 `render-input-mismatch` warn onto the
-  render-needed-from-stale-fit branch (under-reports fit-staleness for one cycle today); (c) a
-  part-Div `#id` uniqueness check for multi-part/folio assembly (HTML-validity nit).
-- **Source:** step-25/27/29/35 review observations, each marked optional.
-
 ### GAP-7 — The ideation phase (mission stage 1) is not built — topics must be hand-authored
 - **Status:** Open (deliberate v1 scope boundary, tracked here as a missing capability)
 - **Severity:** Medium–High (a whole missing pipeline stage — half of the mission's two-stage design)
@@ -927,3 +917,18 @@ entries below are post-build defects, starting with the **`render-output-fix`** 
   n=8, Fisher exact two-tailed p = 0.20 — not significant at α=0.05.** Directional evidence the fix
   removed the diagnosed trigger, not a significance-tested proof; the GAP-6 floor guarantees loud
   failure regardless.
+
+### GAP-5 — Optional hardening (defense-in-depth, not required by design) — RESOLVED (2026-07-23)
+- **Closed by:** `551fc42` — all three optional items landed together as happy-path-neutral hardening
+  (each adds only a raise path or surfaces a previously-dropped warn; clean inputs stay byte-identical):
+  **(a)** `payload.build_payload` now re-scans the `fitted_ir` metadata for secrets (reuses
+  `ir._scan_no_secrets` + `SecretShapedValueError`), so a hand-built `fitted_ir` that bypassed the
+  IR-level secret-scan is still caught; **(b)** `api/manifest._resolved_row` now carries the §21.8
+  rule-2 `render-input-mismatch` warn onto the render-needed-from-stale-fit branch (it was dropped,
+  under-reporting fit-staleness for one cycle; the fit-current path is unchanged, `warn=None` no-op);
+  **(c)** `serialize` adds a per-document part-Div `#id` uniqueness check (`DuplicatePartIdError`,
+  raised before any bytes; unique slugs render unchanged).
+- **Verified:** +5 load-bearing tests (`tests/test_payload.py`, `tests/test_manifest.py`,
+  `tests/test_serialize.py`); reviewed CLEAN (neutrality + no-import-cycle proven at runtime, not
+  asserted); full suite **2651 passed** with ruff + content-guard + schema-lint green.
+- **Source:** step-25/27/29/35 review observations, each marked optional (was GAP-5 under **Open**).
