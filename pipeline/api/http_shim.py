@@ -15,11 +15,16 @@ handlers via `register_api_handlers()` at startup — it adds NO handler and NO 
 is a transport translation over the same `invoke()` door the CLI uses. The shim carries no
 LLM/session/correctness state; every call is one stateless per-verb `invoke()`.
 
-**Scope (Commits 5a + 5b + 5c).** 5a: skeleton + Tier-A synchronous dispatch + N-4 status
-mapping. 5b: the net-new AUTH surface + the DoS guard + the instance-config template. 5c (this
-commit): the served-workspace ALLOW-LIST policy layer + the explicit loopback-bind knob.
-Explicitly NOT here (later commits): the Tier-B 202-Accepted submit+poll async jobs door
-(Commit 6/7/8). A Tier-B (paid/async) verb returns a clear 501 placeholder here.
+**Scope (Commits 5a + 5b + 5c + 6).** 5a: skeleton + Tier-A synchronous dispatch + N-4 status
+mapping. 5b: the net-new AUTH surface + the DoS guard + the instance-config template. 5c: the
+served-workspace ALLOW-LIST policy layer + the explicit loopback-bind knob. **6 (this commit):
+the Tier-B 202-Accepted submit + poll async jobs door for `continue-session{generate-next}`
+ONLY** — the shim resolves the PREDICTABLE target artifact-ids LLM-free (re-resolving the
+session plan from the token cursor, `pipeline.api.session`), `pipeline.jobs.JobStore.submit`s a
+lossy idempotency record (create-exclusive + H2 steal), detaches a `pipeline.api.jobrunner`
+runner, and returns **202 + the predictable ids**; a `POST /poll` resolves the job by
+target-id (`pipeline.jobs.resolve_job_state`). Still 501 placeholders (later commits): a minting
+`render` (Commit 7) and `begin-session{generate!=none}` (Commit 8).
 
 **Auth + DoS (Commit 5b — §C-4 N-7 + the DoS hardening 5a deferred).** Every `POST /invoke`
 carries a static bearer / `X-API-Key` secret, compared **constant-time** (`hmac.compare_digest`)
@@ -60,8 +65,22 @@ security. `serve` warns on a non-loopback bind; the default is NEVER moved off l
 
 **Tier-A verb surface (served synchronously — §C-9):**
 `list`, `get`, `fetch-by-id`, `create-folio`, `add-to-folio`, `emit-manifest`, `emit-outline`,
-`begin-session{generate=none}`, `continue-session{status|list}`. Operator verbs are already
-STRUCTURALLY excluded (not in `KNOWN_VERBS`) → `invoke()` answers `unknown-verb`.
+`begin-session{generate=none}`, and the CHEAP `continue-session` actions
+`{status|list|fetch|get|add-to-folio|emit-manifest}` (Commit 6 promoted the cheap session
+actions from Tier-B to Tier-A — they are read/side-output, LLM-free, so they belong on the
+synchronous door). Operator verbs are already STRUCTURALLY excluded (not in `KNOWN_VERBS`) →
+`invoke()` answers `unknown-verb`.
+
+**Tier-B async door (Commit 6 — the 202 + poll wire shape, N-3):** ONLY
+`continue-session{generate-next}` in this commit. A submit resolves the predictable target
+artifact-id set (§22.2 — the id the paid call will materialize, computed LLM-free from the plan
++ cursor) and returns a **202 acknowledgement** whose body is NOT an `invoke()` envelope:
+`{"status": "accepted", "job": {"key": <r-id>, "target_ids": [...]}, "poll": {...}}` — the
+"same-envelope" invariant of §21.7 is AMENDED to admit this async ack (documented in Commit 11 /
+`known-issues.md`). The Tier-B submit REQUIRES an `idempotency_key` in `params` (a retry must
+collide on one job, N-2; n8n supplies `$execution.id`) → a missing key is a **400**. The poll
+door `POST /poll {workspace, key, target_ids}` carries the SAME auth + allow-list + isolation
+gates as the submit (N-6) and maps the resolved job state to a status (see below).
 
 **N-4 status mapping (load-bearing — the ENVELOPE is the outcome authority):**
 
@@ -71,13 +90,23 @@ STRUCTURALLY excluded (not in `KNOWN_VERBS`) → `invoke()` answers `unknown-ver
 - `ok == False`, `code == invalid-token` → **422** (a §20 session CURSOR error — NEVER 401).
 - `ok == False`, `code == isolation-violation` → **403** (cross-workspace / bad-name refusal, §10).
 - `ok == False`, any other fatal code → **400** (conservative client-error default).
-- A Tier-B verb (generate-next / minting render / begin-session generate!=none) → **501** (the
-  async submit+poll door is not built in 5a; it lands in Commit 6/7/8).
+- A STILL-DEFERRED Tier-B verb (a minting `render` / `begin-session generate!=none`) → **501**
+  (their async door lands in Commit 7/8).
 - Malformed body / bad JSON / missing verb·workspace → **400** (a clean bad-request, never a crash).
 - Unexpected server fault → **500** (never leaks internals).
-- (RESERVED, Tier-B) a synthesized transport-timeout terminal → **504** (a timeout has no
-  envelope → the jobrunner synthesizes a re-drivable terminal, Commit 4/6). Unreachable in 5a's
-  synchronous Tier-A path; documented here for the full contract.
+
+**Tier-B submit dispositions (Commit 6) → HTTP:** `JobStore.submit` returns one of —
+`done` (the whole job already materialized) → **200** + the fetched output (via the `fetch-by-id`
+handler); `existing` (a legitimate in-flight 202→S1 window) → **202** ack (no re-spawn);
+`spawned`/`stolen` (`.spawn is True`) → detach the runner, then **202** ack.
+
+**Tier-B poll states (Commit 6, `pipeline.jobs.resolve_job_state`) → HTTP:** `done` (OUTPUT
+existence, §22.7) → **200** + fetched output; `running` (a live claim/lease OR the startup
+grace) → **202**; a stored `failed` terminal → the terminal envelope + its MAPPED status
+(timeout-class / `re-drivable` → **504** re-drivable; `rate-limit-backpressure` → **429**;
+an envelope code maps via the fatal table; any other terminal → **500**); `failed-redrivable`
+(nothing live, nothing done, no stored reason) → **409** telling the caller to re-submit with
+the SAME `idempotency_key` (§22.7 — never a false DONE, never a wedge).
 
 401 is emitted ONLY by the Commit-5b auth gate (a missing/wrong auth secret) and NOWHERE else —
 the two "token" concepts (the §20 session cursor `invalid-token` → 422 vs the auth secret → 401)
@@ -96,13 +125,16 @@ import argparse
 import hmac
 import os
 import sys
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from pipeline.api import results
+from pipeline.api import token as token_mod
 from pipeline.api.invoke import KNOWN_VERBS, HandlerNotWired, invoke
 from pipeline.canonical import canonical_json_str
 
@@ -114,6 +146,7 @@ __all__ = [
     "ENV_SECRET",
     "ENV_SECRETS",
     "INVOKE_PATH",
+    "POLL_PATH",
     "TIER_A",
     "TIER_B",
     "TIER_UNKNOWN",
@@ -138,8 +171,11 @@ DEFAULT_PORT = 8787
 #: REQUIRES an external TLS/auth proxy — the shim's own auth is an application-layer bearer secret,
 #: not transport security. `serve` prints a one-line warning on a non-loopback bind.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
-#: The single POST endpoint.
+#: The synchronous dispatch endpoint (Tier-A + the Tier-B submit).
 INVOKE_PATH = "/invoke"
+#: The Tier-B async poll endpoint (Commit 6): `POST /poll {workspace, key, target_ids}` — carries
+#: the SAME auth + allow-list + isolation gates as `/invoke` (N-6).
+POLL_PATH = "/poll"
 
 #: DoS guard defaults (overridable in `instance/shim.yaml` → `limits:`). A shim request is small
 #: JSON, so 1 MiB is generous; the socket timeout drops a stalled slow-loris connection.
@@ -153,15 +189,19 @@ ENV_SECRETS = "OPTIQUITY_SHIM_SECRETS"
 
 # --- HTTP statuses used by the N-4 mapping (see the module docstring table) ------------------
 _HTTP_OK = 200
+_HTTP_ACCEPTED = 202
 _HTTP_BAD_REQUEST = 400
 _HTTP_UNAUTHORIZED = 401
 _HTTP_FORBIDDEN = 403
 _HTTP_NOT_FOUND = 404
 _HTTP_METHOD_NOT_ALLOWED = 405
+_HTTP_CONFLICT = 409
 _HTTP_PAYLOAD_TOO_LARGE = 413
 _HTTP_UNPROCESSABLE = 422
+_HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_INTERNAL = 500
 _HTTP_NOT_IMPLEMENTED = 501
+_HTTP_GATEWAY_TIMEOUT = 504
 
 #: A whole-invocation-FATAL envelope `code` → its HTTP status. `invalid-token` is a §20 cursor
 #: error (422/never 401); `isolation-violation` is a cross-workspace refusal (403); an unmapped
@@ -316,17 +356,23 @@ TIER_UNKNOWN = "unknown"
 _TIER_A_SIMPLE = frozenset(
     {"list", "get", "fetch-by-id", "create-folio", "add-to-folio", "emit-manifest", "emit-outline"}
 )
-#: The only two `continue-session` actions Commit 5a serves synchronously (§C-9). Every other
-#: action (the paid `generate-next`, a minting `render`, and — deferred in 5a — the cheap
-#: `fetch`/`get`/`add-to-folio`/`emit-manifest` session actions + any unknown action) is Tier-B.
-_TIER_A_SESSION_ACTIONS = frozenset({"status", "list"})
+#: The CHEAP (read/side-output, LLM-free) `continue-session` actions served synchronously (§C-9).
+#: Commit 6 PROMOTED `fetch`/`get`/`add-to-folio`/`emit-manifest` from Tier-B to Tier-A (they mint
+#: nothing / make no live call, so they belong on the synchronous door alongside `status`/`list`).
+#: The ONLY Tier-B session action now is the paid `generate-next` (the async submit+poll door).
+#: (`render` as a continue-session action is a minting reshape → Tier-B, still a 501 in Commit 6.)
+_TIER_A_SESSION_ACTIONS = frozenset(
+    {"status", "list", "fetch", "get", "add-to-folio", "emit-manifest"}
+)
 
 
 def classify_verb(verb: str, params: Mapping[str, Any]) -> str:
-    """`TIER_A` (serve synchronously), `TIER_B` (defer → 501), or `TIER_UNKNOWN` (let `invoke()`
-    answer `unknown-verb`). Tier-B = the paid/async surface Commit 5a does not serve: `render`
-    (optimistic-sync lands in Commit 7), `begin-session{generate!=none}`, and any
-    `continue-session` action outside `{status, list}`."""
+    """`TIER_A` (serve synchronously), `TIER_B` (async submit+poll or a 501 placeholder), or
+    `TIER_UNKNOWN` (let `invoke()` answer `unknown-verb`). Tier-B = the paid/async surface: the
+    minting `render` (optimistic-sync lands in Commit 7), `begin-session{generate!=none}`
+    (Commit 8), and the `continue-session` paid action `generate-next` (the Commit-6 submit door).
+    Every cheap `continue-session` action (`status|list|fetch|get|add-to-folio|emit-manifest`) is
+    Tier-A."""
     if verb not in KNOWN_VERBS:
         return TIER_UNKNOWN
     if verb in _TIER_A_SIMPLE:
@@ -335,22 +381,113 @@ def classify_verb(verb: str, params: Mapping[str, Any]) -> str:
         return TIER_A if params.get("generate") in (None, "none") else TIER_B
     if verb == "continue-session":
         return TIER_A if params.get("action") in _TIER_A_SESSION_ACTIONS else TIER_B
-    return TIER_B  # `render` (and any future known verb not classified Tier-A) is deferred in 5a
+    return TIER_B  # `render` (and any future known verb not classified Tier-A) is a Tier-B verb
+
+
+def _is_generate_next_submit(verb: str, params: Mapping[str, Any]) -> bool:
+    """True iff this is the ONE Tier-B operation Commit 6 SERVES as an async submit —
+    `continue-session{action: generate-next}`. Every other Tier-B verb (a minting `render`,
+    `begin-session{generate!=none}`) is still a 501 placeholder (Commit 7/8)."""
+    return verb == "continue-session" and params.get("action") == "generate-next"
 
 
 def _tier_b_body(verb: str, params: Mapping[str, Any]) -> dict[str, Any]:
-    """The 501 placeholder for a deferred Tier-B verb (no async door in Commit 5a)."""
+    """The 501 placeholder for a STILL-DEFERRED Tier-B verb (a minting `render` / `begin-session
+    generate!=none`). `generate-next` is NOT routed here in Commit 6 — it is the served async
+    submit (`_submit_generate_next`)."""
     detail = (
-        f"verb {verb!r} is a Tier-B (paid/async) operation this synchronous Tier-A door does "
-        "not serve; it is wired via the 202-Accepted submit+poll door in a later DR-1 commit "
-        "(Commit 6/7/8). Tier-A = list/get/fetch-by-id/create-folio/add-to-folio/emit-manifest/"
-        "emit-outline, begin-session{generate=none}, continue-session{status|list}."
+        f"verb {verb!r} is a Tier-B (paid/async) operation whose async submit+poll door lands in "
+        "a later DR-1 commit (render: Commit 7; begin-session{generate!=none}: Commit 8). The one "
+        "Tier-B operation served in Commit 6 is continue-session{generate-next} (202 + poll)."
     )
     body: dict[str, Any] = {"error": "tier-b-not-served", "verb": verb, "detail": detail}
     action = params.get("action")
     if isinstance(action, str):
         body["action"] = action
     return body
+
+
+# --- Tier-B jobs door (Commit 6): predictable ids · contained store · spawn · poll ----------
+#
+# CONTAINMENT DISCIPLINE (Commit 5c guard). The shim NEVER re-implements the GAP-9 workspace-name
+# resolve-and-contain (no `pipeline.workspace_name` import, no `validate_workspace_name`, no
+# `Path.resolve()` here — the static guard `test_shim_does_not_reimplement_gap9_path_validation`
+# asserts it). Instead it DELEGATES the containment to the framework's own job-subsystem primitive
+# `pipeline.api.jobrunner._store_for`, which applies the SAME landed GAP-9 gate `invoke()` applies
+# and RAISES on an escaping name (a `ValueError` subclass) — the shim catches that and surfaces a
+# 403, never guessing a path itself.
+
+
+def _open_workspace(root: str, workspace: str) -> tuple[Any, Any, Any, Callable[[str], bool]]:
+    """The CONTAINED (store, job_store, claims, is_done) bundle for a Tier-B submit/poll.
+
+    Delegates the GAP-9 resolve-and-contain to `jobrunner._store_for` (the job subsystem's
+    containment authority — NOT re-implemented here); it raises a `ValueError` (WorkspaceName
+    error) on an escaping name, which the caller maps to 403. Returns the full `WorkspaceStore`
+    (derived from the contained `jobs/` dir), the `JobStore`, a fresh claim registry (for `peek`),
+    and an `is_done(target_id)` closure over the §22.7 output-existence authority."""
+    from pipeline.api import jobrunner
+    from pipeline.spine import registry_for
+    from pipeline.store import WorkspaceStore, is_done
+
+    # A minimal probe carrying only what `_store_for` reads (`.workspace`, `.root`) — the
+    # containment delegate. On an escaping name this RAISES before any store dir is created.
+    probe = SimpleNamespace(workspace=workspace, root=str(root))
+    job_store = jobrunner._store_for(probe)
+    store = WorkspaceStore(job_store.jobs_dir.parent)
+    claims = registry_for(store)
+    return store, job_store, claims, (lambda target_id: is_done(store, target_id))
+
+
+def _default_plan_targets(
+    root: str, workspace: str, decoded: token_mod.Token, params: Mapping[str, Any]
+) -> list[str]:
+    """The PREDICTABLE target artifact-id set a `generate-next` call will materialize — resolved
+    LLM-FREE (§22.2), so the job can be keyed + polled BEFORE the paid call.
+
+    DELEGATES to the SINGLE source `session.plan_next_batch_ids` — the SAME pure selector
+    `session._generate_next` uses to pick the batch it composes. There is NO forked/hand-synced
+    copy of the selection here: the job key == the composed set holds BY CONSTRUCTION (returns `[]`
+    on plan-stale / an empty batch, which the submit short-circuits — a job is never keyed on an
+    empty target set)."""
+    from pipeline.api import session
+
+    return list(session.plan_next_batch_ids(Path(root), workspace, decoded, params))
+
+
+def _default_spawn(spec: Any, *, spawn_dir: Path) -> Any:
+    """Detach the runner via `jobrunner.spawn_runner` (the default spawn seam; tests inject one)."""
+    from pipeline.api.jobrunner import spawn_runner
+
+    return spawn_runner(spec, spawn_dir=spawn_dir)
+
+
+def _accepted_body(key: str, target_ids: Sequence[str]) -> dict[str, Any]:
+    """The N-3 202 ACK — a NEW wire shape, deliberately NOT an `invoke()` envelope (the
+    "same-envelope" §21.7 invariant is amended in Commit 11). Carries everything the caller needs
+    to poll: the run-family job `key` + the predictable `target_ids`, and the poll endpoint."""
+    return {
+        "status": "accepted",
+        "job": {"key": key, "target_ids": list(target_ids)},
+        "poll": {"path": POLL_PATH, "method": "POST", "needs": ["workspace", "key", "target_ids"]},
+    }
+
+
+def _terminal_status_for(code: str) -> int:
+    """Map a STORED terminal `code` (`pipeline.api.jobrunner` synthesis / a transport-carried code /
+    an envelope code) to its poll HTTP status. Timeout-class (`re-drivable`/`timeout`) → 504
+    (re-drivable, N-4); backpressure → 429; an envelope code rides the fatal table
+    (unknown-verb→400, invalid-token→422, isolation-violation→403); any other terminal (a
+    wiring/env `runner-failed`) → 500 (a non-re-drivable server-side failure)."""
+    from pipeline.api.jobrunner import RE_DRIVABLE_CODE
+
+    if code in (RE_DRIVABLE_CODE, "timeout"):
+        return _HTTP_GATEWAY_TIMEOUT
+    if code == "rate-limit-backpressure":
+        return _HTTP_TOO_MANY_REQUESTS
+    if code in _FATAL_STATUS:
+        return _FATAL_STATUS[code]
+    return _HTTP_INTERNAL
 
 
 # --- The server ------------------------------------------------------------------------------
@@ -384,6 +521,9 @@ class ShimServer(ThreadingHTTPServer):
         max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
         socket_timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS,
         allowed_workspaces: frozenset[str] = frozenset(),
+        spawn_fn: Callable[..., Any] | None = None,
+        plan_targets_fn: Callable[..., Sequence[str]] | None = None,
+        clock_fn: Callable[[], float] | None = None,
     ) -> None:
         if not secrets:
             raise ShimConfigError(
@@ -397,8 +537,17 @@ class ShimServer(ThreadingHTTPServer):
         self.max_body_bytes = int(max_body_bytes)
         self.socket_timeout = float(socket_timeout)
         #: The served-workspace allow-list (NAME set). Empty = unset = serve any GAP-9-contained
-        #: workspace; the per-request check lives in `_ShimRequestHandler._handle_post`.
+        #: workspace; the per-request check lives in `_ShimRequestHandler._deny_unserved_workspace`.
         self.allowed_workspaces = frozenset(allowed_workspaces)
+        #: Commit-6 Tier-B seams (all `None` → the real defaults; tests inject light stubs so the
+        #: unit suite never spawns a real subprocess or resolves a live plan — the REAL detached
+        #: spawn + real plan resolution are the Commit-I integration harness). `spawn_fn` detaches
+        #: the runner (`jobrunner.spawn_runner`); `plan_targets_fn` resolves the predictable
+        #: target-id set LLM-free (`_default_plan_targets`); `clock_fn` is the poll/submit clock
+        #: (`time.time`) — injectable so a test can drive the startup-grace / re-drivable windows.
+        self.spawn_fn = spawn_fn
+        self.plan_targets_fn = plan_targets_fn
+        self.clock_fn = clock_fn
 
 
 class _ShimRequestHandler(BaseHTTPRequestHandler):
@@ -431,15 +580,16 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib dispatch name
         self._respond(
             _HTTP_METHOD_NOT_ALLOWED,
-            {"error": "method-not-allowed", "detail": f"POST {INVOKE_PATH}"},
+            {"error": "method-not-allowed", "detail": f"POST {INVOKE_PATH} or POST {POLL_PATH}"},
         )
 
     def _handle_post(self) -> None:
         server: ShimServer = self.server  # type: ignore[assignment]
 
-        # (1) AUTH FIRST — before the path check, before ANY body read, before dispatch
-        #     (§C-4 N-7 + the DoS ordering). 401 is emitted ONLY here. An unauthenticated
-        #     request (incl. an oversized/garbage body) never reaches the body read or invoke().
+        # (1) AUTH FIRST — before the path check, before ANY body read, before dispatch, for EVERY
+        #     endpoint (§C-4 N-7 + the DoS ordering; N-6: the poll carries the SAME auth gate as the
+        #     submit). 401 is emitted ONLY here. An unauthenticated request (incl. an oversized/
+        #     garbage body, and any /poll read) never reaches the body read or the store.
         if not self._authorized(server):
             self._respond(
                 _HTTP_UNAUTHORIZED,
@@ -447,14 +597,25 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if self.path.split("?", 1)[0].rstrip("/") not in ("", INVOKE_PATH):
+        # (2) PATH ROUTING — /invoke (Tier-A synchronous + the Tier-B generate-next submit) and
+        #     /poll (the Tier-B async poll) SHARE the auth + DoS + body gates; only the per-endpoint
+        #     body handling differs.
+        path = self.path.split("?", 1)[0].rstrip("/")
+        if path == POLL_PATH:
+            endpoint = self._handle_poll
+        elif path in ("", INVOKE_PATH):
+            endpoint = self._handle_invoke
+        else:
             self._respond(
                 _HTTP_NOT_FOUND,
-                {"error": "not-found", "detail": f"unknown path; POST {INVOKE_PATH}"},
+                {
+                    "error": "not-found",
+                    "detail": f"unknown path; POST {INVOKE_PATH} or POST {POLL_PATH}",
+                },
             )
             return
 
-        # (2) DoS guard — reject an over-cap DECLARED Content-Length BEFORE reading the body (413).
+        # (3) DoS guard — reject an over-cap DECLARED Content-Length BEFORE reading the body (413).
         length = self._content_length()
         if length is None:
             return  # `_content_length` already sent a 400 (a malformed header)
@@ -469,34 +630,19 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # (3) The body is now bounded by the cap: read + parse it.
+        # (4) The body is now bounded by the cap: read + parse it, then hand to the endpoint.
         payload = self._read_json_object(length)
         if payload is None:
             return  # `_read_json_object` already sent a 400
+        endpoint(server, payload)
 
-        verb = payload.get("verb")
-        workspace = payload.get("workspace")
-        params = payload.get("params", {})
-        token = payload.get("token")
-        if not isinstance(verb, str) or not verb:
-            self._bad_request("'verb' is required (a non-empty string)")
-            return
-        if not isinstance(workspace, str) or not workspace:
-            self._bad_request("'workspace' is required (a non-empty string)")
-            return
-        if not isinstance(params, Mapping):
-            self._bad_request("'params' must be a JSON object")
-            return
-
-        # (4) Workspace ALLOW-LIST (Commit 5c) — a shim POLICY layer (NAME membership) on TOP of
-        #     the framework GAP-9 containment. If an allow-list is CONFIGURED (non-empty), only a
-        #     LISTED workspace is served: a non-member → 403 `workspace-not-served` BEFORE dispatch
-        #     (invoke_fn is NEVER called). If UNSET, any workspace is served here and the GAP-9
-        #     resolve-and-contain gate inside invoke() remains the containment authority (auth is
-        #     the primary door). This is NAME membership ONLY — it does NOT re-validate the path,
-        #     so an escaping name is still refused by invoke()'s `isolation-violation` gate (→ 403,
-        #     a DISTINCT `isolation-violation` envelope body). A misconfigured allow-list that
-        #     lists an escaping name cannot defeat GAP-9 — invoke() still refuses it.
+    def _deny_unserved_workspace(self, server: ShimServer, workspace: str) -> bool:
+        """Workspace ALLOW-LIST (Commit 5c, applied to BOTH /invoke and /poll — N-6). If the
+        allow-list is CONFIGURED (non-empty), only a LISTED workspace is served: a non-member →
+        403 `workspace-not-served` BEFORE any dispatch/store access, and this returns True. If
+        UNSET (default), returns False (serve any workspace; the GAP-9 resolve-and-contain gate
+        remains the containment authority). NAME membership ONLY — never a path re-check (an
+        escaping name is still refused by the delegated GAP-9 gate)."""
         allowed = server.allowed_workspaces
         if allowed and workspace not in allowed:
             self._respond(
@@ -509,9 +655,34 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                     ),
                 },
             )
+            return True
+        return False
+
+    def _handle_invoke(self, server: ShimServer, payload: Mapping[str, Any]) -> None:
+        """`POST /invoke`: Tier-A synchronous dispatch + the Tier-B `generate-next` submit."""
+        verb = payload.get("verb")
+        workspace = payload.get("workspace")
+        params = payload.get("params", {})
+        token = payload.get("token")
+        pins = payload.get("pins")
+        if not isinstance(verb, str) or not verb:
+            self._bad_request("'verb' is required (a non-empty string)")
+            return
+        if not isinstance(workspace, str) or not workspace:
+            self._bad_request("'workspace' is required (a non-empty string)")
+            return
+        if not isinstance(params, Mapping):
+            self._bad_request("'params' must be a JSON object")
+            return
+
+        if self._deny_unserved_workspace(server, workspace):
             return
 
         if classify_verb(verb, params) == TIER_B:
+            if _is_generate_next_submit(verb, params):
+                self._submit_generate_next(server, workspace, params, token, pins)
+                return
+            # A STILL-DEFERRED Tier-B verb (a minting render / begin-session{generate!=none}).
             self._respond(_HTTP_NOT_IMPLEMENTED, _tier_b_body(verb, params))
             return
 
@@ -523,6 +694,270 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             self._respond(_HTTP_INTERNAL, {"error": "handler-not-wired", "verb": verb})
             return
         self._respond(http_status_for(result), result)
+
+    def _submit_generate_next(
+        self,
+        server: ShimServer,
+        workspace: str,
+        params: Mapping[str, Any],
+        token: Any,
+        pins: Any,
+    ) -> None:
+        """The Tier-B `continue-session{generate-next}` SUBMIT (Commit 6): resolve the predictable
+        target-ids LLM-free, `JobStore.submit` a lossy idempotency record, detach a runner, and
+        return a 202 ack (or 200 on an already-done idempotent re-submit)."""
+        # (a) The idempotency_key is REQUIRED so a retry collides on ONE job (N-2; n8n: $execution
+        #     .id). Missing → 400 BEFORE any store access.
+        idempotency_key = params.get("idempotency_key")
+        if not isinstance(idempotency_key, str) or not idempotency_key:
+            self._respond(
+                _HTTP_BAD_REQUEST,
+                {
+                    "error": "idempotency-key-required",
+                    "detail": (
+                        "a Tier-B generate-next submit requires a non-empty 'idempotency_key' in "
+                        "params so a retry collides on one job (§21.8/N-2; n8n supplies "
+                        "$execution.id)"
+                    ),
+                },
+            )
+            return
+        if token is None:
+            self._respond(
+                _HTTP_BAD_REQUEST,
+                {
+                    "error": "token-required",
+                    "detail": (
+                        "generate-next requires the resumption token from begin-session (§21.1)"
+                    ),
+                },
+            )
+            return
+
+        # (b) Build the CONTAINED store (delegated GAP-9 — an escaping name RAISES → 403).
+        try:
+            store, job_store, claims, is_done_fn = _open_workspace(server.root, workspace)
+        except ValueError:
+            self._respond(
+                _HTTP_FORBIDDEN,
+                {
+                    "error": "isolation-violation",
+                    "detail": (
+                        "workspace name does not resolve to a contained store root — workspaces "
+                        "never cross (§10/§21.1)"
+                    ),
+                },
+            )
+            return
+
+        # (c) Decode the session cursor (a §20 CURSOR error is 422, NEVER 401).
+        try:
+            decoded = token_mod.decode(token, expected_workspace=workspace)
+        except token_mod.InvalidTokenError as exc:
+            self._respond(_HTTP_UNPROCESSABLE, {"error": "invalid-token", "detail": exc.detail})
+            return
+
+        # (d) Resolve the PREDICTABLE target artifact-id set LLM-free (§22.2). An empty set (all
+        #     consumed / plan-stale) is nothing to generate → a 200 no-op (a job is never keyed on
+        #     an empty target set).
+        plan_targets = (
+            server.plan_targets_fn if server.plan_targets_fn is not None else _default_plan_targets
+        )
+        target_ids = list(plan_targets(server.root, workspace, decoded, params))
+        if not target_ids:
+            self._respond(
+                _HTTP_OK,
+                {
+                    "status": "empty",
+                    "detail": (
+                        "no pending plan targets for this cursor — nothing to generate (all "
+                        "consumed or plan-stale, §21.6)"
+                    ),
+                    "job": {"target_ids": []},
+                },
+            )
+            return
+
+        # (e) Submit (create-exclusive + H2 steal) → disposition → HTTP.
+        now = (server.clock_fn if server.clock_fn is not None else time.time)()
+        outcome = job_store.submit(
+            target_ids, idempotency_key, now=now, is_done=is_done_fn, peek=claims.peek
+        )
+        if outcome.disposition == "done":
+            # The whole job already materialized (an idempotent re-submit after completion) → 200 +
+            # the fetched output (via the existing fetch-by-id handler).
+            record_targets = (
+                list(outcome.record.target_ids) if outcome.record is not None else target_ids
+            )
+            self._respond(
+                _HTTP_OK, self._done_body(server, workspace, outcome.key, record_targets)
+            )
+            return
+        if outcome.spawn:  # `spawned` or `stolen` — detach the runner (record already written).
+            from pipeline.api import jobrunner
+
+            spec = jobrunner.JobSpec(
+                key=outcome.key,
+                verb="continue-session",
+                workspace=workspace,
+                params=dict(params),
+                idempotency_key=idempotency_key,
+                root=str(server.root),
+                token=token,
+                pins=pins,
+            )
+            spawn = server.spawn_fn if server.spawn_fn is not None else _default_spawn
+            spawn(spec, spawn_dir=store.jobs_dir)
+        # `spawned` / `stolen` / `existing` → the N-3 202 ack (existing = a live in-flight job).
+        self._respond(_HTTP_ACCEPTED, _accepted_body(outcome.key, target_ids))
+
+    def _handle_poll(self, server: ShimServer, payload: Mapping[str, Any]) -> None:
+        """`POST /poll {workspace, key, target_ids}` (Commit 6): resolve the job by target-id and
+        map the state to HTTP. Carries the SAME auth (already applied) + allow-list + isolation
+        gates as the submit (N-6) — a poll reads client job/deliverable data, so it is refused
+        (401/403) exactly like the submit."""
+        workspace = payload.get("workspace")
+        key = payload.get("key")
+        target_ids = payload.get("target_ids")
+        if not isinstance(workspace, str) or not workspace:
+            self._bad_request("'workspace' is required (a non-empty string)")
+            return
+        if self._deny_unserved_workspace(server, workspace):  # N-6 allow-list, same as submit
+            return
+        if not isinstance(key, str) or not key:
+            self._bad_request("'key' is required (the run-family job key from the 202 ack)")
+            return
+        if not (
+            isinstance(target_ids, list)
+            and target_ids
+            and all(isinstance(t, str) and t for t in target_ids)
+        ):
+            self._bad_request(
+                "'target_ids' is required (the non-empty predictable-id list from the 202 ack)"
+            )
+            return
+
+        # Build the CONTAINED store (delegated GAP-9 — an escaping name RAISES → 403).
+        try:
+            _store, job_store, claims, is_done_fn = _open_workspace(server.root, workspace)
+        except ValueError:
+            self._respond(
+                _HTTP_FORBIDDEN,
+                {
+                    "error": "isolation-violation",
+                    "detail": (
+                        "workspace name does not resolve to a contained store root — workspaces "
+                        "never cross (§10/§21.1)"
+                    ),
+                },
+            )
+            return
+
+        from pipeline.jobs import JobError, resolve_job_state
+
+        try:
+            record = job_store.load(key)  # a non-run key RAISES JobError (the §22.7 keying pin)
+        except JobError:
+            self._bad_request("'key' is not a valid run-family job key (r-<hex16>)")
+            return
+
+        now = (server.clock_fn if server.clock_fn is not None else time.time)()
+        states = [
+            resolve_job_state(
+                record,
+                tid,
+                now=now,
+                is_done=is_done_fn,
+                peek=claims.peek,
+                startup_grace=job_store.startup_grace,
+            )
+            for tid in target_ids
+        ]
+        job_ref = {"key": key, "target_ids": list(target_ids)}
+
+        # Aggregate (priority): the WHOLE job done → 200; any target still working → 202; a stored
+        # terminal → the mapped failure; else re-drivable (§22.7 — no false DONE, no wedge).
+        if all(state.kind == "done" for state in states):
+            self._respond(
+                _HTTP_OK,
+                {
+                    "status": "done",
+                    "job": job_ref,
+                    "results": self._fetch_outputs(server, workspace, target_ids),
+                },
+            )
+            return
+        if any(state.kind == "running" for state in states):
+            self._respond(
+                _HTTP_ACCEPTED,
+                {
+                    "status": "running",
+                    "job": job_ref,
+                    "detail": "the job is still working (a live claim/lease or the startup grace)",
+                },
+            )
+            return
+        terminal_state = next(
+            (state for state in states if state.kind == "failed" and state.terminal is not None),
+            None,
+        )
+        if terminal_state is not None and terminal_state.terminal is not None:
+            terminal = terminal_state.terminal
+            status = _terminal_status_for(terminal.code)
+            redrivable = status in (_HTTP_GATEWAY_TIMEOUT, _HTTP_TOO_MANY_REQUESTS)
+            self._respond(
+                status,
+                {
+                    "status": "failed",
+                    "code": terminal.code,
+                    "redrivable": redrivable,
+                    "job": job_ref,
+                    "terminal": {"envelope": terminal.envelope, "results": terminal.results},
+                    "detail": (
+                        "re-submit with the SAME idempotency_key (§22.7)"
+                        if redrivable
+                        else "the job failed for a non-re-drivable reason (wiring/env)"
+                    ),
+                },
+            )
+            return
+        self._respond(
+            _HTTP_CONFLICT,
+            {
+                "status": "re-drivable",
+                "redrivable": True,
+                "job": job_ref,
+                "detail": (
+                    "the job is not in flight and not done, with no stored reason — re-submit "
+                    "with the SAME idempotency_key (§22.7)"
+                ),
+            },
+        )
+
+    def _done_body(
+        self, server: ShimServer, workspace: str, key: str, target_ids: Sequence[str]
+    ) -> dict[str, Any]:
+        """The 200 DONE body — the job's key/target-ids + the fetched output items."""
+        return {
+            "status": "done",
+            "job": {"key": key, "target_ids": list(target_ids)},
+            "results": self._fetch_outputs(server, workspace, target_ids),
+        }
+
+    def _fetch_outputs(
+        self, server: ShimServer, workspace: str, target_ids: Sequence[str]
+    ) -> list[Any]:
+        """Fetch each materialized target via the EXISTING `fetch-by-id` handler (dumb hot path,
+        §21.5) and merge the returned result items — the shim adds no retrieval logic of its own."""
+        merged: list[Any] = []
+        for target_id in target_ids:
+            result = server.invoke_fn(
+                "fetch-by-id", workspace, {"id": target_id}, None, root=server.root
+            )
+            items = result.get("results") if isinstance(result, Mapping) else None
+            if isinstance(items, list):
+                merged.extend(items)
+        return merged
 
     def _presented_secret(self) -> str | None:
         """The bearer / `X-API-Key` secret the caller presented, or None. NEVER logged (N-7).
@@ -611,11 +1046,15 @@ def make_server(
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
     socket_timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS,
     allowed_workspaces: frozenset[str] = frozenset(),
+    spawn_fn: Callable[..., Any] | None = None,
+    plan_targets_fn: Callable[..., Sequence[str]] | None = None,
+    clock_fn: Callable[[], float] | None = None,
 ) -> ShimServer:
     """Build (but do not start) the shim server. `port=0` binds an ephemeral port (tests read
     `server.server_address`). The caller is responsible for wiring handlers (`serve()` does).
     `allowed_workspaces` is the Commit-5c served-workspace allow-list (empty = unset = serve any
-    GAP-9-contained workspace).
+    GAP-9-contained workspace). `spawn_fn`/`plan_targets_fn`/`clock_fn` are the Commit-6 Tier-B
+    seams (None = the real defaults; tests inject light stubs).
 
     FAIL-CLOSED: an empty `secrets` set raises `ShimConfigError` (via `ShimServer`) — the server
     is never built wide open."""
@@ -627,6 +1066,9 @@ def make_server(
         max_body_bytes=max_body_bytes,
         socket_timeout=socket_timeout,
         allowed_workspaces=allowed_workspaces,
+        spawn_fn=spawn_fn,
+        plan_targets_fn=plan_targets_fn,
+        clock_fn=clock_fn,
     )
 
 
@@ -677,9 +1119,10 @@ def serve(
         else "allow-list: unset (any GAP-9-contained workspace)"
     )
     print(
-        f"pipeline serve: listening on http://{bound_host}:{bound_port}{INVOKE_PATH} "
-        f"(auth: required, {len(config.secrets)} secret(s); {allow_note}; Tier-A synchronous; "
-        "Tier-B async door lands in a later DR-1 commit)",
+        f"pipeline serve: listening on http://{bound_host}:{bound_port} "
+        f"(POST {INVOKE_PATH} + POST {POLL_PATH}; auth: required, {len(config.secrets)} secret(s); "
+        f"{allow_note}; Tier-A synchronous; Tier-B generate-next 202+poll; render/begin-session "
+        "async doors land in a later DR-1 commit)",
         file=sys.stderr,
     )
     try:

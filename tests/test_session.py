@@ -710,3 +710,79 @@ class TestOutlineDrive:
         out = begin(root, store, outline_params("   \n\n\t\n"), hs=handlers())
         assert out["results"][0]["status"] == "block"
         assert "token" not in out
+
+
+class TestPlanNextBatchIds:
+    """The DR-1 anti-drift invariant (§22.2): `session.plan_next_batch_ids` — the async shim's
+    predictable-target-id resolver — returns EXACTLY the batch `_generate_next` composes. Proven by
+    CO-RESOLVING both against a REAL resolved plan and comparing (they share the one `_select_batch`
+    source, so this holds by construction — not by a hand-synced fork). This is the coverage the
+    reviewer flagged as the commit's untested crux."""
+
+    def _batch_ids(self, out: dict) -> list[str]:
+        """The batch `_generate_next` actually selected, in order — each `results[]` item is ONE
+        selected batch item keyed by its artifact-id (ok / already-materialized / block alike)."""
+        return [r["item"] for r in out["results"]]
+
+    def test_fresh_multi_artifact_batch_matches_generate_next(self, tmp_path):
+        # A real multi-artifact `batch_size` slice: the predicted ids == the batch generate-next
+        # materializes, in plan order.
+        root = build_root(
+            tmp_path, topics=(("x-t-alpha", "A."), ("x-t-beta", "B."), ("x-t-gamma", "C."))
+        )
+        store = store_for(root)
+        hs = handlers(FakeRun())
+        params = base_params(topics=["x-t-alpha", "x-t-beta", "x-t-gamma"])
+        wire = begin(root, store, params, hs=hs)["token"]
+        gn = {"action": "generate-next", "batch_size": 2}
+        predicted = session.plan_next_batch_ids(root, WS, decode(wire), gn)  # BEFORE the paid call
+        out = cont(root, store, gn, wire, hs=hs)
+        assert predicted == self._batch_ids(out)
+        assert len(predicted) == 2  # a genuine multi-artifact slice, not a trivial single id
+
+    def test_only_filter_matches_generate_next(self, tmp_path):
+        # An `only=` request: the predicted set == the only-filtered batch (order = plan order).
+        root = build_root(tmp_path, topics=(("x-t-alpha", "A."), ("x-t-beta", "B.")))
+        store = store_for(root)
+        hs = handlers(FakeRun())
+        begun = begin(root, store, base_params(topics=["x-t-alpha", "x-t-beta"]), hs=hs)
+        wire = begun["token"]
+        target = [begun["results"][0]["ids"]["artifact_ids"][1]]  # a specific id
+        gn = {"action": "generate-next", "only": target}
+        predicted = session.plan_next_batch_ids(root, WS, decode(wire), gn)
+        out = cont(root, store, gn, wire, hs=hs)
+        assert predicted == self._batch_ids(out) == target
+
+    def test_midcursor_complement_matches_generate_next(self, tmp_path):
+        # A mid-cursor session (some `consumed`): the predicted set == the not-yet-consumed
+        # complement generate-next composes next, and EXCLUDES the already-consumed id.
+        root = build_root(
+            tmp_path, topics=(("x-t-alpha", "A."), ("x-t-beta", "B."), ("x-t-gamma", "C."))
+        )
+        store = store_for(root)
+        hs = handlers(FakeRun())
+        params = base_params(topics=["x-t-alpha", "x-t-beta", "x-t-gamma"])
+        wire0 = begin(root, store, params, hs=hs)["token"]
+        out1 = cont(root, store, {"action": "generate-next", "batch_size": 1}, wire0, hs=hs)
+        consumed_id = out1["results"][0]["item"]
+        wire1 = out1["token"]  # the advanced cursor
+        gn = {"action": "generate-next", "batch_size": 2}
+        predicted = session.plan_next_batch_ids(root, WS, decode(wire1), gn)
+        out2 = cont(root, store, gn, wire1, hs=hs)
+        assert predicted == self._batch_ids(out2)
+        assert consumed_id not in predicted and len(predicted) == 2
+
+    def test_plan_stale_returns_empty_like_generate_next(self, tmp_path):
+        # A stale `plan_hash` (a mid-session config edit): the resolver returns [] (nothing to key),
+        # exactly as generate-next composes nothing (plan-stale).
+        root = build_root(tmp_path)
+        store = store_for(root)
+        hs = handlers(FakeRun())
+        wire = begin(root, store, base_params(), hs=hs)["token"]
+        (root / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
+            TOPIC.format(tid="x-t-alpha", why="A completely rewritten rationale."), encoding="utf-8"
+        )
+        gn = {"action": "generate-next"}
+        assert session.plan_next_batch_ids(root, WS, decode(wire), gn) == []
+        out = cont(root, store, gn, wire, hs=hs)
+        assert out["results"][0]["code"] == "plan-stale"  # generate-next likewise composes nothing

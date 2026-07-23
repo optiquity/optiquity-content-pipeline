@@ -99,6 +99,7 @@ __all__ = [
     "begin_session_handler",
     "continue_session_handler",
     "emit_outline_handler",
+    "plan_next_batch_ids",
     "register_api_handlers",
     "register_emit_outline_handler",
     "register_session_handlers",
@@ -531,6 +532,42 @@ def _batch_size(raw: Any, remaining: int) -> int:
     return _DEFAULT_BATCH_SIZE
 
 
+def _select_batch(plan: Plan, consumed: Sequence[str], params: Mapping[str, Any]) -> list[Any]:
+    """The PURE pre-transport batch selection (§21.6) — the ORDERED plan items a `generate-next`
+    call composes this turn: the `only`-filtered set when `params['only']` is a list, else the
+    not-yet-`consumed` cursor complement, sliced to `_batch_size`. This is the SINGLE source both
+    the MATERIALIZER (`_generate_next`) and the async predictable-id resolver
+    (`plan_next_batch_ids`) consume, so the id set a job is keyed/polled on can NEVER drift from the
+    set the paid call actually composes (one source, not two hand-synced copies)."""
+    only = params.get("only")
+    if isinstance(only, Sequence) and not isinstance(only, str | bytes):
+        wanted = {v for v in only if isinstance(v, str)}
+        candidates = [item for item in plan.items if item.artifact_id in wanted]
+    else:
+        seen = set(consumed)
+        candidates = [item for item in plan.items if item.artifact_id not in seen]
+    return candidates[: _batch_size(params.get("batch_size"), len(candidates))]
+
+
+def plan_next_batch_ids(
+    root: Path, workspace: str, token: token_mod.Token, params: Mapping[str, Any]
+) -> list[str]:
+    """The PREDICTABLE target artifact-id set the NEXT `generate-next` call will materialize —
+    resolved PURELY (LLM-free, §22.2), so an async transport (the DR-1 shim) can KEY + POLL a job
+    BEFORE the paid call and be certain the keyed set == the composed set.
+
+    Re-resolves the plan from the token inputs (`_resolve_from_inputs` — a deterministic config
+    read, never a cached plan, never a live call); returns `[]` on a `plan_hash` mismatch (plan-
+    stale → generate-next composes NOTHING, §21.6) or an empty batch; else the batch's artifact-ids
+    IN PLAN ORDER. Shares `_select_batch` with `_generate_next`, so the returned ids are EXACTLY the
+    batch that call composes — the anti-drift invariant holds BY CONSTRUCTION, not by hand-sync."""
+    plan, _env, _pool, _repos = _resolve_from_inputs(root, workspace, token.inputs)
+    if plan.plan_hash != token.plan_hash:
+        return []
+    consumed = list(token.cursor.get("consumed", []))
+    return [item.artifact_id for item in _select_batch(plan, consumed, params)]
+
+
 def _generate_next(
     ctx: invoke_mod.HandlerContext,
     *,
@@ -574,14 +611,10 @@ def _generate_next(
 
     consumed = list(token.cursor.get("consumed", []))
     produced = list(token.produced_ids)
-    only = ctx.params.get("only")
-    if isinstance(only, Sequence) and not isinstance(only, str | bytes):
-        wanted = {v for v in only if isinstance(v, str)}
-        candidates = [item for item in plan.items if item.artifact_id in wanted]
-    else:
-        seen = set(consumed)
-        candidates = [item for item in plan.items if item.artifact_id not in seen]
-    batch = candidates[: _batch_size(ctx.params.get("batch_size"), len(candidates))]
+    # The batch selection is the SHARED pure `_select_batch` (§21.6) — the SAME source the async
+    # `plan_next_batch_ids` uses, so the DR-1 shim's job key can never drift from what this call
+    # materializes (one source of truth, no hand-synced fork).
+    batch = _select_batch(plan, consumed, ctx.params)
 
     now = now or date.today()
     out: list[results.ResultItem] = []

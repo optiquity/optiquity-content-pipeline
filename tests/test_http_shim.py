@@ -66,10 +66,15 @@ def running_server(
     max_body_bytes: int = http_shim.DEFAULT_MAX_BODY_BYTES,
     socket_timeout: float = http_shim.DEFAULT_SOCKET_TIMEOUT_SECONDS,
     allowed_workspaces: frozenset[str] = frozenset(),
+    spawn_fn=None,
+    plan_targets_fn=None,
+    clock_fn=None,
 ) -> Iterator[tuple[str, int]]:
     """Start the shim on an ephemeral loopback port in a daemon thread; yield (host, port). A
     non-empty `secrets` set is required (fail-closed); the harness defaults it to a test secret.
-    `allowed_workspaces` drives the Commit-5c served-workspace allow-list (default: unset)."""
+    `allowed_workspaces` drives the Commit-5c served-workspace allow-list (default: unset).
+    `spawn_fn`/`plan_targets_fn`/`clock_fn` are the Commit-6 Tier-B seams (default: the real
+    ones)."""
     server = http_shim.make_server(
         "127.0.0.1",
         0,
@@ -79,6 +84,9 @@ def running_server(
         max_body_bytes=max_body_bytes,
         socket_timeout=socket_timeout,
         allowed_workspaces=allowed_workspaces,
+        spawn_fn=spawn_fn,
+        plan_targets_fn=plan_targets_fn,
+        clock_fn=clock_fn,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -273,7 +281,14 @@ class TestTierGating:
         assert http_shim.classify_verb("begin-session", {"generate": "none"}) == http_shim.TIER_A
         assert http_shim.classify_verb("continue-session", {"action": "status"}) == http_shim.TIER_A
         assert http_shim.classify_verb("continue-session", {"action": "list"}) == http_shim.TIER_A
-        # Tier-B (deferred → 501):
+        # Commit 6 PROMOTED the cheap continue-session actions from Tier-B to Tier-A (read/
+        # side-output, LLM-free) — no longer a 501:
+        for cheap in ("fetch", "get", "add-to-folio", "emit-manifest"):
+            assert (
+                http_shim.classify_verb("continue-session", {"action": cheap}) == http_shim.TIER_A
+            ), cheap
+        # Tier-B: the minting render (Commit 7), begin-session{generate!=none} (Commit 8), and the
+        # paid generate-next (the Commit-6 submit door):
         assert http_shim.classify_verb("render", {}) == http_shim.TIER_B
         assert http_shim.classify_verb("begin-session", {"generate": "full"}) == http_shim.TIER_B
         assert (
@@ -283,15 +298,15 @@ class TestTierGating:
         # Unknown → let invoke() answer unknown-verb:
         assert http_shim.classify_verb("drift-report", {}) == http_shim.TIER_UNKNOWN
 
-    def test_tier_b_verb_returns_501_before_touching_invoke(self) -> None:
-        # A Tier-B verb is intercepted BEFORE invoke() (the injected stub must never be called).
+    def test_still_deferred_tier_b_verb_returns_501_before_touching_invoke(self) -> None:
+        # A STILL-DEFERRED Tier-B verb (a minting render / begin-session{generate!=none}) is
+        # intercepted BEFORE invoke() (the injected stub must never be called). Commit 6 no longer
+        # includes generate-next here — it is the served async submit (covered below).
         def stub(*a, **k):  # noqa: ANN002, ANN003, ANN202
-            raise AssertionError("invoke() must not be called for a Tier-B verb")
+            raise AssertionError("invoke() must not be called for a deferred Tier-B verb")
 
-        gen_next = {"action": "generate-next"}
         with running_server(invoke_fn=stub) as (host, port):
             for body in (
-                {"verb": "continue-session", "workspace": "wsA", "params": gen_next},
                 {"verb": "render", "workspace": "wsA", "params": {"item": "a-0000000000000000"}},
                 {"verb": "begin-session", "workspace": "wsA", "params": {"generate": "full"}},
             ):
@@ -299,6 +314,17 @@ class TestTierGating:
                 assert status == 501, body
                 assert payload["error"] == "tier-b-not-served"
                 assert payload["verb"] == body["verb"]
+
+    def test_cheap_continue_session_fetch_is_tier_a_200_not_501(self) -> None:
+        # Commit 6: continue-session{fetch} is now Tier-A → it reaches invoke() (200), NOT a 501.
+        with running_server(invoke_fn=_ok_stub) as (host, port):
+            status, body = post(
+                host,
+                port,
+                {"verb": "continue-session", "workspace": "wsA", "params": {"action": "fetch"}},
+            )
+        assert status == 200
+        assert body["envelope"]["ok"] is True
 
 
 # --------------------------------------------------------------------------- robustness
@@ -708,3 +734,327 @@ class TestAllowListAndBindConfig:
         assert s_ok == 200
         assert s_no == 403 and b_no["error"] == "workspace-not-served"
         assert seen == ["wsA"]
+
+
+# --------------------------------------------------- Commit 6: Tier-B generate-next submit + poll
+#
+# These drive the REAL contained store (a tmp `workspaces/wsA/`) but inject the LIGHT seams the task
+# sanctions — the SPAWNER (no real subprocess) and the PLAN-TARGETS resolver (no heavy plan setup) —
+# plus a settable clock to drive the startup-grace / re-drivable windows. The REAL detached spawn +
+# real plan resolution are the Commit-I integration harness.
+
+#: A generic §7.4 artifact id the plan-targets stub hands back as the predictable target.
+ART_ID = "a-0000000000000001"
+
+
+def _valid_token(workspace: str = "wsA") -> dict:
+    """A minimal VALID wire token (decodes against `workspace`); the injected plan-targets stub
+    ignores its inputs, so an empty-input token is enough for the submit tests."""
+    return token_mod.encode(token_mod.mint(workspace, PLAN_HASH))
+
+
+def _fixed_targets(ids: list[str]):  # noqa: ANN202
+    """A `plan_targets_fn` seam stub returning FIXED predictable ids (no live plan resolution)."""
+
+    def resolver(root, workspace, decoded, params):  # noqa: ANN001, ANN202
+        return list(ids)
+
+    return resolver
+
+
+def _spawn_recorder(calls: list):  # noqa: ANN202
+    """A `spawn_fn` seam stub recording each (spec, spawn_dir) — proves the detach happened once."""
+
+    def spawn(spec, *, spawn_dir):  # noqa: ANN001, ANN202
+        calls.append((spec, spawn_dir))
+        return None
+
+    return spawn
+
+
+def _fetch_stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN202
+    """An injected invoke() that SERVES fetch-by-id — the DONE path fetches the materialized
+    output via the existing handler; anything else is a trivial ok envelope."""
+    if verb == "fetch-by-id":
+        return {
+            "envelope": {"ok": True, "verb": verb, "workspace": workspace},
+            "results": [
+                {
+                    "item": params.get("id"),
+                    "status": "ok",
+                    "context": {"path": f"output/{params.get('id')}"},
+                }
+            ],
+        }
+    return {"envelope": {"ok": True, "verb": verb, "workspace": workspace}, "results": []}
+
+
+class _FakeClock:
+    """A settable clock for driving the startup-grace / re-drivable windows deterministically."""
+
+    def __init__(self, now: float = 1_000_000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def poll(host, port, *, workspace, key, target_ids, auth=TEST_SECRET):  # noqa: ANN001, ANN201
+    """POST /poll {workspace, key, target_ids} → (status, json)."""
+    return post(
+        host,
+        port,
+        {"workspace": workspace, "key": key, "target_ids": target_ids},
+        path=http_shim.POLL_PATH,
+        auth=auth,
+    )
+
+
+def _submit_gen_next(host, port, *, workspace="wsA", idem="exec-1", token=None):  # noqa: ANN001, ANN201
+    """POST a generate-next submit (a valid token by default)."""
+    return post(
+        host,
+        port,
+        {
+            "verb": "continue-session",
+            "workspace": workspace,
+            "params": {"action": "generate-next", "idempotency_key": idem},
+            "token": token if token is not None else _valid_token(workspace),
+        },
+    )
+
+
+class TestTierBSubmit:
+    def test_submit_202_key_derivation_and_single_spawn_injected_targets(self, root: str) -> None:
+        # KEY-DERIVATION + spawn wiring (uses the INJECTED `_fixed_targets` seam — NOT a selection
+        # proof; the EXACT batch selection is proven by
+        # `test_session.py::test_plan_next_batch_ids_equals_generate_next_batch`). A generate-next
+        # submit → 202 + the target-ids the ack echoes; JobStore.submit wrote the run-family record;
+        # the injected spawner detached exactly once with the key derived from the target set.
+        from pipeline.jobs import job_key
+
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port)
+        assert status == 202
+        assert body["status"] == "accepted"  # N-3: NOT an invoke() envelope
+        assert body["job"]["target_ids"] == [ART_ID]
+        expected_key = job_key([ART_ID], "exec-1")
+        assert body["job"]["key"] == expected_key
+        assert len(calls) == 1  # the runner was detached exactly once
+        spec, spawn_dir = calls[0]
+        assert spec.key == expected_key and spec.verb == "continue-session"
+        assert Path(spawn_dir) == Path(root) / "workspaces" / "wsA" / "jobs"
+        # JobStore.submit wrote the lossy record keyed by the run-family id.
+        assert (Path(root) / "workspaces" / "wsA" / "jobs" / expected_key).exists()
+
+    def test_double_submit_same_key_spawns_once(self, root: str) -> None:
+        # Two identical submits (same idempotency_key) collide on ONE job: both 202 with the SAME
+        # key; the SECOND sees the in-flight record → NO second spawn (N-2).
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+        ) as (host, port):
+            s1, b1 = _submit_gen_next(host, port)
+            s2, b2 = _submit_gen_next(host, port)
+        assert s1 == 202 and s2 == 202
+        assert b1["job"]["key"] == b2["job"]["key"]
+        assert len(calls) == 1  # exactly one detach across both submits
+
+    def test_missing_idempotency_key_is_400(self, root: str) -> None:
+        # A Tier-B generate-next submit REQUIRES an idempotency_key — missing → 400 (before any
+        # store access / spawn); the injected invoke()/spawner are never reached.
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+        ) as (host, port):
+            status, body = post(
+                host,
+                port,
+                {
+                    "verb": "continue-session",
+                    "workspace": "wsA",
+                    "params": {"action": "generate-next"},
+                    "token": _valid_token(),
+                },
+            )
+        assert status == 400
+        assert body["error"] == "idempotency-key-required"
+        assert not calls
+
+    def test_empty_batch_is_200_no_spawn(self, root: str) -> None:
+        # When the predictable-id set is EMPTY (all consumed / plan-stale) there is nothing to
+        # generate — a 200 no-op, never a job keyed on an empty set, never a spawn.
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([]),
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port)
+        assert status == 200 and body["status"] == "empty"
+        assert not calls
+
+    def test_invalid_token_submit_is_422(self, root: str) -> None:
+        # A tampered session cursor is a §20 domain error → 422 (NEVER 401).
+        calls: list = []
+        wire = _valid_token()
+        wire["plan_hash"] = "0" * 64  # break the digest → invalid-token
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port, token=wire)
+        assert status == 422 and body["error"] == "invalid-token"
+        assert not calls
+
+    def test_escaping_workspace_is_403_via_delegated_gap9(self, root: str) -> None:
+        # A Tier-B submit for an ESCAPING workspace name (allow-list unset) is refused 403 — the
+        # shim DELEGATES the GAP-9 resolve-and-contain (never re-implements it) and never spawns.
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+        ) as (host, port):
+            status, body = _submit_gen_next(
+                host, port, workspace="../victim", token=_valid_token("../victim")
+            )
+        assert status == 403 and body["error"] == "isolation-violation"
+        assert not calls
+
+
+class TestTierBPoll:
+    def _submit(self, host, port, clock):  # noqa: ANN001, ANN202
+        _s, ack = _submit_gen_next(host, port)
+        return ack["job"]["key"]
+
+    def test_poll_running_before_then_done_with_fetch(self, root: str) -> None:
+        # Poll BEFORE materialization (within the startup grace) → 202 running; after the output
+        # exists → 200 done + the fetched output (via the existing fetch-by-id handler).
+        from pipeline.store import WorkspaceStore
+
+        clock = _FakeClock()
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder([]),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=clock,
+        ) as (host, port):
+            key = self._submit(host, port, clock)
+            s_run, b_run = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+            assert s_run == 202 and b_run["status"] == "running"
+            # materialize the output → the §22.7 DONE authority flips
+            store = WorkspaceStore(Path(root) / "workspaces" / "wsA")
+            store.output_path(ART_ID).write_text("done-bytes", encoding="utf-8")
+            s_done, b_done = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+        assert s_done == 200 and b_done["status"] == "done"
+        assert b_done["results"] and b_done["results"][0]["item"] == ART_ID
+
+    def test_poll_stored_terminal_is_failed_with_reason(self, root: str) -> None:
+        # A stored (nondeterministic, timeout-class) terminal → the FAILED status + reason; the
+        # timeout-class `re-drivable` code maps to 504 (N-4) and is re-drivable.
+        from pipeline.jobs import JobStore
+        from pipeline.opdefaults import STARTUP_GRACE_SECONDS
+
+        clock = _FakeClock()
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder([]),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=clock,
+        ) as (host, port):
+            key = self._submit(host, port, clock)
+            JobStore(Path(root) / "workspaces" / "wsA" / "jobs").record_terminal(
+                key,
+                code="re-drivable",
+                envelope={"ok": False, "code": "re-drivable", "message": "transport timeout"},
+                results=[],
+            )
+            clock.now += STARTUP_GRACE_SECONDS + 5  # past the grace so the terminal is not masked
+            status, body = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+        assert status == 504  # timeout-class → re-drivable 504 (N-4)
+        assert body["status"] == "failed" and body["code"] == "re-drivable"
+        assert body["redrivable"] is True
+        assert body["terminal"]["envelope"]["message"] == "transport timeout"
+
+    def test_poll_redrivable_when_grace_expired_and_no_work(self, root: str) -> None:
+        # Past the startup grace with no output, no live claim, and no stored terminal → 409
+        # re-drivable (re-submit with the same idempotency_key) — never a false DONE, never a wedge.
+        from pipeline.opdefaults import STARTUP_GRACE_SECONDS
+
+        clock = _FakeClock()
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder([]),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=clock,
+        ) as (host, port):
+            key = self._submit(host, port, clock)
+            clock.now += STARTUP_GRACE_SECONDS + 5
+            status, body = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+        assert status == 409
+        assert body["status"] == "re-drivable" and body["redrivable"] is True
+
+    def test_poll_invalid_key_is_400(self, root: str) -> None:
+        # A poll `key` that is not a run-family id is a clean 400 (the §22.7 keying pin).
+        with running_server(root=root, invoke_fn=_never_invoked) as (host, port):
+            status, _ = poll(
+                host, port, workspace="wsA", key="a-0000000000000000", target_ids=[ART_ID]
+            )
+        assert status == 400
+
+    def test_poll_unauthenticated_is_401(self, root: str) -> None:
+        # N-6: a poll carries the SAME auth gate as the submit — no secret → 401 (a poll reads
+        # client job/deliverable data).
+        with running_server(root=root, invoke_fn=_never_invoked) as (host, port):
+            status, body = poll(
+                host,
+                port,
+                workspace="wsA",
+                key="r-0000000000000000",
+                target_ids=[ART_ID],
+                auth=None,
+            )
+        assert status == 401 and body["error"] == "unauthorized"
+
+    def test_poll_non_allowlisted_workspace_is_403(self, root: str) -> None:
+        # N-6: a cross-workspace / non-allow-listed poll is refused 403 — the SAME allow-list gate
+        # as the submit, BEFORE any store access (invoke()/store never reached).
+        with running_server(
+            root=root, invoke_fn=_never_invoked, allowed_workspaces=frozenset({"wsA"})
+        ) as (host, port):
+            status, body = poll(
+                host, port, workspace="wsB", key="r-0000000000000000", target_ids=[ART_ID]
+            )
+        assert status == 403 and body["error"] == "workspace-not-served"
+
+    def test_poll_escaping_workspace_is_403_via_delegated_gap9(self, root: str) -> None:
+        # N-6: an ESCAPING workspace name on the POLL door (allow-list unset) is refused 403 — the
+        # SAME delegated GAP-9 resolve-and-contain the submit uses (`_open_workspace`), exercising
+        # the poll's containment catch (the submit path has its own 403 test).
+        with running_server(root=root, invoke_fn=_never_invoked) as (host, port):
+            status, body = poll(
+                host, port, workspace="../victim", key="r-0000000000000000", target_ids=[ART_ID]
+            )
+        assert status == 403 and body["error"] == "isolation-violation"

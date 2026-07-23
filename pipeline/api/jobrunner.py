@@ -221,9 +221,13 @@ def spawn_runner(
 
     Returns IMMEDIATELY (never waits) — the job RECORD was already written by `JobStore.submit`
     BEFORE this call (record → spawn → claim), so a spawn FAILURE here is exactly the H2 stale-
-    record case: the record stays stealable and the next poll/submit re-spawns. On a `Popen`
-    failure the transient spawn file is cleaned up and the error re-raised (the caller records the
-    spawn failure); the durable record is untouched.
+    record case: the record stays stealable and the next poll/submit re-spawns. On a `Popen` OSError
+    the transient spawn file is cleaned up and the OSError is RE-RAISED to the caller; the durable
+    job record is left UNTOUCHED (never `record_terminal`-ed). Recovery is the H2 self-heal, not an
+    explicit terminal: the un-spawned record simply lapses past `spawn_expiry` with no live claim /
+    no output, so the next poll resolves it re-drivable and the next same-key submit steals-and-
+    respawns it. (The DR-1 shim caller therefore lets the OSError propagate — a 500 to the client —
+    and relies on that H2 re-drive; it deliberately writes no terminal for a spawn failure.)
     """
     spawn_dir = Path(spawn_dir)
     spawn_dir.mkdir(parents=True, exist_ok=True)
@@ -234,7 +238,9 @@ def spawn_runner(
         child = popen(argv, start_new_session=True, close_fds=True)
     except OSError:
         # A spawn failure after the record write → the H2 stale-record case. Drop the orphan spec
-        # file (the durable job record is NOT ours to touch) and re-raise so the caller records it.
+        # file (the durable job record is NOT ours to touch) and RE-RAISE. The caller writes NO
+        # terminal — the un-spawned record self-heals via the H2 re-drive (poll → re-drivable →
+        # same-key re-submit steals-and-respawns).
         spawn_file.unlink(missing_ok=True)
         raise
     return SpawnHandle(spawn_file=spawn_file, pid=getattr(child, "pid", None), handle=child)
