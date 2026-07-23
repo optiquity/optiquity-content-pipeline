@@ -2706,6 +2706,8 @@ workspaces/<client>/                    # instance-side only (gitignored in publ
   folios/<folio-id>/members/<artifact-id>   # marker-per-member records (§13.3)
   artifacts/ deliverables/              #   IR-canonical/fitted/AST/bytes + render-bindings (§18)
   claims/                               #   the claim/lease table (§22.3)
+  jobs/                                 #   DR-1 async job/idempotency records — §22.7-class
+                                        #     lossy bookkeeping, run-id keys, gitignored (§27.3)
   select/ output/                       #   selection inputs + outputs (output/manifests/, §21.5)
 instance/profile.md                     # instance goals/audiences (gitignored in public)
 instance/ops/                           # instance-scoped stores (§22.5): presence-lease registry,
@@ -2715,9 +2717,9 @@ scripts/                                # incl. migrate.sh (§11.6), guards (§1
 ```
 
 The **mechanism-public / data-instance split** (§10) governs every new store: the claim table,
-presence-lease registry, and telemetry log are framework *mechanisms* whose *data* lives
-instance-side, gitignored in public. Registry directories are mixed-provenance (§10); instance
-entries carry the `x-` prefix (§11.4).
+presence-lease registry, telemetry log, and the DR-1 `jobs/` record store are framework
+*mechanisms* whose *data* lives instance-side, gitignored in public. Registry directories are
+mixed-provenance (§10); instance entries carry the `x-` prefix (§11.4).
 
 ## §24 Tracking & the SSOT
 
@@ -2851,6 +2853,15 @@ re-registers it with reasons. The register never sits without a clock.
   Any future GC design must honor id-addressed retrieval for referenced ids, and should treat
   superseded *serialize* generations as its primary case — a tool upgrade re-mints broadly on
   next render.
+- **DR-1 `jobs/` retention/GC** (registered at the DR-1 build) — the async subsystem's
+  workspace-scoped `jobs/` store (§23) holds §22.7-class LOSSY job/idempotency records, keyed by
+  a NON-artifact run-family id (a digest of the sorted target-id set + `idempotency_key`) and
+  NEVER an output route (`output_path`/`is_done` refuse every non-artifact family with
+  `StorePathError`). v1 is **retain-all**, like the claim table and the non-current-fit stores
+  above; time-based GC of terminal/abandoned records is registered and deferred. Any future
+  policy must honor the lossy discipline — a missing record resolves re-drivable, never DONE
+  (§22.7). The subdir + this keying convention land at DR-1 Commit 2; the `JobStore` record
+  logic and steal lifecycle at Commit 3.
 - **Stale-fit sweep** (registered at FR6) — auto/batch re-reconcile ("re-fit everything stale on
   platform P") is caller-composable via `list deliverables {platform, fit_current: false}` + a
   force loop (§21.3); a system-side batch convenience would still have to be an explicit caller

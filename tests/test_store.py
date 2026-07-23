@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 import pipeline.store as store_module
-from pipeline.ids import IdError
+from pipeline.ids import IdError, parse_id
 from pipeline.store import (
     STORE_SUBDIRS,
     TEMP_PREFIX,
@@ -53,6 +53,16 @@ ART_PART = "a-9f3c07d21b44e8aa~slides"
 FOLIO = "f-0123456789ab"
 RUN = "r-9f3c07d21b44e8aa"
 
+# A DR-1 job record's key (§22.7-class lossy bookkeeping): a run-family id — NOT an artifact id
+# — whose root is the digest of the sorted target-id set + idempotency_key (the keying helper is
+# DR-1 Commit 3's JobStore; Commit 2 lands only the subdir + this convention). It can never
+# route through `output_path`/`is_done` — the boundary pin in TestJobsBoundary below.
+JOB_KEY = RUN  # a run-family job key: parses, family != artifact ⇒ StorePathError at output_path
+# A bare-digest filename (a plain content hash, no §7.4 family prefix): not a valid id at all, so
+# `parse_id` refuses it with IdError before any family check — proof the boundary holds for
+# EITHER plausible Commit-3 encoding, run-id or bare digest.
+JOB_BARE_DIGEST = "9f3c07d21b44e8aa9f3c07d21b44e8aa"
+
 _SPAWN = multiprocessing.get_context("spawn")
 
 
@@ -67,7 +77,7 @@ def ws(tmp_path):
 
 
 class TestLayout:
-    def test_ensure_layout_creates_the_seven_stores_plus_manifests(self, ws):
+    def test_ensure_layout_creates_every_store_plus_manifests(self, ws):
         created = ws.ensure_layout()
         for name in STORE_SUBDIRS:
             assert (ws.root / name).is_dir(), name
@@ -77,6 +87,8 @@ class TestLayout:
         }
 
     def test_subdir_set_is_exactly_the_section_23_tree(self):
+        # `jobs` is the DR-1 async-coordination subdir, APPENDED (additive; see
+        # test_store_subdirs_is_additive_over_the_original_seven) — identity-inert.
         assert STORE_SUBDIRS == (
             "artifacts",
             "deliverables",
@@ -85,7 +97,41 @@ class TestLayout:
             "reviews",
             "select",
             "output",
+            "jobs",
         )
+
+    def test_store_subdirs_is_additive_over_the_original_seven(self):
+        # DR-1 Commit 2: adding `jobs` must be PURELY ADDITIVE — every original §23 subdir keeps
+        # its exact position (byte-identical prefix) and `jobs` is the appended tail. This is the
+        # tuple half of the identity-inertness claim; the routing half is TestJobsBoundary.
+        original_seven = (
+            "artifacts",
+            "deliverables",
+            "claims",
+            "folios",
+            "reviews",
+            "select",
+            "output",
+        )
+        assert STORE_SUBDIRS[: len(original_seven)] == original_seven  # prefix unchanged
+        assert STORE_SUBDIRS[len(original_seven) :] == ("jobs",)  # jobs appended, nothing else
+
+    def test_jobs_dir_created_on_demand(self, tmp_path):
+        # DR-1 Commit 2: `jobs_dir` is created on first access, like every other store, and
+        # touches nothing else (construction is inert; only what was asked for appears).
+        ws = WorkspaceStore(tmp_path / "lazy-jobs")
+        assert not (tmp_path / "lazy-jobs").exists()  # construction touches nothing
+        jobs = ws.jobs_dir
+        assert jobs == ws.root / "jobs"
+        assert jobs.is_dir()
+        assert not (tmp_path / "lazy-jobs" / "artifacts").exists()  # only jobs/ was asked for
+
+    def test_jobs_dir_materialized_by_ensure_layout(self, ws):
+        # DR-1 Commit 2: `ensure_layout()` materializes `jobs/` (it iterates STORE_SUBDIRS) and
+        # returns it among the created directories.
+        created = ws.ensure_layout()
+        assert (ws.root / "jobs").is_dir()
+        assert ws.jobs_dir in set(created)
 
     def test_ensure_layout_is_idempotent(self, ws):
         assert ws.ensure_layout() == ws.ensure_layout()
@@ -191,6 +237,42 @@ class TestPaths:
 
     def test_manifests_dir_lives_under_output(self, ws):
         assert ws.manifests_dir == ws.root / "output" / "manifests"
+
+
+# ---------------------------------------------------------------------------
+# DR-1 jobs boundary (§22.7 pin): a job key can NEVER route through output_path.
+# ---------------------------------------------------------------------------
+
+
+class TestJobsBoundary:
+    """The load-bearing DR-1 Commit 2 pin: a job record is keyed by a NON-artifact id and can
+    never masquerade as an output. `output_path`/`is_done` route by id FAMILY and refuse every
+    non-artifact family, so no job key can reach the artifact/deliverable path (§22.7)."""
+
+    def test_output_path_refuses_a_run_family_job_key(self, ws):
+        # THE boundary pin: a run-family job key (family != artifact) is refused with the typed
+        # StorePathError — a job record can never be an output route.
+        with pytest.raises(StorePathError, match="invalid-store-path"):
+            ws.output_path(JOB_KEY)
+
+    def test_is_done_refuses_a_run_family_job_key(self, ws):
+        # is_done delegates to output_path, so the same refusal holds: a job key can never be
+        # tested for output existence (the §22.7 authority reads artifact ids only).
+        with pytest.raises(StorePathError, match="invalid-store-path"):
+            is_done(ws, JOB_KEY)
+
+    def test_a_bare_digest_job_filename_also_never_routes(self, ws):
+        # Belt-and-suspenders: even if Commit 3 keyed jobs by a bare content digest (no family
+        # prefix), output_path still refuses it — parse_id raises IdError before any family
+        # check. The invariant "a job filename never routes through output_path" holds for
+        # EITHER plausible encoding (run-id or bare digest).
+        with pytest.raises(IdError):
+            ws.output_path(JOB_BARE_DIGEST)
+
+    def test_a_job_key_is_a_run_not_an_artifact_id(self):
+        # The identity half of the pin: the documented job key parses as a run id, NOT an
+        # artifact id, so it can never collide with an artifact/fitted/deliverable output name.
+        assert parse_id(JOB_KEY).family == "run"
 
 
 # ---------------------------------------------------------------------------

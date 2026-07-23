@@ -22,6 +22,26 @@ module never names or creates any instance workspace itself):
     <root>/reviews/         id-addressed review records (§19; PA-9d)
     <root>/select/          selection inputs (§23; PA-15)
     <root>/output/          outputs, incl. output/manifests/ (§21.5)
+    <root>/jobs/<run-id>    DR-1 async job/idempotency records — §22.7-class LOSSY
+                            bookkeeping, keyed by a NON-artifact run-family id (never an
+                            output route; see "The DR-1 jobs/ boundary" below)
+
+**The DR-1 `jobs/` boundary** (async subsystem; the subdir + this keying convention land here,
+the `JobStore` record logic lands in DR-1 Commit 3): a `jobs/` record is §22.7-class LOSSY
+bookkeeping — a lagging projection consulted for NOTHING that gates correctness (DONE is output
+existence, §22.7; RUNNING is the id-keyed claim/lease, §22.3). Two invariants pin it:
+
+- **A job record is keyed by a NON-artifact id** — a run-family `r-<hex16>` whose root is the
+  digest of the job's sorted target-id set + `idempotency_key` (the keying helper is Commit 3).
+  It is therefore never an artifact/fitted/deliverable id.
+- **A job key can NEVER route through `output_path`/`is_done`.** Those route by id FAMILY and
+  refuse every non-artifact family with `StorePathError` (below), so a job record can never
+  masquerade as an output nor be mistaken for materialized work; even a bare-digest filename
+  would be refused (`IdError`). The two §22.7 authorities (output existence + the claim/lease
+  table) never read `jobs/`.
+
+Its DATA is `provenance: instance`, gitignored (`workspaces/*/jobs/`, §10/§23); retention/GC is
+registered as deferred (§27.3), like the claim table and the non-current-fit stores.
 
 The G1 primitives (all proven on the real APFS volume — gate G1 PASS, 6/6):
 
@@ -84,7 +104,10 @@ __all__ = [
     "write_replace",
 ]
 
-#: §23: the per-client stores created on demand under `workspaces/<client>/`.
+#: §23: the per-client stores created on demand under `workspaces/<client>/`. `jobs/` (DR-1)
+#: is an ADDITIVE async-coordination subdir consumed ONLY by `ensure_layout` here — it is in
+#: NO id/preimage/digest and `output_path` routes by id family (never this tuple), so appending
+#: it is identity-inert (no `schema_version`/`ir_version` bump).
 STORE_SUBDIRS = (
     "artifacts",
     "deliverables",
@@ -93,6 +116,7 @@ STORE_SUBDIRS = (
     "reviews",
     "select",
     "output",
+    "jobs",
 )
 
 #: Staged-temp filenames start with this. A leading dot can never collide with an id
@@ -202,6 +226,19 @@ class WorkspaceStore:
         """Manifest emissions: `output/manifests/` (§21.5, §23)."""
         return self._dir("output", "manifests")
 
+    @property
+    def jobs_dir(self) -> Path:
+        """DR-1 async job/idempotency records — §22.7-class LOSSY bookkeeping (see the
+        module docstring's "DR-1 `jobs/` boundary" note).
+
+        Keyed by a NON-artifact id — a run-family `r-<hex16>` digesting the sorted target-id
+        set + `idempotency_key` (the keying helper is DR-1 Commit 3's `JobStore`). A job key
+        NEVER routes through `output_path`/`is_done`: those refuse every non-artifact family
+        with `StorePathError`, so a job record can never be mistaken for an output. DATA is
+        `provenance: instance`, gitignored (`workspaces/*/jobs/`, §10/§23).
+        """
+        return self._dir("jobs")
+
     def ensure_layout(self) -> tuple[Path, ...]:
         """Materialize the full §23 tree (idempotent); returns the created directories."""
         dirs = tuple(self._dir(name) for name in STORE_SUBDIRS)
@@ -215,7 +252,8 @@ class WorkspaceStore:
         Routes by the id's level (§18 keys): artifact-/fitted-level records live under
         `artifacts/`, deliverable-level records under `deliverables/`; parts ride their
         owner's level (§7.1). The filename is the id EXACTLY — extension-free names are
-        always valid and authoritative (§7.4). Folio/run ids are not outputs — refused.
+        always valid and authoritative (§7.4). Folio/run ids are not outputs — refused (a
+        DR-1 job key is a run-family id, so a job record can never route here — §22.7 pin).
         """
         parsed = parse_id(id_str)
         if parsed.family != "artifact":

@@ -29,8 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARD = REPO_ROOT / "scripts" / "check-no-content.sh"
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "guard"
 
-#: The six PA-1 leak classes plus the four RV-1/RV-2 template-basename probes:
-#: (fixture tree, expected LEAK label, offending path).
+#: The six PA-1 leak classes, the four RV-1/RV-2 template-basename probes, and the DR-1
+#: async-`jobs/` record (a second workspace-content instance): (fixture tree, expected LEAK
+#: label, offending path).
 LEAK_CASES = [
     ("missing-provenance", "LEAK[missing-provenance]", "topics/fixture-missing-provenance.md"),
     ("provenance-instance", "LEAK[provenance-instance]", "personas/fixture-instance-tagged.md"),
@@ -38,6 +39,13 @@ LEAK_CASES = [
     ("instance-defaults", "LEAK[instance-defaults]", "instance/defaults.yaml"),
     ("instance-ops", "LEAK[instance-ops]", "instance/ops/telemetry.jsonl"),
     ("workspace-content", "LEAK[workspace-content]", "workspaces/acme/defaults.yaml"),
+    # DR-1 Commit 2: a tracked async job record under a client workspace is client data —
+    # caught by the SAME workspace-content class (the path names the client; no exemption).
+    (
+        "workspace-jobs",
+        "LEAK[workspace-content]",
+        "workspaces/acme/jobs/r-0123456789abcdef",
+    ),
     # RV-1: a *.template.* basename must NOT defeat the structural leak classes.
     (
         "template-name-workspace",
@@ -245,6 +253,25 @@ def test_all_mode_scans_untracked_files(tmp_path):
     proc = run_guard("--root", str(root), "--mode", "all")
     assert proc.returncode == 1
     assert "LEAK[workspace-content]" in proc.stdout
+
+
+def test_workspace_jobs_data_is_gitignored_and_a_tracked_leak_is_flagged(tmp_path):
+    """DR-1 Commit 2 — the two-part async-`jobs/` boundary story, proven end to end:
+    (1) job DATA is gitignored (`workspaces/*/jobs/`), so a job record is never tracked in the
+        normal course; (2) IF one were ever force-tracked, the guard's workspace-content class
+        flags it — client isolation holds regardless (CLAUDE.md rules 2/4)."""
+    # (1) the DATA-untracked half: the framework .gitignore carries the jobs rule.
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "workspaces/*/jobs/" in gitignore
+    # (2) the guard half: a planted job record under a client workspace is caught by PATH.
+    root = tmp_path / "jobs-leak"
+    (root / "workspaces" / "acme" / "jobs").mkdir(parents=True)
+    (root / "workspaces" / "acme" / "jobs" / "r-0123456789abcdef").write_text(
+        "synthetic job record - never real client data\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout
+    assert "LEAK[workspace-content] workspaces/acme/jobs/r-0123456789abcdef" in proc.stdout
 
 
 def test_all_mode_scans_symlinks(tmp_path):
