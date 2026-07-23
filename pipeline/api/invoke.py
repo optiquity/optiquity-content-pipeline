@@ -39,6 +39,7 @@ from pipeline.api import token as token_mod
 from pipeline.canonical import canonical_json_str
 from pipeline.ids import IdError, parse_id
 from pipeline.store import WorkspaceStore
+from pipeline.workspace_name import WorkspaceNameError, validate_workspace_name
 
 __all__ = [
     "KNOWN_VERBS",
@@ -302,11 +303,16 @@ def invoke(
 ) -> dict[str, Any]:
     """One synchronous external-actor call (§21.1): `{envelope, results, [token]}`.
 
-    The three whole-invocation GATES run first, each envelope-fatal (§21.7):
+    The whole-invocation GATES run first, each envelope-fatal (§21.7):
     1. **unknown-verb** — `verb` not in `KNOWN_VERBS`;
-    2. **invalid-token** — a supplied `token` fails `token.decode` against `workspace`
+    2. **isolation-violation (workspace root)** — when the store is built from the caller's
+       `workspace` name (`store` not injected), the name must resolve to a CONTAINED direct
+       child of `workspaces/` (`pipeline.workspace_name`); `../other-client`, an absolute
+       path, or a symlink escape would move the very store root Gate 3 checks against, so it
+       is refused BEFORE the store exists (§10/§21.1 — the root sibling of the per-id gate);
+    3. **invalid-token** — a supplied `token` fails `token.decode` against `workspace`
        (malformed/tampered/cross-version/wrong-workspace, §20);
-    3. **isolation-violation** — any params-referenced id does not resolve in `workspace`
+    4. **isolation-violation** — any params-referenced id does not resolve in `workspace`
        (§21.1/§10).
     Past the gates, the verb dispatches to its registered handler; at step 32 the registry is
     empty, so a known verb raises `HandlerNotWired` (honest — never a fake success). A wired
@@ -326,9 +332,28 @@ def invoke(
         )
         return _fatal(verb, workspace, [item], results.CODE_UNKNOWN_VERB, str(item.item))
 
-    ws_store = (
-        store if store is not None else WorkspaceStore(Path(root) / "workspaces" / workspace)
-    )
+    # Workspace-root containment (§10/§21.1): when the store is built from the CALLER-SUPPLIED
+    # name, the name must resolve to a contained direct child of `workspaces/` BEFORE the store
+    # exists — else a `../other-client`, an absolute path, or a symlink escape would MOVE the
+    # store root the isolation gate (Gate 3) validates ids against, so ids would resolve in the
+    # WRONG workspace and pass. A breach is whole-invocation-fatal, `isolation-violation`-class
+    # (the root sibling of the per-id gate). An INJECTED store places nothing from the name.
+    if store is not None:
+        ws_store = store
+    else:
+        try:
+            ws_root = validate_workspace_name(workspace, root)
+        except WorkspaceNameError as exc:
+            item = results.make_result(
+                results.CODE_ISOLATION_VIOLATION,
+                item=str(workspace),
+                context={"workspace": str(workspace), "reason": exc.reason},
+                hint=exc.detail,
+            )
+            return _fatal(
+                verb, str(workspace), [item], results.CODE_ISOLATION_VIOLATION, exc.detail
+            )
+        ws_store = WorkspaceStore(ws_root)
 
     # Gate 2 — token decode/verification against the invoked workspace (§20).
     decoded: token_mod.Token | None = None

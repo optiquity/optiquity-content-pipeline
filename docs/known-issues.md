@@ -852,6 +852,44 @@ The build's HARD GATES were closed inline during the build (gate G2 at steps 37�
 generation-code gate at step 39); those are recorded in `state.md` and the commit history. The
 entries below are post-build defects, starting with the **`render-output-fix`** series (2026-07-16).
 
+### GAP-9 — Cross-client isolation was enforced per-id but NOT at the workspace store ROOT — RESOLVED (2026-07-23)
+- **Severity:** High (isolation is the framework's core security invariant — CLAUDE.md rule 2, §10).
+- **Symptom:** the §21.1 isolation gate validates every referenced id against a workspace store built
+  as `WorkspaceStore(<root>/workspaces/<workspace>)` — but `<workspace>` came straight from the caller
+  with **no validation**. A name like `workspace="../other-client"`, an absolute path (`"/etc"`), or a
+  `workspaces/<name>` symlink pointing outside would **move the store root itself**, so a referenced id
+  would resolve inside the WRONG workspace and **pass** the per-id gate. The invariant "isolation is
+  enforced by the API, not by trust" (§21.1) was therefore FALSE for the workspace root. (Not
+  exploitable in v1 — both live doors, the CLI and programmatic `invoke()`, are driven with trusted
+  names — which is exactly why the fix belongs in the framework, not in a caller.)
+- **Root cause:** `pipeline/api/invoke.py` built the store root directly from the raw `workspace` string
+  and `pipeline/store.py` trusts the caller for placement (it validates id-derived FILENAMES via
+  `parse_id`, never the workspace directory NAME); no workspace-name validator existed anywhere in
+  `pipeline/` or `scripts/`. The per-id gate is only as strong as the store root it checks against.
+- **Fix (resolve-and-contain):** a new shared, reusable guard `pipeline/workspace_name.py`
+  (`validate_workspace_name`) is called at the store-root construction site in `invoke.py` (the sole
+  untrusted door) BEFORE any store access, and raises the whole-invocation-fatal `isolation-violation`
+  gate (`envelope.ok=False`) on a breach — the root sibling of the existing per-id gate. Two
+  complementary checks: **(1) PRIMARY resolve-and-contain** — the resolved candidate root must be a
+  DIRECT CHILD of the resolved `workspaces/` (`candidate.resolve().parent == base.resolve()`), which
+  deterministically catches `..`, absolute paths, AND symlink escapes and is existence-independent (a
+  not-yet-created workspace still validates); **(2) SECONDARY hygiene** — the name must be a single safe
+  path segment (charset DERIVED from the whole existing corpus so `mvp-demo` / `optiquitytrader` /
+  `workspace.template` — interior dot — and every generic test label still pass; empty, `/`, a bare
+  `.`/`..`, and a leading `-` are refused). Behavior-neutral: a valid name yields the byte-identical
+  store root, so the corpus and the full suite are unbroken; the store-injection test seam (which places
+  nothing from the name) is untouched. **Not in scope (correctly excluded):** the DR-1 instance
+  ALLOW-LIST — that is the deferred DR-1 shim's POLICY layer, distinct from this framework containment.
+- **Verified:** new `tests/test_workspace_name.py` — the guard accepts every existing valid name
+  (unit + through the door), refuses `../other-client` / `/etc` / `""` / `.` / `..` / `a/b` / `-lead`
+  (typed fatal `isolation-violation`, `envelope.ok=False`), catches a **symlink escape**
+  (`workspaces/evil` → outside) via the resolve step, and an isolation-proof test shows `../victim` (a
+  traversal to a store that genuinely holds the artifact) is now refused at the door before the id can
+  resolve in the wrong workspace. Full suite green (proves no valid workspace broke); `ruff check .`,
+  `scripts/check-no-content.sh`, and `scripts/schema-lint.sh` clean.
+- **Source:** surfaced + verified by the DR-1 architect design pass and ratified by the maintainer as a
+  **standalone** framework fix, independent of DR-1 (2026-07-23).
+
 ### Folder adapter could ground but not compose (commitless + unregistered) — RESOLVED (2026-07-18)
 - **Symptom:** a `folder` source grounded fine but couldn't mint an artifact-id — the folder adapter was
   commitless (`pin_commit → None`) while §7.2 requires exactly one commit per source, so
