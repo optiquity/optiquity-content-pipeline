@@ -42,3 +42,9 @@ workspaces/*/jobs/
 # DATA — CONTENT-FREE (counts/timings only) yet still instance-local, never tracked in the
 # public framework (CLAUDE.md rule 4; check-no-content.sh flags any tracked instance/ops/ file).
 instance/ops/
+
+# DR-1 HTTP shim per-deployment config (Commit 5b): the auth SECRET set + the DoS caps. Framework
+# MECHANISM (pipeline/api/http_shim.py + instance/shim.template.yaml, which SHIPS), instance DATA —
+# the populated file holds the auth secret and is NEVER tracked in the public framework (CLAUDE.md
+# rule 4; check-no-content.sh flags a tracked non-template instance/ file). Only the template ships.
+instance/shim.yaml

@@ -1,4 +1,5 @@
-"""DR-1 Commit 5a tests: the HTTP shim skeleton + `serve` + Tier-A dispatch + N-4 mapping.
+"""DR-1 Commit 5a+5b tests: the HTTP shim skeleton + Tier-A dispatch + N-4 mapping, PLUS the
+Commit-5b security battery (auth gate + rotation set + redaction + the DoS guard).
 
 The server is driven in-process on `127.0.0.1:0` (an ephemeral port, real socket) so every test
 is hermetic + fast — no live subscription, no network. Two dispatch seams are exercised:
@@ -8,13 +9,17 @@ is hermetic + fast — no live subscription, no network. Two dispatch seams are 
 * an INJECTED `invoke_fn` stub — used to pin the pure serialization / status-mapping / Tier-gating
   behavior crisply and to prove the shim adds no business logic.
 
-All fixtures are obviously generic (`wsA`, §7.4 literal ids); no instance content.
+Auth is MANDATORY as of Commit 5b (fail-closed), so the harness (`running_server` + `post`) carries
+a default test secret + `Authorization: Bearer` header; the security tests override `secrets`/`auth`
+to drive the failure paths. All fixtures are obviously generic (`wsA`, §7.4 literal ids); no
+instance content.
 """
 
 from __future__ import annotations
 
 import http.client
 import json
+import socket
 import subprocess
 import threading
 from collections.abc import Iterator
@@ -32,6 +37,10 @@ PLAN_HASH = "d3adb33fd3adb33fd3adb33fd3adb33fd3adb33fd3adb33fd3adb33fd3adb33f0"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: The default auth secret the harness configures + presents (Commit 5b: auth is mandatory). An
+#: obvious non-real placeholder; the security tests below drive the wrong/absent/rotation paths.
+TEST_SECRET = "shim-test-secret-do-not-ship"
+
 
 # --------------------------------------------------------------------------- fixtures/harness
 
@@ -48,9 +57,25 @@ def _clean_registry() -> Iterator[None]:
 
 
 @contextmanager
-def running_server(*, invoke_fn=invoke, root: str = ".") -> Iterator[tuple[str, int]]:
-    """Start the shim on an ephemeral loopback port in a daemon thread; yield (host, port)."""
-    server = http_shim.make_server("127.0.0.1", 0, invoke_fn=invoke_fn, root=root)
+def running_server(
+    *,
+    invoke_fn=invoke,
+    root: str = ".",
+    secrets: frozenset[str] = frozenset({TEST_SECRET}),
+    max_body_bytes: int = http_shim.DEFAULT_MAX_BODY_BYTES,
+    socket_timeout: float = http_shim.DEFAULT_SOCKET_TIMEOUT_SECONDS,
+) -> Iterator[tuple[str, int]]:
+    """Start the shim on an ephemeral loopback port in a daemon thread; yield (host, port). A
+    non-empty `secrets` set is required (fail-closed); the harness defaults it to a test secret."""
+    server = http_shim.make_server(
+        "127.0.0.1",
+        0,
+        invoke_fn=invoke_fn,
+        root=root,
+        secrets=secrets,
+        max_body_bytes=max_body_bytes,
+        socket_timeout=socket_timeout,
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -63,9 +88,18 @@ def running_server(*, invoke_fn=invoke, root: str = ".") -> Iterator[tuple[str, 
 
 
 def post(
-    host: str, port: int, body: object, *, path: str = http_shim.INVOKE_PATH, method: str = "POST"
+    host: str,
+    port: int,
+    body: object,
+    *,
+    path: str = http_shim.INVOKE_PATH,
+    method: str = "POST",
+    auth: str | None = TEST_SECRET,
 ) -> tuple[int, dict]:
-    """POST a body (a dict → JSON, or raw bytes/str passed through) and return (status, json)."""
+    """POST a body (a dict → JSON, or raw bytes/str passed through) and return (status, json).
+
+    `auth` is sent as `Authorization: Bearer <auth>` (the default is a valid secret); pass
+    `auth=None` for the no-auth path or a wrong string for the bad-auth path."""
     conn = http.client.HTTPConnection(host, port, timeout=5)
     if isinstance(body, (bytes, bytearray)):
         raw: bytes = bytes(body)
@@ -73,8 +107,11 @@ def post(
         raw = body.encode("utf-8")
     else:
         raw = json.dumps(body).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if auth is not None:
+        headers["Authorization"] = f"Bearer {auth}"
     try:
-        conn.request(method, path, body=raw, headers={"Content-Type": "application/json"})
+        conn.request(method, path, body=raw, headers=headers)
         resp = conn.getresponse()
         status = resp.status
         data = resp.read()
@@ -82,6 +119,36 @@ def post(
         conn.close()
     parsed = json.loads(data) if data else {}
     return status, parsed
+
+
+def post_with_declared_length(
+    host: str,
+    port: int,
+    *,
+    declared_length: int,
+    actual_body: bytes = b"",
+    auth: str | None = TEST_SECRET,
+) -> int:
+    """POST with a Content-Length header that DECLARES `declared_length` while sending only
+    `actual_body` (default: none). Proves the DoS cap acts on the DECLARED length BEFORE reading
+    the body — an attacker who claims a huge length is refused without the body being read. Returns
+    the HTTP status."""
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        conn.putrequest("POST", http_shim.INVOKE_PATH, skip_host=False, skip_accept_encoding=True)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(declared_length))
+        if auth is not None:
+            conn.putheader("Authorization", f"Bearer {auth}")
+        conn.endheaders()
+        if actual_body:
+            conn.send(actual_body)
+        resp = conn.getresponse()
+        status = resp.status
+        resp.read()
+    finally:
+        conn.close()
+    return status
 
 
 @pytest.fixture()
@@ -287,3 +354,179 @@ class TestServeWiring:
         assert result.returncode == 0, result.stderr
         assert "pipeline serve" in result.stdout
         assert "--host" in result.stdout and "--port" in result.stdout
+
+
+# --------------------------------------------------------------------------- Commit 5b: auth
+
+
+def _ok_stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN202
+    """A minimal injected `invoke` that returns a valid ok envelope → 200 on a served request."""
+    return {"envelope": {"ok": True, "verb": verb, "workspace": workspace}, "results": []}
+
+
+def _never_invoked(*a, **k):  # noqa: ANN002, ANN003, ANN202
+    """An injected `invoke` that MUST NOT be reached (proves a request was refused pre-dispatch)."""
+    raise AssertionError("invoke() must not be called: the request should have been refused first")
+
+
+class TestAuthFailClosed:
+    def test_missing_secret_refuses_to_start(self, tmp_path: Path) -> None:
+        # (a) The server REFUSES TO START (loud error) with no secret — never fail-open.
+        # Via make_server (the server-construction guard, before the socket binds):
+        with pytest.raises(http_shim.ShimConfigError):
+            http_shim.make_server("127.0.0.1", 0, invoke_fn=invoke, secrets=frozenset())
+        # Via the config loader (no env, no instance/shim.yaml) — the loud fail-closed message:
+        with pytest.raises(http_shim.ShimConfigError):
+            http_shim.load_shim_config(str(tmp_path), env={})
+
+    def test_malformed_yaml_shim_config_fails_closed_no_traceback(self, tmp_path: Path) -> None:
+        # A YAML SYNTAX error in instance/shim.yaml (distinct from the non-mapping case) is caught
+        # and re-raised as the documented ShimConfigError — never an uncaught ruamel traceback.
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "shim.yaml").write_text(
+            'auth:\n  secrets:\n    - "unterminated\n', encoding="utf-8"  # unterminated quote
+        )
+        with pytest.raises(http_shim.ShimConfigError):
+            http_shim.load_shim_config(str(tmp_path), env={})
+        # main() surfaces it as a clean fail-closed exit (non-zero) with NO traceback escaping.
+        rc = http_shim.main(["--root", str(tmp_path), "--port", "0"])
+        assert rc == 2
+
+    def test_config_loader_reads_env_and_file_union(self, tmp_path: Path) -> None:
+        # The rotation set is a UNION of the env secret(s) and instance/shim.yaml auth.secrets;
+        # the DoS caps come from the file. Proves the config source + precedence (no real secret).
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "shim.yaml").write_text(
+            "auth:\n  secrets:\n    - file-secret-a\n    - file-secret-b\n"
+            "limits:\n  max_body_bytes: 2048\n  socket_timeout_seconds: 7\n",
+            encoding="utf-8",
+        )
+        cfg = http_shim.load_shim_config(
+            str(tmp_path),
+            env={"OPTIQUITY_SHIM_SECRET": "env-secret", "OPTIQUITY_SHIM_SECRETS": "rot-1,rot-2"},
+        )
+        assert cfg.secrets == frozenset(
+            {"file-secret-a", "file-secret-b", "env-secret", "rot-1", "rot-2"}
+        )
+        assert cfg.max_body_bytes == 2048
+        assert cfg.socket_timeout_seconds == 7.0
+
+
+class TestAuthGate:
+    def test_absent_and_wrong_auth_401_correct_auth_200(self) -> None:
+        # Absent auth → 401; wrong auth → 401; correct auth + a Tier-A verb → 200.
+        with running_server(invoke_fn=_ok_stub) as (host, port):
+            s_absent, b_absent = post(host, port, {"verb": "list", "workspace": "wsA"}, auth=None)
+            s_wrong, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, auth="wrong-secret")
+            s_ok, b_ok = post(host, port, {"verb": "list", "workspace": "wsA"}, auth=TEST_SECRET)
+        assert s_absent == 401 and b_absent["error"] == "unauthorized"
+        assert s_wrong == 401
+        assert s_ok == 200 and b_ok["envelope"]["ok"] is True
+
+    def test_x_api_key_header_also_authenticates(self) -> None:
+        # The X-API-Key header is accepted as an alternative to Authorization: Bearer.
+        with running_server(invoke_fn=_ok_stub) as (host, port):
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            try:
+                conn.request(
+                    "POST",
+                    http_shim.INVOKE_PATH,
+                    body=json.dumps({"verb": "list", "workspace": "wsA"}).encode(),
+                    headers={"Content-Type": "application/json", "X-API-Key": TEST_SECRET},
+                )
+                resp = conn.getresponse()
+                status = resp.status
+                resp.read()
+            finally:
+                conn.close()
+        assert status == 200
+
+    def test_rotation_set_accepts_old_and_new(self) -> None:
+        # With a 2-secret set, BOTH the old and the new secret authenticate (seamless rotation);
+        # any other secret is refused.
+        secrets = frozenset({"old-secret", "new-secret"})
+        with running_server(invoke_fn=_ok_stub, secrets=secrets) as (host, port):
+            s_old, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, auth="old-secret")
+            s_new, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, auth="new-secret")
+            s_other, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, auth="third-secret")
+        assert s_old == 200
+        assert s_new == 200
+        assert s_other == 401
+
+    def test_auth_uses_hmac_compare_digest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The comparison is constant-time: assert hmac.compare_digest is what the gate calls (a
+        # timing test is not required). Spy delegates to the real compare_digest.
+        calls: list[tuple[object, object]] = []
+        real = http_shim.hmac.compare_digest
+
+        def spy(a: object, b: object) -> bool:
+            calls.append((a, b))
+            return real(a, b)
+
+        monkeypatch.setattr(http_shim.hmac, "compare_digest", spy)
+        with running_server(invoke_fn=_ok_stub) as (host, port):
+            post(host, port, {"verb": "list", "workspace": "wsA"}, auth=TEST_SECRET)
+        assert calls, "the auth gate must compare via hmac.compare_digest (constant-time)"
+
+
+class TestRedaction:
+    def test_secret_and_auth_header_never_logged_or_echoed(
+        self, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        # N-7: neither the configured secret nor the presented header value appears in any captured
+        # log output OR in a response body — on the failure path (401) or the success path (200).
+        configured = "CONFIGUREDSECRETMARKER-never-log-9f3a"
+        presented_bad = "PRESENTEDBADTOKEN-never-log-7c21"
+        req = {"verb": "list", "workspace": "wsA"}
+        with running_server(invoke_fn=_ok_stub, secrets=frozenset({configured})) as (host, port):
+            s_bad, b_bad = post(host, port, req, auth=presented_bad)
+            s_ok, b_ok = post(host, port, req, auth=configured)
+        assert s_bad == 401 and s_ok == 200
+        out, err = capfd.readouterr()
+        haystack = out + err + json.dumps(b_bad) + json.dumps(b_ok)
+        assert configured not in haystack
+        assert presented_bad not in haystack
+
+
+class TestDoSGuard:
+    def test_oversized_declared_length_413_before_body_read(self) -> None:
+        # An over-cap DECLARED Content-Length is refused (413) BEFORE the body is read: invoke() is
+        # never reached (the stub would raise → 500) and no body is even sent. 413, not 400/500.
+        with running_server(invoke_fn=_never_invoked, max_body_bytes=256) as (host, port):
+            status = post_with_declared_length(
+                host, port, declared_length=10_000_000, actual_body=b"", auth=TEST_SECRET
+            )
+        assert status == 413
+
+    def test_auth_is_checked_before_the_body_is_consumed(self) -> None:
+        # Auth precedes BOTH the DoS cap and the body read. An unauthenticated oversized request →
+        # 401 (not 413); an unauthenticated garbage body → 401 (not a 400 parse error). invoke()
+        # is never reached in either case.
+        with running_server(invoke_fn=_never_invoked, max_body_bytes=256) as (host, port):
+            s_oversized_noauth = post_with_declared_length(
+                host, port, declared_length=10_000_000, actual_body=b"", auth=None
+            )
+            s_garbage_badauth, b_garbage = post(host, port, b"{ not json", auth="wrong-secret")
+        assert s_oversized_noauth == 401  # auth before the 413 cap and before any body read
+        assert s_garbage_badauth == 401  # auth before the JSON parse path
+        assert b_garbage["error"] == "unauthorized"
+
+    def test_authenticated_malformed_body_is_clean_400(self) -> None:
+        # 5a behaviour preserved: an AUTHENTICATED but malformed body still gets a clean 400.
+        with running_server(invoke_fn=_never_invoked) as (host, port):
+            status, body = post(host, port, b"{ not json", auth=TEST_SECRET)
+        assert status == 400
+        assert body["error"] == "bad-request"
+
+    def test_socket_timeout_drops_a_stalled_client(self) -> None:
+        # Slow-loris guard: a client that sends partial headers and then stalls is dropped by the
+        # server's socket timeout (the connection closes → recv returns b'').
+        with running_server(invoke_fn=_ok_stub, socket_timeout=0.5) as (host, port):
+            sock = socket.create_connection((host, port), timeout=5)
+            try:
+                sock.sendall(b"POST /invoke HTTP/1.1\r\nHost: x\r\n")  # partial: no blank line
+                sock.settimeout(5)
+                data = sock.recv(1024)  # server closes after ~0.5s → EOF
+            finally:
+                sock.close()
+        assert data == b""

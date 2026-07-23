@@ -1,0 +1,48 @@
+# instance/shim.template.yaml — TEMPLATE for the DR-1 HTTP shim's per-deployment config.
+#
+# provenance: framework (this template SHIPS in the public repo — it is the deliverable that
+# documents every knob). The POPULATED file `instance/shim.yaml` is provenance: instance:
+# gitignored (.gitignore: instance/shim.yaml), a named `instance-file` leak class in
+# scripts/check-no-content.sh, and NEVER tracked in the public framework. Following the repo's
+# template convention (shipped templates carry no `provenance:` frontmatter line), the provenance
+# is declared HERE in prose, not as a YAML key. Design authority: docs/design.md §21.9 (amended,
+# DR-1 C-1) + the architect §C-4 auth record + the DoS guard.
+#
+# USAGE (extend-don't-edit, CLAUDE.md rule 5): copy to `instance/shim.yaml` and fill in. NEVER put
+# a real secret in this template and NEVER commit `instance/shim.yaml`. Never edit this template
+# downstream — framework updates flow from upstream.
+#
+# THE AUTH SECRET IS MANDATORY AND FAIL-CLOSED. If NO secret is configured — neither the env var
+# below nor `auth.secrets` here — `pipeline serve` REFUSES TO START; the shim NEVER fails open
+# (never a default/empty accept-all secret). 401 is emitted ONLY on an auth-secret failure; a §20
+# session cursor `invalid-token` stays 422 (the two "token" concepts never collapse).
+#
+# PREFERRED — set the secret via the ENVIRONMENT so it never touches disk:
+#     OPTIQUITY_SHIM_SECRET    a single secret (the common case)
+#     OPTIQUITY_SHIM_SECRETS   a comma-separated SET (rotation: old + new both valid)
+# The env secret(s) AND any `auth.secrets` below are UNIONED into one rotation set; a request
+# authenticates if its `Authorization: Bearer <s>` / `X-API-Key: <s>` header matches ANY member
+# (constant-time compare, hmac.compare_digest). The secret is never logged or echoed in a response.
+
+# --- auth (MANDATORY: at least one secret, here OR via the env var above) --------------------
+# A SET of accepted secrets enables seamless ROTATION: add the new secret, deploy, then drop the
+# old. Generate a strong value, e.g. `openssl rand -hex 32`. Placeholders only below — replace
+# them (and prefer the env var; do not commit real values):
+#
+# auth:
+#   secrets:
+#     - "REPLACE_WITH_A_LONG_RANDOM_STRING"
+#     - "REPLACE_WITH_THE_PREVIOUS_STRING_WHILE_ROTATING"
+
+# --- limits (DoS guard; OPTIONAL — sane defaults shown) --------------------------------------
+# max_body_bytes: an over-cap DECLARED Content-Length is refused (413) BEFORE the body is read;
+#   combined with auth-before-body, an unauthenticated/oversized request never causes a body read.
+# socket_timeout_seconds: a stalled / slow-loris connection is dropped after this many seconds.
+#
+# limits:
+#   max_body_bytes: 1048576          # 1 MiB (default) — a shim request is small JSON.
+#   socket_timeout_seconds: 30       # drop a stalled/slow-loris connection after 30s (default).
+
+# --- bind / workspace allow-list (DR-1 Commit 5c — placeholders land there) ------------------
+# The explicit loopback-bind policy and the served-workspace allow-list are added by a later DR-1
+# commit; this template gains those knobs then. Until then the bind defaults to 127.0.0.1.
