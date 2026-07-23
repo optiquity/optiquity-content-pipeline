@@ -6,7 +6,7 @@
 # scripts/check-no-content.sh, and NEVER tracked in the public framework. Following the repo's
 # template convention (shipped templates carry no `provenance:` frontmatter line), the provenance
 # is declared HERE in prose, not as a YAML key. Design authority: docs/design.md §21.9 (amended,
-# DR-1 C-1) + the architect §C-4 auth record + the DoS guard.
+# DR-1 C-1) + the architect §C-4 auth record + the DoS guard + §C-3 (workspace allow-list / bind).
 #
 # USAGE (extend-don't-edit, CLAUDE.md rule 5): copy to `instance/shim.yaml` and fill in. NEVER put
 # a real secret in this template and NEVER commit `instance/shim.yaml`. Never edit this template
@@ -43,6 +43,30 @@
 #   max_body_bytes: 1048576          # 1 MiB (default) — a shim request is small JSON.
 #   socket_timeout_seconds: 30       # drop a stalled/slow-loris connection after 30s (default).
 
-# --- bind / workspace allow-list (DR-1 Commit 5c — placeholders land there) ------------------
-# The explicit loopback-bind policy and the served-workspace allow-list are added by a later DR-1
-# commit; this template gains those knobs then. Until then the bind defaults to 127.0.0.1.
+# --- bind (DR-1 Commit 5c; OPTIONAL — defaults to LOOPBACK) -----------------------------------
+# host: the address the shim binds. It DEFAULTS TO LOOPBACK (127.0.0.1) and the default is never
+#   moved off loopback. A NON-loopback bind (0.0.0.0, ::, or a routable address) is a CONSCIOUS
+#   operator choice that REQUIRES an external TLS/auth proxy in front: the shim's own auth is an
+#   application-layer bearer secret (above), NOT transport security. `pipeline serve` prints a
+#   one-line WARNING on a non-loopback bind. A CLI `--host` flag overrides this value.
+#
+# bind:
+#   host: 127.0.0.1                   # loopback (default). Only change this behind a TLS/auth proxy.
+
+# --- workspaces.allowed (DR-1 Commit 5c; OPTIONAL served-workspace ALLOW-LIST) ----------------
+# A shim-level POLICY layer on TOP of the framework workspace-name containment (GAP-9, already
+# enforced INSIDE invoke(): an escaping name — "../x", an absolute path, a symlink — is refused as
+# `isolation-violation` regardless of this list). This list does NOT re-validate the path; it is a
+# NAME-membership policy.
+#
+# OPTIONAL-BUT-ENFORCED-WHEN-SET — make a conscious choice:
+#   * UNSET (omit `workspaces:` or leave `allowed` empty) — the DEFAULT: the shim serves ANY
+#     workspace that passes the GAP-9 containment gate inside invoke(). Auth is the primary door.
+#   * CONFIGURED (a non-empty list) — ONLY the listed workspaces are served; a request for any
+#     other workspace is refused 403 (`workspace-not-served`) BEFORE invoke() is called. Use this
+#     to scope one deployment's shim to a known set of client workspaces.
+#
+# workspaces:
+#   allowed:
+#     - "acme"                        # only these named workspaces are served (403 otherwise)
+#     - "self"

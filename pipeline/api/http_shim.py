@@ -15,11 +15,11 @@ handlers via `register_api_handlers()` at startup — it adds NO handler and NO 
 is a transport translation over the same `invoke()` door the CLI uses. The shim carries no
 LLM/session/correctness state; every call is one stateless per-verb `invoke()`.
 
-**Scope (Commits 5a + 5b).** 5a: skeleton + Tier-A synchronous dispatch + N-4 status mapping.
-5b (this commit): the net-new AUTH surface + the DoS guard + the instance-config template.
-Explicitly NOT here (later commits): the workspace allow-list + explicit loopback bind policy
-(Commit 5c), and the Tier-B 202-Accepted submit+poll async jobs door (Commit 6/7/8). A Tier-B
-(paid/async) verb returns a clear 501 placeholder here.
+**Scope (Commits 5a + 5b + 5c).** 5a: skeleton + Tier-A synchronous dispatch + N-4 status
+mapping. 5b: the net-new AUTH surface + the DoS guard + the instance-config template. 5c (this
+commit): the served-workspace ALLOW-LIST policy layer + the explicit loopback-bind knob.
+Explicitly NOT here (later commits): the Tier-B 202-Accepted submit+poll async jobs door
+(Commit 6/7/8). A Tier-B (paid/async) verb returns a clear 501 placeholder here.
 
 **Auth + DoS (Commit 5b — §C-4 N-7 + the DoS hardening 5a deferred).** Every `POST /invoke`
 carries a static bearer / `X-API-Key` secret, compared **constant-time** (`hmac.compare_digest`)
@@ -32,6 +32,31 @@ secret). The auth header + secret are NEVER logged or echoed in a response (reda
 read (a max-body cap); a socket timeout drops a stalled slow-loris connection. Config (the
 secret set + body cap + socket timeout) is `provenance: instance`: an env var (preferred for
 the secret) and/or a gitignored `instance/shim.yaml` (template: `instance/shim.template.yaml`).
+
+**Workspace allow-list + bind (Commit 5c — §C-3 policy layer + loopback bind).** After auth +
+body parse and BEFORE dispatch, an optional served-workspace ALLOW-LIST is a NAME-membership
+POLICY sitting on TOP of the framework GAP-9 containment (do NOT confuse it with, or duplicate,
+that guard):
+
+- **Optional-but-enforced-when-set.** If `workspaces.allowed` is CONFIGURED (non-empty), ONLY a
+  listed `workspace` is served — a non-member is refused **403** (`workspace-not-served`) BEFORE
+  `invoke()` is called (a shim-level policy refusal). If UNSET (the DEFAULT), the shim serves any
+  workspace that passes the GAP-9 resolve-and-contain gate inside `invoke()`; auth remains the
+  primary door. The default is documented in `instance/shim.template.yaml` so the operator makes
+  a conscious choice.
+- **A policy REFINEMENT, never a re-implementation.** The allow-list checks the `workspace` NAME
+  for set membership only — it does NOT re-validate the path. An ESCAPING name (`../x`, an
+  absolute path, a symlink escape) is ALREADY refused inside `invoke()` (`pipeline.workspace_name`
+  `validate_workspace_name`, the landed GAP-9 fix) and surfaces as `isolation-violation` → **403**;
+  the shim SURFACES that, it does not re-check the path here. The two 403s stay DISTINCT: the
+  allow-list body is `{"error": "workspace-not-served"}`, the GAP-9 body is the fatal
+  `isolation-violation` envelope. Even a MISCONFIGURED allow-list that lists an escaping name
+  cannot defeat GAP-9 — the containment gate still refuses it inside `invoke()`.
+
+**Bind policy (Commit 5c).** The bind host is a config knob (`bind.host`, default loopback
+`127.0.0.1`). A NON-loopback bind is a CONSCIOUS operator choice that REQUIRES an external
+TLS/auth proxy — the shim's own auth is a bearer SECRET (application-layer), NOT transport
+security. `serve` warns on a non-loopback bind; the default is NEVER moved off loopback.
 
 **Tier-A verb surface (served synchronously — §C-9):**
 `list`, `get`, `fetch-by-id`, `create-folio`, `add-to-folio`, `emit-manifest`, `emit-outline`,
@@ -58,10 +83,11 @@ STRUCTURALLY excluded (not in `KNOWN_VERBS`) → `invoke()` answers `unknown-ver
 the two "token" concepts (the §20 session cursor `invalid-token` → 422 vs the auth secret → 401)
 must not collapse.
 
-**Boundary (rules 4/5).** This module (incl. the auth gate + DoS guard + `instance/
-shim.template.yaml`) is `provenance: framework` (the public deliverable). The populated
-`instance/shim.yaml` — the SECRET set + the caps — is `provenance: instance` (gitignored,
-per-deployment; the bind + allow-list land in Commit 5c).
+**Boundary (rules 4/5).** This module (incl. the auth gate + DoS guard + the allow-list/bind
+policy layer + `instance/shim.template.yaml`) is `provenance: framework` (the public
+deliverable). The populated `instance/shim.yaml` — the SECRET set + the caps + the
+served-workspace ALLOW-LIST + the BIND host — is `provenance: instance` (gitignored,
+per-deployment).
 """
 
 from __future__ import annotations
@@ -102,9 +128,16 @@ __all__ = [
     "serve",
 ]
 
-#: Default bind. Loopback here already (safe); Commit 5c makes the bind POLICY explicit/config.
+#: Default bind: LOOPBACK. Commit 5c makes the bind POLICY explicit + config-driven (`bind.host`),
+#: but the DEFAULT is never moved off loopback — a non-loopback bind is a conscious operator choice.
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
+
+#: Hosts treated as loopback for the Commit-5c bind advisory. A bind to anything else (an
+#: all-interfaces `0.0.0.0`/`::`/`""` or a routable address) is a CONSCIOUS operator choice that
+#: REQUIRES an external TLS/auth proxy — the shim's own auth is an application-layer bearer secret,
+#: not transport security. `serve` prints a one-line warning on a non-loopback bind.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 #: The single POST endpoint.
 INVOKE_PATH = "/invoke"
 
@@ -172,11 +205,21 @@ class ShimConfig:
     `secrets` is the ROTATION SET — a request authenticates if its bearer / `X-API-Key` header
     matches ANY member (constant-time). It is guaranteed non-empty (`load_shim_config` /
     `ShimServer` fail closed on an empty set). `max_body_bytes` + `socket_timeout_seconds` are the
-    DoS caps."""
+    DoS caps.
+
+    Commit-5c policy knobs (both OPTIONAL, both `provenance: instance`):
+    `allowed_workspaces` is the served-workspace ALLOW-LIST — the NAME-membership POLICY on top of
+    the framework GAP-9 containment. EMPTY (the default) means UNSET: the shim serves any workspace
+    that passes the GAP-9 resolve-and-contain gate inside `invoke()`. Non-empty means only listed
+    workspaces are served (a non-member → 403 `workspace-not-served`). `bind_host` is the bind
+    address; it DEFAULTS TO LOOPBACK — a non-loopback bind is a conscious operator choice requiring
+    an external TLS/auth proxy."""
 
     secrets: frozenset[str]
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     socket_timeout_seconds: float = DEFAULT_SOCKET_TIMEOUT_SECONDS
+    allowed_workspaces: frozenset[str] = frozenset()
+    bind_host: str = DEFAULT_HOST
 
 
 def load_shim_config(root: str = ".", *, env: Mapping[str, str] | None = None) -> ShimConfig:
@@ -187,11 +230,17 @@ def load_shim_config(root: str = ".", *, env: Mapping[str, str] | None = None) -
     Precedence for the rotation SET is a UNION — env secret(s) + file `auth.secrets` all
     authenticate, so an operator can rotate via either surface. The DoS caps come from the file's
     `limits:` block (env-independent), defaulting to `DEFAULT_MAX_BODY_BYTES` /
-    `DEFAULT_SOCKET_TIMEOUT_SECONDS`. The secret is NEVER echoed in the raised error."""
+    `DEFAULT_SOCKET_TIMEOUT_SECONDS`. The secret is NEVER echoed in the raised error.
+
+    Commit-5c policy knobs (file-only, env-independent): `workspaces.allowed` → the served-
+    workspace ALLOW-LIST (empty/absent = UNSET = serve any GAP-9-contained workspace); `bind.host`
+    → the bind address (default loopback `DEFAULT_HOST`). Both are `provenance: instance`."""
     env = os.environ if env is None else env
     secrets: set[str] = set()
     max_body_bytes = DEFAULT_MAX_BODY_BYTES
     socket_timeout = DEFAULT_SOCKET_TIMEOUT_SECONDS
+    allowed_workspaces: set[str] = set()
+    bind_host = DEFAULT_HOST
 
     cfg_path = Path(root) / "instance" / "shim.yaml"
     if cfg_path.exists():
@@ -220,6 +269,23 @@ def load_shim_config(root: str = ".", *, env: Mapping[str, str] | None = None) -
                 max_body_bytes = int(limits["max_body_bytes"])
             if limits.get("socket_timeout_seconds") is not None:
                 socket_timeout = float(limits["socket_timeout_seconds"])
+        # Commit 5c — the served-workspace ALLOW-LIST (a NAME set, NOT a path check). A single
+        # string is accepted as a one-element list. Empty/absent leaves the set UNSET (serve any
+        # GAP-9-contained workspace). This is policy only — no path validation happens here.
+        ws_cfg = data.get("workspaces") or {}
+        if isinstance(ws_cfg, Mapping):
+            allow = ws_cfg.get("allowed")
+            if isinstance(allow, str):
+                allow = [allow]
+            if isinstance(allow, (list, tuple)):
+                allowed_workspaces.update(str(w).strip() for w in allow if str(w).strip())
+        # Commit 5c — the explicit bind host (default loopback). A non-loopback value is a
+        # conscious operator choice; `serve` warns on it. The default is never moved off loopback.
+        bind_cfg = data.get("bind") or {}
+        if isinstance(bind_cfg, Mapping):
+            host_val = bind_cfg.get("host")
+            if isinstance(host_val, str) and host_val.strip():
+                bind_host = host_val.strip()
 
     single = (env.get(ENV_SECRET) or "").strip()
     if single:
@@ -232,7 +298,13 @@ def load_shim_config(root: str = ".", *, env: Mapping[str, str] | None = None) -
             f"{ENV_SECRET} env var (preferred) or auth.secrets in instance/shim.yaml "
             "(copy instance/shim.template.yaml). The shim NEVER fails open."
         )
-    return ShimConfig(frozenset(secrets), max_body_bytes, socket_timeout)
+    return ShimConfig(
+        frozenset(secrets),
+        max_body_bytes,
+        socket_timeout,
+        frozenset(allowed_workspaces),
+        bind_host,
+    )
 
 
 # --- Tier classification (§C-9) --------------------------------------------------------------
@@ -291,8 +363,10 @@ class ShimServer(ThreadingHTTPServer):
     `pipeline.api.invoke.invoke`; a test injects a stub). `root` is the framework repo root the
     workspace store is built under. `secrets` is the (non-empty) rotation set the handler
     constant-time compares against; `max_body_bytes` + `socket_timeout` are the DoS caps.
-    Thread-per-request is safe: every request is one stateless `invoke()` call — no cross-request
-    state lives on the server (§21.9 amended).
+    `allowed_workspaces` is the Commit-5c served-workspace ALLOW-LIST (EMPTY = UNSET = serve any
+    GAP-9-contained workspace; non-empty = only listed names, a non-member → 403). Thread-per-
+    request is safe: every request is one stateless `invoke()` call — no cross-request state lives
+    on the server (§21.9 amended).
 
     FAIL-CLOSED: an EMPTY `secrets` set raises `ShimConfigError` BEFORE `super().__init__` binds
     the socket — the server never comes up wide open (never a default/empty accept-all secret)."""
@@ -309,6 +383,7 @@ class ShimServer(ThreadingHTTPServer):
         secrets: frozenset[str] = frozenset(),
         max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
         socket_timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS,
+        allowed_workspaces: frozenset[str] = frozenset(),
     ) -> None:
         if not secrets:
             raise ShimConfigError(
@@ -321,6 +396,9 @@ class ShimServer(ThreadingHTTPServer):
         self.secrets = frozenset(secrets)
         self.max_body_bytes = int(max_body_bytes)
         self.socket_timeout = float(socket_timeout)
+        #: The served-workspace allow-list (NAME set). Empty = unset = serve any GAP-9-contained
+        #: workspace; the per-request check lives in `_ShimRequestHandler._handle_post`.
+        self.allowed_workspaces = frozenset(allowed_workspaces)
 
 
 class _ShimRequestHandler(BaseHTTPRequestHandler):
@@ -408,6 +486,29 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             return
         if not isinstance(params, Mapping):
             self._bad_request("'params' must be a JSON object")
+            return
+
+        # (4) Workspace ALLOW-LIST (Commit 5c) — a shim POLICY layer (NAME membership) on TOP of
+        #     the framework GAP-9 containment. If an allow-list is CONFIGURED (non-empty), only a
+        #     LISTED workspace is served: a non-member → 403 `workspace-not-served` BEFORE dispatch
+        #     (invoke_fn is NEVER called). If UNSET, any workspace is served here and the GAP-9
+        #     resolve-and-contain gate inside invoke() remains the containment authority (auth is
+        #     the primary door). This is NAME membership ONLY — it does NOT re-validate the path,
+        #     so an escaping name is still refused by invoke()'s `isolation-violation` gate (→ 403,
+        #     a DISTINCT `isolation-violation` envelope body). A misconfigured allow-list that
+        #     lists an escaping name cannot defeat GAP-9 — invoke() still refuses it.
+        allowed = server.allowed_workspaces
+        if allowed and workspace not in allowed:
+            self._respond(
+                _HTTP_FORBIDDEN,
+                {
+                    "error": "workspace-not-served",
+                    "detail": (
+                        f"workspace {workspace!r} is not in this shim's served-workspace "
+                        "allow-list (workspaces.allowed in instance/shim.yaml)"
+                    ),
+                },
+            )
             return
 
         if classify_verb(verb, params) == TIER_B:
@@ -509,9 +610,12 @@ def make_server(
     secrets: frozenset[str] = frozenset(),
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
     socket_timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS,
+    allowed_workspaces: frozenset[str] = frozenset(),
 ) -> ShimServer:
     """Build (but do not start) the shim server. `port=0` binds an ephemeral port (tests read
     `server.server_address`). The caller is responsible for wiring handlers (`serve()` does).
+    `allowed_workspaces` is the Commit-5c served-workspace allow-list (empty = unset = serve any
+    GAP-9-contained workspace).
 
     FAIL-CLOSED: an empty `secrets` set raises `ShimConfigError` (via `ShimServer`) — the server
     is never built wide open."""
@@ -522,11 +626,12 @@ def make_server(
         secrets=secrets,
         max_body_bytes=max_body_bytes,
         socket_timeout=socket_timeout,
+        allowed_workspaces=allowed_workspaces,
     )
 
 
 def serve(
-    *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, root: str = "."
+    *, host: str | None = None, port: int = DEFAULT_PORT, root: str = "."
 ) -> None:
     """Load config (FAIL-CLOSED on a missing secret), wire the EXACT existing handlers, then serve
     `POST /invoke` until interrupted.
@@ -535,25 +640,45 @@ def serve(
     secret is configured — the process exits instead of binding a wide-open door.
     `register_api_handlers()` is imported function-scoped (like `main_cli`) so importing this
     module never wires verbs the step-32 empty-registry tests expect empty. The shim adds NO
-    handler — it wires the same production surface. The listening banner NEVER prints the secret."""
+    handler — it wires the same production surface. The listening banner NEVER prints the secret.
+
+    Commit-5c bind policy: the bind host resolves to `host` if an EXPLICIT one is passed (a CLI
+    `--host` override), else the config's `bind.host` (default loopback `DEFAULT_HOST`). A
+    non-loopback bind emits a one-line ADVISORY — it is a conscious operator choice that requires
+    an external TLS/auth proxy. The served-workspace allow-list (`config.allowed_workspaces`) is
+    passed to the server as the Commit-5c policy layer."""
     from pipeline.api.session import register_api_handlers
 
     config = load_shim_config(root)  # fail-closed: raises ShimConfigError if no secret
+    bind_host = host if host is not None else config.bind_host
 
     register_api_handlers()
     server = make_server(
-        host,
+        bind_host,
         port,
         invoke_fn=invoke,
         root=root,
         secrets=config.secrets,
         max_body_bytes=config.max_body_bytes,
         socket_timeout=config.socket_timeout_seconds,
+        allowed_workspaces=config.allowed_workspaces,
     )
     bound_host, bound_port = server.server_address
+    if bind_host not in _LOOPBACK_HOSTS:
+        print(
+            f"pipeline serve: WARNING — binding to a NON-loopback host {bind_host!r}. The shim's "
+            "auth is an application-layer bearer secret, NOT transport security: put an external "
+            "TLS/auth proxy in front of a network-exposed bind (§C-3). The default is loopback.",
+            file=sys.stderr,
+        )
+    allow_note = (
+        f"allow-list: {len(config.allowed_workspaces)} workspace(s)"
+        if config.allowed_workspaces
+        else "allow-list: unset (any GAP-9-contained workspace)"
+    )
     print(
         f"pipeline serve: listening on http://{bound_host}:{bound_port}{INVOKE_PATH} "
-        f"(auth: required, {len(config.secrets)} secret(s); Tier-A synchronous; "
+        f"(auth: required, {len(config.secrets)} secret(s); {allow_note}; Tier-A synchronous; "
         "Tier-B async door lands in a later DR-1 commit)",
         file=sys.stderr,
     )
@@ -568,9 +693,10 @@ def serve(
 def main(argv: list[str] | None = None) -> int:
     """`scripts/pipeline serve` → this entry: start the HTTP shim. `--help` dispatches (argparse).
 
-    The bind defaults to loopback; Commit 5c makes the bind POLICY explicit + config-driven. A
-    missing auth secret is a clean fail-closed exit (a loud one-line error + non-zero), never a
-    traceback and never a wide-open bind."""
+    The bind defaults to loopback; Commit 5c makes the bind POLICY explicit + config-driven
+    (`bind.host` in instance/shim.yaml). An EXPLICIT `--host` overrides the config; without it the
+    config's `bind.host` (default loopback) is used. A missing auth secret is a clean fail-closed
+    exit (a loud one-line error + non-zero), never a traceback and never a wide-open bind."""
     parser = argparse.ArgumentParser(
         prog="pipeline serve",
         description=(
@@ -581,7 +707,14 @@ def main(argv: list[str] | None = None) -> int:
             "DR-1 commit."
         ),
     )
-    parser.add_argument("--host", default=DEFAULT_HOST, help="bind host (default: 127.0.0.1)")
+    parser.add_argument(
+        "--host",
+        default=None,
+        help=(
+            "bind host; overrides bind.host in instance/shim.yaml (which defaults to loopback "
+            "127.0.0.1). A non-loopback bind requires an external TLS/auth proxy."
+        ),
+    )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="bind port (default: 8787)")
     parser.add_argument(
         "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"

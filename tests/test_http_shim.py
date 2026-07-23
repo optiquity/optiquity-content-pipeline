@@ -17,6 +17,7 @@ instance content.
 
 from __future__ import annotations
 
+import ast
 import http.client
 import json
 import socket
@@ -64,9 +65,11 @@ def running_server(
     secrets: frozenset[str] = frozenset({TEST_SECRET}),
     max_body_bytes: int = http_shim.DEFAULT_MAX_BODY_BYTES,
     socket_timeout: float = http_shim.DEFAULT_SOCKET_TIMEOUT_SECONDS,
+    allowed_workspaces: frozenset[str] = frozenset(),
 ) -> Iterator[tuple[str, int]]:
     """Start the shim on an ephemeral loopback port in a daemon thread; yield (host, port). A
-    non-empty `secrets` set is required (fail-closed); the harness defaults it to a test secret."""
+    non-empty `secrets` set is required (fail-closed); the harness defaults it to a test secret.
+    `allowed_workspaces` drives the Commit-5c served-workspace allow-list (default: unset)."""
     server = http_shim.make_server(
         "127.0.0.1",
         0,
@@ -75,6 +78,7 @@ def running_server(
         secrets=secrets,
         max_body_bytes=max_body_bytes,
         socket_timeout=socket_timeout,
+        allowed_workspaces=allowed_workspaces,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -530,3 +534,177 @@ class TestDoSGuard:
             finally:
                 sock.close()
         assert data == b""
+
+
+# ---------------------------------------------------------- Commit 5c: workspace allow-list
+
+
+def _seen_stub(seen: list[str]):  # noqa: ANN202
+    """An injected `invoke` that records each dispatched workspace and returns an ok envelope.
+    Used to PROVE a non-served workspace never reaches dispatch (its name never lands in `seen`)."""
+
+    def stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN202
+        seen.append(workspace)
+        return {"envelope": {"ok": True, "verb": verb, "workspace": workspace}, "results": []}
+
+    return stub
+
+
+class TestWorkspaceAllowList:
+    def test_configured_dispatches_listed_refuses_non_listed(self) -> None:
+        # Allow-list CONFIGURED: a LISTED workspace passes to dispatch (200); a NON-listed one is
+        # refused 403 `workspace-not-served` BEFORE dispatch — invoke_fn is NOT called for it
+        # (proved by the recorded `seen` list containing only the listed workspace).
+        seen: list[str] = []
+        with running_server(
+            invoke_fn=_seen_stub(seen), allowed_workspaces=frozenset({"wsA"})
+        ) as (host, port):
+            s_listed, b_listed = post(host, port, {"verb": "list", "workspace": "wsA"})
+            s_denied, b_denied = post(host, port, {"verb": "list", "workspace": "wsB"})
+        assert s_listed == 200 and b_listed["envelope"]["ok"] is True
+        assert s_denied == 403 and b_denied["error"] == "workspace-not-served"
+        assert seen == ["wsA"]  # the non-listed request NEVER reached invoke()
+
+    def test_unset_serves_any_contained_workspace(self) -> None:
+        # Allow-list UNSET (the default): a request for ANY workspace passes to dispatch (200),
+        # proving the optional-when-unset semantics (containment stays invoke()'s GAP-9 gate).
+        seen: list[str] = []
+        with running_server(invoke_fn=_seen_stub(seen)) as (host, port):  # unset
+            for ws in ("wsA", "wsB", "another-ws"):
+                status, body = post(host, port, {"verb": "list", "workspace": ws})
+                assert status == 200, ws
+                assert body["envelope"]["ok"] is True
+        assert seen == ["wsA", "wsB", "another-ws"]
+
+    def test_allow_list_precedes_tier_gating(self) -> None:
+        # A non-listed workspace is refused 403 BEFORE tier classification — even a Tier-B verb
+        # gets `workspace-not-served` (403), NOT 501. Policy (is this workspace served?) precedes
+        # tier routing; `_never_invoked` proves dispatch is never reached.
+        with running_server(
+            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"wsA"})
+        ) as (host, port):
+            status, body = post(
+                host,
+                port,
+                {"verb": "render", "workspace": "wsB", "params": {"item": "a-0000000000000000"}},
+            )
+        assert status == 403
+        assert body["error"] == "workspace-not-served"
+
+    def test_escaping_name_surfaced_from_invoke_gap9_when_unset(self, root: str) -> None:
+        # Allow-list UNSET → an ESCAPING workspace name (`../victim`) flows to the REAL invoke(),
+        # whose LANDED GAP-9 resolve-and-contain gate refuses it as `isolation-violation` → 403.
+        # The shim SURFACES that refusal; it does NOT re-implement the path check. The 403 body is
+        # the fatal `isolation-violation` envelope — DISTINCT from the allow-list's
+        # `workspace-not-served` shape.
+        from pipeline.api.session import register_api_handlers
+
+        register_api_handlers()
+        with running_server(root=root) as (host, port):  # real invoke(), allow-list unset
+            status, body = post(
+                host, port, {"verb": "list", "workspace": "../victim", "params": {}}
+            )
+        assert status == 403
+        assert body["envelope"]["ok"] is False
+        assert body["envelope"]["code"] == "isolation-violation"
+        assert body.get("error") != "workspace-not-served"  # NOT the shim policy shape
+
+    def test_escaping_name_refused_by_allow_list_when_configured(self) -> None:
+        # The OTHER branch: with a CONFIGURED allow-list that does not list the escaping name, the
+        # shim's NAME-membership policy refuses it 403 `workspace-not-served` BEFORE invoke()
+        # (still 403). Proves the allow-list does not need to — and does not — re-validate the
+        # path; a misconfig cannot defeat GAP-9 because invoke() is the containment authority.
+        with running_server(
+            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"wsA"})
+        ) as (host, port):
+            status, body = post(host, port, {"verb": "list", "workspace": "../victim"})
+        assert status == 403
+        assert body["error"] == "workspace-not-served"
+
+    def test_shim_does_not_reimplement_gap9_path_validation(self) -> None:
+        # STATIC guard: http_shim.py must not IMPORT the GAP-9 containment module nor CALL its
+        # resolve-and-contain names in code (docstrings/comments referencing them are fine — they
+        # are not Name/Attribute nodes). Proves the allow-list is NAME membership ONLY, never a
+        # duplicated path check.
+        src = (REPO_ROOT / "pipeline" / "api" / "http_shim.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "pipeline.workspace_name", "shim must not import GAP-9 guard"
+            if isinstance(node, ast.Import):
+                assert all("workspace_name" not in n.name for n in node.names)
+        code_names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
+            n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+        }
+        assert "validate_workspace_name" not in code_names
+        assert "WorkspaceNameError" not in code_names
+        # no Path.resolve() → no resolve-and-contain re-implementation in the shim:
+        assert "resolve" not in code_names
+
+
+# ------------------------------------------------------------- Commit 5c: config (allow-list/bind)
+
+
+class TestAllowListAndBindConfig:
+    def test_allow_list_loads_from_shim_yaml(self, tmp_path: Path) -> None:
+        # workspaces.allowed loads from instance/shim.yaml as a SET (env-independent).
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "shim.yaml").write_text(
+            "auth:\n  secrets:\n    - file-secret\n"
+            "workspaces:\n  allowed:\n    - wsA\n    - wsB\n",
+            encoding="utf-8",
+        )
+        cfg = http_shim.load_shim_config(str(tmp_path), env={})
+        assert cfg.allowed_workspaces == frozenset({"wsA", "wsB"})
+
+    def test_allow_list_single_string_is_one_element(self, tmp_path: Path) -> None:
+        # A single string under workspaces.allowed is accepted as a one-element allow-list.
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "shim.yaml").write_text(
+            "auth:\n  secrets:\n    - file-secret\nworkspaces:\n  allowed: soloworkspace\n",
+            encoding="utf-8",
+        )
+        cfg = http_shim.load_shim_config(str(tmp_path), env={})
+        assert cfg.allowed_workspaces == frozenset({"soloworkspace"})
+
+    def test_allow_list_unset_is_empty(self, tmp_path: Path) -> None:
+        # No workspaces block → the allow-list is UNSET (empty) → serve any contained workspace.
+        cfg = http_shim.load_shim_config(str(tmp_path), env={"OPTIQUITY_SHIM_SECRET": "s"})
+        assert cfg.allowed_workspaces == frozenset()
+
+    def test_default_bind_is_loopback(self, tmp_path: Path) -> None:
+        # The default bind is 127.0.0.1 (the module constant AND an unset-config load).
+        assert http_shim.DEFAULT_HOST == "127.0.0.1"
+        cfg = http_shim.load_shim_config(str(tmp_path), env={"OPTIQUITY_SHIM_SECRET": "s"})
+        assert cfg.bind_host == "127.0.0.1"
+
+    def test_bind_host_knob_read_from_config(self, tmp_path: Path) -> None:
+        # bind.host is read from instance/shim.yaml (a non-loopback value is honored but is the
+        # operator's conscious choice; serve() warns on it — see the module docstring).
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "shim.yaml").write_text(
+            "auth:\n  secrets:\n    - file-secret\nbind:\n  host: 0.0.0.0\n", encoding="utf-8"
+        )
+        cfg = http_shim.load_shim_config(str(tmp_path), env={})
+        assert cfg.bind_host == "0.0.0.0"
+
+    def test_config_allow_list_drives_server_enforcement(self, tmp_path: Path) -> None:
+        # END-TO-END: the allow-list loaded from instance/shim.yaml DRIVES the server — a listed
+        # workspace dispatches (200), a non-listed one is refused 403 without reaching invoke().
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "shim.yaml").write_text(
+            f"auth:\n  secrets:\n    - {TEST_SECRET}\nworkspaces:\n  allowed:\n    - wsA\n",
+            encoding="utf-8",
+        )
+        cfg = http_shim.load_shim_config(str(tmp_path), env={})
+        seen: list[str] = []
+        with running_server(
+            invoke_fn=_seen_stub(seen),
+            secrets=cfg.secrets,
+            allowed_workspaces=cfg.allowed_workspaces,
+        ) as (host, port):
+            s_ok, _ = post(host, port, {"verb": "list", "workspace": "wsA"})
+            s_no, b_no = post(host, port, {"verb": "list", "workspace": "wsB"})
+        assert s_ok == 200
+        assert s_no == 403 and b_no["error"] == "workspace-not-served"
+        assert seen == ["wsA"]
