@@ -2475,8 +2475,13 @@ should join the identity preimage is a registered maintainer question (§27.3), 
 ### §21.9 Transport & flags
 
 - **HARD, NON-NEGOTIABLE: the pipeline is a headless Claude Code CLI invocation authenticated on
-  the Claude SUBSCRIPTION — never API keys, never `ANTHROPIC_API_KEY`** (F10). Not a long-running
-  server; one synchronous invocation per verb: params + optional token in → results + token out.
+  the Claude SUBSCRIPTION — never API keys, never `ANTHROPIC_API_KEY`** (F10). The pipeline CORE is
+  not a long-running server: one synchronous invocation per verb (params + optional token in →
+  results + token out), no persistent process carrying LLM/session state across calls. An
+  OPTIONAL transport FRONT (the CLI door, or the DR-1 HTTP shim — `docs/known-issues.md` DR-1) MAY
+  be a persistent process, provided it holds no LLM/session/correctness state — all cross-request
+  correctness state lives on disk (the content-addressed output store + the claim/presence-lease
+  registries), and the front dispatches only to stateless per-verb invocations.
 - The transport's specifics are **unverified and gated before build** (G5, G3, G2 — §27.2):
   subscription auth headless, per-call statelessness (no hidden conversation carry-over), the
   exact n8n→headless mechanism, and the Graphify serve-MCP/output-path flags. The contract shape
