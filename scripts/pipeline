@@ -16,4 +16,13 @@ if [ "${1:-}" = "invoke" ]; then
   exec uv run --project "$REPO_ROOT" python -m pipeline.api.invoke "$@"
 fi
 
+# `serve` (DR-1 Commit 5a) — the HTTP shim (§21.9): a stateless persistent transport FRONT over
+# the same `invoke()` door. Routes straight to the api shim module (its own self-contained entry,
+# the sibling of `invoke` above). Tier-A verbs are served synchronously; the Tier-B async door
+# lands in a later DR-1 commit. `serve --help` dispatches to the shim's argparse.
+if [ "${1:-}" = "serve" ]; then
+  shift
+  exec uv run --project "$REPO_ROOT" python -m pipeline.api.http_shim "$@"
+fi
+
 exec uv run --project "$REPO_ROOT" python -m pipeline "$@"
