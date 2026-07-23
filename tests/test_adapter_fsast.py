@@ -34,9 +34,11 @@ from pipeline.adapters.base import (
     SourceAdapter,
 )
 from pipeline.adapters.fsast import (
+    CLI_FACET_KEYS,
     CONNECTION_KEYS,
     DEFAULT_BUDGET,
     MODE_BOTH,
+    MODE_CLI,
     MODE_SIGNATURES,
     MODE_TREE,
     MODES,
@@ -73,6 +75,31 @@ class Widget(Base):
 README = "# Project\n\nGeneric readme prose.\n"
 LEAKED_PY = "def leaked_symbol():\n    return 1\n"
 
+# A synthetic argparse module for the #CLI (`mode: cli`) family: a literal long flag with
+# facets, a multi-string `-v`/`--verbose` flag, a positional, a DYNAMIC (non-literal) flag
+# that must be skipped in-band, and — crucially — the SAME `--workspace` flag redeclared in
+# two subparsers so the `@L<lineno>` call-site scope is exercised (distinct subjects).
+CLI_PY = '''\
+"""A CLI entrypoint."""
+import argparse
+
+
+def build_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workspace", help="the client workspace", type=Path, required=True)
+    parser.add_argument("-v", "--verbose", action="store_true", help="be chatty")
+    parser.add_argument("path", help="input file")
+    parser.add_argument(dynamic_flag, help="not groundable")  # non-literal first arg -> skip
+
+    sub = parser.add_subparsers()
+    build = sub.add_parser("build")
+    build.add_argument("--workspace", help="build workspace", default="./out")
+
+    serve = sub.add_parser("serve")
+    serve.add_argument("--workspace", help="serve workspace", default="./srv")
+    return parser
+'''
+
 
 def make_tree(root: Path) -> Path:
     """One synthetic tree: a package with signatures, a non-.py file, and a battery of
@@ -108,6 +135,14 @@ def make_skip_tree(root: Path) -> Path:
     (root / "foo" / "mod.py").write_text("def foo_fn():\n    return 1\n", encoding="utf-8")
     (root / "keep").mkdir()
     (root / "keep" / "kept.py").write_text("def kept_fn():\n    return 2\n", encoding="utf-8")
+    return root
+
+
+def make_cli_tree(root: Path) -> Path:
+    """A one-file corpus whose `cli.py` declares a battery of argparse flags (literal, multi-
+    string, positional, dynamic-skip, and `--workspace` redeclared in two subparsers)."""
+    root.mkdir(parents=True)
+    (root / "cli.py").write_text(CLI_PY, encoding="utf-8")
     return root
 
 
@@ -546,7 +581,8 @@ def ground_mode(root: Path, mode, query: str = "q"):
 class TestScopeMode:
     def test_mode_constants_and_default(self):
         assert MODE_BOTH == "both" and MODE_TREE == "tree" and MODE_SIGNATURES == "signatures"
-        assert MODES == frozenset({"both", "tree", "signatures"})
+        assert MODE_CLI == "cli"
+        assert MODES == frozenset({"both", "tree", "signatures", "cli"})
 
     def test_mode_absent_equals_both_byte_identical(self, tmp_path):
         # omit-when-absent, no churn: an absent `mode` is byte-identical to `mode: both`.
@@ -675,3 +711,163 @@ class TestSkipDirs:
         root = make_tree(tmp_path / "corpus")
         with pytest.raises(AdapterError, match="skip_dirs entries must be non-empty"):
             FsAstAdapter().ground(connection={"path": str(root), "skip_dirs": bad}, query="q")
+
+
+# --- MG-2 byte-identity: the pre-cli legacy-mode shape is pinned + unchanged -------------------
+
+#: A golden snapshot of the DEFAULT (`both`) output for `make_tree`, captured pre-cli under
+#: py312 `ast.unparse`. Adding `mode: cli` is purely ADDITIVE, so this exact ordered
+#: (subject, claim) sequence must survive byte-for-byte — the fact-level proof that the legacy
+#: modes are untouched (complements the walk-order/anchor/tier assertions elsewhere).
+DEFAULT_MODE_SNAPSHOT = [
+    (".", "./ contains: pkg/, readme.md"),
+    ("pkg", "pkg/ contains: __init__.py, core.py"),
+    ("pkg/core.py::build", "def build(plan, item, *, budget: int=10) -> str"),
+    ("pkg/core.py::fetch", "async def fetch(url)"),
+    ("pkg/core.py::Widget", "class Widget(Base)"),
+    ("pkg/core.py::Widget.run", "def run(self, mode: str='fast') -> bool"),
+    ("pkg/core.py::Widget.close", "async def close(self)"),
+]
+
+
+class TestLegacyModeByteIdentity:
+    def test_default_mode_full_ordered_snapshot_is_unchanged(self, tmp_path):
+        # absent-mode and explicit `both` both reproduce the pinned pre-cli shape, verbatim.
+        root = make_tree(tmp_path / "corpus")
+        for conn in ({"path": str(root)}, {"path": str(root), "mode": MODE_BOTH}):
+            result = FsAstAdapter().ground(connection=conn, query="the framework itself")
+            assert [(f.subject, f.claim) for f in result.facts] == DEFAULT_MODE_SNAPSHOT
+
+    def test_grounded_twice_stable_across_all_legacy_modes(self, tmp_path):
+        # grounded-twice-stable for every pre-cli mode: repeat grounding is byte-identical.
+        root = make_tree(tmp_path / "corpus")
+        for conn in (
+            {"path": str(root)},
+            {"path": str(root), "mode": MODE_BOTH},
+            {"path": str(root), "mode": MODE_TREE},
+            {"path": str(root), "mode": MODE_SIGNATURES},
+        ):
+            first = FsAstAdapter().ground(connection=conn, query="q")
+            second = FsAstAdapter().ground(connection=conn, query="q")
+            assert first == second
+
+
+# --- MG-2: `mode: cli` — argparse command-line-flag grounding (opt-in, additive) --------------
+
+
+def ground_cli(root: Path, query: str = "q", **extra):
+    return FsAstAdapter().ground(
+        connection={"path": str(root), "mode": MODE_CLI, **extra}, query=query
+    )
+
+
+class TestCliMode:
+    def test_cli_facet_keys_are_a_fixed_deterministic_tuple(self):
+        assert CLI_FACET_KEYS == ("help", "type", "required", "default", "action")
+
+    def test_cli_mode_emits_expected_flag_facts(self, tmp_path):
+        facts = by_subject(ground_cli(make_cli_tree(tmp_path / "cli-corpus")))
+        # a literal long flag folds its cheap facets (help/type/required) in the fixed order:
+        top_ws = facts["cli.py::--workspace@L7"]
+        assert top_ws.claim == (
+            "--workspace (help='the client workspace', type=Path, required=True)"
+        )
+        assert top_ws.tier == TIER_EXTRACTED and top_ws.refinements == {}
+        # a multi-string flag lists ALL options, keys on the first `--` long option, and pulls
+        # help + action (default/type/required absent, so dropped) in CLI_FACET_KEYS order:
+        assert facts["cli.py::--verbose@L8"].claim == (
+            "-v, --verbose (help='be chatty', action='store_true')"
+        )
+        # a bare positional keys on itself (no `--` long option present):
+        assert facts["cli.py::path@L9"].claim == "path (help='input file')"
+
+    def test_cli_subject_scoped_by_call_site_line_with_anchor(self, tmp_path):
+        # subject = <relpath>::<flag>@L<lineno>; anchor = the add_argument call site (#9 scheme).
+        facts = by_subject(ground_cli(make_cli_tree(tmp_path / "cli-corpus")))
+        fact = facts["cli.py::--verbose@L8"]
+        assert fact.anchors == (Anchor("file-line", "cli.py:L8"),)
+        assert anchor_line(fact) == 8
+        assert "--verbose" in CLI_PY.splitlines()[anchor_line(fact) - 1]
+
+    def test_same_flag_in_two_subparsers_gets_distinct_subjects(self, tmp_path):
+        # THE collision test: `--workspace` is declared THREE times (top parser + `build` +
+        # `serve` subparsers). The @L<lineno> call-site scope keeps every one a DISTINCT,
+        # collision-free subject — WITHOUT it they collapse into one subject (a same-subject-
+        # different-claim resolver conflict).
+        facts = ground_cli(make_cli_tree(tmp_path / "cli-corpus")).facts
+        ws = [f for f in facts if f.subject.startswith("cli.py::--workspace@L")]
+        assert len(ws) == 3
+        assert len({f.subject for f in ws}) == 3       # three distinct subjects
+        assert len({anchor_line(f) for f in ws}) == 3  # each at its own call-site line
+        assert len({f.claim for f in ws}) == 3         # each carries its own help/default facet
+        assert sorted(f.subject for f in ws) == [
+            "cli.py::--workspace@L14",
+            "cli.py::--workspace@L17",
+            "cli.py::--workspace@L7",
+        ]
+
+    def test_dynamic_nonliteral_add_argument_is_skipped_in_band(self, tmp_path):
+        # `add_argument(dynamic_flag, ...)` — first positional is NOT a string literal, so it
+        # is NOT groundable and is SKIPPED IN-BAND (no error, no fact), like the budget cap.
+        result = ground_cli(make_cli_tree(tmp_path / "cli-corpus"))
+        assert len(result.facts) == 5  # 3 top-level literal flags + 2 subparser --workspace
+        for fact in result.facts:
+            assert "dynamic_flag" not in fact.subject and "dynamic_flag" not in fact.claim
+            assert "not groundable" not in fact.claim  # the skipped call's help never rode a fact
+
+    def test_cli_facts_are_extracted_with_line_anchor_and_file_mtime(self, tmp_path):
+        root = make_cli_tree(tmp_path / "cli-corpus")
+        expected_as_of = datetime.date.fromtimestamp((root / "cli.py").stat().st_mtime)
+        for fact in ground_cli(root).facts:
+            assert fact.tier == TIER_EXTRACTED
+            assert fact.anchors[0].kind == "file-line"
+            assert fact.anchors[0].value.startswith("cli.py:L")
+            assert fact.as_of == expected_as_of
+            assert fact.refinements == {}
+
+    def test_cli_mode_emits_no_tree_or_signature_facts(self, tmp_path):
+        # cli is standalone: no #3 tree fact (no " contains:") and no #9 signature fact.
+        result = ground_cli(make_cli_tree(tmp_path / "cli-corpus"))
+        assert all(" contains:" not in f.claim for f in result.facts)  # NO tree fact
+        assert all("@L" in f.subject for f in result.facts)  # every subject is a #CLI call site
+        # a tree WITH signatures but NO argparse grounds ZERO facts under cli (empty != error).
+        assert ground_cli(make_tree(tmp_path / "plain")).facts == ()
+
+    def test_cli_query_insensitive_and_reproducible(self, tmp_path):
+        root = make_cli_tree(tmp_path / "cli-corpus")
+        empty = ground_cli(root, query="")
+        real = ground_cli(root, query="the framework itself")
+        token = ground_cli(root, query="workspace")
+        assert empty.facts == real.facts == token.facts and len(empty.facts) > 0
+        assert ground_cli(root) == ground_cli(root)  # byte-identical repeat
+
+    def test_cli_budget_caps_first_n_in_deterministic_walk_order(self, tmp_path):
+        # in-band first-N cap holds for cli: the first two call sites in ascending-line order.
+        root = make_cli_tree(tmp_path / "cli-corpus")
+        capped = ground_cli(root, budget=2)
+        assert [f.subject for f in capped.facts] == [
+            "cli.py::--workspace@L7",
+            "cli.py::--verbose@L8",
+        ]
+        assert ground_cli(root, budget=2) == capped  # deterministic first-N, every time
+
+    def test_cli_unparseable_py_is_loud(self, tmp_path):
+        # cli reads via the SAME loud read path as _signatures: a broken .py is a typed error.
+        root = make_cli_tree(tmp_path / "cli-corpus")
+        (root / "broken.py").write_text("def (:\n", encoding="utf-8")
+        with pytest.raises(AdapterError, match="does not parse"):
+            ground_cli(root)
+
+    def test_cli_undecodable_py_is_loud(self, tmp_path):
+        root = make_cli_tree(tmp_path / "cli-corpus")
+        (root / "binary.py").write_bytes(b"\xff\xfe\x00garbage")
+        with pytest.raises(AdapterError, match="not UTF-8"):
+            ground_cli(root)
+
+    @pytest.mark.parametrize("bad", ["CLI", "cli ", "argparse", "flags"])
+    def test_unknown_mode_still_loud_and_cli_is_accepted(self, tmp_path, bad):
+        # cli joined MODES (accepted); a look-alike is still the loud unknown-mode error.
+        root = make_cli_tree(tmp_path / "cli-corpus")
+        assert len(ground_cli(root).facts) == 5  # `cli` itself is NOT rejected
+        with pytest.raises(AdapterError, match="mode must be one of"):
+            FsAstAdapter().ground(connection={"path": str(root), "mode": bad}, query="q")

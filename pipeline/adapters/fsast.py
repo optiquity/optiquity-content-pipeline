@@ -5,13 +5,17 @@ provider; the ADAPTER is code, the SOURCE INSTANCE is config. §6.2 — per-fact
 anchors, freshness basis "derived (commit/mtime)". §3.3 + CLAUDE.md rule 1 — sources are
 READ-ONLY, always. This is the project-manual genre's structural source (planner-03
 Part C, FD1-b): it grounds a repository's own SHAPE — its directory tree (#3 repository
-layout) and its Python API surface (#9) — as EXTRACTED facts a manual can cite.
+layout), its Python API surface (#9), and — opt-in via `mode: cli` — its command-line
+flags (#CLI, MG-2) — as EXTRACTED facts a manual can cite.
 
 What it does: walks one bound local directory (deterministically: parent-first,
 lexicographic; hidden entries, symlinks, and any `workspaces`/`__pycache__` subdir skipped)
-and emits two families of `Fact`, ALL `tier = EXTRACTED` (each claim is mechanically derived,
+and emits `Fact` families, ALL `tier = EXTRACTED` (each claim is a mechanically derived,
 resolvable statement about the source — "the tree literally contains this", "this file
-literally declares this signature" — exactly §6.5's EXTRACTED answer to *how sure*):
+literally declares this signature", "this file literally declares this CLI flag" — exactly
+§6.5's EXTRACTED answer to *how sure*). The #3 tree + #9 signature families ride the DEFAULT
+(`both`) scope; the third — #CLI command-line flags — is OPT-IN via `mode: cli` and emitted
+ALONE (purely additive; NEVER folded into `both`, so the legacy modes stay byte-identical):
 
 - **#3 filesystem tree — one fact per walked directory.** `subject` = the directory
   relpath-from-root (`.` for the root, POSIX); `claim` = a deterministic sorted one-line
@@ -27,6 +31,21 @@ literally declares this signature" — exactly §6.5's EXTRACTED answer to *how 
   (``def run_thread(plan, item, ...) -> ArtifactResult`` / ``class FolderAdapter(SourceAdapter)``),
   arg names + cheap annotations via `ast.unparse`; `anchors` = one `file-line` anchor
   ``<relpath>:L<lineno>``; `as_of` = the file's mtime date.
+- **#CLI command-line flags (MG-2) — one fact per static `argparse` `add_argument(...)`
+  whose flag/name (first positional) is a STRING LITERAL. OPT-IN via `mode: cli` ONLY**
+  (never emitted by `both`/`tree`/`signatures`). Parsed via the SAME `ast` read path as #9.
+  `subject` = ``<file-relpath>::<flag>@L<lineno>`` — the ``@L<lineno>`` CALL-SITE scope is
+  REQUIRED: it keeps the SAME flag recurring across subparsers (e.g. ``--workspace``
+  redeclared per subcommand with different help) DISTINCT, never a duplicate/conflicting
+  subject. ``<flag>`` is the first long ``--option`` string, else the first positional
+  string. `claim` = the flag(s) + cheap declared facets (`help`/`type`/`required`/`default`/
+  `action`) pulled from the call's LITERAL kwargs via `ast.unparse` (a non-literal kwarg
+  value is dropped; one deterministic line); `anchors` = one `file-line` anchor
+  ``<relpath>:L<lineno>`` at the call site; `as_of` = the file's mtime date. An
+  `add_argument` whose flag/name is NOT a string literal (dynamically built) is SKIPPED
+  IN-BAND (like the budget cap — never an error). Static-argparse-string-literal-only:
+  dynamic flag construction, Click, and Typer are DOCUMENTED misses (one-file-extendable
+  later), never a crash.
 
 **Query-INSENSITIVE (planner-03 R4).** The adapter validates that `query` is a `str`
 (loud if not) and then IGNORES its content: it emits the FULL tree + signature set
@@ -46,10 +65,14 @@ drop the structural facts — so, unlike `folder`'s coarse substring, `fsast` ne
 - **Scope mode (`mode` connection key)** — `both` (the DEFAULT, and what an ABSENT key
   means) emits the tree(#3) AND signature(#9) families exactly as above; `tree` emits ONLY
   the #3 directory-tree facts (no signatures); `signatures` emits ONLY the #9 def/class
-  signature facts (no tree). This lets a project-manual cite a repo's real layout (#3) and a
-  clean public-API sample (#9) as SEPARATE, budget-clean bindings without one flooding the
-  other. The mode gates only WHICH fact families are emitted — the walk, pruning, tier, fact
-  shapes, deterministic order, and budget cap are unchanged for whatever a mode does emit.
+  signature facts (no tree); `cli` emits ONLY the #CLI command-line-flag facts (no tree, no
+  signatures) — static-argparse-string-literal-only (dynamic construction / Click / Typer
+  are documented misses, skipped IN-BAND). This lets a project-manual cite a repo's real
+  layout (#3), a clean public-API sample (#9), and its real CLI surface (#CLI) as SEPARATE,
+  budget-clean bindings without one flooding another. The mode gates only WHICH fact families
+  are emitted — the walk, pruning, tier, fact shapes, deterministic order, and budget cap are
+  unchanged for whatever a mode does emit. `cli` is purely ADDITIVE: it is NEVER folded into
+  `both`, so `both`/`tree`/`signatures`/absent stay byte-identical to the pre-cli adapter.
   An unknown mode value is a loud `AdapterError`.
 - **Extra prune list (`skip_dirs` connection key)** — an OPTIONAL list/tuple of directory
   NAMES pruned mid-walk IN ADDITION to the always-pruned `workspaces`/`__pycache__`/dot-dirs/
@@ -96,11 +119,13 @@ from pipeline.adapters.base import (
 )
 
 __all__ = [
+    "CLI_FACET_KEYS",
     "CONNECTION_KEYS",
     "DEFAULT_BUDGET",
     "FsAstAdapter",
     "MODES",
     "MODE_BOTH",
+    "MODE_CLI",
     "MODE_SIGNATURES",
     "MODE_TREE",
     "PY_SUFFIX",
@@ -120,13 +145,23 @@ DEFAULT_BUDGET = 2000
 
 #: Scope-mode values for the optional `mode` connection key. `both` (the default when the key
 #: is ABSENT) emits the tree(#3) AND signature(#9) families exactly as before; `tree` emits
-#: ONLY the #3 directory-tree facts; `signatures` emits ONLY the #9 def/class signature facts.
-#: Lets a manual ground a repo's real layout (#3) and a clean public-API sample (#9) as SEPARATE
-#: budget-clean sources without one flooding the other. Any other value is a loud AdapterError.
+#: ONLY the #3 directory-tree facts; `signatures` emits ONLY the #9 def/class signature facts;
+#: `cli` (MG-2) emits ONLY the #CLI command-line-flag facts (no tree, no signatures). Lets a
+#: manual ground a repo's real layout (#3), a clean public-API sample (#9), and its real CLI
+#: surface (#CLI) as SEPARATE budget-clean sources without one flooding another. `cli` is purely
+#: ADDITIVE — never folded into `both`, so the legacy modes stay byte-identical. Any other value
+#: is a loud AdapterError.
 MODE_BOTH = "both"
 MODE_TREE = "tree"
 MODE_SIGNATURES = "signatures"
-MODES = frozenset({MODE_BOTH, MODE_TREE, MODE_SIGNATURES})
+MODE_CLI = "cli"
+MODES = frozenset({MODE_BOTH, MODE_TREE, MODE_SIGNATURES, MODE_CLI})
+
+#: The `argparse` add_argument kwargs a #CLI (`mode: cli`) fact folds into its one-line claim,
+#: in a FIXED order for determinism — the cheap, commonly-declared facets. A facet is included
+#: only when its kwarg value is a cheap literal (`_is_cheap_cli_literal`); a richer/dynamic value
+#: is dropped gracefully so the claim stays one deterministic line.
+CLI_FACET_KEYS = ("help", "type", "required", "default", "action")
 
 #: The closed connection-key set: the bound directory + its fact budget, plus the two OPTIONAL
 #: scoped-grounding keys (`mode`, `skip_dirs`) — nothing else. Both are omit-when-absent: an
@@ -212,7 +247,8 @@ def _validate_connection(connection: Mapping[str, Any]) -> _Connection:
         raise AdapterError(
             f"adapter-failure: fsast connection mode must be one of {sorted(MODES)!r} "
             f"({MODE_BOTH!r}=tree #3 + signature #9 facts [default], {MODE_TREE!r}=tree only, "
-            f"{MODE_SIGNATURES!r}=signatures only), got {mode!r}"
+            f"{MODE_SIGNATURES!r}=signatures only, {MODE_CLI!r}=CLI-flag #CLI facts only), "
+            f"got {mode!r}"
         )
     raw_skip = connection.get("skip_dirs", ())
     if not isinstance(raw_skip, (list, tuple)):
@@ -297,6 +333,82 @@ def _signatures(file: Path, relpath: str) -> list[tuple[str, str, int]]:
     return facts
 
 
+def _is_cheap_cli_literal(value: ast.expr) -> bool:
+    """A #CLI kwarg value cheap + deterministic enough to fold into a one-line claim: a
+    constant (str/number/bool/None), a bare name (`int`, `str`, `Path`), or a dotted
+    attribute (`argparse.SUPPRESS`). Anything richer — a call, lambda, f-string,
+    comprehension, list/dict/set literal, … — is a NON-literal we drop in-band (directive:
+    "skip a non-literal kwarg value gracefully"), keeping the claim one deterministic line."""
+    return isinstance(value, (ast.Constant, ast.Name, ast.Attribute))
+
+
+def _cli_facts(file: Path, relpath: str) -> list[tuple[str, str, int]]:
+    """Every static `argparse` `add_argument(...)` in a `.py` whose flag/name (first
+    positional) is a STRING LITERAL, as ``(subject, claim, lineno)`` triples in deterministic
+    source order (ascending line, then column). Reads via the SAME `read_text` + `ast.parse`
+    path as `_signatures` — undecodable bytes / unparseable Python are the SAME loud typed
+    `AdapterError`s (never a silent skip). A call whose flag/name is NOT a string literal
+    (dynamically built) is SKIPPED IN-BAND — static-argparse-string-literal-only is a
+    documented, one-file-extendable limit (dynamic construction / Click / Typer are misses,
+    never a crash), exactly the budget cap's in-band posture.
+
+    `subject` = ``<relpath>::<flag>@L<lineno>`` — the ``@L<lineno>`` CALL-SITE scope is
+    REQUIRED so the SAME flag redeclared across subparsers stays a DISTINCT, collision-free
+    subject. ``<flag>`` is the first long ``--option``, else the first positional string.
+    `claim` = the option string(s) + cheap declared facets (`CLI_FACET_KEYS`, in that fixed
+    order) pulled from the call's LITERAL kwargs via `ast.unparse`; a non-literal facet value
+    is dropped so the claim stays one deterministic line."""
+    try:
+        source = file.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise AdapterError(
+            f"adapter-failure: source file {relpath!r} is not UTF-8 text: {exc} "
+            "(undecodable sources fail loudly, never silently skip)"
+        ) from exc
+    except OSError as exc:
+        raise AdapterError(
+            f"adapter-failure: could not read source file {relpath!r}: {exc}"
+        ) from exc
+    try:
+        tree = ast.parse(source, filename=str(file))
+    except SyntaxError as exc:
+        raise AdapterError(
+            f"adapter-failure: source file {relpath!r} does not parse as Python: {exc} "
+            "(an unparseable .py is a typed error, never a silent skip)"
+        ) from exc
+    collected: list[tuple[int, int, str, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "add_argument":
+            continue
+        if not node.args:
+            continue
+        first = node.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            continue  # dynamically-built flag/name: NOT groundable -> skip IN-BAND (docstring)
+        options = [
+            arg.value
+            for arg in node.args
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+        ]
+        longs = [opt for opt in options if opt.startswith("--")]
+        flag = longs[0] if longs else options[0]  # first long --option, else first positional
+        kw_values = {kw.arg: kw.value for kw in node.keywords if kw.arg is not None}
+        facets = [
+            f"{key}={ast.unparse(kw_values[key])}"
+            for key in CLI_FACET_KEYS
+            if key in kw_values and _is_cheap_cli_literal(kw_values[key])
+        ]
+        joined = ", ".join(options)
+        claim = f"{joined} ({', '.join(facets)})" if facets else joined
+        subject = f"{relpath}::{flag}@L{node.lineno}"
+        collected.append((node.lineno, node.col_offset, subject, claim))
+    collected.sort()  # deterministic source order (line, then column)
+    return [(subject, claim, lineno) for lineno, _col, subject, claim in collected]
+
+
 class FsAstAdapter(SourceAdapter):
     """`adapter: fsast` — read-only tree(#3) + Python-AST signature(#9) grounding over one
     local directory. Query-INSENSITIVE: it emits the whole structural fact set regardless
@@ -319,15 +431,19 @@ class FsAstAdapter(SourceAdapter):
 
     def _walk_facts(self, conn: _Connection) -> Iterator[Fact]:
         """The deterministic fact stream: for each directory (parent-first, lexicographic)
-        one tree(#3) fact, then the signature(#9) facts of its `.py` files (sorted). Hidden
-        entries, symlinks, and any `workspaces`/`__pycache__`/`skip_dirs` subdir are pruned
-        (rule 1/2; planner-03 R6 + commit-pin reproducibility). The scope `mode` gates only
-        WHICH families are yielded — `both` yields tree + signatures (the default, identical
-        to pre-C2b), `tree` yields tree facts only, `signatures` yields signature facts only;
-        the walk, pruning, and per-fact shapes are the same for whatever a mode does emit."""
+        one tree(#3) fact, then the signature(#9) OR command-line-flag(#CLI) facts of its
+        `.py` files (sorted). Hidden entries, symlinks, and any `workspaces`/`__pycache__`/
+        `skip_dirs` subdir are pruned (rule 1/2; planner-03 R6 + commit-pin reproducibility).
+        The scope `mode` gates only WHICH families are yielded — `both` yields tree +
+        signatures (the default, identical to pre-C2b), `tree` yields tree facts only,
+        `signatures` yields signature facts only, and `cli` yields the #CLI command-line-flag
+        facts ALONE (opt-in; NEVER folded into `both`, so `both`/`tree`/`signatures` stay
+        byte-identical to the pre-cli adapter); the walk, pruning, and per-fact shapes are the
+        same for whatever a mode does emit."""
         root = conn.root
         emit_tree = conn.mode in (MODE_BOTH, MODE_TREE)
         emit_signatures = conn.mode in (MODE_BOTH, MODE_SIGNATURES)
+        emit_cli = conn.mode == MODE_CLI  # MG-2: standalone; never mixed into `both`
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             here = Path(dirpath)
             kept_dirs = sorted(
@@ -348,19 +464,28 @@ class FsAstAdapter(SourceAdapter):
             relpath = here.relative_to(root).as_posix()
             if emit_tree:
                 yield self._tree_fact(here, relpath, kept_dirs, kept_files)
-            if not emit_signatures:
-                continue
+            if not (emit_signatures or emit_cli):
+                continue  # tree-only mode: no per-file parse needed (byte-identical to pre-C2b)
             for name in kept_files:
                 if not name.endswith(PY_SUFFIX):
                     continue
                 file = here / name
                 file_rel = file.relative_to(root).as_posix()
                 file_as_of = datetime.date.fromtimestamp(file.stat().st_mtime)
-                for subject, claim, lineno in _signatures(file, file_rel):
+                # #9 signatures and #CLI flags share the identical line-anchored fact shape
+                # (directive 3). The mode picks EXACTLY ONE family (never both), so `both`/
+                # `tree`/`signatures` keep the pre-cli signature output byte-identical — cli
+                # is purely additive.
+                triples = (
+                    _signatures(file, file_rel)
+                    if emit_signatures
+                    else _cli_facts(file, file_rel)
+                )
+                for subject, claim, lineno in triples:
                     yield Fact(
                         subject=subject,
                         claim=claim,
-                        tier=TIER_EXTRACTED,  # a mechanically derived signature (docstring)
+                        tier=TIER_EXTRACTED,  # mechanically derived signature/flag (docstring)
                         anchors=(Anchor("file-line", f"{file_rel}:L{lineno}"),),
                         as_of=file_as_of,
                         refinements={},  # the adapter classifies nothing; kind defaults ride
