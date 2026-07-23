@@ -74,6 +74,7 @@ __all__ = [
     "DISPOSITION_REVISION",
     "DeliverableCoordinate",
     "DocumentPlan",
+    "DuplicatePartIdError",
     "PandocBytesOutcome",
     "PandocOutcome",
     "PandocParseError",
@@ -154,6 +155,14 @@ class PandocParseError(SerializeError):
     """Pandoc parsed nonzero, emitted unparseable JSON, or emitted an off-pin api-version."""
 
     code = "pandoc-parse-failed"
+
+
+class DuplicatePartIdError(SerializeError):
+    """Two part Divs co-rendering into ONE document share a `#id` (role slug) — the emitted HTML
+    would carry duplicate ids (invalid). Refused loudly (§15/RI8: a part role slug is doc-unique),
+    never silently serialized."""
+
+    code = "duplicate-part-id"
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +543,30 @@ def _references_frontmatter(references: Sequence[Mapping[str, Any]]) -> str:
     return f"---\nreferences: {yaml_value}\n---\n\n"
 
 
+def _check_unique_part_div_ids(plan: DocumentPlan) -> None:
+    """Refuse a document whose part Divs would emit DUPLICATE `#id`s (invalid HTML).
+
+    Every part leaf co-renders into ONE AST as a fenced Div `::: {#role .role …}`
+    (`emit_part_div`, where the `#id` is the part `role` slug). Two parts sharing a `role` slug
+    within a single document therefore emit two Divs with the SAME `#id` — invalid HTML. The role
+    slug is documented doc-unique (§15/RI8); this makes that assumption a LOUD, typed guard rather
+    than a silent invalid-HTML emission (fail-loud posture, §3.1). Standalone parts are each their
+    OWN document (one Div) → never collide; a flat body carries no part Div. Happy path (unique
+    slugs, the corpus): scans silently, emits identical bytes."""
+    seen: set[str] = set()
+    for part, _sequence, _body in plan.leaves:
+        if part is None:  # a flat body — no Div, no id
+            continue
+        role = str(part["role"])
+        if role in seen:
+            raise DuplicatePartIdError(
+                f"duplicate-part-id: two parts in one document both render the `#{role}` Div id "
+                "— a part role slug must be doc-unique (§15/RI8), else the emitted HTML carries "
+                "duplicate ids; refusing to serialize invalid HTML"
+            )
+        seen.add(role)
+
+
 def emit_document_markdown(
     plan: DocumentPlan,
     ledger: Mapping[str, Any],
@@ -563,7 +596,12 @@ def emit_document_markdown(
 
     `references=None`/empty ⇒ NO frontmatter ⇒ byte-identical to pre-C5 for every citation-less
     artifact (the whole existing render corpus parses to the identical AST; zero golden churn).
+
+    HTML-VALIDITY GUARD: the part Divs' `#id`s (role slugs) must be doc-unique — a duplicate raises
+    `DuplicatePartIdError` BEFORE any bytes are emitted (fail-loud, §3.1). Unique slugs (the
+    corpus) pass silently → identical bytes.
     """
+    _check_unique_part_div_ids(plan)
     chunks: list[str] = []
     for part, sequence, body in plan.leaves:
         enriched = enrich_leaf(body, ledger)

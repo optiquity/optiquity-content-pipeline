@@ -25,7 +25,7 @@ import pytest
 
 from pipeline.dispatch import RenderTarget
 from pipeline.filters.provenance_strip import has_provenance
-from pipeline.ir import PANDOC_API_VERSION
+from pipeline.ir import PANDOC_API_VERSION, SecretShapedValueError
 from pipeline.payload import PayloadError, build_payload, part_structure
 from pipeline.serialize import (
     READER_PIN,
@@ -379,3 +379,32 @@ def test_payload_imports_no_ssot():
             assert all("ssot" not in alias.name for alias in node.names)
         elif isinstance(node, ast_mod.ImportFrom):
             assert node.module is None or "ssot" not in node.module
+
+
+# ---------------------------------------------------------------------------
+# GAP-5(a): DEFENSE-IN-DEPTH metadata re-scan (§3.3). A caller that hand-builds a `fitted_ir`
+# bypassing the IR-level secret-scan must still be caught at payload-build time (fail-closed).
+# ---------------------------------------------------------------------------
+
+
+def test_secret_in_hand_built_metadata_is_caught_at_payload_build():
+    # A hand-built fitted_ir whose metadata bag carries a secret-shaped value (a GitHub token),
+    # never routed through `pipeline.ir.build_ir`'s §3.3 scan. build_payload RE-SCANS and refuses
+    # it with the SAME typed error — no leaking payload is returned (fail-closed).
+    leaky = {"body": "x", "metadata": {"deploy_token": "ghp_" + "A" * 30}}
+    with pytest.raises(SecretShapedValueError):
+        build_payload(
+            ast=_provenance_ast(),
+            deliverable_id=DELIV,
+            render_target=EXTERNAL,
+            pin_bundle=_pins(),
+            fitted_ir=leaky,
+            requested_output_types=["epub"],
+            extension="epub",
+        )
+
+
+def test_clean_metadata_bag_is_unchanged_by_the_rescan():
+    # Happy path unchanged: a secret-free metadata bag scans silently and rides through opaque.
+    payload = _build(_provenance_ast(), _parts_fitted())
+    assert payload["metadata"] == {"campaign": "q3", "client": "acme"}

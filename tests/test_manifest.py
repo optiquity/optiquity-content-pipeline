@@ -379,6 +379,24 @@ class TestResolvedRows:
         assert row["warn"] == "render-input-mismatch"  # the warn rides the row (§21.8)
         assert row["fit_current"] is False
 
+    def test_render_needed_from_stale_fit_still_carries_render_input_mismatch(self, store):
+        # GAP-5(b): a STALE fit (§21.8 rule 2 — no fit-current candidate) whose only materialized
+        # deliverable is ALSO serialize-stale → the serialize level finds nothing current → the row
+        # is `render-needed`. The `render-input-mismatch` warn must STILL ride that row (it rode the
+        # latest-minted stale fit at the fit level); dropping it under-reports fit-staleness for one
+        # cycle. Contrast test_stale_fit_row_carries_render_input_mismatch (a MATERIALIZED
+        # serialize-current stale-fit row) — here nothing is materializable, but the warn persists.
+        seed_artifact(store, ART)
+        did, fit = seed_deliverable(store, artifact_id=ART, fit_preimage=_fit_pre(200))
+        folio = make_folio(store, [ART])
+        resolver = FakeResolver(stale_fits={fit}, stale_serials={did})  # stale fit AND stale bytes
+        out = _emit(store, folio, member_targets={ART: [COORD]}, resolver=resolver)
+        (row,) = [r for r in _rows(out) if r["member_artifact_id"] == ART]
+        assert row["state"] == "render-needed"  # no serialize-current deliverable to reference
+        assert row["deliverable_id"] is None  # the stale bytes are NOT handed to the publisher
+        assert row["fitted_id"] == fit  # the chosen (latest-minted stale) fit names the target
+        assert row["warn"] == "render-input-mismatch"  # the FIX: fit-staleness surfaced
+
     def test_render_needed_for_resolvable_but_unmaterialized(self, store):
         seed_artifact(store, ART)
         fit = seed_fit(store, artifact_id=ART)  # a fit exists; NO deliverable materialized

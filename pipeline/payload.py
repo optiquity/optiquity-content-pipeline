@@ -53,6 +53,7 @@ from pipeline import ids
 from pipeline.dispatch import RenderTarget
 from pipeline.filters.provenance_strip import has_provenance, strip_provenance
 from pipeline.ids import IdError
+from pipeline.ir import _scan_no_secrets
 
 __all__ = [
     "PayloadError",
@@ -170,11 +171,16 @@ def build_payload(
     SECURITY (RI14): the AST is stripped of ALL provenance UNCONDITIONALLY (`strip_provenance`,
     fail-closed) and re-verified with `has_provenance` — provenance/tier tags and any fact-anchor
     id are EXCLUDED; the grounding ledger is not a component; the `metadata` bag rides through
-    opaque (secret-scanned upstream at IR build). The strip's attr-walk touches only Pandoc `Attr`
+    opaque (secret-scanned upstream at IR build). DEFENSE-IN-DEPTH (§3.3): the metadata bag is
+    ALSO re-scanned HERE with the SAME `pipeline.ir` scanner + typed `SecretShapedValueError`, so
+    a caller that hand-builds a `fitted_ir` bypassing the IR-level scan still cannot leak a
+    secret-shaped value into the external hand-off — fail-closed, before any payload is returned.
+    The strip's attr-walk touches only Pandoc `Attr`
     carriers, so the pre-citeproc `Cite` nodes and the `meta.references` MetaMap SURVIVE it intact
     (citeproc runs on the actor's side → NO `data-cites` exists at payload time → the fail-closed
     guard does not trip). Raises `PayloadError` on a non-external target, a non-deliverable id, or
-    (the fail-closed guard) surviving provenance."""
+    (the fail-closed guard) surviving provenance; raises `SecretShapedValueError` (§3.3) if the
+    metadata bag carries a secret-shaped value."""
     if not isinstance(render_target, RenderTarget):
         raise PayloadError(
             f"payload-error: render_target must be a dispatch.RenderTarget, got "
@@ -226,14 +232,22 @@ def build_payload(
             "pandoc_version": pin_bundle.get("pandoc_version"),
         }
 
+    # (4) the opaque metadata bag, untouched — but DEFENSE-IN-DEPTH re-scanned (§3.3) with the
+    # SAME `pipeline.ir` scanner + typed error, so a hand-built `fitted_ir` that bypassed the
+    # IR-level scan cannot leak a secret-shaped value into the external hand-off. Fail-closed:
+    # `_scan_no_secrets` raises `SecretShapedValueError` BEFORE any payload is returned. A clean
+    # bag scans silently → byte-identical output (happy path unchanged).
+    metadata = dict(fitted_ir.get("metadata", {}))
+    _scan_no_secrets(metadata, "payload.metadata")
+
     return {
         # (1) the AST JSON, embedding its api-version.
         "ast": payload_ast,
         "reproducibility": reproducibility,
         # (3) the part structure with EXPLICIT sequence.
         "parts": part_structure(fitted_ir, extension=extension),
-        # (4) the opaque metadata bag, untouched (secret-scanned upstream at IR build).
-        "metadata": dict(fitted_ir.get("metadata", {})),
+        # (4) the opaque metadata bag, untouched (secret-scanned upstream at IR build + re-scanned).
+        "metadata": metadata,
         # (5) the language (already localized — the actor never re-localizes).
         "language": language,
     }

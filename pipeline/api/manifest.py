@@ -448,6 +448,11 @@ def _resolved_row(
         row.update(coord_cols)
         row["state"] = STATE_RENDER_NEEDED
         row["fitted_id"] = chosen_fit  # the chosen fit (current-matching, or latest-minted stale)
+        # §21.8 rule 2: the `render-input-mismatch` warn RIDES the latest-minted (stale) fit's row
+        # regardless of the serialize level, so carry it onto this render-needed-from-stale-fit
+        # branch too (else a stale fit with no materialized serialize-current under-reports its
+        # fit-staleness for one cycle). `warn` is None on a fit-current fit → byte-identical there.
+        row["warn"] = warn
         return row
     # No materialized deliverable for the coordinate → render-needed (resolvable from a fit if one
     # exists; the work order says "render this"). Nothing is rendered here (§21.5).

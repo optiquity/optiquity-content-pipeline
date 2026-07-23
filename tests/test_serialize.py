@@ -39,6 +39,7 @@ from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id
 from pipeline.ir import PANDOC_API_VERSION, build_ir, extract_fact_refs
 from pipeline.serialize import (
     READER_PIN,
+    DuplicatePartIdError,
     PandocOutcome,
     PandocParseError,
     PandocUnavailableError,
@@ -320,6 +321,35 @@ def test_flat_body_is_one_document():
     assert len(units) == 1 and units[0].label is None and units[0].part_ids == ()
     plans = plan_documents(_flat_fitted())
     assert len(plans) == 1
+
+
+# ---------------------------------------------------------------------------
+# GAP-5(c): part-Div `#id` uniqueness — two parts co-rendering into ONE document must not emit
+# duplicate `#id`s (invalid HTML); a collision is refused loudly, never silently serialized.
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_part_div_id_is_refused():
+    # Two in-document parts share the `intro` role slug → both would render as `::: {#intro …}`
+    # inside ONE combined AST (duplicate `#id` = invalid HTML). emit_document_markdown must raise
+    # the typed DuplicatePartIdError BEFORE any bytes are emitted.
+    dup = {
+        "grounding": _LEDGER,
+        "parts": [
+            {"part-id": f"{ART}~a", "role": "intro", "packaging_hint": "in-document", "body": "A."},
+            {"part-id": f"{ART}~b", "role": "intro", "packaging_hint": "in-document", "body": "B."},
+        ],
+    }
+    (plan,) = plan_documents(dup)  # both in-document → ONE combined document (two same-#id Divs)
+    with pytest.raises(DuplicatePartIdError):
+        emit_document_markdown(plan, dup["grounding"])
+
+
+def test_unique_part_div_ids_still_emit_unchanged():
+    # Happy path: distinct role slugs (the corpus case) emit without complaint — bytes unchanged.
+    (plan,) = plan_documents(_parts_fitted("in-document", "in-document"))
+    markdown = emit_document_markdown(plan, _LEDGER)
+    assert "{#intro" in markdown and "{#appendix" in markdown
 
 
 # ---------------------------------------------------------------------------
