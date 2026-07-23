@@ -10,7 +10,7 @@ An extended, sectioned argument (design §5.2 — a platform-agnostic genre; one
 design's own three named examples). One thesis, developed across sections, earning its
 length.
 
-Rhetorical structure (consumed at compose, §15):
+Rhetorical structure (authoring reference; §15):
 
 1. **Framing** — the question or tension the essay addresses, and why it matters now.
 2. **Thesis** — the position, stated early and unambiguously.
@@ -24,3 +24,8 @@ Discipline: every section serves the one thesis — a detachable section is a se
 artifact (§5.2). Single-part genre: `parts` rides the schema floor (Q14). No platform
 data lives here (Q4): destination norms and any split-into-a-series defaulting arrive
 from the selected Platform's projections at render time (§12.3).
+
+This body is human-authoring REFERENCE — NOT a compose input: the writer
+receives only the bound attributes, the `parts`/`section_schema` structure,
+the grounded facts, and (when set) the DR-3 outline drive brief; this body is
+never threaded to the writer (§15).

@@ -11,7 +11,7 @@ the size class, not any destination — formats carry no platform coupling, Q4):
 subject, evaluated against declared criteria, ending in a verdict. Longer than a
 quick take, shorter than an exhaustive teardown.
 
-Rhetorical structure (consumed at compose, §15):
+Rhetorical structure (authoring reference; §15):
 
 1. **Subject & stakes** — what is being reviewed and why the reader would care now.
 2. **Criteria** — the yardsticks, declared before any judgment is passed.
@@ -26,3 +26,8 @@ craft. Single-part genre: `parts` rides the schema floor (Q14) — the numbered 
 are rhetorical structure in this body, not sub-outputs. No platform data lives here
 (Q4): preferred lengths and destination norms arrive from the selected Platform's
 per-format advisory projection at render time (§12.3).
+
+This body is human-authoring REFERENCE — NOT a compose input: the writer
+receives only the bound attributes, the `parts`/`section_schema` structure,
+the grounded facts, and (when set) the DR-3 outline drive brief; this body is
+never threaded to the writer (§15).

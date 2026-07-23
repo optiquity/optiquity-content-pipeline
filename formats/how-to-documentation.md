@@ -10,7 +10,7 @@ Task-oriented procedural documentation (design §5.2 — a platform-agnostic gen
 task, taken from a known starting state to a verified end state. The reader is doing,
 not browsing.
 
-Rhetorical structure (consumed at compose, §15):
+Rhetorical structure (authoring reference; §15):
 
 1. **Goal** — the task in the reader's terms, and what "done" looks like.
 2. **Prerequisites** — required setup, versions, and permissions, stated before the
@@ -27,3 +27,8 @@ grounded — every command, flag, path, and output must trace to the source repo
 are rhetorical structure, not named sub-outputs. No platform data lives here (Q4):
 where this lands (a docs site, a repo, a knowledge base) is the selected Platform's
 business at render time (§12.3).
+
+This body is human-authoring REFERENCE — NOT a compose input: the writer
+receives only the bound attributes, the `parts`/`section_schema` structure,
+the grounded facts, and (when set) the DR-3 outline drive brief; this body is
+never threaded to the writer (§15).

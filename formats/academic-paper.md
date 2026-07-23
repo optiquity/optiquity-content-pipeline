@@ -43,7 +43,7 @@ evidence, and the method that produced it without reading linearly. Outline-shap
 a sectioned skeleton (DR-3), and its sections carry declared ROLES that the typed-section
 conformance contract in this entry's frontmatter checks (DR-4).
 
-Rhetorical structure (consumed at compose, §15; the section ROLES the `section_schema` references):
+Rhetorical structure (authoring reference; §15; the section ROLES the `section_schema` references):
 
 1. **Abstract** (`#abstract`) — a self-contained precis: the question, what was done, and the
    headline finding, in a few sentences; no citations, no undefined abbreviations.
@@ -73,3 +73,7 @@ The typed-section conformance contract (`section_schema`, DR-4) declared above r
 canonical abstract → methods → results order (warning), and caps the abstract's length (warning).
 The roles are author-declared here; they are never structural `type` kinds (which name genre-
 neutral STRUCTURAL shapes only: prose, figure, table, callout).
+
+This body is human-authoring REFERENCE — it is NOT a compose input: the writer receives only the
+bound attributes, the `parts`/`section_schema` structure, the grounded facts, and (when set) the
+DR-3 outline drive brief; this body is never threaded to the writer (§15).

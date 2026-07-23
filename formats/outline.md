@@ -11,7 +11,7 @@ tree of sections and headings, each carrying a stated intent and a few bullet le
 that a human edits BEFORE any prose is drafted and that renders unchanged to whatever
 output type the deliverable coordinate selects (md, plain-text, pdf, epub).
 
-Rhetorical structure (consumed at compose, §15):
+Rhetorical structure (authoring reference; §15):
 
 1. **Title + one-line thesis** — what the finished piece will deliver or argue, in a
    single sentence the rest of the tree serves.
@@ -31,3 +31,8 @@ and any factual lead carried into the drafted artifact must trace to the source
 floor (Q14) — one outline is one artifact, never a composite. No platform data lives
 here (Q4): the scaffold is not "for" any destination until the user routes it
 (§8, §12.3).
+
+This body is human-authoring REFERENCE — NOT a compose input: the writer
+receives only the bound attributes, the `parts`/`section_schema` structure,
+the grounded facts, and (when set) the DR-3 outline drive brief; this body is
+never threaded to the writer (§15).

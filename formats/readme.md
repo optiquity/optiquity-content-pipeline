@@ -9,7 +9,7 @@ schema_version: 1
 The repository front-door genre (design §5.2 — a platform-agnostic genre; one of the
 design's own three named examples): what this is, why it matters, how to start.
 
-Rhetorical structure (consumed at compose, §15):
+Rhetorical structure (authoring reference; §15):
 
 1. **What it is** — one paragraph: what the project does, in the reader's terms.
 2. **Why it matters** — the problem it removes; who it is for.
@@ -23,3 +23,8 @@ Discipline: heavily grounded — a readme's factual claims (commands, flags, pat
 behavior) must trace to the source repo (§3.3, §6.5). Single-part genre: `parts` rides
 the schema floor (Q14). No platform data lives here (Q4): this genre is not "for" any
 destination until the user routes it (§8, §12.3).
+
+This body is human-authoring REFERENCE — NOT a compose input: the writer
+receives only the bound attributes, the `parts`/`section_schema` structure,
+the grounded facts, and (when set) the DR-3 outline drive brief; this body is
+never threaded to the writer (§15).
