@@ -110,16 +110,28 @@ DR-2) → DR-6 → DR-3 → DR-4 → DR-5 → DR-2`.
   **→ RESOLVED at DR-4 (C1/C2, `pipeline/sections.py`; 2026-07-19):** the F1 sentinel section grammar
   (C1) + the C2 conformance vocabulary are BUILT and shared. **STILL DEFERRED (precise):** the DR-3
   `constraint?` consumer (DR-3 cut `constraint?` from v1, so #3's "consumed by the deferred DR-3
-  `constraint?`" half awaits DR-3's resumption); and the F1-sentinel BROADENING — v1 recognizes ATX
-  headings ONLY, SETEXT/blockquoted headings fail-closed to body (a known limit, never a mistyped
-  section).
+  `constraint?`" half awaits DR-3's resumption).
+  **→ ATX-ONLY BY DESIGN — WON'T-BROADEN (documented, deliberate limit; ratified 2026-07-23):** the
+  F1-sentinel BROADENING (recognize SETEXT `===`/`---` and blockquoted `> ##` headings) is **retired as
+  a deliberate limit, not a deferral.** Section sentinels are **ATX-only** (`#`…`######`) **BY DESIGN**;
+  SETEXT/blockquoted headings fail **closed** to body — never a mis-parse / mistyped section. Rationale
+  (focused architect design pass, 2026-07-23 —
+  `ops-handoff/sentinel-broadening/architect-01/report.md`):
+  the F1 grammar feeds **only the conformance GATES** (block/pass), never any digest (`outline_digest` /
+  `artifact-id` / `fit_digest` derive from other inputs) — so no grammar change can churn identity and
+  broadening carries **no identity motivation**; the `---` form **cannot be disambiguated** in F1's
+  line-scanner without a **fail-open** mis-parse (a frontmatter closing `---` read as an h2; a `---` rule
+  after prose), which would break the fail-closed never-mis-parse contract (a faithful rule needs a
+  block/frontmatter parser — an architecture change); blockquoted `> ##` is semantically wrong as a
+  top-level section; and the value is **fully substitutable by writing `##`** (already fully supported).
   **#3a** — F1 sentinels **N-invariant** (a DR-3 build-time requirement: reserve the sentinel-significant
   structure when pinning N, so un-deferring F1 churns no `outline-digest`). **NO-GO for DR-3 + DR-4.**
-  **→ HONORED, NOT un-deferred (2026-07-19):** the N-invariance RESERVATION was made in DR-3
-  (`pipeline/outline.py`) and C1 respects it (section boundaries derive only from N-preserved
-  structure — full-line content + leading indentation, never trailing whitespace / blank-run counts /
-  nesting depth), so a future F1 broadening churns no `outline-digest`. The broadening itself stays
-  deferred.
+  **→ HONORED — SATISFIED, now MOOT for the broadening (2026-07-19 reservation; 2026-07-23 close):** the
+  N-invariance RESERVATION was made in DR-3 (`pipeline/outline.py`) and C1 respects it (section
+  boundaries derive only from N-preserved structure — full-line content + leading indentation, never
+  trailing whitespace / blank-run counts / nesting depth), so any future F1 grammar change churns no
+  `outline-digest`. With the broadening retired as an ATX-only limit (above), this reservation is
+  **satisfied and moot for the broadening**; it remains **honored** for the grammar as built.
 - **#4** — extend the §16 RI5 reconcile-gate ordering (DR-4 structural gate + DR-6 coverage re-check +
   terminal hard-limit gate; joint hard-structural × hard-limit → block-and-report). **NO-GO for DR-4.**
   **→ RESOLVED at DR-4 (C8; 2026-07-19):** the DR-4 structural gate + the terminal hard-limit gate + the

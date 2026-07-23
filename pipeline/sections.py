@@ -38,9 +38,11 @@ V1 RECOGNITION LIMITS (SAFE, fail-closed): ONLY ATX (`#`) headings are recognize
 sentinels. A SETEXT heading (a title underlined by a `===`/`---` run) and a BLOCKQUOTED heading
 (`> ## X`) are treated as ordinary BODY — NOT typed or keyed in v1. This is fail-CLOSED: an
 unrecognized heading is never forged into a role/type; at worst its section goes un-enforced (an
-under-counted boundary), never a false or mistyped section. Broadening to setext would invite the
-`===`/`---` vs. thematic-break / YAML-fence ambiguity the plan flags as a parse-divergence risk, so
-it is deferred to a later commit's known-issues entry.
+under-counted boundary), never a false or mistyped section. This ATX-only limit is a DOCUMENTED,
+DELIBERATE decision (WON'T-BROADEN) — NOT deferred: broadening to setext would invite the
+`===`/`---` vs. thematic-break / YAML-fence ambiguity, which cannot be disambiguated in this
+line-scanner without a fail-OPEN mis-parse, and the value is fully substitutable by writing `##`.
+See known-issues.md #3.
 
 Trailing `{...}` ATTRIBUTE recognition is pandoc's REAL rule, EXACTLY: a trailing `{...}` is an
 attribute block ONLY IF it is line-final AND its whole interior parses as whitespace-separated

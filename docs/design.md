@@ -268,7 +268,12 @@ a `section_schema`-bearing Format that composes a NON-outline body is **EXEMPT**
 silently unconformant (a section contract has nothing to enforce against a bodyless/non-sectioned
 artifact; the base gate no-ops rather than blocking). The section **`type`** carrier (`prose`,
 `figure`, `table`, `callout`) is an OPEN one-file-add frozenset, not a closed enum; author-declared
-**roles** (`abstract`, …) are open and are never `type` kinds.
+**roles** (`abstract`, …) are open and are never `type` kinds. The section sentinels that mark that
+heading skeleton are **ATX-only by design** (`#`…`######`) — SETEXT (`===`/`---`) and blockquoted
+(`> ##`) headings fail **closed** to body (never a mistyped section), a deliberate, ratified limit (the
+F1 grammar feeds only the conformance gates, never any digest, so broadening carries no identity
+motivation; `---` cannot be disambiguated in F1's line-scanner without a fail-open mis-parse; and the
+value is fully substitutable by writing `##`), not an open gap (see `known-issues.md` #3).
 
 **Voice — how it sounds.** Owns all register/affect/manner: formality, humor, warmth, energy,
 narrator-persona, plus free-text guidelines. Parametric: a named voice is a saved slider
