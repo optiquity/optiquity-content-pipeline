@@ -29,6 +29,7 @@ import pytest
 from pipeline import ids, mvpdemo, reconcile, serialize
 from pipeline.api import render
 from pipeline.api.invoke import invoke
+from pipeline.claims import ClaimRegistry
 from pipeline.filters.provenance_strip import has_provenance
 from pipeline.ids import parse_id
 from pipeline.lint import REGISTRY_ROOTS
@@ -458,3 +459,149 @@ class TestC6ExternalRoutingAndMintOutcome:
         assert isinstance(record["stripped"], bool)
         assert record["binding"]["deliverable_id"] == deliverable_id
         assert set(record["payload"]) == {"ast", "reproducibility", "parts", "metadata", "language"}
+
+
+# ---------------------------------------------------------------------------
+# GAP-10: the render check-then-mint double-spend race is closed by wiring the §22.3 claim
+# primitives (`fit_resolution.claim_fit`/`serialize.claim_deliverable`) around the two paid
+# mints — the SAME acquire→work→release the generate-next spine runs. These lock: (1) two
+# concurrent identical renders → EXACTLY ONE runs the paid mint, the other gets the re-drivable
+# `claim-held`; (2) the claim is `peek`-live DURING the mint; (3) a mint that raises `_EngineError`
+# releases in the `finally` (no dangling claim); (4) the cache-hit path acquires NO claim and is
+# byte-identical (behaviour-neutral happy path).
+#
+# Concurrency is driven DETERMINISTICALLY via re-entrancy: a fake engine fires a SECOND `render`
+# from INSIDE the first render's `mint_*` — i.e. while the first render provably holds the live
+# claim — so the second contender must observe the claim held. No threads, fully hermetic.
+# ---------------------------------------------------------------------------
+
+
+def _snapshot(store):
+    """Every file under the store root → bytes (output artifacts, bindings, claims). A released
+    claim leaves NO file, so a behaviour-neutral render round-trips to an identical snapshot."""
+    return {
+        str(p.relative_to(store.root)): p.read_bytes()
+        for p in sorted(store.root.rglob("*"))
+        if p.is_file()
+    }
+
+
+class _CountingRegistry:
+    """A thin spy over a real `ClaimRegistry` that counts `acquire` calls — proves the cache-hit
+    path acquires NO claim. Delegates `release`/`peek` to the wrapped registry unchanged."""
+
+    def __init__(self, inner: ClaimRegistry):
+        self.inner = inner
+        self.acquires = 0
+
+    def acquire(self, id_str):
+        self.acquires += 1
+        return self.inner.acquire(id_str)
+
+    def release(self, id_str):
+        return self.inner.release(id_str)
+
+    def peek(self, id_str):
+        return self.inner.peek(id_str)
+
+
+class TestGap10RenderClaimDoubleSpend:
+    def test_two_concurrent_fit_mints_only_one_runs_the_other_claim_held(self, store):
+        """A SECOND identical render fired while the FIRST holds the live fit claim must get
+        `claim-held` and spend NOTHING — exactly one `mint_fit` runs (no double-spend)."""
+        inner = FakeRenderEngine(RP_A, SP_A)
+
+        class ReentrantFitEngine(FakeRenderEngine):
+            def mint_fit(self, leg, *, preimage, revision):
+                # We are INSIDE the outer render's live fit claim; fire the concurrent render now.
+                self.inner_out = _render(store, inner)
+                return super().mint_fit(leg, preimage=preimage, revision=revision)
+
+        outer = ReentrantFitEngine(RP_A, SP_A)
+        out = _render(store, outer)
+
+        assert out["envelope"]["ok"] is True
+        assert out["results"][0]["status"] == "ok"  # the outer WON — it minted
+        assert outer.fit_mints == 1  # exactly ONE paid fit mint ran
+        assert inner.fit_mints == 0  # the loser spent nothing — the double-spend is closed
+        inner_item = outer.inner_out["results"][0]
+        assert inner_item["code"] == "claim-held" and inner_item["status"] == "warn"
+        # The re-drivable block names the id the caller re-drives by (§22.3/§21.8).
+        assert inner_item["ids"]["fitted_id"] == out["results"][0]["ids"]["fitted_id"]
+
+    def test_two_concurrent_deliverable_mints_only_one_runs_the_other_claim_held(self, store):
+        """The SAME guarantee for the paid DELIVERABLE mint: a stable fit HIT + a drifted serialize
+        revision, with a concurrent render fired from inside `mint_deliverable`."""
+        _render(store, FakeRenderEngine(RP_A, SP_A))  # materialize the baseline fit + deliverable
+        inner = FakeRenderEngine(RP_A, SP_B)  # fit HIT, deliverable serialize-revision MISS
+
+        class ReentrantDeliverableEngine(FakeRenderEngine):
+            def mint_deliverable(self, leg, *, preimage, serialize_revision):
+                self.inner_out = _render(store, inner)  # inside the outer's live deliverable claim
+                return super().mint_deliverable(
+                    leg, preimage=preimage, serialize_revision=serialize_revision
+                )
+
+        outer = ReentrantDeliverableEngine(RP_A, SP_B)
+        out = _render(store, outer)
+
+        assert out["results"][0]["code"] == "re-serialized"  # the outer minted the revision
+        assert outer.fit_mints == 0 and outer.deliverable_mints == 1  # one paid deliverable mint
+        assert inner.deliverable_mints == 0  # the loser spent nothing
+        inner_item = outer.inner_out["results"][0]
+        assert inner_item["code"] == "claim-held" and inner_item["status"] == "warn"
+        assert inner_item["ids"]["deliverable_id"] == out["results"][0]["ids"]["deliverable_id"]
+
+    def test_peek_is_live_during_the_fit_mint(self, store):
+        """`peek(fitted-id)` from an INDEPENDENT registry (any holder) returns a live record while
+        the mint runs — the render holds the claim across the whole paid leg (§22.3)."""
+        seen = {}
+
+        class PeekingEngine(FakeRenderEngine):
+            def mint_fit(self, leg, *, preimage, revision):
+                probe = ClaimRegistry(store.claims_dir, holder="probe")
+                fid = ids.fitted_id(leg.item, leg.platform, leg.language)
+                seen["record"] = probe.peek(fid)
+                return super().mint_fit(leg, preimage=preimage, revision=revision)
+
+        _render(store, PeekingEngine(RP_A, SP_A))
+        assert seen["record"] is not None  # the claim was LIVE during the mint
+        assert seen["record"].holder  # a real holder was recorded on the claim
+
+    def test_release_on_engine_error_leaves_no_dangling_claim(self, store):
+        """A `mint_fit` that raises `_EngineError` still releases the fit claim in the `finally`,
+        so the id is immediately re-drivable — no wedged claim, no lost mint."""
+
+        class RaisingEngine(FakeRenderEngine):
+            def mint_fit(self, leg, *, preimage, revision):
+                raise render._EngineError("boom")
+
+        with pytest.raises(render._EngineError):
+            _render(store, RaisingEngine(RP_A, SP_A))
+        assert list(store.claims_dir.iterdir()) == []  # the finally released the claim
+
+        # Re-drivable: a fresh render acquires cleanly and mints exactly once.
+        engine2 = FakeRenderEngine(RP_A, SP_A)
+        out = _render(store, engine2)
+        assert out["results"][0]["status"] == "ok" and engine2.fit_mints == 1
+
+    def test_cache_hit_acquires_no_claim_and_is_byte_identical(self, store, monkeypatch):
+        """The cache-hit / `is_done` path acquires NO claim and mints nothing — the store is
+        byte-identical (same output bytes, same ids): the happy path is behaviour-neutral."""
+        _render(store, FakeRenderEngine(RP_A, SP_A))  # first render mints fit + deliverable
+        before = _snapshot(store)
+
+        registries = []
+        real_registry_for = render.registry_for
+
+        def spy_registry_for(s):
+            reg = _CountingRegistry(real_registry_for(s))
+            registries.append(reg)
+            return reg
+
+        monkeypatch.setattr(render, "registry_for", spy_registry_for)
+        out = _render(store, FakeRenderEngine(RP_A, SP_A))  # identical inputs → pure cache hit
+
+        assert out["results"][0]["code"] == "already-materialized"
+        assert registries and all(r.acquires == 0 for r in registries)  # NO claim acquired
+        assert _snapshot(store) == before  # byte-identical store — behaviour-neutral

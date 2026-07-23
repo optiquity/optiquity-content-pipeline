@@ -58,6 +58,7 @@ from pipeline.serialize import (
     DeliverableCoordinate,
     SerializeResolution,
 )
+from pipeline.spine import registry_for
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, is_done, write_new
 
 __all__ = [
@@ -188,6 +189,11 @@ def _render(
         root=root, workspace=ctx.workspace, store=ctx.store, item=item,
         platform=platform, language=language, canonical_ir=canonical_ir,
     )
+    # GAP-10: ONE workspace-scoped claim registry (fresh minted holder, RV-4) brackets BOTH paid
+    # mints below — the SAME §22.3 acquire→work→release the generate-next spine runs (spine S1→S6).
+    # Constructing it is side-effect-free (no I/O until `acquire`), so the cache-hit path that never
+    # acquires stays behaviour-neutral.
+    registry = registry_for(ctx.store)
 
     # -- FIT resolution (§16 FR2 / the force matrix) --------------------------------------------
     try:
@@ -202,16 +208,31 @@ def _render(
         fit_res = fit_resolution.resolve_fit(coordinate, fit_bindings, fit_preimage)
     fitted_id = fit_resolution.resolved_fitted_id(fit_res, coordinate)
 
+    # GAP-10: bracket the PAID fit mint in a §22.3 claim (mirror the generate-next spine S1→S6).
+    # A bare check-then-mint let two concurrent identical renders BOTH pass `not is_done` and BOTH
+    # run the paid reshape — a double-spend. The content-addressed fitted-id is the claim key, so
+    # both contenders `acquire` the SAME key: exactly one wins, the other gets `claim-held` and is
+    # re-driven by id. Release rides a `finally` — even an `_EngineError` leaves no dangling claim.
     if fit_res.should_mint and not is_done(ctx.store, fitted_id):
-        fitted_ir, fit_binding = engine.mint_fit(
-            fit_leg, preimage=fit_preimage, revision=fit_res.revision
-        )
-        if fit_binding.get("fitted_id") != fitted_id:
-            return ([_block(
-                f"render: engine minted fit {fit_binding.get('fitted_id')!r} but the "
-                f"resolution fixed {fitted_id!r} (§7.4)"
-            )], None)
-        _persist(ctx.store, fitted_id, {"ir": fitted_ir, "binding": fit_binding})
+        acq = fit_resolution.claim_fit(registry, fit_res, coordinate)
+        if not acq.acquired:
+            return ([_claim_held(item, fitted_id, holder=acq.holder)], None)
+        try:
+            # Re-check UNDER the claim: another render may have materialized (and released) in the
+            # check→acquire window — fall through to fetch, never re-spend the mint (acquire-then-
+            # is_done-became-true race).
+            if not is_done(ctx.store, fitted_id):
+                fitted_ir, fit_binding = engine.mint_fit(
+                    fit_leg, preimage=fit_preimage, revision=fit_res.revision
+                )
+                if fit_binding.get("fitted_id") != fitted_id:
+                    return ([_block(
+                        f"render: engine minted fit {fit_binding.get('fitted_id')!r} but the "
+                        f"resolution fixed {fitted_id!r} (§7.4)"
+                    )], None)
+                _persist(ctx.store, fitted_id, {"ir": fitted_ir, "binding": fit_binding})
+        finally:
+            registry.release(fitted_id)  # holder-checked (B4-4b); no-op if we never held
     fitted_ir = _load_ir(ctx.store, fitted_id)
     if fitted_ir is None:
         return ([_block(f"render: resolved fit {fitted_id!r} has no stored IR (§16)")], None)
@@ -234,28 +255,42 @@ def _render(
 
     output_path: str | None = None
     if ser_res.should_mint and not is_done(ctx.store, deliverable_id):
-        mint = engine.mint_deliverable(
-            ser_leg, preimage=ser_preimage, serialize_revision=ser_res.revision
-        )
-        render_binding = mint.binding
-        if render_binding.get("deliverable_id") != deliverable_id:
-            return ([_block(
-                f"render: engine minted deliverable {render_binding.get('deliverable_id')!r} "
-                f"but the resolution fixed {deliverable_id!r} (§7.4)"
-            )], None)
-        # GAP-1b: persist by side. INTERNAL → the layer-2 bytes + render-binding record (the
-        # existing path); EXTERNAL → the zero-provenance contract payload as the
-        # `{binding, side, payload, stripped}` record (`mvpdemo._mint_external`'s exact shape).
-        # An external deliverable has NO layer-2 bytes: the id rides `ids` and retrieval is the
-        # existing `fetch-by-id` (§21.5/§21.8), so `output_path` stays None → `_result` emits
-        # `output=None` for the external side.
-        if mint.side == "external":
-            _persist_external_payload(ctx.store, deliverable_id, mint)
-        else:
-            output_path = _persist_deliverable(
-                ctx.store, deliverable_id, render_binding,
-                mint.output_bytes, mint.extension,
-            )
+        # GAP-10: the SAME §22.3 claim bracket for the paid deliverable mint (`claim_deliverable`
+        # mirrors `claim_fit`; the content-addressed deliverable-id is the key). Held → the
+        # re-drivable `claim-held`; release in a `finally`.
+        acq = serialize.claim_deliverable(registry, ser_res, del_coord)
+        if not acq.acquired:
+            return ([_claim_held(item, fitted_id, deliverable_id, holder=acq.holder)], None)
+        try:
+            if not is_done(ctx.store, deliverable_id):
+                mint = engine.mint_deliverable(
+                    ser_leg, preimage=ser_preimage, serialize_revision=ser_res.revision
+                )
+                render_binding = mint.binding
+                if render_binding.get("deliverable_id") != deliverable_id:
+                    return ([_block(
+                        f"render: engine minted deliverable "
+                        f"{render_binding.get('deliverable_id')!r} but the resolution fixed "
+                        f"{deliverable_id!r} (§7.4)"
+                    )], None)
+                # GAP-1b: persist by side. INTERNAL → the layer-2 bytes + render-binding record (the
+                # existing path); EXTERNAL → the zero-provenance contract payload as the
+                # `{binding, side, payload, stripped}` record (`mvpdemo._mint_external`'s exact
+                # shape). An external deliverable has NO layer-2 bytes: the id rides `ids` and
+                # retrieval is the existing `fetch-by-id` (§21.5/§21.8), so `output_path` stays None
+                # → `_result` emits `output=None` for the external side.
+                if mint.side == "external":
+                    _persist_external_payload(ctx.store, deliverable_id, mint)
+                else:
+                    output_path = _persist_deliverable(
+                        ctx.store, deliverable_id, render_binding,
+                        mint.output_bytes, mint.extension,
+                    )
+            else:
+                # is_done became true under the claim (another render won) — fall through to fetch.
+                output_path = _existing_deliverable_path(ctx.store, deliverable_id)
+        finally:
+            registry.release(deliverable_id)  # holder-checked (B4-4b)
     else:
         output_path = _existing_deliverable_path(ctx.store, deliverable_id)
 
@@ -485,6 +520,33 @@ def _existing_deliverable_path(store: WorkspaceStore, deliverable_id: str) -> st
 def _block(hint: str) -> results.ResultItem:
     """A code-less block (§21.7 closed) — a malformed render call the taxonomy does not name."""
     return results.ResultItem(item="render", status="block", remediation={"hint": hint})
+
+
+def _claim_held(
+    item: str,
+    fitted_id: str,
+    deliverable_id: str | None = None,
+    *,
+    holder: str | None = None,
+) -> results.ResultItem:
+    """The re-drivable `claim-held` (GAP-10) — another render holds a LIVE §22.3 claim on this id
+    (a paid mint is in progress), so this contender skips the mint and the caller re-drives by id.
+
+    The SAME existing coded outcome the generate-next spine returns for a held work unit
+    (`parallel.result_for_spine`) — one uniform liveness model, no new taxonomy code. A `warn`,
+    never a `block`: the work is in flight, not refused. `holder` (the incumbent, when the claim
+    is readable) rides `context` exactly as the spine mapping records it."""
+    ids: dict[str, Any] = {"item": item, "fitted_id": fitted_id}
+    if deliverable_id is not None:
+        ids["deliverable_id"] = deliverable_id
+    return results.make_result(
+        results.CODE_CLAIM_HELD,
+        item=item,
+        ids=ids,
+        context={"holder": holder} if holder is not None else None,
+        hint="another render holds a live claim on this id — re-drive by id; exactly one "
+        "contender mints (§22.3/§21.8)",
+    )
 
 
 # ---------------------------------------------------------------------------

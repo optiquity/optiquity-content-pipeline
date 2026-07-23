@@ -852,6 +852,45 @@ The build's HARD GATES were closed inline during the build (gate G2 at steps 37�
 generation-code gate at step 39); those are recorded in `state.md` and the commit history. The
 entries below are post-build defects, starting with the **`render-output-fix`** series (2026-07-16).
 
+### GAP-10 — The `render` verb minted under a bare check-then-mint with NO claim (double-spend race) — RESOLVED (2026-07-23)
+- **Severity:** Medium (a COST leak, never corruption — the no-replace `commit_new` still admits exactly
+  one output per id, so two contenders never produce a double OUTPUT; but both would run the PAID LLM
+  reshape / pandoc serialize). A latent framework defect DR-1's persistent HTTP front would make hotter
+  (concurrent identical requests), which is why it is fixed upstream in the framework, standalone.
+- **Symptom:** `pipeline/api/render.py::_render` minted the fit (`should_mint and not is_done(...)` →
+  `mint_fit`) and the deliverable (same guard → `mint_deliverable`) under a bare **check-then-mint with
+  no claim**. Two concurrent identical renders BOTH pass `not is_done` (neither has committed yet) and
+  BOTH run the expensive paid mint — a double-spend. `generate-next` never had this: it claims at S1
+  (`spine.py` `claims.acquire(unit.id)`) before the paid work.
+- **Root cause:** the built claim wrappers `fit_resolution.claim_fit` (`:471`) and
+  `serialize.claim_deliverable` (`:1209`) — thin, tested wrappers over the §22.3 `ClaimRegistry.acquire`,
+  DESIGNED for the live render path — were called **only from `tests/`**, i.e. dead on the live mint path.
+  The primitives existed; the render handler simply never wired them.
+- **Fix (Option A — wire the existing claim primitives):** `_render` now builds one workspace-scoped
+  `ClaimRegistry` (`spine.registry_for`, fresh RV-4 holder) and brackets EACH paid mint in the SAME
+  acquire→work→release the generate-next spine runs (S1→S6): `claim_fit`/`claim_deliverable` acquire the
+  content-addressed fitted-/deliverable-id BEFORE the mint; the no-replace commit stands; `registry.release`
+  runs in a `finally` (holder-checked — even an `_EngineError` or any exception leaves NO dangling claim).
+  A **held** claim (another contender minting) surfaces as the EXISTING re-drivable coded block
+  `claim-held` (`results.CODE_CLAIM_HELD`, warn) — the same outcome `parallel.result_for_spine` maps a held
+  work unit to; the caller re-drives by id, exactly one contender mints. No new taxonomy code, no
+  `ALL_CODES` change, no `schema_version`/`ir_version` bump. Behaviour-neutral for the single-render happy
+  path: the mint is bracketed by acquire+release (the claim file is created then unlinked), so the output
+  bytes + ids are byte-identical; and the **cache-hit / `is_done` path acquires NO claim** (the guard is
+  `should_mint and not is_done`). The acquire-then-`is_done`-became-true race is handled: after acquiring,
+  `_render` re-checks `is_done` under the claim and falls through to fetch instead of re-spending the mint.
+  This also gives render the same `peek`-based liveness as generate-next (the DR-1 Commit-7 prerequisite).
+- **Verified:** new `tests/test_render_verb.py::TestGap10RenderClaimDoubleSpend` (5 tests) — two concurrent
+  identical renders (fired deterministically via re-entrancy, no threads) run EXACTLY ONE `mint_fit` (and,
+  separately, one `mint_deliverable`), the other gets `claim-held` and spends nothing; `peek(fitted-id)`
+  from an independent registry is LIVE during the mint; a `mint_fit` that raises `_EngineError` releases in
+  the `finally` (claims dir empty, id immediately re-drivable); the cache-hit render acquires ZERO claims
+  and leaves a byte-identical store snapshot. Full suite green (all pre-existing render tests unchanged);
+  `ruff check .`, `scripts/check-no-content.sh`, and `scripts/schema-lint.sh` clean.
+- **Source:** surfaced by the DR-1 (HTTP-shim) planner adversarial pass (`planner-03-reconciliation` §D /
+  §(A)-H1) and ratified by the maintainer as a **standalone** framework fix — the same posture as GAP-9,
+  a prerequisite that lands before the DR-1 sequence.
+
 ### GAP-9 — Cross-client isolation was enforced per-id but NOT at the workspace store ROOT — RESOLVED (2026-07-23)
 - **Severity:** High (isolation is the framework's core security invariant — CLAUDE.md rule 2, §10).
 - **Symptom:** the §21.1 isolation gate validates every referenced id against a workspace store built
