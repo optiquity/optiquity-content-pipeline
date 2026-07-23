@@ -40,6 +40,14 @@ this module, keeping the edit surface a flat value table.
 - `TELEMETRY_ENABLED_DEFAULT = True` — capture is default-on and disable-able (§22.5 PC11).
 - `RECOMMENDED_WIDTH_WINDOW_SECONDS = 3600` (1 h) — the recent telemetry window the advisory
   `recommended_width` reads (§22.5); never auto-applied.
+- `STARTUP_GRACE_SECONDS = 120` (2 min) — the DR-1 async job's 202→S1 SPAWN WINDOW: the time a
+  freshly-submitted job record is treated as RUNNING BEFORE its detached runner acquires its
+  first S1 claim (`pipeline.jobs`). It must EXCEED the observed spawn→first-claim latency (spawn
+  + handler entry + grounding/resolution + `claims.acquire`) so a legitimately-starting runner is
+  never re-driven, and sit FAR BELOW `WRAPPER_HARD_TIMEOUT_SECONDS` (1200 s) so a genuinely dead
+  pre-claim runner becomes stealable long before its own hard timeout would matter. Outside G2's
+  two-number scope; a lossy-bookkeeping grace, not a correctness authority (§22.7 — output
+  existence + the S1 claim/lease remain the sole DONE / exactly-once authorities).
 """
 
 from __future__ import annotations
@@ -49,6 +57,7 @@ __all__ = [
     "MAX_PARALLEL_PER_WORKSPACE",
     "MAX_PARALLEL_SESSIONS",
     "RECOMMENDED_WIDTH_WINDOW_SECONDS",
+    "STARTUP_GRACE_SECONDS",
     "TELEMETRY_ENABLED_DEFAULT",
     "WRAPPER_HARD_TIMEOUT_SECONDS",
 ]
@@ -71,3 +80,10 @@ TELEMETRY_ENABLED_DEFAULT = True
 
 #: The recent telemetry window the advisory `recommended_width` reads, seconds (§22.5) — 1 h.
 RECOMMENDED_WIDTH_WINDOW_SECONDS = 3600
+
+#: DR-1 async job 202→S1 spawn window, seconds — 2 min. The grace during which a just-submitted
+#: job record counts as RUNNING before its detached runner acquires its first S1 claim
+#: (`pipeline.jobs`). EXCEEDS the observed spawn→first-claim latency (so a starting runner is not
+#: re-driven) and STRICTLY < WRAPPER_HARD_TIMEOUT_SECONDS (so a dead pre-claim runner is stealable
+#: well before its own timeout). Lossy-bookkeeping grace, never a §22.7 correctness authority.
+STARTUP_GRACE_SECONDS = 120
