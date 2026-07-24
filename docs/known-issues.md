@@ -158,27 +158,123 @@ model). **Kept, unbreakable:** zero new `artifact-id` identity surface; the prec
 dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-6 "deadlock" is false);
 `ir_version` as an evolvable foundation.
 
-### DR-1 — HTTP/webhook interface for cloud-hosted workflow orchestrators
-- **Status:** Deferred (not in v1) — requirement recorded for a later build.
-- **Need:** The v1 external-actor door (GAP-2) is the local `pipeline invoke render` CLI, invoked
-  by an orchestrator that can shell out to the **same machine** (v1's named consumer: self-hosted n8n
-  via its Execute Command node). **Cloud-hosted** orchestrators — Make, Zapier, n8n Cloud, Google
+### DR-1 — HTTP shim + poll/webhook async door for cloud-hosted workflow orchestrators — BUILT
+- **Status:** BUILT (2026-07-24) — **shipped as an additive HTTP shim over the existing `invoke()`
+  door (`pipeline/api/http_shim.py`, `scripts/pipeline serve`): 2 standalone framework prerequisites
+  (GAP-9, GAP-10, now Resolved) + a §21.9 design amendment + a 17-commit shim build, each reviewed →
+  gate-green. The design questions are resolved; deferrals are registered below.** (The original
+  design-era Deferred status is preserved in the design-status note near the end.)
+- **Need:** The v1 external-actor door (GAP-2) is the local `pipeline invoke render` CLI, invoked by
+  an orchestrator that can shell out to the **same machine** (v1's named consumer: self-hosted n8n via
+  its Execute Command node). **Cloud-hosted** orchestrators — Make, Zapier, n8n Cloud, Google
   (Workflows / Apps Script), and others — cannot execute a local CLI; they can only call an **HTTP
-  endpoint** (typically a webhook). To serve those users the pipeline needs an HTTP interface.
-- **Shape (design intent):** a thin, **transport-agnostic HTTP shim over the existing `invoke()` API**
-  — one endpoint taking `{verb, workspace, params}` (or one per verb), returning the **same JSON
-  envelope** the CLI emits (`ok`, `results[]`, a status mapping to the CLI exit codes 0/1/2/3). It adds
-  **no business logic** — it reuses the exact handlers the CLI door wires. Because it is
-  network-exposed, **authentication (token / API key) and rate limiting are part of this item**, as is
-  restricting it to the safe external verb set (never the operator-only verbs, §21.9).
-- **Why deferred:** v1's only named consumer is self-hosted n8n on the same host (maintainer,
-  2026-07-13), for which the CLI door suffices. The HTTP shim was designed (see the `render-output-fix`
-  GAP-2 design) as an **additive** component so it drops in later without disturbing the CLI/`invoke`
-  door.
-- **Depends on:** GAP-2 (the CLI/`invoke` door + `register_*_handler` wiring) lands first; the shim
-  sits on top of the same `invoke()`.
+  endpoint** (typically a webhook). To serve those users the pipeline needs an HTTP interface — added
+  WITHOUT disturbing the CLI/`invoke` door (additive, transport-agnostic).
+- **The shipped shape (BUILT).** A stdlib `http.server` front (NO new dependency) exposing `POST
+  /invoke` (+ `POST /poll`) over the EXACT existing handlers — no business logic, a transport
+  translation over the same stateless per-verb `invoke()` (§21.9: an OPTIONAL transport FRONT holding
+  no LLM/session/correctness state; all cross-request state is on disk):
+  - **Tier-A (synchronous).** The CHEAP, LLM-free verbs (`list`/`get`/`fetch-by-id`/`create-folio`/
+    `add-to-folio`/`emit-manifest`/`emit-outline`/`begin-session{generate=none}` + the cheap
+    `continue-session` actions) dispatch synchronously and return the SAME `invoke()` JSON envelope the
+    CLI emits, with the N-4 HTTP-status mapping (200 = whole-invocation ok incl. a per-item block; 400
+    unknown-verb; 422 invalid-token; 403 isolation-violation).
+  - **Tier-B (202-Accepted, paid).** The PAID verbs `continue-session{generate-next}` and `render`
+    answer a submit with **202-Accepted** — a NEW wire shape (`{status: accepted, job:{key,
+    target_ids}, poll, [callback]}`, NOT an `invoke()` envelope) carrying the PREDICTABLE target ids
+    (resolved LLM-free from the plan + cursor / the render primitives), then detach a `jobrunner`.
+    `render` additionally runs an OPTIMISTIC-SYNC-then-202 fast path (a cache-hit / fast serialize
+    returns 200 + output inline; a paid reshape exceeding the wait → 202 + the predictable
+    deliverable-id).
+  - **Delivery is a CLIENT CHOICE — poll OR webhook:**
+    - **Poll (always available, the floor).** `POST /poll {workspace, key, target_ids}` resolves the
+      job by target-id and maps its state to a status (200 done+output · 202 still-running · 429
+      backpressure · 504 re-drivable-timeout · 4xx fatal). A legitimately-running job is **never told
+      to resend** — the job-lifetime window + the "already-running → don't re-spawn" rule keep a slow
+      paid job from being double-charged.
+    - **Webhook (optional).** A submit MAY carry `callback_url`; on done/failed the pipeline POSTs a
+      small WAKEUP ping (the client then FETCHES via the authenticated poll — the callback is NEVER the
+      result payload). The `poll` block still ships, so poll stays the floor.
+  - **Anti-double-charge (the load-bearing safety).** A paid submit is idempotent on an
+    `idempotency_key` (n8n `$execution.id`; a missing key is a 400): a retry collides on ONE job
+    (create-exclusive + H2 lease-steal). GAP-10 (Resolved) makes `render` CLAIM its mints, so a
+    concurrent identical render is `claim-held`, never a double-spend. Jobs are §22.7-class LOSSY
+    bookkeeping (no `artifact-id` preimage; a lost status just falls back to poll).
+  - **Security posture (fail-closed throughout).** MANDATORY bearer/`X-API-Key` auth (constant-time
+    compare, a configured SET for rotation), checked BEFORE path/body/dispatch; NO secret configured →
+    `serve` REFUSES TO START (never accept-all). **DoS guards:** an over-cap declared Content-Length →
+    413 before the body is read; a socket timeout drops a slow-loris. **Bind:** loopback (`127.0.0.1`)
+    by default, never moved off; a non-loopback bind is a conscious choice REQUIRING an external
+    TLS/auth proxy (the shim's auth is application-layer). **Workspace ALLOW-LIST** (a name-membership
+    policy on TOP of the GAP-9 containment — 403 `workspace-not-served`; unset = serve-any behind
+    auth), applied to BOTH /invoke and /poll (N-6). **Webhook SSRF + host allow-list**
+    (`pipeline/callback_policy.py`): callbacks are OPT-IN / off-by-default (an empty list rejects
+    everything); an approved host must ALSO clear an SSRF block (loopback / link-local incl.
+    169.254.169.254 metadata / private / unique-local / unspecified / multicast / NAT64 / reserved /
+    mapped-IPv6 all refused), validated at SUBMIT and RE-validated at DELIVERY (the DNS-rebinding
+    re-check), NO redirect-following, bounded retry, and it NEVER crashes the runner; IDNA-hostile
+    hosts are caught (UnicodeError → refuse).
+  - **Spend bound.** An advisory pre-spawn concurrency cap (`_deny_over_capacity`) + the
+    always-correct `rate-limit-backpressure` → 429 backstop (the subscription's OWN pushback, routed
+    through the ONE terminal-status mapper) bound real overspend regardless of the advisory cap's
+    raciness.
+  - **`begin-session{generate!=none}` (compose-in-one-call) DEFERRED (maintainer, 2026-07-24).** The
+    202-door for that one-call verb is a 501 placeholder. The supported path is TWO calls:
+    `begin-session{generate=none}` (Tier-A, instant, returns the session token) then `generate-next`
+    (Tier-B, poll/webhook) — which already covers the use case, so the one-call form is deferred, not
+    a gap.
+- **Commit chain (build order).** Standalone framework prerequisites first (both now in Resolved):
+  `2f29e88` **GAP-9** workspace-name resolve-and-contain · `3e8d5b6` **GAP-10** render mint-claim
+  (double-spend close). Then the design amendment `6f58881` **§21.9 C-1** (a persistent transport FRONT
+  is allowed if stateless). Then the shim: `444f046` `jobs/` store subdir · `ab1efe8` `jobs.py` lossy
+  record + TTL-steal lifecycle + poll resolver · `c3ffc50` detached `jobrunner` + verb-aware outcome
+  router · `60f1db1` shim skeleton + `serve` + Tier-A dispatch + N-4 status mapping · `164dd39`
+  fail-closed auth + DoS guard + config template · `9cc45a7` workspace allow-list + explicit loopback
+  bind · `92b70b6` Tier-B `generate-next` submit + poll-by-id. Then the ratified poll+webhook rework:
+  `42228b8` reshape the poll/submit window (a slow job is never told to resend) · `056e943` register
+  the API handlers in the detached runner (Tier-B was inert) · `772afca` SSRF + allow-list callback
+  guard · `b475409` accept + validate a callback URL at submit · `d7e7ad1` deliver the webhook wakeup
+  ping (retry + re-validate + no redirects) · `82648dd` non-injected Tier-B integration harness (real
+  spawn, fake claude) · `2dcc3fe` `render` as a Tier-B verb (optimistic-sync-then-202) · `270a4f1`
+  advisory concurrency cap + 429 backstop · `b0c7088` IDNA hardening.
+- **Decisions & corrections (RECORDED):**
+  - **Poll-OR-webhook is a client CHOICE; poll is the floor.** The webhook is a convenience wakeup, not
+    a delivery channel; a client that ignores `callback_url` just polls. Both read the SAME job record
+    + the SAME §22.7 authorities.
+  - **§21.9 amendment (C-1).** "The pipeline is not a long-running server" is AMENDED (not
+    reinterpreted): an OPTIONAL transport FRONT MAY be persistent provided it holds no
+    LLM/session/correctness state (commit `6f58881`).
+  - **§21.7 "same JSON envelope" amendment (N-3).** The "same-envelope" invariant is AMENDED to admit
+    the Tier-B 202-Accepted ack + the poll HTTP-status mapping as sanctioned ADDITIVE wire shapes
+    (Tier-A + the terminal poll still carry the canonical `invoke()` envelope). See `docs/design.md`
+    §21.7 (the DR-1 amendment bullet) and the "Not in this build" register row.
+  - **The compose-in-one-call verb is DEFERRED, covered by the two-call path** (above).
+  - **The two prerequisites (GAP-9, GAP-10) were fixed in the framework, not the shim** — an HTTP front
+    makes both hotter (untrusted names; concurrent identical requests), so they belong upstream. See
+    the Resolved entries.
+- **Honest DEFERRALS (registered, not hidden):**
+  - **Path B concurrency (transport-chokepoint presence wiring) DEFERRED.** v1 bounds spend with the
+    advisory pre-spawn cap + the 429 backstop; a hard transport-level chokepoint that wires job
+    presence into admission (Path B) is not built.
+  - **Webhook per-caller API keys DEFERRED.** The outbound wakeup carries no per-caller credential; the
+    client authenticates the subsequent FETCH via the shim's bearer auth. A per-caller callback secret
+    is a later additive change.
+  - **Connection-IP-pinning for the DNS-rebinding residual DEFERRED.** v1 re-validates the host at
+    DELIVERY (re-resolve + re-check) — the v1 mitigation for DNS rebinding; pinning the exact connected
+    IP to the validated one (closing the resolve→connect TOCTOU fully) is deferred.
+  - **`begin-session{generate!=none}` (compose-in-one-call) DEFERRED** (above) — the two-call path is
+    the supported approach; the one-call 202-door is a 501 placeholder.
+- **Cross-refs:** the standalone prerequisites **GAP-9** (workspace-root isolation) and **GAP-10**
+  (render mint-claim double-spend) are in **Resolved** below.
+- **Design status (2026-07-13 → 07-24):** designed via an architect pass (initial → adversarial →
+  reconciliation) + a planner pass + a focused poll/webhook reshape design; the load-bearing records
+  are archived under `docs/archive/design-record/dr-design-passes/dr1-http-shim/` (+
+  `dr1-webhook-poll/`), and the code's `§C-`/`N-` citations resolve there.
 - **Source:** maintainer requirement, 2026-07-13 — "needed eventually for other users who use any
   cloud based workflow orchestrator (Make, Zapier, n8n, Google, and others)."
+- **Gate:** final `uv run pytest -q` = **3001 passed, 6 deselected**; `ruff check .` clean;
+  `scripts/check-no-content.sh` OK; `scripts/schema-lint.sh` clean. Coder/reviewer reports under
+  `ops-handoff/dr1-http-shim/` + `ops-handoff/dr1-webhook-poll/`.
 
 ### DR-2 — Selectable style guides (writing-rule presets) → the compose-time `lexicons/` house-style registry — BUILT
 - **Status:** BUILT (2026-07-21) — **shipped as the compose-time `lexicons/` registry (attributes-only

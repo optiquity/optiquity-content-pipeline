@@ -6,7 +6,9 @@
 # scripts/check-no-content.sh, and NEVER tracked in the public framework. Following the repo's
 # template convention (shipped templates carry no `provenance:` frontmatter line), the provenance
 # is declared HERE in prose, not as a YAML key. Design authority: docs/design.md §21.9 (amended,
-# DR-1 C-1) + the architect §C-4 auth record + the DoS guard + §C-3 (workspace allow-list / bind).
+# DR-1 C-1) + the architect §C-4 auth record + the DoS guard + §C-3 (workspace allow-list / bind);
+# the C-1/C-3/C-4 labels are decided in
+# docs/archive/design-record/dr-design-passes/dr1-http-shim/architect-03-reconciliation/report.md.
 #
 # USAGE (extend-don't-edit, CLAUDE.md rule 5): copy to `instance/shim.yaml` and fill in. NEVER put
 # a real secret in this template and NEVER commit `instance/shim.yaml`. Never edit this template

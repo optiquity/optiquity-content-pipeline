@@ -2363,6 +2363,19 @@ ResultItem = { item, status: ok|warn|block|needs-input, ids{...}, output{path?|b
 - `needs-input` marks a run paused on a human decision the system will never guess (§3.1); v1
   producers: the migration worklist (§11.6, resolved out-of-band) and an unresolved manifest
   member (§21.5).
+- **DR-1 amendment — the async transport MAY add sanctioned wire shapes (BUILT 2026-07-24).** The
+  original DR-1 design intent had the HTTP shim return "the same JSON envelope the CLI emits." That
+  holds for every **Tier-A** (synchronous) verb and for a **terminal poll** — both carry the exact
+  `invoke()` envelope above. But a **paid Tier-B** verb (`generate-next`, `render`) answers a submit
+  with a **202-Accepted acknowledgement** — a deliberately DIFFERENT wire shape, `{status:
+  "accepted", job:{key, target_ids}, poll:{…}, [callback]}`, NOT a `ResultItem` envelope — and a
+  poll maps a job's resolved state onto an HTTP status (200 done · 202 still-running · 429
+  backpressure · 504 re-drivable-timeout · 4xx fatal). These are **sanctioned ADDITIVE wire shapes,
+  not a violation** of the one-`ResultItem`-shape-per-verb rule: the 202 ack is an async submit
+  receipt (no verb result exists yet), and the terminal delivery — poll body or webhook-woken fetch
+  — is still the canonical envelope. Content identity is untouched (jobs are §22.7-class lossy
+  bookkeeping, no `artifact-id` preimage). See `docs/known-issues.md` **DR-1** and
+  `pipeline/api/http_shim.py`.
 
 ### §21.8 Reproducibility & idempotency
 
@@ -2806,7 +2819,7 @@ not to build yet, with the hook designed so the later add is purely additive:
 | **Entry `aliases:` graceful rename** | registered as deferred at B4 (entry-identity rider): an optional frontmatter field letting a renamed entry carry its old ids; not built in v1 — a rename is a deliberate two-touch act whose dangling references fail loudly at M1 (§11.1). |
 | **Same-inputs fit re-roll** | deliberately inexpressible under FR2's digest identity ("roll again under identical config" needs a nonce); a nonce segment is grammar-compatible with the `_` qualifier (§7.4); needs its own ruling — registered (§27.3). |
 | **Stale-fit sweep** | caller-composable today: `list deliverables {platform, fit_current: false}` + a force loop (§21.3, §21.8); any system-side batch convenience would still be an explicit caller act (Q3) — registered (§27.3). |
-| **HTTP shim for cloud orchestrators (GAP-2)** | the v1 external-actor door is the local `pipeline invoke render` CLI (the n8n Execute Command door); a **cloud-hosted** orchestrator (Make/Zapier/n8n Cloud/Google) cannot shell a local CLI and needs an HTTP endpoint. Designed as an **additive, transport-agnostic HTTP shim over the same `invoke()`** — same JSON envelope, same safe verb set (never operator verbs, §21.9), auth + rate-limiting owned by the shim. Deferred: v1's only named consumer is self-hosted n8n. See `docs/known-issues.md` **DR-1**. |
+| **HTTP shim for cloud orchestrators (GAP-2)** | ~~Deferred~~ **BUILT (DR-1, 2026-07-24).** The v1 external-actor door is the local `pipeline invoke render` CLI (the n8n Execute Command door); a **cloud-hosted** orchestrator (Make/Zapier/n8n Cloud/Google) cannot shell a local CLI and needs an HTTP endpoint. Shipped as an **additive, transport-agnostic HTTP shim over the same `invoke()`** (`pipeline/api/http_shim.py`, `scripts/pipeline serve`) — the same safe verb set (never operator verbs, §21.9), auth + rate-limiting owned by the shim. The "same JSON envelope" holds for Tier-A + the terminal poll; **paid Tier-B verbs add the sanctioned 202-Accepted ack + poll/webhook status mapping** (§21.7 DR-1 amendment above — an additive wire shape, not a violation). See `docs/known-issues.md` **DR-1**. |
 
 ## §27 Open-items register
 

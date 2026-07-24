@@ -1,7 +1,8 @@
 """The webhook-callback SAFETY GUARD — the SSRF block + the operator allow-list.
 
-Design authority: the DR-1 result-delivery reshape design record §2.3 "SECURITY" (the
-allow-list + SSRF guard, validated at BOTH submit-time and delivery-time), plus CLAUDE.md's
+Design authority: the DR-1 result-delivery reshape design record §2.3 "SECURITY"
+(`docs/archive/design-record/dr-design-passes/dr1-webhook-poll/architect-01/report.md`) — the
+allow-list + SSRF guard, validated at BOTH submit-time and delivery-time — plus CLAUDE.md's
 posture that outbound egress is the higher-risk surface and must fail closed. This is the
 security crux of the additive webhook callback: before the pipeline makes ANY outbound HTTP
 request to a client-supplied URL, that URL must clear this guard.

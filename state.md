@@ -79,7 +79,8 @@ A maintainer-driven design program ran after delivery (each via research → arc
 whole-picture adversarial → reconciliation, all RATIFIED; cross-DR integration + planner pipeline before
 build): **DR-2** style guides · **DR-3** editable outline (Markdown-canonical) · **DR-4** content
 templates · **DR-5** style-placement · **DR-6** general grounding. All tracked in `docs/known-issues.md`;
-18 design records archived under `docs/archive/design-record/dr-design-passes/`.
+22 design records archived under `docs/archive/design-record/dr-design-passes/` (18 from this program +
+4 DR-1 records added 2026-07-24 — see the DR-1 subsection below).
 
 - **DR-6 increment 1 — BUILT (Option A, advisory).** Four gated commits, each coder → reviewer → (fix →
   re-review) to CLEAN, commits under the maintainer's standing approval:
@@ -272,6 +273,39 @@ Current HEAD `551fc42`. Backlog impact: **GAP-5 → Resolved** and **#3 → docu
 - `551fc42` **item 2** — GAP-5 defense-in-depth hardening (all three sub-items, +5 load-bearing tests):
   (a) payload metadata secret re-scan, (b) `manifest._resolved_row` render-input-mismatch warn on the
   stale-fit branch, (c) serialize part-Div `#id` uniqueness check → **GAP-5 moved Open → Resolved**.
+
+### DR-1 — HTTP shim + poll/webhook (BUILT, 2026-07-24)
+
+The deferred DR-1 (HTTP interface for cloud-hosted orchestrators — Make / Zapier / n8n Cloud / Google)
+is **BUILT** as an additive, transport-agnostic HTTP shim over the existing `invoke()` door
+(`pipeline/api/http_shim.py`, `scripts/pipeline serve`; stdlib `http.server`, no new dependency, no
+business logic). Commit range `2f29e88`, `3e8d5b6`, `6f58881`, `444f046`..`b0c7088` (HEAD `b0c7088`);
+each coder → reviewer → (fix) → re-review CLEAN under the standing cadence.
+
+- **Shipped shape:** **Tier-A** cheap / LLM-free verbs served synchronously (the same `invoke()` JSON
+  envelope + the N-4 HTTP-status mapping); **Tier-B** paid verbs (`generate-next`, `render`) as
+  **202-Accepted** with a client CHOICE of delivery — **poll** (always-available floor; a
+  legitimately-running job is never told to resend, so no double-charge — the job-lifetime window +
+  "already-running ⇒ don't re-spawn") OR an optional **webhook** wakeup ping (approved-host allow-list
+  + SSRF block, validated at submit AND re-validated at delivery, no redirects, bounded retry, never
+  crashes the runner). Mandatory fail-closed bearer auth, loopback-default bind, workspace allow-list,
+  DoS guards; an advisory concurrency cap + the `rate-limit-backpressure`→429 backstop bound spend.
+- **Prerequisites (standalone framework fixes, now Resolved):** `2f29e88` GAP-9 (workspace-root
+  isolation) + `3e8d5b6` GAP-10 (render mint-claim double-spend) — an HTTP front makes both hotter, so
+  they landed upstream first.
+- **`begin-session{generate!=none}` (compose-in-one-call) DEFERRED (maintainer, 2026-07-24):** the
+  TWO-CALL path is the supported approach — `begin-session{generate=none}` (Tier-A, instant, returns
+  the session token) then `generate-next` (Tier-B, poll/webhook). The one-call 202-door is a 501
+  placeholder.
+- **Docs closeout (this):** `docs/known-issues.md` DR-1 → BUILT; the design.md §21.7 "same JSON
+  envelope" amendment (admits the 202-ack + the poll status mapping as sanctioned additive wire shapes)
+  + the "Not in this build" register row; mission `0.2.6`; the 4 load-bearing design records archived
+  under `docs/archive/design-record/dr-design-passes/dr1-http-shim/` (+ `dr1-webhook-poll/`) so the
+  code's `§C-`/`N-` citations resolve. Deferrals (Path B transport-chokepoint concurrency, webhook
+  per-caller API keys, connection-IP-pinning for the DNS-rebinding residual, begin-session one-call)
+  registered in `docs/known-issues.md` DR-1.
+- **Gate:** `uv run pytest -q` = **3001 passed, 6 deselected**; ruff + content-guard + schema-lint
+  clean. Reports: `ops-handoff/dr1-http-shim/`, `ops-handoff/dr1-webhook-poll/`.
 
 **⚙ SPAWN-CHANNEL MITIGATION (maintainer directive 2026-07-13, CLI bug #73647; TEMPORARY, this session):**
 the peer-message security boilerplate is channel-specific and fixed at SPAWN TIME — `isolation:"worktree"`

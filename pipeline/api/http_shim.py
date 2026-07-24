@@ -8,6 +8,17 @@ never fails the batch). Reconciled plan: DR-1 **Commit 5a** — skeleton + `serv
 (cheap-verb) SYNCHRONOUS dispatch + the N-4 status mapping. Architect §C-4 (status mapping) /
 §C-9 (verb surface).
 
+**Archived design records (repo-relative — the `§C-`/`N-` labels below resolve here).** The
+`§C-1`/`§C-3`/`§C-4`/`§C-9` conclusion labels are decided in
+`docs/archive/design-record/dr-design-passes/dr1-http-shim/architect-03-reconciliation/report.md`;
+the `N-3`/`N-4`/`N-6`/`N-7` findings it folds in are stated in
+`docs/archive/design-record/dr-design-passes/dr1-http-shim/architect-02-adversarial/report.md`;
+the build plan is
+`docs/archive/design-record/dr-design-passes/dr1-http-shim/planner-03-reconciliation/report.md`.
+The poll/webhook rework is
+`docs/archive/design-record/dr-design-passes/dr1-webhook-poll/architect-01/report.md` (see
+`pipeline/callback_policy.py`).
+
 **What this is.** A stdlib `http.server.ThreadingHTTPServer` (NO new dependency) exposing a
 single `POST /invoke` endpoint that takes `{verb, workspace, params, [token]}`, dispatches to
 `invoke(...)`, and serializes the returned dict to an HTTP response. It wires the EXACT existing
