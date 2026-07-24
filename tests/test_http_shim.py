@@ -1013,9 +1013,33 @@ class TestTierBCallbackSubmit:
         assert len(calls) == 1
         spec, _spawn_dir = calls[0]
         assert spec.callback_url == cb  # rides the spawn spec
+        # W3c: the predictable target_ids + the FROZEN operator allow-list snapshot also ride the
+        # spec, so the detached runner delivers the wakeup + RE-VALIDATES against the same list.
+        assert spec.target_ids == (ART_ID,)
+        assert spec.allowed_callback_hosts == frozenset({_GLOBAL_CB_HOST})
+        # W3c: the 202 ack tells the client to EXPECT a callback POST — the poll floor still ships.
+        assert body["callback"] == {"registered": True}
+        assert body["poll"]["path"] == http_shim.POLL_PATH
         key = job_key([ART_ID], "exec-1")
         record = json.loads((Path(root) / "workspaces" / "wsA" / "jobs" / key).read_bytes())
         assert record["callback_url"] == cb  # rides the stored record
+
+    def test_no_callback_url_omits_the_registered_note(self, root: str) -> None:
+        # The poll-only path is unchanged: a submit with no callback_url gets no `callback` note in
+        # the 202 ack (and the spec carries no allow-list / a None callback_url).
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port)
+        assert status == 202 and body["status"] == "accepted"
+        assert "callback" not in body  # no note when no callback was registered
+        spec, _spawn_dir = calls[0]
+        assert spec.callback_url is None and spec.target_ids == (ART_ID,)
 
     def test_callback_url_when_disabled_is_400_before_any_run(self, root: str) -> None:
         # The allow-list is UNSET (default) → callbacks OPT-IN OFF: a submit with callback_url is

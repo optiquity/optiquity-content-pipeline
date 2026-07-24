@@ -487,15 +487,24 @@ def _default_spawn(spec: Any, *, spawn_dir: Path) -> Any:
     return spawn_runner(spec, spawn_dir=spawn_dir)
 
 
-def _accepted_body(key: str, target_ids: Sequence[str]) -> dict[str, Any]:
+def _accepted_body(
+    key: str, target_ids: Sequence[str], *, callback_registered: bool = False
+) -> dict[str, Any]:
     """The N-3 202 ACK — a NEW wire shape, deliberately NOT an `invoke()` envelope (the
     "same-envelope" §21.7 invariant is amended in Commit 11). Carries everything the caller needs
-    to poll: the run-family job `key` + the predictable `target_ids`, and the poll endpoint."""
-    return {
+    to poll: the run-family job `key` + the predictable `target_ids`, and the poll endpoint.
+
+    W3c: when a webhook `callback_url` was accepted, a small `"callback": {"registered": true}` note
+    tells the client to EXPECT a completion POST — but the `poll` block still ships, so the poll
+    stays the always-available floor (a client can ignore the note and just poll)."""
+    body: dict[str, Any] = {
         "status": "accepted",
         "job": {"key": key, "target_ids": list(target_ids)},
         "poll": {"path": POLL_PATH, "method": "POST", "needs": ["workspace", "key", "target_ids"]},
     }
+    if callback_registered:
+        body["callback"] = {"registered": True}
+    return body
 
 
 def _terminal_status_for(code: str) -> int:
@@ -871,11 +880,21 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 token=token,
                 pins=pins,
                 callback_url=callback_url,
+                # W3c: the predictable target-id set (for the delivery wakeup's payload) + a FROZEN
+                # snapshot of the operator allow-list, so the detached runner RE-VALIDATES the
+                # callback URL at delivery (the DNS-rebinding re-check) against that list without
+                # re-reading instance config.
+                target_ids=tuple(target_ids),
+                allowed_callback_hosts=server.allowed_callback_hosts,
             )
             spawn = server.spawn_fn if server.spawn_fn is not None else _default_spawn
             spawn(spec, spawn_dir=store.jobs_dir)
-        # `spawned` / `stolen` / `existing` → the N-3 202 ack (existing = a live in-flight job).
-        self._respond(_HTTP_ACCEPTED, _accepted_body(outcome.key, target_ids))
+        # `spawned` / `stolen` / `existing` → the N-3 202 ack (existing = a live in-flight job). A
+        # registered callback adds the W3c `callback: {registered: true}` note; poll floor stays.
+        self._respond(
+            _HTTP_ACCEPTED,
+            _accepted_body(outcome.key, target_ids, callback_registered=callback_url is not None),
+        )
 
     def _handle_poll(self, server: ShimServer, payload: Mapping[str, Any]) -> None:
         """`POST /poll {workspace, key, target_ids}` (Commit 6): resolve the job by target-id and

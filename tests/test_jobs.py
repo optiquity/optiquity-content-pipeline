@@ -529,3 +529,54 @@ class TestRecordTerminal:
         record = store.load(out.key)
         assert record.terminal is None
         assert record.status == "running"
+
+
+# ---------------------------------------------------------------------------
+# (W3c) record_callback_status: the lossy webhook-delivery outcome writer.
+# ---------------------------------------------------------------------------
+
+
+class TestRecordCallbackStatus:
+    def test_status_is_written_and_round_trips_via_load(self, store, auth):
+        out = store.submit((A, B), "idk-1", now=T0, is_done=auth.is_done, peek=auth.peek)
+        assert store.record_callback_status(out.key, "delivered") is True
+        assert store.load(out.key).callback_status == "delivered"
+
+    def test_it_preserves_the_other_record_fields(self, store, auth):
+        # W3c bookkeeping only annotates callback_status — the callback_url + terminal + status the
+        # record already carried are untouched (it never resurrects/rewrites the identity fields).
+        out = store.submit(
+            (A, B), "idk-1", now=T0, is_done=auth.is_done, peek=auth.peek,
+            callback_url="http://hooks.example.com/exec-1",
+        )
+        store.record_terminal(out.key, code="timeout", envelope={"ok": False}, results=[])
+        assert store.record_callback_status(out.key, "failed") is True
+        record = store.load(out.key)
+        assert record.callback_status == "failed"
+        assert record.callback_url == "http://hooks.example.com/exec-1"
+        assert record.terminal is not None and record.terminal.code == "timeout"
+        assert record.status == "failed"
+
+    def test_it_is_a_noop_when_no_record_exists(self, store):
+        # Lossy discipline (mirrors record_terminal): a stolen/vanished record is a no-op, NEVER a
+        # raise — a lost callback status just degrades the client to the always-available poll.
+        key = job_key((A,), "idk-1")
+        assert store.record_callback_status(key, "delivered") is False
+        assert store.load(key) is None
+
+    def test_a_non_string_callback_status_makes_the_record_unreadable(self, store, auth):
+        # Same lossy tolerance as callback_url/idem_key: a torn/foreign callback_status that is
+        # neither None nor a string → `load` resolves it as absent (None), never a crash.
+        out = store.submit((A, B), "idk-1", now=T0, is_done=auth.is_done, peek=auth.peek)
+        path = store.path_for(out.key)
+        obj = json.loads(path.read_bytes())
+        obj["callback_status"] = 7  # not a string / not None
+        path.write_bytes((json.dumps(obj) + "\n").encode("utf-8"))
+        assert store.load(out.key) is None
+
+    def test_absent_callback_status_defaults_to_none(self, store, auth):
+        # A record written before any delivery attempt carries callback_status None (poll-only / not
+        # yet), and the field is present in the serialized record.
+        out = store.submit((A, B), "idk-1", now=T0, is_done=auth.is_done, peek=auth.peek)
+        assert store.load(out.key).callback_status is None
+        assert json.loads(store.path_for(out.key).read_bytes())["callback_status"] is None

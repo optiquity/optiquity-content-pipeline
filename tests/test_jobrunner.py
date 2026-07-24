@@ -322,9 +322,11 @@ class TestSpawnPrimitive:
         assert handle.pid == 4242 and popen.waited is False
 
     def test_callback_url_rides_the_spawn_file_round_trip(self):
-        # W3b: the (already submit-validated) callback_url rides the JobSpec spawn FILE to the
-        # detached runner (W3c will deliver it) — as_json/from_json round-trip it; absent ⇒ None.
+        # W3b/W3c: the (already submit-validated) callback_url + the predictable target_ids + the
+        # FROZEN operator allow-list snapshot all ride the JobSpec spawn FILE to the detached runner
+        # (W3c delivers against them) — as_json/from_json round-trip each; absent ⇒ None / empty.
         cb = "http://hooks.example.com/exec-1"
+        hosts = frozenset({"hooks.example.com", "other.example.com:5678"})
         spec = JobSpec(
             key=job_key((A,), IDK),
             verb="continue-session",
@@ -333,10 +335,18 @@ class TestSpawnPrimitive:
             idempotency_key=IDK,
             root="/repo-root",
             callback_url=cb,
+            target_ids=(A, B),
+            allowed_callback_hosts=hosts,
         )
-        assert JobSpec.from_json(spec.as_json()).callback_url == cb
-        # A spec with no callback_url round-trips to None (poll-only).
-        assert JobSpec.from_json(_spec(job_key((A,), IDK)).as_json()).callback_url is None
+        restored = JobSpec.from_json(spec.as_json())
+        assert restored.callback_url == cb
+        assert restored.target_ids == (A, B)
+        assert restored.allowed_callback_hosts == hosts  # frozenset ↔ sorted-list round-trip
+        # A spec with no callback fields round-trips to the poll-only defaults.
+        bare = JobSpec.from_json(_spec(job_key((A,), IDK)).as_json())
+        assert bare.callback_url is None
+        assert bare.target_ids == ()
+        assert bare.allowed_callback_hosts == frozenset()
 
     def test_spawn_uses_real_popen_default(self):
         # The default `popen` seam IS `subprocess.Popen` (the real detached primitive) — pinned so a
@@ -457,6 +467,118 @@ class TestMain:
         assert terminal is not None
         assert terminal.code == RE_DRIVABLE_CODE
         assert terminal.code != TERMINAL_FAILED_CODE  # NOT the HandlerNotWired `runner-failed` path
+
+    def _spawn_for(self, tmp_path, spec):
+        """Write `spec`'s record (record → spawn → claim) + its spawn file; return the JobStore."""
+        from pipeline.api import jobrunner
+
+        job_store = jobrunner._store_for(spec)  # the SAME store main() records into
+        job_store.submit(
+            list(spec.target_ids), IDK, now=T0, is_done=_never_done, peek=_never_claimed
+        )
+        spawn_dir = tmp_path / "spawn"
+        spawn_dir.mkdir()
+        spawn_file = spawn_dir / "spawn.json"
+        spawn_file.write_text(spec.as_json(), encoding="utf-8")
+        return job_store, spawn_file
+
+    def test_main_delivers_the_callback_and_records_the_status(self, tmp_path, monkeypatch):
+        """W3c: after run_job settles, main() DELIVERS the wakeup callback (production defaults) and
+        records the returned status on the job record. The delivery seam is stubbed so no real
+        network is touched — this proves the WIRING (spec + RunOutcome reach it; status lands)."""
+        import pipeline.callback_delivery as cbd
+        from pipeline.api import jobrunner
+
+        cb = "https://hooks.example.com/exec-1"
+        hosts = frozenset({"hooks.example.com"})
+        key = job_key((A,), IDK)
+        spec = JobSpec(
+            key=key,
+            verb="continue-session",
+            workspace=WS,
+            params={"action": "generate-next"},
+            idempotency_key=IDK,
+            root=str(tmp_path),
+            callback_url=cb,
+            target_ids=(A,),
+            allowed_callback_hosts=hosts,
+        )
+        job_store, spawn_file = self._spawn_for(tmp_path, spec)
+
+        captured = {}
+
+        def _fake_deliver(spec_, outcome_, *, allowed_hosts, **_kw):  # noqa: ANN001, ANN202
+            captured["callback_url"] = spec_.callback_url
+            captured["allowed_hosts"] = allowed_hosts
+            captured["disposition"] = outcome_.disposition
+            return "delivered"
+
+        monkeypatch.setattr(cbd, "deliver_callback", _fake_deliver)
+        monkeypatch.setattr(jobrunner.invoke_mod, "invoke", _invoke_clean)
+
+        assert jobrunner.main([str(spawn_file)]) == 0
+        # The delivery ran against the spec's URL + the FROZEN submit-time allow-list, on settled
+        # RunOutcome; and the returned status was recorded on the (lossy) job record.
+        assert captured == {
+            "callback_url": cb,
+            "allowed_hosts": hosts,
+            "disposition": "clean",
+        }
+        assert job_store.load(key).callback_status == "delivered"
+
+    def test_main_callback_failure_does_not_affect_the_job_outcome(self, tmp_path, monkeypatch):
+        """A callback FAILURE is NOT a job failure: main() still returns 0, the failed status is
+        recorded, and the clean job's terminal/output is untouched (poll floor is unaffected)."""
+        import pipeline.callback_delivery as cbd
+        from pipeline.api import jobrunner
+
+        key = job_key((A,), IDK)
+        spec = JobSpec(
+            key=key,
+            verb="continue-session",
+            workspace=WS,
+            params={"action": "generate-next"},
+            idempotency_key=IDK,
+            root=str(tmp_path),
+            callback_url="https://hooks.example.com/exec-1",
+            target_ids=(A,),
+            allowed_callback_hosts=frozenset({"hooks.example.com"}),
+        )
+        job_store, spawn_file = self._spawn_for(tmp_path, spec)
+        monkeypatch.setattr(cbd, "deliver_callback", lambda *a, **k: "failed")  # noqa: ARG005
+        monkeypatch.setattr(jobrunner.invoke_mod, "invoke", _invoke_clean)
+
+        assert jobrunner.main([str(spawn_file)]) == 0  # a failed callback ≠ a failed job
+        record = job_store.load(key)
+        assert record.callback_status == "failed"
+        assert record.terminal is None  # the clean job's terminal is untouched by the delivery
+
+    def test_main_with_no_callback_url_delivers_nothing(self, tmp_path, monkeypatch):
+        """No callback_url ⇒ deliver_callback is NEVER invoked (poll-only) and callback_status stays
+        None. The seam is stubbed to RAISE if called — main() returning 0 proves it was not."""
+        import pipeline.callback_delivery as cbd
+        from pipeline.api import jobrunner
+
+        key = job_key((A,), IDK)
+        spec = JobSpec(
+            key=key,
+            verb="continue-session",
+            workspace=WS,
+            params={"action": "generate-next"},
+            idempotency_key=IDK,
+            root=str(tmp_path),
+            target_ids=(A,),
+        )
+        job_store, spawn_file = self._spawn_for(tmp_path, spec)
+
+        def _must_not_deliver(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+            raise AssertionError("deliver_callback must not run when no callback_url is set")
+
+        monkeypatch.setattr(cbd, "deliver_callback", _must_not_deliver)
+        monkeypatch.setattr(jobrunner.invoke_mod, "invoke", _invoke_clean)
+
+        assert jobrunner.main([str(spawn_file)]) == 0  # returned 0 ⇒ the seam was never called
+        assert job_store.load(key).callback_status is None
 
     def test_module_import_does_not_register_in_a_fresh_process(self):
         """The import-empty gate, proven in a genuinely FRESH interpreter (exactly the real detached

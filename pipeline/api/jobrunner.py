@@ -136,10 +136,14 @@ class JobSpec:
     not a credential, and the subscription transport carries no API key at all (F10).
 
     `callback_url` is the OPTIONAL, already-validated (submit-time allow-list + SSRF guard, W3b)
-    webhook the runner will POST a completion WAKEUP to once delivery lands (W3c). It rides the
-    spawn file so the detached runner — the only component that outlives the shim and knows the
-    job finished — has it in hand; it is transient invocation input, never identity (no version
-    bump). None ⇒ poll-only (no callback registered)."""
+    webhook the runner will POST a completion WAKEUP to once delivery lands (W3c). `target_ids` is
+    the predictable artifact-id set the submit resolved LLM-free — carried so the delivery wakeup's
+    payload (`job.target_ids`, the poll pointer) needs no record read. `allowed_callback_hosts` is
+    the FROZEN operator allow-list SNAPSHOT taken at submit, so the detached runner RE-VALIDATES the
+    callback URL at delivery (the DNS-rebinding re-check) against the SAME list the submit used,
+    without re-reading instance config. All three ride the spawn file so the detached runner — the
+    only component that outlives the shim and knows the job finished — has them in hand; they are
+    transient invocation input, never identity (no bump). `callback_url` None ⇒ poll-only."""
 
     key: str
     verb: str
@@ -150,17 +154,24 @@ class JobSpec:
     token: Any = None
     pins: Any = None
     callback_url: str | None = None
+    target_ids: tuple[str, ...] = ()
+    allowed_callback_hosts: frozenset[str] = frozenset()
 
     def as_json(self) -> str:
-        """Canonical JSON for the spawn file (byte-stable, matching the repo convention)."""
+        """Canonical JSON for the spawn file (byte-stable, matching the repo convention). The
+        `allowed_callback_hosts` frozenset is written as a SORTED list (JSON has no set); from_json
+        restores the frozenset — the membership check is order-independent, so the round-trip is
+        lossless for the guard."""
         return canonical_json_str(
             {
+                "allowed_callback_hosts": sorted(self.allowed_callback_hosts),
                 "callback_url": self.callback_url,
                 "idempotency_key": self.idempotency_key,
                 "key": self.key,
                 "params": dict(self.params),
                 "pins": self.pins,
                 "root": self.root,
+                "target_ids": list(self.target_ids),
                 "token": self.token,
                 "verb": self.verb,
                 "workspace": self.workspace,
@@ -184,6 +195,8 @@ class JobSpec:
             token=obj.get("token"),
             pins=obj.get("pins"),
             callback_url=obj.get("callback_url"),
+            target_ids=tuple(obj.get("target_ids") or ()),
+            allowed_callback_hosts=frozenset(obj.get("allowed_callback_hosts") or ()),
         )
 
 
@@ -360,11 +373,32 @@ def run_job(
     return RunOutcome("clean" if kind == "clean" else "skip-deterministic", code, False)
 
 
+def _deliver_callback(spec: JobSpec, outcome: RunOutcome) -> None:
+    """W3c: POST the completion WAKEUP callback if one was registered, then record the delivery
+    status on the job record. A NO-OP when the spec carries no `callback_url` (poll-only) — the
+    common path, so nothing is imported/opened.
+
+    This NEVER affects the job outcome and NEVER crashes the runner: `deliver_callback` catches all
+    delivery failure (network/redirect/timeout/rebind) and RETURNS a status instead of raising, and
+    `record_callback_status` is a tolerant lossy write (a stolen/vanished record → a no-op). A lost
+    or failed callback simply degrades the client to the always-available poll — the job's output
+    already materialized. The re-validation uses the FROZEN submit-time allow-list snapshot on the
+    spec (the DNS-rebinding re-check), so the detached runner never re-reads instance config. The
+    import is FUNCTION-SCOPED (like `main()`'s handler wiring) so the module import graph stays
+    acyclic: `pipeline.callback_delivery` imports THIS module, never the reverse at import time."""
+    if not spec.callback_url:
+        return
+    from pipeline.callback_delivery import deliver_callback
+
+    status = deliver_callback(spec, outcome, allowed_hosts=spec.allowed_callback_hosts)
+    _store_for(spec).record_callback_status(spec.key, status)
+
+
 def main(argv: list[str] | None = None) -> int:
     """`python -m pipeline.api.jobrunner <spawn_file>` — the detached entry point. Reads the spawn
-    spec, WIRES the production handler surface, runs the job, and deletes the transient spawn file.
-    A truly-unexpected exception propagates (non-zero exit, no terminal); the spawn file is cleaned
-    up either way.
+    spec, WIRES the production handler surface, runs the job, DELIVERS the optional completion
+    wakeup callback (W3c), and deletes the transient spawn file. A truly-unexpected exception
+    propagates (non-zero exit, no terminal); the spawn file is cleaned up either way.
 
     **The runner is a FRESH process, so it MUST wire its own registry (mirrors `serve()`).** The
     detached runner is launched as `python -m pipeline.api.jobrunner <spawn_file>` — a brand-new
@@ -390,7 +424,11 @@ def main(argv: list[str] | None = None) -> int:
 
     register_api_handlers()
     try:
-        run_job(spec)
+        outcome = run_job(spec)
+        # W3c: deliver the optional completion-wakeup callback AFTER the job settled. A callback
+        # failure is NOT a job failure — `_deliver_callback` catches everything and records a lossy
+        # status; the poll floor is unaffected. A no-op when no callback_url was registered.
+        _deliver_callback(spec, outcome)
     finally:
         spawn_file.unlink(missing_ok=True)
     return 0

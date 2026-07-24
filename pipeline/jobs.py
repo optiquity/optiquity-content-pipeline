@@ -206,9 +206,11 @@ class JobRecord:
     is set only by `record_terminal` for a nondeterministic failure.
 
     `callback_url` is the OPTIONAL webhook the submit ALREADY validated (allow-list + SSRF guard,
-    W3b) and stored for the detached runner's completion WAKEUP (delivery is W3c). Like every field
-    here it is LOSSY bookkeeping, not identity: a lost/absent value just means the client falls back
-    to the always-available poll — no version bump, no correctness authority. None ⇒ poll-only."""
+    W3b) and stored for the detached runner's completion WAKEUP (delivery is W3c). `callback_status`
+    is the W3c DELIVERY OUTCOME the runner records after attempting that wakeup (`delivered` /
+    `failed` / `rejected-at-delivery`, or None while pending / poll-only). Like every field it is
+    LOSSY bookkeeping, not identity: a lost/absent value just means the client falls back to the
+    always-available poll — no bump, no correctness authority. None ⇒ poll-only / not-yet."""
 
     target_ids: tuple[str, ...]
     idempotency_key: str | None
@@ -216,6 +218,7 @@ class JobRecord:
     status: str
     terminal: JobTerminal | None = None
     callback_url: str | None = None
+    callback_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -307,6 +310,7 @@ def _record_bytes(record: JobRecord) -> bytes:
         }
     )
     obj = {
+        "callback_status": record.callback_status,
         "callback_url": record.callback_url,
         "idempotency_key": record.idempotency_key,
         "spawn_time": record.spawn_time,
@@ -330,6 +334,7 @@ def _parse_record(obj: object) -> JobRecord | Literal["unreadable"]:
     status = obj.get("status")
     idempotency_key = obj.get("idempotency_key")
     callback_url = obj.get("callback_url")
+    callback_status = obj.get("callback_status")
     terminal_raw = obj.get("terminal")
     if not isinstance(target_ids, list) or not all(isinstance(t, str) for t in target_ids):
         return "unreadable"
@@ -344,6 +349,8 @@ def _parse_record(obj: object) -> JobRecord | Literal["unreadable"]:
     if idempotency_key is not None and not isinstance(idempotency_key, str):
         return "unreadable"
     if callback_url is not None and not isinstance(callback_url, str):
+        return "unreadable"
+    if callback_status is not None and not isinstance(callback_status, str):
         return "unreadable"
     terminal: JobTerminal | None = None
     if terminal_raw is not None:
@@ -362,6 +369,7 @@ def _parse_record(obj: object) -> JobRecord | Literal["unreadable"]:
         status=status,
         terminal=terminal,
         callback_url=callback_url,
+        callback_status=callback_status,
     )
 
 
@@ -533,6 +541,23 @@ class JobStore:
             terminal=JobTerminal(code=code, envelope=envelope, results=results),
         )
         write_replace(path, _record_bytes(updated))
+        return True
+
+    def record_callback_status(self, key: str, status: str) -> bool:
+        """Record the W3c webhook DELIVERY outcome (`delivered`/`failed`/`rejected-at-delivery`) on
+        the job record — §22.7-class LOSSY bookkeeping the detached runner writes AFTER attempting
+        the completion wakeup. Returns True iff written.
+
+        TOLERANT by construction: a missing/torn/STOLEN record (the runner was stolen-from between
+        run and delivery) is a no-op (returns False), NEVER a raise — a lost callback status just
+        degrades the client to the always-available poll, and this update gates nothing correctness-
+        critical. It only annotates `callback_status`; it never resurrects a vanished record and
+        never touches `terminal`/`status`/the output authorities."""
+        path = self.path_for(key)
+        current = self._read(path)
+        if not isinstance(current, JobRecord):
+            return False
+        write_replace(path, _record_bytes(replace(current, callback_status=status)))
         return True
 
     def resolve(

@@ -58,11 +58,23 @@ this module, keeping the edit surface a flat value table.
   become stealable in seconds, not the full job lifetime). This is NO LONGER a running-vs-dead
   boundary (that role is now `JOB_LIFETIME_SECONDS`); the old double-meaning was exactly the
   Commit-6 defect. Outside G2's two-number scope; lossy-bookkeeping, not a §22.7 authority.
+- `CALLBACK_MAX_ATTEMPTS = 3` / `CALLBACK_BACKOFF_SECONDS = 1` / `CALLBACK_TIMEOUT_SECONDS = 10` —
+  the DR-1 W3c webhook-callback DELIVERY budget (`pipeline.callback_delivery`): the bounded outbound
+  completion-wakeup retry. Framework CONSTANTS, deliberately NOT config knobs (the only callback
+  operator config is the host allow-list; the retry/backoff/timeout surface stays fixed and small).
+  `MAX_ATTEMPTS` POSTs are tried before giving up (status `failed`; a 2xx → `delivered`), sleeping
+  `BACKOFF·4**attempt` seconds between tries (1 s, 4 s, 16 s … — bounded, small), each issued with a
+  `TIMEOUT`-second per-request socket timeout so a slow/black-hole endpoint never HANGS the detached
+  runner. All INTs (the clean-constants surface, `tests/test_telemetry.py`). Lossy: a give-up just
+  degrades the client to the always-available poll — never a §22.7 correctness authority.
 """
 
 from __future__ import annotations
 
 __all__ = [
+    "CALLBACK_BACKOFF_SECONDS",
+    "CALLBACK_MAX_ATTEMPTS",
+    "CALLBACK_TIMEOUT_SECONDS",
     "JOB_LIFETIME_SECONDS",
     "LEASE_TTL_SECONDS",
     "MAX_PARALLEL_PER_WORKSPACE",
@@ -107,3 +119,19 @@ NASCENT_RECORD_GRACE_SECONDS = 120
 #: live-claim check remains the authority for active work of ANY duration; this window only ever
 #: governs the no-claim spans. Lossy-bookkeeping, never a §22.7 correctness authority.
 JOB_LIFETIME_SECONDS = WRAPPER_HARD_TIMEOUT_SECONDS + NASCENT_RECORD_GRACE_SECONDS
+
+#: DR-1 W3c webhook-callback DELIVERY budget — the bounded outbound completion-wakeup retry
+#: (`pipeline.callback_delivery`). Framework constants, NOT config knobs (only the allow-list is
+#: operator config). All INTs (the clean-constants surface). Lossy: a give-up degrades to the poll.
+#:
+#: Total POST attempts before giving up (status `failed`); a 2xx → `delivered`. Bounded — the
+#: detached runner's only remaining task is this delivery, then exit.
+CALLBACK_MAX_ATTEMPTS = 3
+
+#: Exponential-backoff BASE, seconds: the runner sleeps `BASE * 4**attempt` between tries
+#: (1 s, 4 s, 16 s …), so the total wait across the bounded attempts stays small.
+CALLBACK_BACKOFF_SECONDS = 1
+
+#: Per-request connect/read socket timeout, seconds: a callback POST never HANGS the runner (a
+#: slow / black-hole endpoint fails fast → retry → give up, then exit).
+CALLBACK_TIMEOUT_SECONDS = 10
