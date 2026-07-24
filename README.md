@@ -19,6 +19,8 @@ Before the concepts, it helps to know how you would actually run the framework. 
 
 Your own instance is simply the first private instance; others clone the public repo to make their own. Either way there is only ever one pipeline repo with many workspaces — never a separate repo per client.
 
+However you deploy it, there are two doors onto the same operations. Locally you drive the pipeline through the command line (`scripts/pipeline`). A cloud-hosted automation tool that cannot reach your command line — n8n Cloud, Make, Zapier, Google — drives it instead over HTTP, through the `pipeline serve` shim, behind a login. Both doors run the identical verbs; the HTTP door is described under *HTTP access* in *User-facing surface* below.
+
 ## Durable rules
 
 Five invariants hold across every session and every instance, and the rest of this manual assumes them. They are stated in full in `CLAUDE.md` and elaborated throughout the glossary below — this is the short authoritative summary.
@@ -129,6 +131,14 @@ This glossary is self-contained: a new reader needs nothing else to understand t
 - **Serialize (render).** The second render pass: a deterministic, model-free transform that turns a fitted variant into the standard Pandoc tree and then into output bytes (or a hand-off payload for an external renderer). This pass — and only this pass — is truly free in the sense that the same inputs and the same pinned tools always produce identical output. Adding a new output-type or presentation to an existing tree is one writer call with no model step.
 - **Review gates.** Two quality checks bracket the pipeline: an artifact review on the intermediate representation, run once and early before any fanout, and a deliverable review on every shipped output. The reviews re-check grounding — that claims carry evidence and that the evidence supports the claim — while the hard publish floor and tier-honesty are enforced earlier, at compose. Reviews surface concerns; they are part of how the system keeps published content tied to its sources.
 
+### The HTTP access surface
+
+- **HTTP shim (serve door).** A small web server, started with `pipeline serve`, that exposes the pipeline's verbs over HTTP so a cloud automation tool can drive it remotely, behind a login. It is a thin transport front that holds no state and adds no behavior of its own — each request is translated onto the same call the command line makes. It is optional; nothing else in the system depends on it.
+- **Tier-A vs Tier-B verb.** The two speeds of verb over HTTP. A *Tier-A* verb is cheap and model-free (listing, fetching, folio edits, emitting a manifest or outline, opening a session); it runs inside the request and returns its result immediately. A *Tier-B* verb is paid and model-driven (generating the next artifact, rendering); it usually can't finish inside one request, so it is acknowledged up front and run in the background, and the caller collects the result by poll or webhook.
+- **Poll.** The always-available way a caller collects a slow (Tier-B) result: it asks the shim "is this job ready yet?" and gets back the output when done, a "still running" answer while it works, or an error if it failed. Polling is the floor — it works whether or not a webhook was requested.
+- **Webhook (callback).** An optional convenience: a caller may pass a `callback_url` when submitting a slow job, and the pipeline sends that URL a short wake-up ping the moment the job settles. The ping is only a nudge to fetch — never the result itself, which is still collected through the authenticated poll. Callbacks are off by default and restricted to an operator-approved, non-internal address list.
+- **Job (job handle).** The background unit a Tier-B submit creates. The caller does not wait for it; instead the shim returns a *job handle* — a key plus the ids the job will produce — which the caller uses to poll for the result. A job's status record is lossy bookkeeping only: it speeds up polling but is never the authority on whether the work finished (the finished output is), so a lost status just falls back to a poll.
+
 ## Requirements
 
 Before a first run, put these in place:
@@ -157,6 +167,7 @@ The command-line surface is the launcher in scripts/... pipeline, dispatched by 
 - **Generate an artifact.** Composition is wave 0, keyed by artifact-id, driven by continue-session{generate-next, only}: open the session, then call continue-session generate-next per item. Under the hood a thread runs run_thread, starting from a SelectionRequest; a ready-made one is available from demo_selection for a first run. The demo thread and MVP demo are wired as the subcommands _cmd_demo_thread and _cmd_mvp_demo.
 - **Drive a genre with an authored outline.** To shape one artifact, attach an outline through the selection's outlines map; the request resolves it with outline_for, and the map is normalized by _normalize_outlines. The outline drives structure and emphasis without adding any new publishable fact.
 - **Render and read the deliverable.** Rendering is the token-free wave 1, run by the _cmd_render subcommand (with _cmd_invoke for external hand-off). Output files are named by output_filename.
+- **Serve over HTTP.** `pipeline serve` starts the HTTP shim, which makes the same verbs reachable by a remote cloud orchestrator behind a login (see *HTTP access* under *User-facing surface*). It refuses to start without an auth secret configured.
 - **Operator subcommands.** Two round out the surface: an SSOT command _cmd_ssot and a drift-report command _cmd_drift_report.
 
 ## Repository layout
@@ -201,6 +212,8 @@ A literal view of the current tree (excluding `tests/`, `archive/`, `workspaces/
 │   ├── __main__.py
 │   ├── ast_store.py
 │   ├── attrtypes.py
+│   ├── callback_delivery.py
+│   ├── callback_policy.py
 │   ├── canonical.py
 │   ├── cascade.py
 │   ├── claims.py
@@ -215,6 +228,7 @@ A literal view of the current tree (excluding `tests/`, `archive/`, `workspaces/
 │   ├── grounding.py
 │   ├── ids.py
 │   ├── ir.py
+│   ├── jobs.py
 │   ├── lint.py
 │   ├── m1.py
 │   ├── m3.py
@@ -274,8 +288,9 @@ Every description below is sourced deterministically — engine modules from the
 | `LICENSE` | The project license. |
 | `pipeline/` | The Python engine — compose/render stages, the cascade, grounding, IR, dispatch, serialize, driver, plus adapters/, api/, filters/, prompts/. |
 | `docs/` | The design record — mission, definitive design (design.md), design-decisions, known-issues, plus docs/reference/ (the operator grammar). |
-| `scripts/` | The launcher (scripts/pipeline shim) plus maintenance tools: schema-lint, migrate, update-from-upstream, check-no-content. |
+| `scripts/` | The launcher (scripts/pipeline shim — includes the `serve` HTTP door) plus maintenance tools: schema-lint, migrate, update-from-upstream, check-no-content. |
 | `instance/` | Instance-owned config — instance-global scope defaults (defaults.yaml) and the profile; extends the framework, gitignored in public. |
+| `instance/shim.template.yaml` | Template for the HTTP shim's per-deployment config — the auth secret, bind host, workspace allow-list, and callback host allow-list; copy to the gitignored instance/shim.yaml and fill in. |
 | `topics/` | Topic content dimension — what it is about and why it matters; binds at compose and enters artifact-id. |
 | `personas/` | Persona content dimension — who it is for; provides the default_voice ref consumed by the Voice dimension. |
 | `platforms/` | Platform rendering dimension — destination + constraint layer selected per deliverable (routing, never an instance-wide baseline). |
@@ -295,6 +310,8 @@ Every description below is sourced deterministically — engine modules from the
 | `pipeline/__main__.py` | `python -m pipeline` — the module entry point behind the `scripts/pipeline` shim (T8). |
 | `pipeline/ast_store.py` | The layer-3 AST store: keyed by (fitted-id, reader-pin digest) — plan step 27. |
 | `pipeline/attrtypes.py` | The §11.1 attribute-type system: typed value validation that REFUSES coercions. |
+| `pipeline/callback_delivery.py` | The webhook-callback delivery — the outbound completion wake-up ping the detached runner sends when a Tier-B job settles (DR-1). |
+| `pipeline/callback_policy.py` | The webhook-callback safety guard — the SSRF block + the operator host allow-list, checked at submit and re-checked at delivery (DR-1). |
 | `pipeline/canonical.py` | Canonical JSON (sorted keys, deterministic bytes) + SHA-256 digest helpers + canonical sets. |
 | `pipeline/cascade.py` | M2 — value binding (Mechanism 2 of the §12 value cascade): the folio-free spine fold. |
 | `pipeline/claims.py` | The claim/lease registry: §22.3 acquire → live-skip → steal → holder-checked release. |
@@ -309,6 +326,7 @@ Every description below is sourced deterministically — engine modules from the
 | `pipeline/grounding.py` | The grounding resolver — the §6.3 resolver walk over the adapter contract. |
 | `pipeline/ids.py` | The §7 id family: preimage canonicalization, id minting, and the §7.4 string grammar. |
 | `pipeline/ir.py` | The IR-canonical model + its JSON validation schema (§15 RI1–RI4) — plan step 24. |
+| `pipeline/jobs.py` | The DR-1 async jobs subsystem: the lossy job record + TTL/steal lifecycle + the poll resolver behind the HTTP shim's Tier-B door. |
 | `pipeline/lint.py` | SV11 schema-lint (design §11.7) — the public repo's schema/registry CI gate. |
 | `pipeline/m1.py` | M1 — entry resolution (Mechanism 1 of the §12 value cascade): shadowing + field-merge. |
 | `pipeline/m3.py` | M3 — the source-selection grammar & its four-layer cascade (Mechanism 3, design §12.1). |
@@ -344,7 +362,9 @@ Every description below is sourced deterministically — engine modules from the
 | `pipeline/api/discovery.py` | Discovery — `list <type> [filters]` / `get <type> <id>` (§21.3, §13.2), SSOT-FREE. |
 | `pipeline/api/fetch.py` | `fetch-by-id` — the DUMB HOT PATH of the external-actor API (§21.5). |
 | `pipeline/api/folio_verbs.py` | The standalone folio write verbs — `create-folio` + `add-to-folio` (§21.2, §9). |
+| `pipeline/api/http_shim.py` | The DR-1 HTTP shim (`pipeline serve`) — the HTTP sibling of the CLI over `invoke()`: Tier-A synchronous dispatch + the Tier-B 202-Accepted poll/webhook async door, behind mandatory auth. |
 | `pipeline/api/invoke.py` | The external-actor `invoke` contract (§21.1): one synchronous call, one JSON object out. |
+| `pipeline/api/jobrunner.py` | The detached Tier-B job runner (DR-1) — re-enters `invoke()` out of band for a paid job, then delivers its completion callback. |
 | `pipeline/api/manifest.py` | `emit-manifest` — the point-in-time WORK ORDER for a folio (§21.5), NO MINT, SSOT-FREE. |
 | `pipeline/api/render.py` | The standalone, token-free `render` verb (§21.8, §21.1) — fit + serialize RESOLUTION. |
 | `pipeline/api/results.py` | The typed result contract + the CONSOLIDATED §21.7/§22.6 code taxonomy — one place. |
@@ -366,6 +386,8 @@ A generation thread runs a fixed spine. The entry point is run_thread, which ret
 - **Persist.** Records are written by _persist and _persist_record.
 - **Two review gates.** An artifact review runs via _run_artifact_review and a deliverable review via review_deliverable; their instructions live in pipeline/prompts/ (artifact_reviewer.md, deliverable_reviewer.md).
 
+Riding on top of that engine — never inside it — is the HTTP shim (`pipeline serve`). It is a thin, stateless transport front that adds no business logic of its own: it receives an HTTP request and re-enters the same `invoke()` a command-line caller would, holding no session or model state between calls, so all cross-request state stays on disk in the same content-addressed store. Cheap verbs (Tier-A) run synchronously and return inline. Paid verbs (Tier-B) are acknowledged with a 202 and handed to a small on-disk jobs subsystem: a detached job runner re-enters `invoke()` out of band, writes a lossy status record the poll endpoint reads, and — when the caller asked for one — delivers a webhook wake-up once the job settles.
+
 One limit shapes how deep this section can go: the facts available to this manual reach top-level definitions and one level of class methods, so call chains below that depth are not shown here.
 
 ## User-facing surface
@@ -376,6 +398,21 @@ The surface has four parts: the selection inputs, the verbs, the store, and the 
 - **Verbs.** The API modules live in pipeline/api/ (discovery.py, fetch.py, folio_verbs.py, invoke.py, manifest.py, render.py, results.py, session.py, token.py). The compose verbs are begin-session and its continue-session{generate-next, only}; the render side is the token-free render verb. External hand-off is carried by emit-manifest for side: external targets.
 - **Store.** Persistent state is a WorkspaceStore, threaded through the engine — for example, _persist(doc, request, *, store: WorkspaceStore,...) writes into it.
 - **Run-layer overrides.** Overrides bound at session start enter through CascadeEnv.__init__, which accepts an OverrideSet; individual values are ValueBindings parsed by parse_value_bindings.
+
+### HTTP access (cloud orchestrators)
+
+The verbs above are reached two ways. Locally you shell out to `scripts/pipeline` (the CLI door) or call `invoke()` in-process. The **HTTP shim** is the remote door: a small web server, started with `pipeline serve`, that lets a cloud automation tool — n8n Cloud, Make, Zapier, Google Workflows, and the like — drive the very same operations over the internet, behind a login. Those tools cannot run a command on your machine; they can only call a URL, so the shim gives them one. It is not a second implementation — every request is translated straight onto the same `invoke()` the CLI uses.
+
+A caller sends `POST /invoke` with a small JSON body — `{verb, workspace, params}`, optionally a session `token` and a `callback_url` — plus an auth header (`Authorization: Bearer <secret>` or `X-API-Key: <secret>`). What comes back depends on how expensive the verb is:
+
+- **Quick verbs answer instantly.** The cheap, model-free operations — listing and fetching, creating and adding to folios, emitting a manifest or an outline, opening a session — run then and there and return the same JSON envelope the CLI would. (These are the *Tier-A* verbs.)
+- **Slow verbs return "working on it."** The paid, model-driven operations — generating the next artifact, and rendering — usually take longer than one web request allows, so the shim replies **202 Accepted** with a small *job handle* (a key plus the ids the job will produce) instead of the result. (These are the *Tier-B* verbs. A render whose output is already cached is the exception — it can come straight back with the result.) The tool then chooses how to collect the result:
+  - **Poll** — ask "is it ready yet?" by sending `POST /poll` with the job handle. It answers 200 with the output when done, 202 while still running, or an error if the job failed. Polling always works; it is the floor.
+  - **Webhook (callback)** — if the submit carried a `callback_url`, the pipeline sends that URL a short wake-up ping the moment the job settles. The ping is only a nudge, never the result — the tool still fetches the finished output through the authenticated poll. A tool that ignores callbacks simply polls.
+
+So a typical remote generation is: open a session (a quick verb, returns a token) → submit `generate-next` with that token (202 + a job handle) → poll, or wait for the webhook, then fetch the artifact.
+
+**Safety is fail-closed throughout.** `pipeline serve` refuses to start unless an auth secret is configured — it never accepts an anonymous caller. It binds to loopback (`127.0.0.1`) by default; exposing it to the network is a deliberate choice that expects a TLS/auth proxy in front. It serves only workspaces on an operator allow-list, and only calls webhook addresses on a separate, opt-in allow-list — never internal or cloud-metadata addresses, and it re-checks the address again at delivery time. It also caps how many paid jobs run at once. Every knob lives in `instance/shim.template.yaml`; copy it to `instance/shim.yaml` and fill it in.
 
 ## Extending it
 
@@ -392,7 +429,8 @@ Every extension point is a one-file change; a new axis/stage is a config additio
 Some things are deliberately deferred; treat the tracker as the authority, not this manual.
 
 - **The known-issues tracker.** docs/ carries known-issues.md, the register that named deferrals point to.
-- **Reserved and deferred features.** The design's reservation table defers a range of features — Language/localization fanout GA... AIMD width auto-tune... Per-part dimension overrides... HTTP shim for cloud orchestrators among them — each designed to slot in additively later.
+- **Reserved and deferred features.** The design's reservation table defers a range of features — Language/localization fanout GA... AIMD width auto-tune... Per-part dimension overrides among them — each designed to slot in additively later. (The HTTP shim for cloud orchestrators, once on this list, has since shipped — see *HTTP access* under *User-facing surface*.)
+- **HTTP shim — known limits.** A few honest deferrals on the `pipeline serve` door: composing in a single HTTP call — one `begin-session` that also generates — is not wired; the supported path is two calls (open the session, then generate), which already covers the case. The concurrency cap is advisory: the account-wide count currently sees only the shim's own in-flight jobs, so bounding true spend across other callers is a fidelity follow-up. And pinning a webhook's connection to its validated IP — the last edge of the DNS-rebinding case — is deferred; the shipped mitigation re-checks the address again at delivery time.
 - **Unverified transport.** The invocation details are not yet proven: the transport's specifics are unverified and gated before build, including subscription-auth headless operation and the n8n→headless mechanism.
 - **Maintainer-gated runs.** Actions that cost or commit are held for a maintainer. The bootstrap commit runs only on approval, and a session should update state.md and propose (not make) a commit.
 - **Presentation-asset lowering on the production path.** This manual has no grounded fact fixing whether presentation-asset lowering runs on the production path, so it stays a lead to verify in the known-issues tracker rather than a claim stated here.
