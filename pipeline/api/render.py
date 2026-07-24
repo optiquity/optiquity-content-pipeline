@@ -33,7 +33,7 @@ blast-radius/idempotency/force paths are exercised hermetically.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -65,10 +65,12 @@ __all__ = [
     "FitLeg",
     "MintOutcome",
     "RenderEngine",
+    "RenderResolution",
     "SerializeLeg",
     "DefaultRenderEngine",
     "render_handler",
     "register_render_handler",
+    "resolve_render_target",
 ]
 
 
@@ -156,65 +158,224 @@ class RenderEngine(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def _render(
-    ctx: invoke_mod.HandlerContext, *, engine: RenderEngine
-) -> tuple[Sequence[results.ResultItem], token_mod.Token | None]:
-    """One `render` call (§21.8): fit resolution + serialize resolution over the store, minting
-    baseline/revision ids via the engine ONLY when the resolution says so; idempotent by id
-    existence, and `force_reconcile` mints a NEW revision fit, never mutating the old."""
-    params = ctx.params
+@dataclass(frozen=True)
+class RenderResolution:
+    """The LLM-FREE render resolution (§21.8/§22.2): the predictable fitted-id + deliverable-id
+    plus the fit leg/preimage/resolution the (paid) fit mint consumes. Produced by
+    `resolve_render_target` from the SAME `_resolve_fit`/`_resolve_deliverable` primitives the
+    `render` handler (`_render`, the materializer) resolves through — so the deliverable-id a DR-1
+    async transport (the HTTP shim) keys/polls a job on is BY CONSTRUCTION the id the handler
+    materializes (no hand-synced fork; the render analogue of `session.plan_next_batch_ids`).
+
+    `block` carries a validation / not-found / coordinate short-circuit (the handler returns it
+    verbatim as its one ResultItem; the shim maps its presence to a blocked submit, never a job).
+    When `block` is set every id field is None.
+
+    `fit_materialized` records whether the fit's IR was ALREADY present at resolve time: True → the
+    serialize resolution read the STORED fitted IR (a local pandoc reader — still LLM-free, no paid
+    reshape); False → the fit must still MINT (the paid reshape), so its IR is absent and the
+    deliverable is necessarily a FRESH BASELINE (no prior deliverables under an unmaterialized
+    fitted-id) whose id is preimage-INDEPENDENT — resolvable WITHOUT the paid call."""
+
+    block: results.ResultItem | None
+    item: str | None = None
+    platform: str | None = None
+    language: str | None = None
+    output_type: str | None = None
+    presentation: str | None = None
+    force: bool = False
+    root: Path | None = None
+    coordinate: FitCoordinate | None = None
+    fit_leg: FitLeg | None = None
+    fit_preimage: Mapping[str, Any] | None = None
+    fit_res: FitResolution | None = None
+    fitted_id: str | None = None
+    fit_materialized: bool = False
+    deliverable_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _DeliverableResolution:
+    """The serialize half of the resolution (`_resolve_deliverable`) — the predictable
+    deliverable-id + the serialize leg/preimage/resolution the (local) deliverable mint consumes.
+    `block` short-circuits a coordinate error; when set every other field is None. `ser_leg`/
+    `ser_preimage` are None on the fit-not-yet-materialized baseline path (no IR to build them)."""
+
+    block: results.ResultItem | None
+    del_coord: DeliverableCoordinate | None = None
+    ser_leg: SerializeLeg | None = None
+    ser_preimage: Mapping[str, Any] | None = None
+    ser_res: SerializeResolution | None = None
+    deliverable_id: str | None = None
+
+
+def _resolve_fit(
+    store: WorkspaceStore, params: Mapping[str, Any], *, engine: RenderEngine, workspace: str
+) -> RenderResolution:
+    """LLM-FREE FIT resolution (§16 FR2 / the force matrix) → the predictable fitted-id + the fit
+    leg/preimage/resolution. Returns a `RenderResolution` carrying ONLY the fit fields (the
+    deliverable fields stay None); `block` is set on a validation / not-found / coordinate error.
+    The SINGLE fit-resolution path — shared by `_render` (the materializer) and
+    `resolve_render_target` (the shim's predictable-id resolver), so there is no forked copy."""
     item = params.get("item")
     coords = _coordinates(params)
     if not isinstance(item, str) or not item or coords is None:
-        return ([_block(
+        return RenderResolution(block=_block(
             "render needs `item` + platform/language/output_type/presentation (§21.2)"
-        )], None)
+        ))
     platform, language, output_type, presentation = coords
     force = bool(params.get("force_reconcile", False))
 
-    canonical_record = _read_record(ctx.store, item)
+    canonical_record = _read_record(store, item)
     if canonical_record is None:
-        return ([results.make_result(
+        return RenderResolution(block=results.make_result(
             results.CODE_NOT_FOUND, item=item, ids={"id": item},
             hint=f"no artifact record for {item!r} in this workspace (§21.8)",
-        )], None)
+        ))
     # GAP-1a: read via `ir.unwrap_ir`, tolerating BOTH persisted shapes — a FITTED/render record
     # wraps the IR under `["ir"]`; a fresh COMPOSE record IS the raw envelope. The old
     # `"ir" not in record` gate 404'd EVERY real composed artifact (compose persists raw); this
     # gates on a REAL absence (`record is None`) and unwraps whichever shape is stored (§15 RI4).
     canonical_ir = ir.unwrap_ir(canonical_record)
 
-    root = ctx.store.root.parent.parent
+    root = store.root.parent.parent
     fit_leg = FitLeg(
-        root=root, workspace=ctx.workspace, store=ctx.store, item=item,
+        root=root, workspace=workspace, store=store, item=item,
         platform=platform, language=language, canonical_ir=canonical_ir,
     )
+    try:
+        coordinate = FitCoordinate(artifact_id=item, platform=platform, language=language)
+    except fit_resolution.FitResolutionError as exc:
+        return RenderResolution(block=_block(f"render: {exc}"))
+    fit_preimage = engine.reconcile_preimage(fit_leg)
+    fit_bindings = _fit_bindings(store, item, platform, language)
+    if force:
+        fit_res = fit_resolution.resolve_force_reconcile(coordinate, fit_bindings, fit_preimage)
+    else:
+        fit_res = fit_resolution.resolve_fit(coordinate, fit_bindings, fit_preimage)
+    fitted_id = fit_resolution.resolved_fitted_id(fit_res, coordinate)
+    return RenderResolution(
+        block=None, item=item, platform=platform, language=language,
+        output_type=output_type, presentation=presentation, force=force, root=root,
+        coordinate=coordinate, fit_leg=fit_leg, fit_preimage=fit_preimage,
+        fit_res=fit_res, fitted_id=fitted_id,
+    )
+
+
+def _resolve_deliverable(
+    store: WorkspaceStore,
+    workspace: str,
+    root: Path,
+    fitted_id: str,
+    output_type: str,
+    presentation: str,
+    *,
+    engine: RenderEngine,
+    fitted_ir: Mapping[str, Any] | None,
+) -> _DeliverableResolution:
+    """LLM-FREE SERIALIZE resolution (§17 FR7.3) → the predictable deliverable-id + the serialize
+    leg/preimage/resolution. The SINGLE serialize-resolution path — shared by `_render`
+    (post-fit-mint, with the materialized IR) and `resolve_render_target` (pre-mint prediction).
+
+    `fitted_ir` is the fit's materialized IR when present; when None the fit is NOT yet materialized
+    (it will MINT the paid reshape), so there are NO deliverables under its (fresh) fitted-id and
+    the resolution is necessarily a BASELINE MISS whose id is preimage-INDEPENDENT — resolved
+    WITHOUT computing a serialize preimage (no paid call needed to key the job). A fresh fit yields
+    the SAME baseline deliverable-id whether resolved here pre-mint or by `_render` post-mint, so
+    the shim's predicted id == the id the handler materializes."""
+    try:
+        del_coord = DeliverableCoordinate(
+            fitted_id=fitted_id, output_type=output_type, presentation=presentation
+        )
+    except serialize.SerializeError as exc:
+        return _DeliverableResolution(block=_block(f"render: {exc}"))
+    render_bindings = _render_bindings(store, fitted_id, output_type, presentation)
+    if fitted_ir is None:
+        # The fit is unmaterialized → its fresh fitted-id has no deliverables (a deliverable-id
+        # embeds its fitted-id's coordinates), so `render_bindings` is empty and
+        # `resolve_deliverable` returns a BASELINE MISS — an empty preimage suffices because a
+        # baseline id never consults the serialize digest (§21.8). Goes through the SAME shared
+        # `resolve_deliverable`/`resolved_deliverable_id` the materialized path uses (no fork).
+        ser_leg = None
+        ser_preimage = None
+        ser_res = serialize.resolve_deliverable(del_coord, render_bindings, {})
+    else:
+        ser_leg = SerializeLeg(
+            root=root, workspace=workspace, store=store, fitted_id=fitted_id,
+            fitted_ir=fitted_ir, output_type=output_type, presentation=presentation,
+        )
+        ser_preimage = engine.serialize_preimage(ser_leg)
+        ser_res = serialize.resolve_deliverable(del_coord, render_bindings, ser_preimage)
+    deliverable_id = serialize.resolved_deliverable_id(ser_res, del_coord)
+    return _DeliverableResolution(
+        block=None, del_coord=del_coord, ser_leg=ser_leg, ser_preimage=ser_preimage,
+        ser_res=ser_res, deliverable_id=deliverable_id,
+    )
+
+
+def resolve_render_target(
+    store: WorkspaceStore,
+    params: Mapping[str, Any],
+    *,
+    engine: RenderEngine | None = None,
+    workspace: str | None = None,
+) -> RenderResolution:
+    """Resolve a `render` request to its PREDICTABLE fitted-id + deliverable-id, LLM-FREE (§22.2),
+    via the SAME `_resolve_fit`/`_resolve_deliverable` primitives the `render` handler materializes
+    through — so a DR-1 async transport (the HTTP shim) can KEY + POLL a render job on the
+    deliverable-id BEFORE the paid reshape and be certain the keyed id == the id the handler
+    materializes (no hand-synced fork; the render analogue of `session.plan_next_batch_ids`).
+
+    The deliverable-id is resolvable WITHOUT the paid call in BOTH cases: a fit that is already
+    materialized reads the stored IR (a local pandoc reader — still LLM-free) and resolves the FULL
+    serialize; a fit that must still mint yields a fresh BASELINE deliverable whose id is
+    preimage-independent. `block` is set (ids None) on a validation / not-found / coordinate error.
+    `engine` defaults to the production `DefaultRenderEngine` (injected out in tests); `workspace`
+    defaults to the store's own name."""
+    e = engine if engine is not None else DefaultRenderEngine()
+    ws = workspace if workspace is not None else store.root.name
+    fit = _resolve_fit(store, params, engine=e, workspace=ws)
+    if fit.block is not None:
+        return fit
+    assert fit.fitted_id is not None  # a non-block fit always fixes a fitted-id
+    fit_materialized = is_done(store, fit.fitted_id)
+    fitted_ir = _load_ir(store, fit.fitted_id) if fit_materialized else None
+    deliverable = _resolve_deliverable(
+        store, ws, fit.root, fit.fitted_id, fit.output_type, fit.presentation,
+        engine=e, fitted_ir=fitted_ir,
+    )
+    if deliverable.block is not None:
+        return replace(fit, block=deliverable.block)
+    return replace(
+        fit, fit_materialized=fit_materialized, deliverable_id=deliverable.deliverable_id
+    )
+
+
+def _render(
+    ctx: invoke_mod.HandlerContext, *, engine: RenderEngine
+) -> tuple[Sequence[results.ResultItem], token_mod.Token | None]:
+    """One `render` call (§21.8): fit resolution + serialize resolution over the store, minting
+    baseline/revision ids via the engine ONLY when the resolution says so; idempotent by id
+    existence, and `force_reconcile` mints a NEW revision fit, never mutating the old. The
+    resolution rides the SHARED `_resolve_fit`/`_resolve_deliverable` primitives (the SAME ones the
+    DR-1 shim's `resolve_render_target` uses to predict the id — one resolution path, no fork)."""
+    fit = _resolve_fit(ctx.store, ctx.params, engine=engine, workspace=ctx.workspace)
+    if fit.block is not None:
+        return ([fit.block], None)
+    item, fitted_id = fit.item, fit.fitted_id
     # GAP-10: ONE workspace-scoped claim registry (fresh minted holder, RV-4) brackets BOTH paid
     # mints below — the SAME §22.3 acquire→work→release the generate-next spine runs (spine S1→S6).
     # Constructing it is side-effect-free (no I/O until `acquire`), so the cache-hit path that never
     # acquires stays behaviour-neutral.
     registry = registry_for(ctx.store)
 
-    # -- FIT resolution (§16 FR2 / the force matrix) --------------------------------------------
-    try:
-        coordinate = FitCoordinate(artifact_id=item, platform=platform, language=language)
-    except fit_resolution.FitResolutionError as exc:
-        return ([_block(f"render: {exc}")], None)
-    fit_preimage = engine.reconcile_preimage(fit_leg)
-    fit_bindings = _fit_bindings(ctx.store, item, platform, language)
-    if force:
-        fit_res = fit_resolution.resolve_force_reconcile(coordinate, fit_bindings, fit_preimage)
-    else:
-        fit_res = fit_resolution.resolve_fit(coordinate, fit_bindings, fit_preimage)
-    fitted_id = fit_resolution.resolved_fitted_id(fit_res, coordinate)
-
     # GAP-10: bracket the PAID fit mint in a §22.3 claim (mirror the generate-next spine S1→S6).
     # A bare check-then-mint let two concurrent identical renders BOTH pass `not is_done` and BOTH
     # run the paid reshape — a double-spend. The content-addressed fitted-id is the claim key, so
     # both contenders `acquire` the SAME key: exactly one wins, the other gets `claim-held` and is
     # re-driven by id. Release rides a `finally` — even an `_EngineError` leaves no dangling claim.
-    if fit_res.should_mint and not is_done(ctx.store, fitted_id):
-        acq = fit_resolution.claim_fit(registry, fit_res, coordinate)
+    if fit.fit_res.should_mint and not is_done(ctx.store, fitted_id):
+        acq = fit_resolution.claim_fit(registry, fit.fit_res, fit.coordinate)
         if not acq.acquired:
             return ([_claim_held(item, fitted_id, holder=acq.holder)], None)
         try:
@@ -223,7 +384,7 @@ def _render(
             # is_done-became-true race).
             if not is_done(ctx.store, fitted_id):
                 fitted_ir, fit_binding = engine.mint_fit(
-                    fit_leg, preimage=fit_preimage, revision=fit_res.revision
+                    fit.fit_leg, preimage=fit.fit_preimage, revision=fit.fit_res.revision
                 )
                 if fit_binding.get("fitted_id") != fitted_id:
                     return ([_block(
@@ -237,34 +398,31 @@ def _render(
     if fitted_ir is None:
         return ([_block(f"render: resolved fit {fitted_id!r} has no stored IR (§16)")], None)
 
-    # -- SERIALIZE resolution (§17 FR7.3) -------------------------------------------------------
-    ser_leg = SerializeLeg(
-        root=root, workspace=ctx.workspace, store=ctx.store, fitted_id=fitted_id,
-        fitted_ir=fitted_ir, output_type=output_type, presentation=presentation,
+    # -- SERIALIZE resolution (§17 FR7.3) — the SHARED primitive, now with the materialized IR (a
+    #    fresh fit resolves to the SAME baseline deliverable-id the shim predicted pre-mint) -------
+    deliverable = _resolve_deliverable(
+        ctx.store, ctx.workspace, fit.root, fitted_id, fit.output_type, fit.presentation,
+        engine=engine, fitted_ir=fitted_ir,
     )
-    try:
-        del_coord = DeliverableCoordinate(
-            fitted_id=fitted_id, output_type=output_type, presentation=presentation
-        )
-    except serialize.SerializeError as exc:
-        return ([_block(f"render: {exc}")], None)
-    ser_preimage = engine.serialize_preimage(ser_leg)
-    render_bindings = _render_bindings(ctx.store, fitted_id, output_type, presentation)
-    ser_res = serialize.resolve_deliverable(del_coord, render_bindings, ser_preimage)
-    deliverable_id = serialize.resolved_deliverable_id(ser_res, del_coord)
+    if deliverable.block is not None:
+        return ([deliverable.block], None)
+    ser_res = deliverable.ser_res
+    deliverable_id = deliverable.deliverable_id
 
     output_path: str | None = None
     if ser_res.should_mint and not is_done(ctx.store, deliverable_id):
         # GAP-10: the SAME §22.3 claim bracket for the paid deliverable mint (`claim_deliverable`
         # mirrors `claim_fit`; the content-addressed deliverable-id is the key). Held → the
         # re-drivable `claim-held`; release in a `finally`.
-        acq = serialize.claim_deliverable(registry, ser_res, del_coord)
+        acq = serialize.claim_deliverable(registry, ser_res, deliverable.del_coord)
         if not acq.acquired:
             return ([_claim_held(item, fitted_id, deliverable_id, holder=acq.holder)], None)
         try:
             if not is_done(ctx.store, deliverable_id):
                 mint = engine.mint_deliverable(
-                    ser_leg, preimage=ser_preimage, serialize_revision=ser_res.revision
+                    deliverable.ser_leg,
+                    preimage=deliverable.ser_preimage,
+                    serialize_revision=ser_res.revision,
                 )
                 render_binding = mint.binding
                 if render_binding.get("deliverable_id") != deliverable_id:
@@ -294,7 +452,7 @@ def _render(
     else:
         output_path = _existing_deliverable_path(ctx.store, deliverable_id)
 
-    return ([_result(item, fitted_id, deliverable_id, fit_res, ser_res, output_path)], None)
+    return ([_result(item, fitted_id, deliverable_id, fit.fit_res, ser_res, output_path)], None)
 
 
 def _result(

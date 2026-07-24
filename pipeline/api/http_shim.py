@@ -15,16 +15,23 @@ handlers via `register_api_handlers()` at startup — it adds NO handler and NO 
 is a transport translation over the same `invoke()` door the CLI uses. The shim carries no
 LLM/session/correctness state; every call is one stateless per-verb `invoke()`.
 
-**Scope (Commits 5a + 5b + 5c + 6).** 5a: skeleton + Tier-A synchronous dispatch + N-4 status
+**Scope (Commits 5a + 5b + 5c + 6 + 8).** 5a: skeleton + Tier-A synchronous dispatch + N-4 status
 mapping. 5b: the net-new AUTH surface + the DoS guard + the instance-config template. 5c: the
-served-workspace ALLOW-LIST policy layer + the explicit loopback-bind knob. **6 (this commit):
-the Tier-B 202-Accepted submit + poll async jobs door for `continue-session{generate-next}`
-ONLY** — the shim resolves the PREDICTABLE target artifact-ids LLM-free (re-resolving the
-session plan from the token cursor, `pipeline.api.session`), `pipeline.jobs.JobStore.submit`s a
-lossy idempotency record (create-exclusive + H2 steal), detaches a `pipeline.api.jobrunner`
-runner, and returns **202 + the predictable ids**; a `POST /poll` resolves the job by
-target-id (`pipeline.jobs.resolve_job_state`). Still 501 placeholders (later commits): a minting
-`render` (Commit 7) and `begin-session{generate!=none}` (Commit 8).
+served-workspace ALLOW-LIST policy layer + the explicit loopback-bind knob. 6: the Tier-B
+202-Accepted submit + poll async jobs door for `continue-session{generate-next}` — the shim
+resolves the PREDICTABLE target artifact-ids LLM-free (re-resolving the session plan from the
+token cursor, `pipeline.api.session`), `pipeline.jobs.JobStore.submit`s a lossy idempotency record
+(create-exclusive + H2 steal), detaches a `pipeline.api.jobrunner` runner, and returns **202 + the
+predictable ids**; a `POST /poll` resolves the job by target-id
+(`pipeline.jobs.resolve_job_state`). **8 (this commit): the minting `render` Tier-B door with an
+OPTIMISTIC-SYNC-then-202 fast path** — the shim resolves the PREDICTABLE render deliverable-id
+LLM-free (`pipeline.api.render.resolve_render_target`, the SAME primitives the render handler
+materializes through — no fork), submits + detaches a runner over the SAME jobs machinery, then
+HOLDS the request up to `RENDER_SYNC_WAIT_SECONDS` polling OUTPUT existence: a cache-hit / fast
+serialize → **200 + output** (sync); a paid reshape exceeding the wait → **202 + the predictable
+deliverable-id** (poll / webhook from there). GAP-10 already claims render's mints, so a concurrent
+render is `claim-held` (never a double-spend). Still a 501 placeholder (later commit):
+`begin-session{generate!=none}` (Commit 9).
 
 **Auth + DoS (Commit 5b — §C-4 N-7 + the DoS hardening 5a deferred).** Every `POST /invoke`
 carries a static bearer / `X-API-Key` secret, compared **constant-time** (`hmac.compare_digest`)
@@ -90,8 +97,8 @@ gates as the submit (N-6) and maps the resolved job state to a status (see below
 - `ok == False`, `code == invalid-token` → **422** (a §20 session CURSOR error — NEVER 401).
 - `ok == False`, `code == isolation-violation` → **403** (cross-workspace / bad-name refusal, §10).
 - `ok == False`, any other fatal code → **400** (conservative client-error default).
-- A STILL-DEFERRED Tier-B verb (a minting `render` / `begin-session generate!=none`) → **501**
-  (their async door lands in Commit 7/8).
+- The STILL-DEFERRED Tier-B verb `begin-session{generate!=none}` → **501** (its async door lands
+  in Commit 9). A minting `render` is now SERVED (Commit 8, `_submit_render`), not 501.
 - Malformed body / bad JSON / missing verb·workspace → **400** (a clean bad-request, never a crash).
 - Unexpected server fault → **500** (never leaks internals).
 
@@ -138,6 +145,7 @@ from pipeline.api import token as token_mod
 from pipeline.api.invoke import KNOWN_VERBS, HandlerNotWired, invoke
 from pipeline.callback_policy import CallbackPolicyError, validate_callback_url
 from pipeline.canonical import canonical_json_str
+from pipeline.opdefaults import RENDER_SYNC_WAIT_SECONDS
 
 __all__ = [
     "DEFAULT_HOST",
@@ -182,6 +190,12 @@ POLL_PATH = "/poll"
 #: JSON, so 1 MiB is generous; the socket timeout drops a stalled slow-loris connection.
 DEFAULT_MAX_BODY_BYTES = 1_048_576  # 1 MiB
 DEFAULT_SOCKET_TIMEOUT_SECONDS = 30.0
+
+#: The render OPTIMISTIC-SYNC poll cadence (Commit 8): the shim re-checks OUTPUT existence
+#: (`is_done`) at this interval while it holds a `render` submit open, up to
+#: `RENDER_SYNC_WAIT_SECONDS` (`pipeline.opdefaults`). Small so a fast render returns 200 promptly;
+#: the loop NEVER busy-spins (it sleeps between checks) and NEVER exceeds the hard wait ceiling.
+RENDER_POLL_INTERVAL_SECONDS = 0.25
 
 #: Env vars carrying the auth secret (PREFERRED over the file so it never touches disk). A single
 #: secret plus a comma-separated SET are UNIONED with any `instance/shim.yaml` `auth.secrets`.
@@ -392,12 +406,12 @@ _TIER_A_SESSION_ACTIONS = frozenset(
 
 
 def classify_verb(verb: str, params: Mapping[str, Any]) -> str:
-    """`TIER_A` (serve synchronously), `TIER_B` (async submit+poll or a 501 placeholder), or
-    `TIER_UNKNOWN` (let `invoke()` answer `unknown-verb`). Tier-B = the paid/async surface: the
-    minting `render` (optimistic-sync lands in Commit 7), `begin-session{generate!=none}`
-    (Commit 8), and the `continue-session` paid action `generate-next` (the Commit-6 submit door).
-    Every cheap `continue-session` action (`status|list|fetch|get|add-to-folio|emit-manifest`) is
-    Tier-A."""
+    """`TIER_A` (serve synchronously), `TIER_B` (async submit+poll — a served door or a 501
+    placeholder), or `TIER_UNKNOWN` (let `invoke()` answer `unknown-verb`). Tier-B = the paid/async
+    surface: the minting `render` (the Commit-8 optimistic-sync-then-202 door), the
+    `continue-session` paid action `generate-next` (the Commit-6 submit door), and
+    `begin-session{generate!=none}` (still a 501 placeholder — Commit 9). Every cheap
+    `continue-session` action (`status|list|fetch|get|add-to-folio|emit-manifest`) is Tier-A."""
     if verb not in KNOWN_VERBS:
         return TIER_UNKNOWN
     if verb in _TIER_A_SIMPLE:
@@ -410,20 +424,20 @@ def classify_verb(verb: str, params: Mapping[str, Any]) -> str:
 
 
 def _is_generate_next_submit(verb: str, params: Mapping[str, Any]) -> bool:
-    """True iff this is the ONE Tier-B operation Commit 6 SERVES as an async submit —
-    `continue-session{action: generate-next}`. Every other Tier-B verb (a minting `render`,
-    `begin-session{generate!=none}`) is still a 501 placeholder (Commit 7/8)."""
+    """True iff this is the `continue-session{action: generate-next}` async submit door
+    (Commit 6). `render` has its OWN Tier-B door (Commit 8, `_submit_render`); the only STILL-
+    DEFERRED Tier-B verb is `begin-session{generate!=none}` (Commit 9)."""
     return verb == "continue-session" and params.get("action") == "generate-next"
 
 
 def _tier_b_body(verb: str, params: Mapping[str, Any]) -> dict[str, Any]:
-    """The 501 placeholder for a STILL-DEFERRED Tier-B verb (a minting `render` / `begin-session
-    generate!=none`). `generate-next` is NOT routed here in Commit 6 — it is the served async
-    submit (`_submit_generate_next`)."""
+    """The 501 placeholder for the STILL-DEFERRED Tier-B verb `begin-session{generate!=none}`
+    (Commit 9). `generate-next` (`_submit_generate_next`, Commit 6) and the minting `render`
+    (`_submit_render`, Commit 8) are SERVED async doors — never routed here."""
     detail = (
         f"verb {verb!r} is a Tier-B (paid/async) operation whose async submit+poll door lands in "
-        "a later DR-1 commit (render: Commit 7; begin-session{generate!=none}: Commit 8). The one "
-        "Tier-B operation served in Commit 6 is continue-session{generate-next} (202 + poll)."
+        "a later DR-1 commit (begin-session{generate!=none}: Commit 9). The Tier-B operations "
+        "served today are continue-session{generate-next} and render (202 + poll)."
     )
     body: dict[str, Any] = {"error": "tier-b-not-served", "verb": verb, "detail": detail}
     action = params.get("action")
@@ -478,6 +492,22 @@ def _default_plan_targets(
     from pipeline.api import session
 
     return list(session.plan_next_batch_ids(Path(root), workspace, decoded, params))
+
+
+def _default_render_targets(store: Any, workspace: str, params: Mapping[str, Any]) -> Any:
+    """The PREDICTABLE render deliverable-id (§22.2) resolved LLM-FREE — the id the paid `render`
+    call will materialize, so the job can be keyed + polled BEFORE the reshape.
+
+    DELEGATES to the SINGLE source `render.resolve_render_target` — the SAME `_resolve_fit`/
+    `_resolve_deliverable` primitives the `render` handler (`_render`) materializes through, so the
+    keyed/polled deliverable-id == the id the handler materializes BY CONSTRUCTION (no forked
+    resolution — the render analogue of `_default_plan_targets` → `session.plan_next_batch_ids`).
+    Returns the `RenderResolution` (its `.block` short-circuits a validation/not-found error; its
+    `.deliverable_id` keys the job). The import is function-scoped to keep the shim module import
+    light (render.py pulls in reconcile/serialize)."""
+    from pipeline.api.render import resolve_render_target
+
+    return resolve_render_target(store, params, workspace=workspace)
 
 
 def _default_spawn(spec: Any, *, spawn_dir: Path) -> Any:
@@ -558,7 +588,9 @@ class ShimServer(ThreadingHTTPServer):
         allowed_callback_hosts: frozenset[str] = frozenset(),
         spawn_fn: Callable[..., Any] | None = None,
         plan_targets_fn: Callable[..., Sequence[str]] | None = None,
+        render_target_fn: Callable[..., Any] | None = None,
         clock_fn: Callable[[], float] | None = None,
+        render_sync_wait_seconds: float | None = None,
     ) -> None:
         if not secrets:
             raise ShimConfigError(
@@ -578,15 +610,27 @@ class ShimServer(ThreadingHTTPServer):
         #: submit with callback_url → 400 `callbacks-disabled`). Passed to
         #: `callback_policy.validate_callback_url` at submit-time; never a spawn-decision input.
         self.allowed_callback_hosts = frozenset(allowed_callback_hosts)
-        #: Commit-6 Tier-B seams (all `None` → the real defaults; tests inject light stubs so the
-        #: unit suite never spawns a real subprocess or resolves a live plan — the REAL detached
-        #: spawn + real plan resolution are the Commit-I integration harness). `spawn_fn` detaches
-        #: the runner (`jobrunner.spawn_runner`); `plan_targets_fn` resolves the predictable
-        #: target-id set LLM-free (`_default_plan_targets`); `clock_fn` is the poll/submit clock
-        #: (`time.time`) — injectable so a test can drive the job-lifetime / re-drivable windows.
+        #: Commit-6/8 Tier-B seams (all `None` → the real defaults; tests inject light stubs so the
+        #: unit suite never spawns a real subprocess or resolves a live plan/render — the REAL
+        #: detached spawn + real resolution are the integration harness). `spawn_fn` detaches the
+        #: runner (`jobrunner.spawn_runner`); `plan_targets_fn` resolves the predictable
+        #: generate-next target-id set LLM-free (`_default_plan_targets`); `render_target_fn`
+        #: resolves the predictable render deliverable-id LLM-free (`_default_render_targets`);
+        #: `clock_fn` is the poll/submit/render-wait clock (`time.time`) — injectable so a test can
+        #: drive the job-lifetime / re-drivable windows AND the render optimistic-sync deadline.
         self.spawn_fn = spawn_fn
         self.plan_targets_fn = plan_targets_fn
+        self.render_target_fn = render_target_fn
         self.clock_fn = clock_fn
+        #: Commit-8 render OPTIMISTIC-SYNC hold ceiling, seconds (None → RENDER_SYNC_WAIT_SECONDS).
+        #: Injectable so a test can drive the wait to 0 (a minting render → an INSTANT 202, never a
+        #: real 60 s sleep in the suite). The wait is a HARD ceiling; the loop sleeps
+        #: `RENDER_POLL_INTERVAL_SECONDS` between `is_done` checks and never exceeds it.
+        self.render_sync_wait_seconds = (
+            RENDER_SYNC_WAIT_SECONDS
+            if render_sync_wait_seconds is None
+            else float(render_sync_wait_seconds)
+        )
 
 
 class _ShimRequestHandler(BaseHTTPRequestHandler):
@@ -721,7 +765,10 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             if _is_generate_next_submit(verb, params):
                 self._submit_generate_next(server, workspace, params, token, pins)
                 return
-            # A STILL-DEFERRED Tier-B verb (a minting render / begin-session{generate!=none}).
+            if verb == "render":
+                self._submit_render(server, workspace, params, token, pins)
+                return
+            # The STILL-DEFERRED Tier-B verb `begin-session{generate!=none}` (Commit 9).
             self._respond(_HTTP_NOT_IMPLEMENTED, _tier_b_body(verb, params))
             return
 
@@ -895,6 +942,193 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             _HTTP_ACCEPTED,
             _accepted_body(outcome.key, target_ids, callback_registered=callback_url is not None),
         )
+
+    def _submit_render(
+        self,
+        server: ShimServer,
+        workspace: str,
+        params: Mapping[str, Any],
+        token: Any,
+        pins: Any,
+    ) -> None:
+        """The Tier-B `render` SUBMIT with the OPTIMISTIC-SYNC-then-202 fast path (Commit 8):
+        resolve the predictable deliverable-id LLM-free, `JobStore.submit` a lossy idempotency
+        record, detach a runner, then HOLD the request up to `RENDER_SYNC_WAIT_SECONDS` polling
+        OUTPUT existence — a cache-hit / fast local-pandoc serialize materializes within the wait →
+        a synchronous **200 + the fetched output**; a fit that must run the paid reshape exceeds it
+        → **202 + the predictable deliverable-id** (the detached runner continues; the client polls
+        or gets the W3c webhook).
+
+        `render` is token-free (§21.8) and CONTENT-ADDRESSED: the deliverable-id is a pure function
+        of the request, so a retry collides on the SAME `job_key` even WITHOUT an `idempotency_key`
+        (unlike generate-next, which requires one). `idempotency_key` is therefore OPTIONAL here;
+        when supplied it further scopes the key and must be a non-empty string.
+
+        GAP-10 already claims render's fit/deliverable mints, so a concurrent render is `claim-held`
+        (one mints, the other re-drives by id) — never a double-spend. The optional `callback_url`
+        rides the SAME W3b submit-time guard and the SAME poll door as generate-next (reuse, no
+        duplication).
+
+        THREAD-EXHAUSTION NOTE (Decision #5): the ≤`RENDER_SYNC_WAIT_SECONDS` synchronous hold ×
+        `ThreadingHTTPServer` thread-per-request pins one thread per in-flight render for the wait,
+        so a burst of minting renders can saturate the pool. The advisory/backstop concurrency cap
+        (DR-1 Commit 10) is the mitigation — deliberately NOT added here; the bounded wait is the
+        interim guard, documented on `RENDER_SYNC_WAIT_SECONDS`."""
+        # (a) OPTIONAL webhook callback (W3b) — VALIDATE at SUBMIT, BEFORE any store access / spawn.
+        #     Same guard as generate-next; a rejection names only the reason CLASS (never the URL).
+        callback_url = params.get("callback_url")
+        if callback_url is not None:
+            try:
+                validate_callback_url(callback_url, allowed_hosts=server.allowed_callback_hosts)
+            except CallbackPolicyError as exc:
+                self._respond(
+                    _HTTP_BAD_REQUEST,
+                    {"error": "callback-url-rejected", "reason": exc.reason, "detail": exc.detail},
+                )
+                return
+
+        # (b) OPTIONAL idempotency_key — content-addressed render needs none (a retry collides on
+        #     the deliverable-id); when supplied it must be a non-empty string.
+        idempotency_key = params.get("idempotency_key")
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or not idempotency_key
+        ):
+            self._respond(
+                _HTTP_BAD_REQUEST,
+                {
+                    "error": "idempotency-key-invalid",
+                    "detail": (
+                        "'idempotency_key' is OPTIONAL for render (the deliverable-id is content-"
+                        "addressed) but, when supplied, must be a non-empty string"
+                    ),
+                },
+            )
+            return
+
+        # (c) Build the CONTAINED store (delegated GAP-9 — an escaping name RAISES → 403).
+        try:
+            store, job_store, claims, is_done_fn = _open_workspace(server.root, workspace)
+        except ValueError:
+            self._respond(
+                _HTTP_FORBIDDEN,
+                {
+                    "error": "isolation-violation",
+                    "detail": (
+                        "workspace name does not resolve to a contained store root — workspaces "
+                        "never cross (§10/§21.1)"
+                    ),
+                },
+            )
+            return
+
+        # (d) Resolve the PREDICTABLE deliverable-id LLM-FREE (§22.2) via the SHARED render resolver
+        #     (`render.resolve_render_target` — the SAME `_resolve_fit`/`_resolve_deliverable`
+        #     primitives `_render` materializes through, no fork). A validation / not-found /
+        #     coordinate short-circuit rides `.block` → 400 naming the render block (no job keyed,
+        #     no spawn — nothing to run).
+        render_targets = (
+            server.render_target_fn
+            if server.render_target_fn is not None
+            else _default_render_targets
+        )
+        resolution = render_targets(store, workspace, params)
+        if resolution.block is not None:
+            self._respond(
+                _HTTP_BAD_REQUEST,
+                {"error": "render-blocked", "block": resolution.block.as_dict()},
+            )
+            return
+        deliverable_id = resolution.deliverable_id
+        target_ids = [deliverable_id]
+
+        # (d2) CACHE-HIT fast path (§22.7 existence): the deliverable ALREADY materialized → serve
+        #      it synchronously (200 + output) WITHOUT keying a job or spawning a runner. render is
+        #      idempotent by id existence, so there is nothing to run; the key is still the
+        #      deterministic `job_key` for a coherent done body / a subsequent poll.
+        if is_done_fn(deliverable_id):
+            from pipeline.jobs import job_key
+
+            self._respond(
+                _HTTP_OK,
+                self._done_body(
+                    server, workspace, job_key(target_ids, idempotency_key), target_ids
+                ),
+            )
+            return
+
+        # (e) Submit (create-exclusive + H2 steal) → disposition.
+        now = (server.clock_fn if server.clock_fn is not None else time.time)()
+        outcome = job_store.submit(
+            target_ids,
+            idempotency_key,
+            now=now,
+            is_done=is_done_fn,
+            peek=claims.peek,
+            callback_url=callback_url,
+        )
+        # A `done` disposition SHORT-CIRCUITS: the whole deliverable already materialized (a
+        # cache-hit / an idempotent re-submit after completion) → 200 + the fetched output.
+        if outcome.disposition == "done":
+            self._respond(_HTTP_OK, self._done_body(server, workspace, outcome.key, target_ids))
+            return
+        if outcome.spawn:  # `spawned` or `stolen` — detach the runner (record already written).
+            from pipeline.api import jobrunner
+
+            spec = jobrunner.JobSpec(
+                key=outcome.key,
+                verb="render",
+                workspace=workspace,
+                params=dict(params),
+                idempotency_key=idempotency_key,
+                root=str(server.root),
+                token=token,
+                pins=pins,
+                callback_url=callback_url,
+                target_ids=tuple(target_ids),
+                allowed_callback_hosts=server.allowed_callback_hosts,
+            )
+            spawn = server.spawn_fn if server.spawn_fn is not None else _default_spawn
+            spawn(spec, spawn_dir=store.jobs_dir)
+            # OPTIMISTIC-SYNC: hold up to RENDER_SYNC_WAIT_SECONDS polling OUTPUT existence. A fast
+            # render (cache-hit fit + local pandoc serialize) materializes within the wait → 200 +
+            # output; a paid reshape exceeds it → the 202 ack below.
+            if self._render_wait_for_done(server, is_done_fn, deliverable_id):
+                self._respond(
+                    _HTTP_OK, self._done_body(server, workspace, outcome.key, target_ids)
+                )
+                return
+        elif is_done_fn(deliverable_id):
+            # `existing` — a prior submit owns the spawn/wait; SHORT-CIRCUIT (never a second wait):
+            # if it has since materialized → 200 + output, else the 202 ack below.
+            self._respond(_HTTP_OK, self._done_body(server, workspace, outcome.key, target_ids))
+            return
+        # `spawned`/`stolen` exceeding the wait, or an `existing` not-yet-done → the N-3 202 ack
+        # with the predictable deliverable-id (the detached runner continues; the client polls or
+        # gets the webhook). A registered callback adds the W3c note; the poll floor always ships.
+        self._respond(
+            _HTTP_ACCEPTED,
+            _accepted_body(outcome.key, target_ids, callback_registered=callback_url is not None),
+        )
+
+    def _render_wait_for_done(
+        self, server: ShimServer, is_done_fn: Callable[[str], bool], deliverable_id: str
+    ) -> bool:
+        """The render OPTIMISTIC-SYNC bounded poll (Commit 8): return True the instant the
+        deliverable materializes (OUTPUT existence, §22.7), else False once the HARD ceiling
+        `server.render_sync_wait_seconds` elapses. The clock is `server.clock_fn` (injectable), so a
+        test drives the deadline WITHOUT a real sleep — with the wait set to 0 the first `is_done`
+        miss returns False INSTANTLY (a minting render → 202), and a fast-materializing seam returns
+        True on the first check (→ 200). Between checks it sleeps `RENDER_POLL_INTERVAL_SECONDS`
+        (never a busy-spin) and never overruns the ceiling."""
+        clock = server.clock_fn if server.clock_fn is not None else time.time
+        deadline = clock() + server.render_sync_wait_seconds
+        while True:
+            if is_done_fn(deliverable_id):
+                return True
+            remaining = deadline - clock()
+            if remaining <= 0:
+                return False
+            time.sleep(min(RENDER_POLL_INTERVAL_SECONDS, remaining))
 
     def _handle_poll(self, server: ShimServer, payload: Mapping[str, Any]) -> None:
         """`POST /poll {workspace, key, target_ids}` (Commit 6): resolve the job by target-id and
@@ -1137,14 +1371,18 @@ def make_server(
     allowed_callback_hosts: frozenset[str] = frozenset(),
     spawn_fn: Callable[..., Any] | None = None,
     plan_targets_fn: Callable[..., Sequence[str]] | None = None,
+    render_target_fn: Callable[..., Any] | None = None,
     clock_fn: Callable[[], float] | None = None,
+    render_sync_wait_seconds: float | None = None,
 ) -> ShimServer:
     """Build (but do not start) the shim server. `port=0` binds an ephemeral port (tests read
     `server.server_address`). The caller is responsible for wiring handlers (`serve()` does).
     `allowed_workspaces` is the Commit-5c served-workspace allow-list (empty = unset = serve any
     GAP-9-contained workspace); `allowed_callback_hosts` is the W3b webhook callback allow-list
-    (empty = opt-in OFF = callbacks disabled). `spawn_fn`/`plan_targets_fn`/`clock_fn` are the
-    Commit-6 Tier-B seams (None = the real defaults; tests inject light stubs).
+    (empty = opt-in OFF = callbacks disabled). `spawn_fn`/`plan_targets_fn`/`render_target_fn`/
+    `clock_fn`/`render_sync_wait_seconds` are the Commit-6/8 Tier-B seams (None = the real
+    defaults; tests inject light stubs, and set `render_sync_wait_seconds=0` to keep the render
+    optimistic-sync tests instant).
 
     FAIL-CLOSED: an empty `secrets` set raises `ShimConfigError` (via `ShimServer`) — the server
     is never built wide open."""
@@ -1159,7 +1397,9 @@ def make_server(
         allowed_callback_hosts=allowed_callback_hosts,
         spawn_fn=spawn_fn,
         plan_targets_fn=plan_targets_fn,
+        render_target_fn=render_target_fn,
         clock_fn=clock_fn,
+        render_sync_wait_seconds=render_sync_wait_seconds,
     )
 
 
@@ -1218,8 +1458,8 @@ def serve(
     print(
         f"pipeline serve: listening on http://{bound_host}:{bound_port} "
         f"(POST {INVOKE_PATH} + POST {POLL_PATH}; auth: required, {len(config.secrets)} secret(s); "
-        f"{allow_note}; {callback_note}; Tier-A synchronous; Tier-B generate-next 202+poll; "
-        "render/begin-session async doors land in a later DR-1 commit)",
+        f"{allow_note}; {callback_note}; Tier-A synchronous; Tier-B generate-next 202+poll + "
+        "render optimistic-sync-then-202; begin-session async door lands in a later DR-1 commit)",
         file=sys.stderr,
     )
     try:

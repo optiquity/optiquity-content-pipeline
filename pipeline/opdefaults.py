@@ -81,6 +81,7 @@ __all__ = [
     "MAX_PARALLEL_SESSIONS",
     "NASCENT_RECORD_GRACE_SECONDS",
     "RECOMMENDED_WIDTH_WINDOW_SECONDS",
+    "RENDER_SYNC_WAIT_SECONDS",
     "TELEMETRY_ENABLED_DEFAULT",
     "WRAPPER_HARD_TIMEOUT_SECONDS",
 ]
@@ -119,6 +120,20 @@ NASCENT_RECORD_GRACE_SECONDS = 120
 #: live-claim check remains the authority for active work of ANY duration; this window only ever
 #: governs the no-claim spans. Lossy-bookkeeping, never a §22.7 correctness authority.
 JOB_LIFETIME_SECONDS = WRAPPER_HARD_TIMEOUT_SECONDS + NASCENT_RECORD_GRACE_SECONDS
+
+#: DR-1 render OPTIMISTIC-SYNC hold, seconds — 60 s. The BOUNDED window the HTTP shim holds a
+#: `render` submit open, polling OUTPUT EXISTENCE (§22.7 `is_done`) on the predictable
+#: deliverable-id BEFORE falling back to the async 202+poll: a cache-hit / local-pandoc serialize
+#: usually materializes well within it → a synchronous 200 + the output; a fit that must run the
+#: paid reshape exceeds it → 202 + the predictable deliverable-id (the detached runner continues,
+#: the client polls / gets the webhook). Chosen WELL BELOW `WRAPPER_HARD_TIMEOUT_SECONDS` (1200 s):
+#: the hold is a latency convenience, never a substitute for the async door. THREAD-EXHAUSTION
+#: NOTE: the hold × `ThreadingHTTPServer` thread-per-request pins one thread per in-flight render
+#: for up to this long — a burst of minting renders can saturate the pool. The advisory/backstop
+#: concurrency cap (DR-1 Commit 10, `MAX_PARALLEL_SESSIONS`) is the mitigation; keeping this bound
+#: small (and the wait a hard ceiling) is the interim guard. Lossy-latency knob, never a §22.7
+#: correctness authority (the deliverable-id + poll are the authorities whether or not it fires).
+RENDER_SYNC_WAIT_SECONDS = 60
 
 #: DR-1 W3c webhook-callback DELIVERY budget — the bounded outbound completion-wakeup retry
 #: (`pipeline.callback_delivery`). Framework constants, NOT config knobs (only the allow-list is
