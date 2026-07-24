@@ -76,6 +76,7 @@ from pipeline.canonical import canonical_json_str
 from pipeline.driver import DriverError
 from pipeline.jobs import JobStore, is_deterministic_block
 from pipeline.store import WorkspaceStore
+from pipeline.telemetry import PresenceRegistry, TelemetryError
 from pipeline.transport import ApiKeyPresentError, BinaryNotFoundError
 from pipeline.workspace_name import validate_workspace_name
 
@@ -326,51 +327,124 @@ def _classify_returned(out: Mapping[str, Any]) -> tuple[_ReturnedKind, str | Non
     return ("skip", None) if deterministic_seen else ("clean", None)
 
 
+# ---------------------------------------------------------------------------
+# The account-wide PRESENCE lease (DR-1 Commit 10 — the ADVISORY concurrency cap, Path A).
+#
+# The detached runner registers a presence lease AROUND the paid work and releases it in a
+# `finally`, so `PresenceRegistry.live_count()` reflects in-flight DR-1 runners — the input the
+# HTTP shim's ADVISORY pre-spawn cap reads (`http_shim._deny_over_capacity`) and `begin-session`'s
+# `recommended_width` advisory consults. This is the MINIMAL Path-A wiring.
+#
+# PATH B (DEFERRED — the fidelity follow-up). Path A counts ONLY DR-1 runners, because only THIS
+# module registers a lease. A CLI / interactive `main_cli` session that spends against the SAME
+# subscription is NOT counted, so `live_count()` under-reports true account concurrency and the
+# advisory cap can pass while the account is actually busy. The fix is to register the lease at the
+# shared transport CHOKEPOINT (`transport.invoke_headless`) so EVERY paid session — HTTP, CLI,
+# interactive — increments the same count. That is intentionally NOT done here (it would move a
+# telemetry side effect onto the innermost hot path for every caller); the always-correct bound is
+# the RETURNED `rate-limit-backpressure` → 429 backstop regardless, so Path A + the backstop is the
+# reconciled Commit-10 scope and Path B is a later refinement.
+# ---------------------------------------------------------------------------
+
+
+def _presence_for(spec: JobSpec) -> PresenceRegistry:
+    """The account-wide presence-lease registry (§22.5) under `<root>/instance/ops/presence` — the
+    SAME registry the shim's advisory cap and `begin-session`'s width advisory consult (framework
+    MECHANISM, instance DATA, gitignored). Content-free: a lease is a random opaque token, never a
+    workspace name."""
+    return PresenceRegistry(Path(spec.root) / "instance" / "ops" / "presence")
+
+
+def _acquire_presence(registry: PresenceRegistry) -> str | None:
+    """Register this runner's account-wide presence lease around the paid work (Path A, §22.5) so it
+    COUNTS toward `live_count()` while in flight. Returns the opaque lease token, or None.
+
+    BEST-EFFORT / OFF THE CRITICAL PATH: the presence registry is operational telemetry (§22.5), NOT
+    an INV-CORRECTNESS root, so a registry I/O failure yields NO lease (None) and the paid job runs
+    UNIMPEDED — telemetry never breaks the critical path (and the 429 backstop still bounds real
+    overspend). NO heartbeat/refresh is needed: the 30-min lease TTL (`LEASE_TTL_SECONDS`)
+    comfortably exceeds the 20-min wrapper hard timeout (`WRAPPER_HARD_TIMEOUT_SECONDS`), so a
+    single job's lease never lapses mid-work; a DEAD runner's lease self-expires within the TTL
+    (§22.5 self-healing), so a crash that skips the `finally` release leaks no permanent count."""
+    try:
+        return registry.register().token
+    except (OSError, TelemetryError):
+        return None
+
+
+def _release_presence(registry: PresenceRegistry, token: str | None) -> None:
+    """Release the presence lease in a `finally` — a run that RAISES still drops its lease (no
+    leaked count). A None token (register was a best-effort no-op) is itself a no-op; a release I/O
+    error is swallowed (the lease self-expires at the TTL anyway — never break the runner on a
+    telemetry hiccup)."""
+    if token is None:
+        return
+    try:
+        registry.release(token)
+    except OSError:
+        pass
+
+
 def run_job(
     spec: JobSpec,
     *,
     job_store: JobStore | None = None,
     invoke: Any = None,
+    presence: PresenceRegistry | None = None,
 ) -> RunOutcome:
     """Run ONE job: re-enter `invoke()` (which acquires the S1 claim inside the handler) and route
-    the single outcome to at most one `record_terminal` write (H3). `invoke`/`job_store` are
-    injectable seams — the tests drive every branch with an injected `invoke` return/raise and a
-    tmp `JobStore`, no live transport. A raiser in `_RAISER_SET` is caught and synthesized into a
-    terminal; anything else PROPAGATES (crash → no terminal → the poll's re-drivable recovery)."""
+    the single outcome to at most one `record_terminal` write (H3). `invoke`/`job_store`/`presence`
+    are injectable seams — the tests drive every branch with an injected `invoke` return/raise, a
+    tmp `JobStore`, and a tmp `PresenceRegistry`, no live transport. A raiser in `_RAISER_SET` is
+    caught and synthesized into a terminal; anything else PROPAGATES (crash → no terminal → the
+    poll's re-drivable recovery).
+
+    Concurrency (DR-1 Commit 10, Path A): the runner REGISTERS an account-wide presence lease around
+    the paid work and RELEASES it in a `finally` — even a truly-unexpected raise drops the lease
+    (no leaked count) — so `PresenceRegistry.live_count()` reflects this in-flight runner for the
+    shim's ADVISORY cap. Presence is best-effort (off the critical path): a registry I/O failure
+    never blocks the job."""
     store = job_store if job_store is not None else _store_for(spec)
     call = invoke_mod.invoke if invoke is None else invoke
+    registry = presence if presence is not None else _presence_for(spec)
+    lease_token = _acquire_presence(registry)
     try:
-        out = call(
-            spec.verb,
-            spec.workspace,
-            dict(spec.params),
-            spec.token,
-            spec.pins,
-            root=spec.root,
-        )
-    except _RAISER_SET as exc:
-        code = _raised_terminal_code(exc)
-        envelope = {
-            "ok": False,
-            "verb": spec.verb,
-            "workspace": spec.workspace,
-            "code": code,
-            "message": str(exc),
-        }
-        stored = store.record_terminal(spec.key, code=code, envelope=envelope, results=[])
-        return RunOutcome("terminal-raised", code, stored)
+        try:
+            out = call(
+                spec.verb,
+                spec.workspace,
+                dict(spec.params),
+                spec.token,
+                spec.pins,
+                root=spec.root,
+            )
+        except _RAISER_SET as exc:
+            code = _raised_terminal_code(exc)
+            envelope = {
+                "ok": False,
+                "verb": spec.verb,
+                "workspace": spec.workspace,
+                "code": code,
+                "message": str(exc),
+            }
+            stored = store.record_terminal(spec.key, code=code, envelope=envelope, results=[])
+            return RunOutcome("terminal-raised", code, stored)
 
-    kind, code = _classify_returned(out if isinstance(out, Mapping) else {})
-    if kind == "record":
-        assert code is not None  # the record branch always names a code
-        stored = store.record_terminal(
-            spec.key,
-            code=code,
-            envelope=out.get("envelope"),
-            results=out.get("results"),
-        )
-        return RunOutcome("terminal-returned", code, stored)
-    return RunOutcome("clean" if kind == "clean" else "skip-deterministic", code, False)
+        kind, code = _classify_returned(out if isinstance(out, Mapping) else {})
+        if kind == "record":
+            assert code is not None  # the record branch always names a code
+            stored = store.record_terminal(
+                spec.key,
+                code=code,
+                envelope=out.get("envelope"),
+                results=out.get("results"),
+            )
+            return RunOutcome("terminal-returned", code, stored)
+        return RunOutcome("clean" if kind == "clean" else "skip-deterministic", code, False)
+    finally:
+        # RELEASE in a finally: a return (any branch) OR a truly-unexpected raise still drops the
+        # lease — no leaked in-flight count. (A crash that never reaches here self-heals at TTL.)
+        _release_presence(registry, lease_token)
 
 
 def _deliver_callback(spec: JobSpec, outcome: RunOutcome) -> None:

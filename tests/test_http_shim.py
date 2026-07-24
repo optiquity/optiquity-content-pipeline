@@ -74,6 +74,7 @@ def running_server(
     render_target_fn=None,
     clock_fn=None,
     render_sync_wait_seconds=None,
+    live_count_fn=None,
 ) -> Iterator[tuple[str, int]]:
     """Start the shim on an ephemeral loopback port in a daemon thread; yield (host, port). A
     non-empty `secrets` set is required (fail-closed); the harness defaults it to a test secret.
@@ -81,7 +82,9 @@ def running_server(
     `allowed_callback_hosts` drives the W3b webhook callback allow-list (default: unset = callbacks
     off). `spawn_fn`/`plan_targets_fn`/`render_target_fn`/`clock_fn`/`render_sync_wait_seconds` are
     the Commit-6/8 Tier-B seams (default: the real ones; set `render_sync_wait_seconds=0` to make a
-    minting render's optimistic-sync return an INSTANT 202 with no real sleep)."""
+    minting render's optimistic-sync return an INSTANT 202 with no real sleep). `live_count_fn` is
+    the DR-1 Commit-10 ADVISORY-cap seam (default: the real PresenceRegistry-backed count; seed it
+    at/over MAX_PARALLEL_SESSIONS to drive the 429 refusal without spawning real runners)."""
     server = http_shim.make_server(
         "127.0.0.1",
         0,
@@ -97,6 +100,7 @@ def running_server(
         render_target_fn=render_target_fn,
         clock_fn=clock_fn,
         render_sync_wait_seconds=render_sync_wait_seconds,
+        live_count_fn=live_count_fn,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1550,3 +1554,206 @@ class TestRenderTierBSubmit:
         # a fresh fit is not yet materialized → the baseline deliverable, resolved WITHOUT any mint
         assert r1.fit_materialized is False
         assert engine.mints == 0
+
+
+# --------------------------------------------------------------------------- DR-1 Commit 10:
+# the ADVISORY concurrency cap (Path A) + the always-correct rate-limit-backpressure 429 backstop.
+# `live_count_fn` seeds the account-wide in-flight PRESENCE count without spawning real runners.
+
+
+def post_full(host, port, body, *, path=http_shim.INVOKE_PATH, auth=TEST_SECRET):  # noqa: ANN001, ANN201
+    """Like `post` but ALSO returns the response HEADERS — for the `Retry-After` assertion on a 429
+    (the advisory cap + the backpressure backstop, DR-1 Commit 10)."""
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    raw = body if isinstance(body, (bytes, bytearray)) else json.dumps(body).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if auth is not None:
+        headers["Authorization"] = f"Bearer {auth}"
+    try:
+        conn.request("POST", path, body=raw, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        resp_headers = dict(resp.getheaders())
+        data = resp.read()
+    finally:
+        conn.close()
+    return status, (json.loads(data) if data else {}), resp_headers
+
+
+def poll_full(host, port, *, workspace, key, target_ids, auth=TEST_SECRET):  # noqa: ANN001, ANN201
+    """`POST /poll` returning (status, json, headers) — the header-capturing poll (for the
+    backstop's Retry-After assertion)."""
+    return post_full(
+        host,
+        port,
+        {"workspace": workspace, "key": key, "target_ids": target_ids},
+        path=http_shim.POLL_PATH,
+        auth=auth,
+    )
+
+
+class TestConcurrencyCap:
+    """DR-1 Commit 10 — the ADVISORY pre-spawn cap (Path A). Seed `live_count()` AT/OVER
+    MAX_PARALLEL_SESSIONS → a Tier-B submit is refused 429 + Retry-After with NO spawn; below the
+    cap → the normal 202. The pre-check is BEST-EFFORT / racy (proven below); the 429 backstop
+    (`TestConcurrencyBackstop`) is the always-correct bound."""
+
+    def test_gen_next_at_cap_is_429_retry_after_no_spawn(self, root: str) -> None:
+        from pipeline.opdefaults import MAX_PARALLEL_SESSIONS, SHIM_CAP_RETRY_AFTER_SECONDS
+
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+            live_count_fn=lambda _root: MAX_PARALLEL_SESSIONS,  # seeded AT the cap
+        ) as (host, port):
+            status, body, headers = post_full(
+                host,
+                port,
+                {
+                    "verb": "continue-session",
+                    "workspace": "wsA",
+                    "params": {"action": "generate-next", "idempotency_key": "exec-1"},
+                    "token": _valid_token(),
+                },
+            )
+        assert status == 429
+        assert body["error"] == "concurrency-cap"
+        assert body["retry_after_seconds"] == SHIM_CAP_RETRY_AFTER_SECONDS
+        assert headers.get("Retry-After") == str(SHIM_CAP_RETRY_AFTER_SECONDS)
+        assert not calls  # ADVISORY cap → do NOT spawn (the record self-heals via the H2 re-drive)
+
+    def test_gen_next_below_cap_is_normal_202(self, root: str) -> None:
+        from pipeline.opdefaults import MAX_PARALLEL_SESSIONS
+
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+            live_count_fn=lambda _root: MAX_PARALLEL_SESSIONS - 1,  # one BELOW the cap
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port)
+        assert status == 202 and body["status"] == "accepted"
+        assert len(calls) == 1  # below the cap → spawns normally
+
+    def test_render_at_cap_is_429_retry_after_no_spawn(self, root: str) -> None:
+        from pipeline.opdefaults import MAX_PARALLEL_SESSIONS, SHIM_CAP_RETRY_AFTER_SECONDS
+
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            render_target_fn=_fixed_render_target(DELIV_ID),
+            clock_fn=_FakeClock(),
+            render_sync_wait_seconds=0,
+            live_count_fn=lambda _root: MAX_PARALLEL_SESSIONS,  # seeded AT the cap
+        ) as (host, port):
+            status, body, headers = post_full(
+                host, port, {"verb": "render", "workspace": "wsA", "params": _render_params()}
+            )
+        assert status == 429 and body["error"] == "concurrency-cap"
+        assert headers.get("Retry-After") == str(SHIM_CAP_RETRY_AFTER_SECONDS)
+        # do NOT spawn — and thus never enter the optimistic-sync hold (one fewer pinned thread).
+        assert not calls
+
+    def test_default_live_count_reads_the_real_registry(self, root: str) -> None:
+        # The default (non-injected) seam reads the REAL PresenceRegistry: seed 3 live leases under
+        # <root>/instance/ops/presence and a submit is refused 429 — proving the shim consults the
+        # SAME registry the runners populate (integration, no stub).
+        from pipeline.opdefaults import MAX_PARALLEL_SESSIONS
+        from pipeline.telemetry import PresenceRegistry
+
+        registry = PresenceRegistry(Path(root) / "instance" / "ops" / "presence")
+        for _ in range(MAX_PARALLEL_SESSIONS):
+            registry.register()
+        assert registry.live_count() == MAX_PARALLEL_SESSIONS
+        calls: list = []
+        with running_server(  # NO live_count_fn → the real _default_live_count reads the registry
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port)
+        assert status == 429 and body["error"] == "concurrency-cap"
+        assert not calls
+
+    def test_pre_spawn_check_is_best_effort_a_burst_can_exceed(self, root: str) -> None:
+        # RACY-BUT-BOUNDED HONESTY: the pre-spawn check reads live_count BEFORE the detached runners
+        # register their leases, so within that racy window a BURST of distinct submits ALL pass
+        # (none 429) — the check can briefly EXCEED the cap. It is best-effort, NOT a hard gate; the
+        # returned rate-limit-backpressure 429 (TestConcurrencyBackstop) is the real bound. Here
+        # live_count() reads 0 (the pre-registration window), so cap+1 distinct submits all spawn.
+        from pipeline.opdefaults import MAX_PARALLEL_SESSIONS
+
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+            live_count_fn=lambda _root: 0,  # the racy pre-registration window
+        ) as (host, port):
+            statuses = [
+                _submit_gen_next(host, port, idem=f"exec-{i}")[0]
+                for i in range(MAX_PARALLEL_SESSIONS + 1)
+            ]
+        assert statuses == [202] * (MAX_PARALLEL_SESSIONS + 1)  # ALL pass — the burst exceeded
+        assert len(calls) == MAX_PARALLEL_SESSIONS + 1  # all spawned (best-effort, not a hard gate)
+
+
+class TestConcurrencyBackstop:
+    """DR-1 Commit 10 — the ALWAYS-CORRECT bound: the RETURNED `rate-limit-backpressure` → 429. It
+    catches real overspend regardless of the advisory pre-check's raciness (the subscription's own
+    pushback), and is the ONE mapping (`_terminal_status_for`) every surface routes through."""
+
+    def test_terminal_status_mapper_backpressure_is_429(self) -> None:
+        from pipeline.api.jobrunner import RE_DRIVABLE_CODE
+
+        assert http_shim._terminal_status_for("rate-limit-backpressure") == 429  # the backstop arm
+        assert http_shim._terminal_status_for(RE_DRIVABLE_CODE) == 504  # timeout-class, not 429
+
+    def test_poll_backpressure_terminal_is_429_with_retry_after(self, root: str) -> None:
+        # THE BACKSTOP end-to-end: a job whose stored terminal is the subscription's own
+        # rate-limit-backpressure → the poll maps it to 429 + Retry-After (re-drivable). This is the
+        # real bound the racy advisory pre-check backs onto.
+        from pipeline.jobs import JobStore
+        from pipeline.opdefaults import NASCENT_RECORD_GRACE_SECONDS, SHIM_CAP_RETRY_AFTER_SECONDS
+
+        clock = _FakeClock()
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder([]),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=clock,
+        ) as (host, port):
+            _s, ack = _submit_gen_next(host, port)
+            key = ack["job"]["key"]
+            JobStore(Path(root) / "workspaces" / "wsA" / "jobs").record_terminal(
+                key,
+                code="rate-limit-backpressure",
+                envelope={
+                    "ok": False,
+                    "code": "rate-limit-backpressure",
+                    "message": "usage limit reached",
+                },
+                results=[],
+            )
+            clock.now += NASCENT_RECORD_GRACE_SECONDS + 5  # surface the stored terminal promptly
+            status, body, headers = poll_full(
+                host, port, workspace="wsA", key=key, target_ids=[ART_ID]
+            )
+        assert status == 429
+        assert body["status"] == "failed" and body["code"] == "rate-limit-backpressure"
+        assert body["redrivable"] is True
+        assert headers.get("Retry-After") == str(SHIM_CAP_RETRY_AFTER_SECONDS)

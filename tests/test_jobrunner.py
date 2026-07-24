@@ -278,6 +278,97 @@ class TestIdempotentReentry:
 
 
 # ---------------------------------------------------------------------------
+# The account-wide PRESENCE lease (DR-1 Commit 10 — the ADVISORY concurrency cap, Path A). The
+# runner REGISTERS a lease around the paid work and RELEASES it in a `finally`, so the shim's
+# `live_count()` reflects in-flight DR-1 runners. Best-effort / off the critical path: a presence
+# I/O failure NEVER breaks the paid job.
+# ---------------------------------------------------------------------------
+
+
+class TestPresenceLease:
+    def test_runner_counts_while_in_flight_and_releases_after(self, store, tmp_path):
+        # `live_count` reflects the in-flight runner DURING the paid work and DROPS to 0 after — the
+        # register-around-run + finally-release wiring the shim's advisory cap reads.
+        from pipeline.telemetry import PresenceRegistry
+
+        registry = PresenceRegistry(tmp_path / "instance" / "ops" / "presence")
+        seen: dict = {}
+
+        def _invoke_observing(*_a, **_k):
+            seen["during"] = registry.live_count()  # observed WHILE the runner holds its lease
+            return {"envelope": _envelope(), "results": [{"item": A, "status": "ok", "ids": {}}]}
+
+        assert registry.live_count() == 0  # nothing registered before the run
+        key = _submit_record(store)
+        outcome = run_job(_spec(key), job_store=store, invoke=_invoke_observing, presence=registry)
+        assert outcome == RunOutcome("clean", None, False)
+        assert seen["during"] == 1  # the in-flight runner COUNTED toward the account-wide cap
+        assert registry.live_count() == 0  # released in the `finally` after the run
+
+    def test_a_raising_run_still_releases_the_lease_no_leak(self, store, tmp_path):
+        # A truly-unexpected raise PROPAGATES (crash → no terminal), but the `finally` still drops
+        # the presence lease — no leaked in-flight count that would wedge the advisory cap.
+        from pipeline.telemetry import PresenceRegistry
+
+        registry = PresenceRegistry(tmp_path / "instance" / "ops" / "presence")
+        key = _submit_record(store)
+        with pytest.raises(RuntimeError, match="boom"):
+            run_job(
+                _spec(key),
+                job_store=store,
+                invoke=_raiser(RuntimeError("boom — unexpected")),
+                presence=registry,
+            )
+        assert registry.live_count() == 0  # released even on a truly-unexpected raise
+
+    def test_a_caught_raiser_terminal_run_also_releases(self, store, tmp_path):
+        # The caught-raiser branch (render `_EngineError` → a recorded re-drivable terminal) returns
+        # normally THROUGH the finally — it too drops the lease.
+        from pipeline.telemetry import PresenceRegistry
+
+        registry = PresenceRegistry(tmp_path / "instance" / "ops" / "presence")
+        key = _submit_record(store)
+        exc = _EngineError("reconcile did not fit a-… (status=error code=timeout)")
+        outcome = run_job(
+            _spec(key, verb="render"), job_store=store, invoke=_raiser(exc), presence=registry
+        )
+        assert outcome == RunOutcome("terminal-raised", RE_DRIVABLE_CODE, True)
+        assert registry.live_count() == 0
+
+    def test_presence_io_failure_never_blocks_the_paid_job(self, store):
+        # Best-effort / off the critical path: a registry whose register() RAISES must NOT break
+        # run_job — the paid job still runs and returns its outcome (telemetry never wedges spend).
+        class _BrokenRegistry:
+            def register(self):
+                raise OSError("presence dir unwritable")
+
+            def release(self, token):  # pragma: no cover — a None token is never released
+                raise AssertionError("release must not run for a best-effort no-op token")
+
+        key = _submit_record(store)
+        outcome = run_job(
+            _spec(key), job_store=store, invoke=_invoke_clean, presence=_BrokenRegistry()
+        )
+        assert outcome == RunOutcome("clean", None, False)  # ran despite the presence failure
+
+    def test_default_presence_registry_is_root_scoped_instance_ops(self, tmp_path):
+        # The default (non-injected) registry homes under `<root>/instance/ops/presence` — the SAME
+        # account-wide registry the shim's advisory cap + begin-session's width advisory consult.
+        from pipeline.api.jobrunner import _presence_for
+
+        spec = JobSpec(
+            key=job_key((A,), IDK),
+            verb="continue-session",
+            workspace=WS,
+            params={"action": "generate-next"},
+            idempotency_key=IDK,
+            root=str(tmp_path),
+        )
+        registry = _presence_for(spec)
+        assert registry.ops_dir == tmp_path / "instance" / "ops" / "presence"
+
+
+# ---------------------------------------------------------------------------
 # The detached-spawn primitive.
 # ---------------------------------------------------------------------------
 

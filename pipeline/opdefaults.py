@@ -82,6 +82,7 @@ __all__ = [
     "NASCENT_RECORD_GRACE_SECONDS",
     "RECOMMENDED_WIDTH_WINDOW_SECONDS",
     "RENDER_SYNC_WAIT_SECONDS",
+    "SHIM_CAP_RETRY_AFTER_SECONDS",
     "TELEMETRY_ENABLED_DEFAULT",
     "WRAPPER_HARD_TIMEOUT_SECONDS",
 ]
@@ -134,6 +135,16 @@ JOB_LIFETIME_SECONDS = WRAPPER_HARD_TIMEOUT_SECONDS + NASCENT_RECORD_GRACE_SECON
 #: small (and the wait a hard ceiling) is the interim guard. Lossy-latency knob, never a §22.7
 #: correctness authority (the deliverable-id + poll are the authorities whether or not it fires).
 RENDER_SYNC_WAIT_SECONDS = 60
+
+#: DR-1 Commit 10 ADVISORY concurrency-cap Retry-After hint, seconds — 30 s. The `Retry-After` the
+#: HTTP shim returns with a 429 when the account-wide in-flight PRESENCE count is AT
+#: `MAX_PARALLEL_SESSIONS` (Path A: the advisory pre-spawn check) AND with the poll's
+#: `rate-limit-backpressure` → 429 backstop (the subscription's own pushback). A modest back-off:
+#: typical subscription calls settle in ~8-12 s (§22.8), so a slot usually frees well within it. It
+#: is a HINT, never a guarantee — the advisory cap is BEST-EFFORT / racy (N simultaneous submits can
+#: all pass before any runner registers), so the always-correct bound is the RETURNED backpressure
+#: 429, not this pre-check. Lossy-latency knob, never a §22.7 correctness authority.
+SHIM_CAP_RETRY_AFTER_SECONDS = 30
 
 #: DR-1 W3c webhook-callback DELIVERY budget — the bounded outbound completion-wakeup retry
 #: (`pipeline.callback_delivery`). Framework constants, NOT config knobs (only the allow-list is

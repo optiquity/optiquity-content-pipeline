@@ -145,7 +145,11 @@ from pipeline.api import token as token_mod
 from pipeline.api.invoke import KNOWN_VERBS, HandlerNotWired, invoke
 from pipeline.callback_policy import CallbackPolicyError, validate_callback_url
 from pipeline.canonical import canonical_json_str
-from pipeline.opdefaults import RENDER_SYNC_WAIT_SECONDS
+from pipeline.opdefaults import (
+    MAX_PARALLEL_SESSIONS,
+    RENDER_SYNC_WAIT_SECONDS,
+    SHIM_CAP_RETRY_AFTER_SECONDS,
+)
 
 __all__ = [
     "DEFAULT_HOST",
@@ -542,7 +546,14 @@ def _terminal_status_for(code: str) -> int:
     an envelope code) to its poll HTTP status. Timeout-class (`re-drivable`/`timeout`) → 504
     (re-drivable, N-4); backpressure → 429; an envelope code rides the fatal table
     (unknown-verb→400, invalid-token→422, isolation-violation→403); any other terminal (a
-    wiring/env `runner-failed`) → 500 (a non-re-drivable server-side failure)."""
+    wiring/env `runner-failed`) → 500 (a non-re-drivable server-side failure).
+
+    The `rate-limit-backpressure` → 429 arm is the ALWAYS-CORRECT concurrency bound (DR-1 Commit
+    10 — the backstop): the subscription's OWN pushback, surfaced whenever a Tier-B call RETURNS
+    the backpressure code (via the poll, and via any sync path that routes a returned code through
+    this ONE mapper). It bounds real overspend regardless of the advisory pre-spawn cap's raciness
+    (`_deny_over_capacity`). Any NEW inline-sync Tier-B surface MUST route its returned code through
+    here so the 429 backstop keeps holding."""
     from pipeline.api.jobrunner import RE_DRIVABLE_CODE
 
     if code in (RE_DRIVABLE_CODE, "timeout"):
@@ -552,6 +563,40 @@ def _terminal_status_for(code: str) -> int:
     if code in _FATAL_STATUS:
         return _FATAL_STATUS[code]
     return _HTTP_INTERNAL
+
+
+# --- The ADVISORY concurrency cap (DR-1 Commit 10 — Path A) ----------------------------------
+#
+# Path A (the advisory pre-spawn check + the always-correct 429 backstop). Before detaching a NEW
+# Tier-B runner, the shim reads the account-wide in-flight PRESENCE count (`live_count()`, seeded
+# by the runners' own leases — `jobrunner.run_job`) and refuses 429 + Retry-After at the cap
+# (`_deny_over_capacity`). This SHEDS an obvious burst early but is BEST-EFFORT / RACY (N submits
+# can all pass before any registers). The ALWAYS-CORRECT bound is the RETURNED
+# `rate-limit-backpressure` → 429 backstop (`_terminal_status_for`), catching real overspend anyway.
+#
+# PATH B (DEFERRED — the fidelity follow-up). `live_count()` presently reflects ONLY DR-1 runners
+# (they alone register a lease), so a CLI / interactive session spending against the SAME
+# subscription is NOT counted and the advisory cap can pass while the account is busy. Registering
+# the lease at the shared transport CHOKEPOINT (`transport.invoke_headless`) would count EVERY paid
+# session — HTTP, CLI, interactive — in the same registry. Intentionally not done here (see the
+# matching note in `jobrunner`); Path A + the backstop is the reconciled Commit-10 scope.
+
+
+def _default_live_count(root: str) -> int:
+    """The account-wide in-flight PRESENCE count from the real `PresenceRegistry` (§22.5) under
+    `<root>/instance/ops/presence` — the same registry the runners' leases populate.
+
+    ADVISORY input only. Reflects DR-1 runners (Path A); CLI/interactive sessions are not yet
+    counted (Path B, deferred). FAIL-OPEN (returns 0) on any registry-read error: the cap is
+    advisory and the returned-backpressure 429 is the real bound, so a telemetry I/O hiccup must
+    NEVER block a submit. An absent registry dir also reads 0 (`live_count`'s own guard) — the
+    default before any runner has registered."""
+    from pipeline.telemetry import PresenceRegistry
+
+    try:
+        return PresenceRegistry(Path(root) / "instance" / "ops" / "presence").live_count()
+    except OSError:
+        return 0
 
 
 # --- The server ------------------------------------------------------------------------------
@@ -591,6 +636,7 @@ class ShimServer(ThreadingHTTPServer):
         render_target_fn: Callable[..., Any] | None = None,
         clock_fn: Callable[[], float] | None = None,
         render_sync_wait_seconds: float | None = None,
+        live_count_fn: Callable[[str], int] | None = None,
     ) -> None:
         if not secrets:
             raise ShimConfigError(
@@ -631,6 +677,18 @@ class ShimServer(ThreadingHTTPServer):
             if render_sync_wait_seconds is None
             else float(render_sync_wait_seconds)
         )
+        #: DR-1 Commit 10 ADVISORY concurrency-cap seam: `live_count_fn(root) -> int` reads the
+        #: account-wide in-flight PRESENCE count (None → the real `_default_live_count`, backed by
+        #: `PresenceRegistry`). A test seeds it AT/OVER `MAX_PARALLEL_SESSIONS` to drive the 429
+        #: refusal without spawning real runners; the default reads 0 until a runner registers a
+        #: lease, so the cap is transparent below-cap.
+        self.live_count_fn = live_count_fn
+
+    def live_count(self) -> int:
+        """The account-wide in-flight presence count for the ADVISORY cap — the seam or the real
+        `PresenceRegistry`-backed default (`_default_live_count`), against this server's root."""
+        count = self.live_count_fn if self.live_count_fn is not None else _default_live_count
+        return count(self.root)
 
 
 class _ShimRequestHandler(BaseHTTPRequestHandler):
@@ -737,6 +795,42 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                         "allow-list (workspaces.allowed in instance/shim.yaml)"
                     ),
                 },
+            )
+            return True
+        return False
+
+    def _deny_over_capacity(self, server: ShimServer) -> bool:
+        """ADVISORY concurrency cap (DR-1 Commit 10 — Path A). BEFORE detaching a NEW Tier-B runner,
+        read the account-wide in-flight PRESENCE count; AT/OVER `MAX_PARALLEL_SESSIONS` (§22.5) →
+        refuse **429 + Retry-After**, do NOT spawn, and return True. Below the cap → return False
+        (proceed). Applied only where a NEW spawn WOULD happen (`outcome.spawn`), so it never
+        rejects an already-`done` idempotent re-submit or an `existing` in-flight job (no new
+        spend there).
+
+        BEST-EFFORT / RACY BY CONSTRUCTION — NOT a hard gate. N simultaneous submits can all read a
+        below-cap count BEFORE any runner registers its lease (a thundering herd), so a burst may
+        briefly EXCEED the cap; this only SHEDS an obvious burst early. The ALWAYS-CORRECT bound is
+        the returned `rate-limit-backpressure` → 429 backstop (`_terminal_status_for`) — the
+        subscription's own pushback — which catches real overspend regardless of this raciness. On a
+        refusal the just-written job record is simply left un-spawned: the SAME H2 self-heal as a
+        spawn failure (the record lapses with no live claim / no output → the next same-key submit
+        re-drives once a slot frees). Path A counts only DR-1 runners; Path B (the transport
+        chokepoint) is DEFERRED (see the module note)."""
+        if server.live_count() >= MAX_PARALLEL_SESSIONS:
+            self._respond(
+                _HTTP_TOO_MANY_REQUESTS,
+                {
+                    "error": "concurrency-cap",
+                    "detail": (
+                        f"the account-wide in-flight session count is at the cap "
+                        f"({MAX_PARALLEL_SESSIONS}, §22.5 max_parallel_sessions) — retry after the "
+                        "hinted delay. This pre-spawn check is ADVISORY / best-effort (a burst may "
+                        "briefly exceed it); the subscription's own rate-limit-backpressure (429) "
+                        "is the always-correct bound."
+                    ),
+                    "retry_after_seconds": SHIM_CAP_RETRY_AFTER_SECONDS,
+                },
+                extra_headers={"Retry-After": str(SHIM_CAP_RETRY_AFTER_SECONDS)},
             )
             return True
         return False
@@ -915,6 +1009,11 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if outcome.spawn:  # `spawned` or `stolen` — detach the runner (record already written).
+            # ADVISORY concurrency cap (DR-1 Commit 10, Path A): at MAX_PARALLEL_SESSIONS → 429 +
+            # Retry-After, do NOT spawn. Best-effort/racy; the just-written record self-heals via
+            # the H2 re-drive (same as a spawn failure). The 429 backstop is the real bound.
+            if self._deny_over_capacity(server):
+                return
             from pipeline.api import jobrunner
 
             spec = jobrunner.JobSpec(
@@ -1072,6 +1171,12 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             self._respond(_HTTP_OK, self._done_body(server, workspace, outcome.key, target_ids))
             return
         if outcome.spawn:  # `spawned` or `stolen` — detach the runner (record already written).
+            # ADVISORY concurrency cap (DR-1 Commit 10, Path A): at MAX_PARALLEL_SESSIONS → 429 +
+            # Retry-After, do NOT spawn (and never enter the optimistic-sync hold — one fewer pinned
+            # thread under a burst, the §RENDER_SYNC_WAIT thread-exhaustion note). Best-effort/racy;
+            # the record self-heals via the H2 re-drive. The 429 backstop is the real bound.
+            if self._deny_over_capacity(server):
+                return
             from pipeline.api import jobrunner
 
             spec = jobrunner.JobSpec(
@@ -1227,6 +1332,14 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             terminal = terminal_state.terminal
             status = _terminal_status_for(terminal.code)
             redrivable = status in (_HTTP_GATEWAY_TIMEOUT, _HTTP_TOO_MANY_REQUESTS)
+            # The 429 BACKSTOP (DR-1 Commit 10): a surfaced `rate-limit-backpressure` — the
+            # subscription's own pushback — carries a Retry-After hint so the client backs off
+            # before re-driving. (A 504 timeout-class re-drive gets no hint; it re-drives at once.)
+            extra_headers = (
+                {"Retry-After": str(SHIM_CAP_RETRY_AFTER_SECONDS)}
+                if status == _HTTP_TOO_MANY_REQUESTS
+                else None
+            )
             self._respond(
                 status,
                 {
@@ -1241,6 +1354,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                         else "the job failed for a non-re-drivable reason (wiring/env)"
                     ),
                 },
+                extra_headers=extra_headers,
             )
             return
         self._respond(
@@ -1349,11 +1463,21 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
     def _bad_request(self, detail: str) -> None:
         self._respond(_HTTP_BAD_REQUEST, {"error": "bad-request", "detail": detail})
 
-    def _respond(self, status: int, obj: Mapping[str, Any]) -> None:
+    def _respond(
+        self,
+        status: int,
+        obj: Mapping[str, Any],
+        *,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
         body = (canonical_json_str(obj) + "\n").encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # Optional extra headers (e.g. `Retry-After` on a 429 — the advisory cap + the backpressure
+        # backstop, DR-1 Commit 10). Emitted BEFORE end_headers; never carries a secret (N-7).
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1374,6 +1498,7 @@ def make_server(
     render_target_fn: Callable[..., Any] | None = None,
     clock_fn: Callable[[], float] | None = None,
     render_sync_wait_seconds: float | None = None,
+    live_count_fn: Callable[[str], int] | None = None,
 ) -> ShimServer:
     """Build (but do not start) the shim server. `port=0` binds an ephemeral port (tests read
     `server.server_address`). The caller is responsible for wiring handlers (`serve()` does).
@@ -1382,7 +1507,8 @@ def make_server(
     (empty = opt-in OFF = callbacks disabled). `spawn_fn`/`plan_targets_fn`/`render_target_fn`/
     `clock_fn`/`render_sync_wait_seconds` are the Commit-6/8 Tier-B seams (None = the real
     defaults; tests inject light stubs, and set `render_sync_wait_seconds=0` to keep the render
-    optimistic-sync tests instant).
+    optimistic-sync tests instant). `live_count_fn` is the DR-1 Commit-10 ADVISORY-cap seam (None =
+    the real `PresenceRegistry`-backed `_default_live_count`; a test seeds it at/over the cap).
 
     FAIL-CLOSED: an empty `secrets` set raises `ShimConfigError` (via `ShimServer`) — the server
     is never built wide open."""
@@ -1400,6 +1526,7 @@ def make_server(
         render_target_fn=render_target_fn,
         clock_fn=clock_fn,
         render_sync_wait_seconds=render_sync_wait_seconds,
+        live_count_fn=live_count_fn,
     )
 
 
