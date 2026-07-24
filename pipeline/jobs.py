@@ -28,23 +28,35 @@ masquerade as an output.
 
 `JobStore.submit` writes the initial record with `store.create_exclusive` (the happy path: no
 double-spawn — exactly one caller creates the record and is told to spawn). On `FileExistsError`
-it reads the incumbent and resolves WITHOUT double-spawning: the whole job materialized → DONE;
-within the startup grace OR a live claim on any target → the legitimate 202→S1 window, return the
-existing job (no re-spawn); else STALE (past grace, no live claim, output absent) → STEAL the
-record via `store.write_replace` (reset the grace) and signal a re-spawn. A concurrent steal on an
-already-dead job is a bounded per-submitter cost leak (an N-way race spawns up to N runners) —
-never a double OUTPUT, because the S1 claim admits one LLM run per id and `commit_new` admits one
-output (§22.3).
+it reads the incumbent and resolves WITHOUT double-spawning, in THIS order: the whole job
+materialized → DONE; a STORED terminal (the runner's `invoke` returned a failure and it EXITED) →
+STEAL + re-spawn (the RETRY path — re-drive by the same key, above the window so a recorded failure
+never wedges the retry for the full lifetime); within the JOB-LIFETIME window OR a live claim on
+any target → the "still running" case (a slow start / a no-claim gap / active work), return the
+existing job (NO re-spawn — the anti-double-charge guard); else STALE (past the window, no live
+claim, output absent, no terminal) → STEAL the record via `store.write_replace` and signal a
+re-spawn. A concurrent steal on an already-dead job is a bounded per-submitter cost leak (an N-way
+race spawns up to N runners) — never a double OUTPUT, because the S1 claim admits one LLM run per
+id and `commit_new` admits one output (§22.3).
 
-The NASCENT-record window mirrors §22.3 exactly: `create_exclusive` names the file atomically but
-the content write lands a moment later, so a racing submit may read a torn record. Within an
-implicit grace anchored at the file's mtime the incumbent submitter is presumed to be spawning —
-DO NOT steal (that would double-spawn a live job); past it a torn record is stealable. `submit`
-(the spawn-decision authority) handles this conservatively; the read-only resolver simply treats
-an unreadable record as absent (a transient wrong poll self-corrects — the same acquire/peek
-asymmetry §22.3 already draws).
+The JOB-LIFETIME window (`JOB_LIFETIME_SECONDS`, 22 min) is ONE GENEROUS "assume still running"
+line — above one full paid call, below the lease TTL. It REPLACES the old 120 s startup grace as
+the running-vs-dead boundary: the live-claim check remains the authority for active work of any
+duration, so the record window only ever governs the brief NO-CLAIM spans (startup / between
+artifacts / the commit tail) — now with a ~10× margin, so a legitimately-running slow job is NEVER
+told to resend (which had caused a double paid run).
 
-## The poll resolver (H3 CORRECTED truth-table) — `resolve_job_state`
+The NASCENT-record window (`NASCENT_RECORD_GRACE_SECONDS`, seconds-scale) is a SEPARATE, short
+grace mirroring §22.3: `create_exclusive` names the file atomically but the content write lands a
+moment later, so a racing submit may read a torn record. Within an implicit grace anchored at the
+file's mtime the incumbent submitter is presumed to be finishing the write — DO NOT steal (that
+would double-spawn a live job); past it a torn record is stealable. It stays SECONDS-scale (a torn
+record from a crashed submitter must become stealable in seconds, not 22 min). `submit` (the
+spawn-decision authority) handles this conservatively; the read-only resolver simply treats an
+unreadable record as absent (a transient wrong poll self-corrects — the same acquire/peek asymmetry
+§22.3 already draws).
+
+## The poll resolver (reshaped truth-table) — `resolve_job_state`
 
 Evaluated in THIS order (the load-bearing state machine):
 
@@ -55,12 +67,14 @@ Evaluated in THIS order (the load-bearing state machine):
    authority #2 (the LLM window). `peek` returns a record EVEN FOR AN EXPIRED lease (no clock
    check — `claims.py`), so the resolver compares `lease_expiry` to `now` ITSELF; "peek returned
    something" is NOT "live". → **RUNNING**.
-3. record present AND `now < spawn_time + startup_grace` — the 202→S1 / nascent-None startup
-   window, where the runner has not yet acquired its first claim (peek still None). → **RUNNING**.
-4. record present AND a STORED terminal envelope — a NONDETERMINISTIC failure was recorded
-   (N-5) → surface the reason. → **FAILED** (the HTTP layer maps the envelope code to a
-   re-drivable 504 vs a terminal FAILED — Commit 6, not here).
-5. else → **FAILED-re-drivable** — nothing live, nothing done, no stored reason: safe to
+3. record present AND a STORED terminal envelope — a NONDETERMINISTIC failure was recorded (N-5).
+   MOVED ABOVE the window: a stored terminal means the runner's `invoke` RETURNED, so it has
+   EXITED — surface the reason PROMPTLY, never mask a real failure as RUNNING for the full job
+   lifetime. → **FAILED** (the HTTP layer maps the code to a re-drivable 504 vs a terminal FAILED).
+4. record present AND `now < spawn_time + JOB_LIFETIME_SECONDS` — the assume-still-running window
+   (a slow start or a brief no-claim gap; peek still None). REPLACES the old 120 s startup grace →
+   a legitimately-running slow job resolves RUNNING, never redrivable. → **RUNNING**.
+5. else → **FAILED-re-drivable** — past the window, nothing live/done, no stored reason: safe to
    re-submit by the same key. A deterministic block (un-stored, N-5) and a deleted record both
    land here — the completeness sweep / a re-submit re-derive them. Never a wedge, never a false
    DONE.
@@ -70,10 +84,11 @@ Evaluated in THIS order (the load-bearing state machine):
 Stores `{envelope, results}` ONLY for NONDETERMINISTIC runtime failures (the runner's exception
 synthesis / a transport-carried `timeout`/`rate-limit-backpressure`/`api-error`). DETERMINISTIC
 blocks (`empty-pool`/`out-of-window`/`drift-block`/`hard-limit-exceeded`) store NOTHING — the
-§21.7 completeness sweep re-derives them, so persisting them would be redundant lossy state. A
-stored terminal is masked by authorities #1/#2/#3 in the resolver, so a stale terminal (e.g. from
-a stolen-from runner's late call) is never a correctness fault — it only ever annotates a job that
-is ALREADY not-done, not-live, and past grace.
+§21.7 completeness sweep re-derives them, so persisting them would be redundant lossy state. In the
+resolver a stored terminal is masked by authorities #1/#2 (output / a live claim), so a stale
+terminal (e.g. from a stolen-from runner's late call) is never a correctness fault — it only ever
+annotates a job that is ALREADY not-done and not-live. A steal writes a fresh record with
+`terminal=None`, so a terminal present always belongs to the current, un-stolen runner.
 """
 
 from __future__ import annotations
@@ -95,7 +110,7 @@ from pipeline.api.results import (
 from pipeline.canonical import canonical_json_str, canonical_set
 from pipeline.claims import ClaimRecord
 from pipeline.ids import mint_run_id, parse_id
-from pipeline.opdefaults import STARTUP_GRACE_SECONDS
+from pipeline.opdefaults import JOB_LIFETIME_SECONDS, NASCENT_RECORD_GRACE_SECONDS
 from pipeline.store import create_exclusive, write_replace
 
 __all__ = [
@@ -187,8 +202,8 @@ class JobTerminal:
 @dataclass(frozen=True)
 class JobRecord:
     """One §22.7-class LOSSY job record. Present-but-output-absent is NEVER DONE; a missing record
-    still resolves safely (→ re-drivable). `spawn_time` anchors the startup grace; `terminal` is
-    set only by `record_terminal` for a nondeterministic failure."""
+    still resolves safely (→ re-drivable). `spawn_time` anchors the job-lifetime window; `terminal`
+    is set only by `record_terminal` for a nondeterministic failure."""
 
     target_ids: tuple[str, ...]
     idempotency_key: str | None
@@ -235,9 +250,11 @@ def resolve_job_state(
     now: float,
     is_done: IsDone,
     peek: Peek,
-    startup_grace: float = STARTUP_GRACE_SECONDS,
+    startup_grace: float = JOB_LIFETIME_SECONDS,
 ) -> JobState:
-    """Resolve a poll for `target_id` against the (lossy) `record` — the H3 truth-table, in order.
+    """Resolve a poll for `target_id` against the (lossy) `record` — the reshaped truth-table, in
+    order. `startup_grace` is the ASSUME-STILL-RUNNING window (`JOB_LIFETIME_SECONDS`); the legacy
+    param name is retained because the shim's poll call-site passes it as a keyword.
 
     `record is None` covers a MISSING or unreadable record: it flows through steps 1/2 (the §22.7
     authorities are record-independent) and lands at step 5 (re-drivable) unless the output exists
@@ -249,13 +266,22 @@ def resolve_job_state(
     # 2. A LIVE claim/lease — §22.7 authority #2 (the LLM window). Compare lease_expiry OURSELVES.
     if _claim_is_live(peek(target_id), now):
         return JobState("running", "claim-live")
-    # 3. The startup-grace window (202→S1 / nascent-None), anchored on the record's spawn_time.
-    if record is not None and now < record.spawn_time + startup_grace:
-        return JobState("running", "startup-grace")
-    # 4. A stored terminal (nondeterministic failure, N-5) → surface the reason.
+    # 3. A stored terminal (nondeterministic failure, N-5) → surface the reason PROMPTLY. MOVED
+    #    ABOVE the window: `record_terminal` is written ONLY after `run_job`/`invoke` RETURNED, so
+    #    the runner has EXITED — a real failure must not be masked as RUNNING for the full job
+    #    lifetime. Not a stale-terminal hazard: a steal writes a fresh record with terminal=None, so
+    #    any terminal present belongs to the current (un-stolen) runner, and steps 1/2 already mask
+    #    it if output/claim reappeared.
     if record is not None and record.terminal is not None:
         return JobState("failed", "stored-terminal", terminal=record.terminal)
-    # 5. Nothing live, nothing done, no stored reason → safe to re-submit by the same key.
+    # 4. Within the job-lifetime window — the runner is presumed STILL RUNNING (a slow start, or a
+    #    brief no-claim gap between artifacts / the commit tail). REPLACES the old 120 s startup-
+    #    grace boundary: the generous window governs only the no-claim spans (the live-claim check
+    #    at step 2 covers active work of any duration), so a legitimately-running slow job is NEVER
+    #    told to resend. This is the anti-double-charge guarantee on the poll side.
+    if record is not None and now < record.spawn_time + startup_grace:
+        return JobState("running", "within-lifetime")
+    # 5. Past the window, nothing live/done, no stored reason → safe to re-submit by the same key.
     return JobState("failed-redrivable", "no-live-work")
 
 
@@ -337,13 +363,21 @@ def _parse_record(obj: object) -> JobRecord | Literal["unreadable"]:
 class JobStore:
     """The workspace-scoped `jobs/` record store (§23). `jobs_dir` is the workspace's `jobs/`
     tree (a `WorkspaceStore.jobs_dir` in production; any tmp dir in tests) — the only handle it
-    holds. `startup_grace` is the 202→S1 spawn window (`opdefaults.STARTUP_GRACE_SECONDS`).
+    holds. Two DISTINCT windows (the Commit-6 double-meaning is now split):
+
+    - `startup_grace` — the ASSUME-STILL-RUNNING / job-lifetime window (`JOB_LIFETIME_SECONDS`,
+      22 min): the running-vs-dead line for the resolver + submit's "already in progress" guard.
+      (The legacy field name is retained because the shim's poll call-site reads it by that name;
+      the honest rename to `job_lifetime` waits on the shim rework.)
+    - `nascent_grace` — the SHORT §22.3 torn/nascent-record grace (`NASCENT_RECORD_GRACE_SECONDS`,
+      seconds-scale), used ONLY by `submit` for the just-created-but-torn-record race.
 
     Records key by the run-family `job_key`; the `is_done`/`peek` §22.7 authorities are passed per
     call (never held), so every branch is drivable in a unit test without a live transport."""
 
     jobs_dir: Path
-    startup_grace: float = STARTUP_GRACE_SECONDS
+    startup_grace: float = JOB_LIFETIME_SECONDS
+    nascent_grace: float = NASCENT_RECORD_GRACE_SECONDS
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "jobs_dir", Path(self.jobs_dir))
@@ -416,14 +450,14 @@ class JobStore:
             if current == "missing":
                 continue  # stolen/GC'd between our create-fail and our read — retry the create
             if current == "unreadable":
-                # Nascent concurrent create (§22.3 nascent window): within an implicit mtime grace
-                # the incumbent submitter is spawning — do NOT steal (would double-spawn a live
-                # job); past it a torn record is stealable.
+                # Nascent concurrent create (§22.3 nascent window): within the SHORT mtime grace
+                # the incumbent submitter is finishing the write — do NOT steal (would double-spawn
+                # a live job); past this seconds-scale grace a torn record is stealable.
                 try:
                     anchored = os.stat(path).st_mtime
                 except FileNotFoundError:
                     continue  # vanished in the window — retry the create
-                if now < anchored + self.startup_grace:
+                if now < anchored + self.nascent_grace:
                     return SubmitOutcome(
                         key=key, disposition="existing", spawn=False, record=None
                     )
@@ -432,12 +466,23 @@ class JobStore:
             # (1) The WHOLE job materialized → DONE (no spawn). §22.7 authority #1.
             if current.target_ids and all(is_done(t) for t in current.target_ids):
                 return SubmitOutcome(key=key, disposition="done", spawn=False, record=current)
-            # (2) Within the startup grace OR a live claim on any target → the legitimate 202→S1
-            #     window / an actively-running runner. Existing job, no re-spawn (N-2).
-            within_grace = now < current.spawn_time + self.startup_grace
-            if within_grace or any(_claim_is_live(peek(t), now) for t in current.target_ids):
+            # (2) A stored terminal → the runner's `run_job`/`invoke` RETURNED with a failure, so it
+            #     has EXITED. This is the RETRY path: STEAL + re-spawn (re-drive by the same key).
+            #     Placed ABOVE the within-window guard so a re-submit of a recorded failure inside
+            #     the (22-min) lifetime window RE-DRIVES instead of being answered `existing` and
+            #     wedging the retry. Double-charge-free: the S1 claim admits one LLM run per
+            #     artifact-id and `commit_new` one output — a concurrent steal is a bounded cost
+            #     leak, never a double output (§22.3).
+            if current.terminal is not None:
+                return self._steal(path, key, fresh, fresh_bytes)
+            # (3) Within the job-lifetime window OR a live claim on any target → a slow start / a
+            #     no-claim gap / an actively-running runner. EXISTING job, NO re-spawn — the core
+            #     anti-double-charge guard: a legitimately-running slow job is never re-spawned.
+            within_lifetime = now < current.spawn_time + self.startup_grace
+            if within_lifetime or any(_claim_is_live(peek(t), now) for t in current.target_ids):
                 return SubmitOutcome(key=key, disposition="existing", spawn=False, record=current)
-            # (3) STALE: past grace, no live claim, not done → the runner died. STEAL + re-spawn.
+            # (4) STALE: past the window, no live claim, not done, no terminal → the runner died.
+            #     STEAL + re-spawn.
             return self._steal(path, key, fresh, fresh_bytes)
         raise JobError(
             f"job-store-error: submit({key!r}) exhausted retries against a vanishing record"

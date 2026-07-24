@@ -40,24 +40,35 @@ this module, keeping the edit surface a flat value table.
 - `TELEMETRY_ENABLED_DEFAULT = True` — capture is default-on and disable-able (§22.5 PC11).
 - `RECOMMENDED_WIDTH_WINDOW_SECONDS = 3600` (1 h) — the recent telemetry window the advisory
   `recommended_width` reads (§22.5); never auto-applied.
-- `STARTUP_GRACE_SECONDS = 120` (2 min) — the DR-1 async job's 202→S1 SPAWN WINDOW: the time a
-  freshly-submitted job record is treated as RUNNING BEFORE its detached runner acquires its
-  first S1 claim (`pipeline.jobs`). It must EXCEED the observed spawn→first-claim latency (spawn
-  + handler entry + grounding/resolution + `claims.acquire`) so a legitimately-starting runner is
-  never re-driven, and sit FAR BELOW `WRAPPER_HARD_TIMEOUT_SECONDS` (1200 s) so a genuinely dead
-  pre-claim runner becomes stealable long before its own hard timeout would matter. Outside G2's
-  two-number scope; a lossy-bookkeeping grace, not a correctness authority (§22.7 — output
-  existence + the S1 claim/lease remain the sole DONE / exactly-once authorities).
+- `JOB_LIFETIME_SECONDS = WRAPPER_HARD_TIMEOUT_SECONDS + NASCENT_RECORD_GRACE_SECONDS` (1320 s /
+  22 min) — the DR-1 async job's "ASSUME-STILL-RUNNING" window: a job whose record was spawned
+  less than this ago, with no output and no live claim, is presumed to be in a slow start or a
+  brief no-claim gap (between artifacts / the commit tail), NOT dead — so a legitimately-running
+  slow job is NEVER told to resend (the anti-double-charge line, `pipeline.jobs`). DERIVED so it
+  sits ABOVE one full paid call (`WRAPPER_HARD_TIMEOUT_SECONDS`, 1200 s) and BELOW the lease TTL
+  (`LEASE_TTL_SECONDS`, 1800 s): the live-claim check stays the authority for active work of ANY
+  duration, so this window only ever governs the no-claim spans (with ~10× margin). A derived int;
+  lossy-bookkeeping, not a §22.7 correctness authority (output existence + the S1 claim/lease
+  remain the sole DONE / exactly-once authorities).
+- `NASCENT_RECORD_GRACE_SECONDS = 120` (2 min) — the §22.3 TORN/NASCENT-RECORD grace, used ONLY by
+  `JobStore.submit`: `create_exclusive` names the record file atomically but its content write
+  lands a moment later, so a racing submit may read a torn record; within this SHORT mtime-anchored
+  grace the incumbent submitter is presumed to be finishing the write — DO NOT steal (that would
+  double-spawn a live job). It must stay SECONDS-scale (a torn record from a crashed submitter must
+  become stealable in seconds, not the full job lifetime). This is NO LONGER a running-vs-dead
+  boundary (that role is now `JOB_LIFETIME_SECONDS`); the old double-meaning was exactly the
+  Commit-6 defect. Outside G2's two-number scope; lossy-bookkeeping, not a §22.7 authority.
 """
 
 from __future__ import annotations
 
 __all__ = [
+    "JOB_LIFETIME_SECONDS",
     "LEASE_TTL_SECONDS",
     "MAX_PARALLEL_PER_WORKSPACE",
     "MAX_PARALLEL_SESSIONS",
+    "NASCENT_RECORD_GRACE_SECONDS",
     "RECOMMENDED_WIDTH_WINDOW_SECONDS",
-    "STARTUP_GRACE_SECONDS",
     "TELEMETRY_ENABLED_DEFAULT",
     "WRAPPER_HARD_TIMEOUT_SECONDS",
 ]
@@ -81,9 +92,18 @@ TELEMETRY_ENABLED_DEFAULT = True
 #: The recent telemetry window the advisory `recommended_width` reads, seconds (§22.5) — 1 h.
 RECOMMENDED_WIDTH_WINDOW_SECONDS = 3600
 
-#: DR-1 async job 202→S1 spawn window, seconds — 2 min. The grace during which a just-submitted
-#: job record counts as RUNNING before its detached runner acquires its first S1 claim
-#: (`pipeline.jobs`). EXCEEDS the observed spawn→first-claim latency (so a starting runner is not
-#: re-driven) and STRICTLY < WRAPPER_HARD_TIMEOUT_SECONDS (so a dead pre-claim runner is stealable
-#: well before its own timeout). Lossy-bookkeeping grace, never a §22.7 correctness authority.
-STARTUP_GRACE_SECONDS = 120
+#: §22.3 torn/nascent-record grace, seconds — 2 min. The SHORT mtime-anchored window in which a
+#: racing `JobStore.submit` treats a torn just-created record as an incumbent still being written —
+#: DO NOT steal. Seconds-scale by design (a crashed submitter's torn record is stealable in
+#: seconds). NO LONGER a running-vs-dead boundary (that is `JOB_LIFETIME_SECONDS`) — the old
+#: double-meaning was the Commit-6 defect. Lossy-bookkeeping, never a §22.7 correctness authority.
+NASCENT_RECORD_GRACE_SECONDS = 120
+
+#: DR-1 async job "assume-still-running" window, seconds — 22 min. DERIVED: one full paid call
+#: (WRAPPER_HARD_TIMEOUT_SECONDS) + one nascent-record grace, so it sits ABOVE a single in-flight
+#: paid call and BELOW LEASE_TTL_SECONDS (1800 s). A job spawned less than this ago with no output
+#: and no live claim is presumed still running (a slow start / a no-claim gap), so a legitimately-
+#: running slow job is NEVER told to resend — the anti-double-charge line (`pipeline.jobs`). The
+#: live-claim check remains the authority for active work of ANY duration; this window only ever
+#: governs the no-claim spans. Lossy-bookkeeping, never a §22.7 correctness authority.
+JOB_LIFETIME_SECONDS = WRAPPER_HARD_TIMEOUT_SECONDS + NASCENT_RECORD_GRACE_SECONDS

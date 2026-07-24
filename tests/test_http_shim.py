@@ -973,7 +973,7 @@ class TestTierBPoll:
         # A stored (nondeterministic, timeout-class) terminal → the FAILED status + reason; the
         # timeout-class `re-drivable` code maps to 504 (N-4) and is re-drivable.
         from pipeline.jobs import JobStore
-        from pipeline.opdefaults import STARTUP_GRACE_SECONDS
+        from pipeline.opdefaults import NASCENT_RECORD_GRACE_SECONDS
 
         clock = _FakeClock()
         with running_server(
@@ -990,17 +990,21 @@ class TestTierBPoll:
                 envelope={"ok": False, "code": "re-drivable", "message": "transport timeout"},
                 results=[],
             )
-            clock.now += STARTUP_GRACE_SECONDS + 5  # past the grace so the terminal is not masked
+            # A stored terminal surfaces PROMPTLY (resolver step 3, above the window): even a small
+            # advance — within the lifetime window — is enough; it is never masked for 22 min.
+            clock.now += NASCENT_RECORD_GRACE_SECONDS + 5
             status, body = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
         assert status == 504  # timeout-class → re-drivable 504 (N-4)
         assert body["status"] == "failed" and body["code"] == "re-drivable"
         assert body["redrivable"] is True
         assert body["terminal"]["envelope"]["message"] == "transport timeout"
 
-    def test_poll_redrivable_when_grace_expired_and_no_work(self, root: str) -> None:
-        # Past the startup grace with no output, no live claim, and no stored terminal → 409
+    def test_poll_redrivable_when_the_lifetime_window_expired_and_no_work(self, root: str) -> None:
+        # Past the JOB-LIFETIME window with no output, no live claim, and no stored terminal → 409
         # re-drivable (re-submit with the same idempotency_key) — never a false DONE, never a wedge.
-        from pipeline.opdefaults import STARTUP_GRACE_SECONDS
+        # NB: past the OLD 120 s line but WITHIN the window the poll is 202 running (the core fix);
+        # 409 only fires past the full lifetime window.
+        from pipeline.opdefaults import JOB_LIFETIME_SECONDS
 
         clock = _FakeClock()
         with running_server(
@@ -1011,10 +1015,31 @@ class TestTierBPoll:
             clock_fn=clock,
         ) as (host, port):
             key = self._submit(host, port, clock)
-            clock.now += STARTUP_GRACE_SECONDS + 5
+            clock.now += JOB_LIFETIME_SECONDS + 5
             status, body = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
         assert status == 409
         assert body["status"] == "re-drivable" and body["redrivable"] is True
+
+    def test_poll_past_120s_but_within_lifetime_is_202_not_resend(self, root: str) -> None:
+        # THE ANTI-DOUBLE-CHARGE FIX, end-to-end through the HTTP layer: a poll landing PAST the
+        # old 120 s line but WITHIN the 22-min job-lifetime window — with no output and no live
+        # claim (a no-claim gap) — must be 202 "still running", NOT 409 "resend". Under the
+        # Commit-6 120 s boundary this exact poll returned 409, and a retry then double-charged.
+        from pipeline.opdefaults import NASCENT_RECORD_GRACE_SECONDS
+
+        clock = _FakeClock()
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder([]),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=clock,
+        ) as (host, port):
+            key = self._submit(host, port, clock)
+            clock.now += NASCENT_RECORD_GRACE_SECONDS + 5  # past 120 s, still within the window
+            status, body = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+        assert status == 202
+        assert body["status"] == "running"
 
     def test_poll_invalid_key_is_400(self, root: str) -> None:
         # A poll `key` that is not a run-family id is a clean 400 (the §22.7 keying pin).

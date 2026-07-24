@@ -43,7 +43,7 @@ from pipeline.api.render import _EngineError
 from pipeline.api.results import CODE_EMPTY_POOL, CODE_HARD_LIMIT_EXCEEDED
 from pipeline.driver import DriverError
 from pipeline.jobs import JobState, JobStore, job_key
-from pipeline.opdefaults import STARTUP_GRACE_SECONDS
+from pipeline.opdefaults import JOB_LIFETIME_SECONDS, NASCENT_RECORD_GRACE_SECONDS
 from pipeline.transport import ApiKeyPresentError, BinaryNotFoundError
 
 # §7.4 literal artifact ids — the predictable target ids a generate-next job fans out to.
@@ -51,7 +51,8 @@ A = "a-9f3c07d21b44e8aa"
 B = "a-1111111111111111"
 
 T0 = 1_000_000.0  # the injected epoch-seconds base (the test owns time)
-GRACE = float(STARTUP_GRACE_SECONDS)
+LIFETIME = float(JOB_LIFETIME_SECONDS)  # the running-vs-dead / job-lifetime window (22 min)
+NASCENT = float(NASCENT_RECORD_GRACE_SECONDS)  # the short torn/nascent-record grace (seconds-scale)
 WS = "ws"
 IDK = "idk-1"
 
@@ -165,8 +166,11 @@ class TestReturnedFailures:
         record = store.load(key)
         assert record.terminal is not None
         assert record.terminal.code == "timeout"  # Commit 6 maps timeout → a re-drivable 504
-        # A poll past grace with no live claim surfaces the stored terminal (resolver branch 4).
-        state = store.resolve(key, A, now=T0 + GRACE + 1, is_done=_never_done, peek=_never_claimed)
+        # A poll surfaces the stored terminal PROMPTLY (resolver branch 3, above the window): even
+        # WITHIN the lifetime window with no live claim, a recorded failure is not masked.
+        state = store.resolve(
+            key, A, now=T0 + NASCENT + 5, is_done=_never_done, peek=_never_claimed
+        )
         assert state.kind == "failed" and state.detail == "stored-terminal"
 
     def test_h3_generate_next_codeless_block_records_redrivable_terminal(self, store):
@@ -182,7 +186,10 @@ class TestReturnedFailures:
         assert outcome == RunOutcome("skip-deterministic", None, False)
         # N-5: the sweep re-derives the block, so the runner stores NOTHING.
         assert store.load(key).terminal is None
-        state = store.resolve(key, A, now=T0 + GRACE + 1, is_done=_never_done, peek=_never_claimed)
+        # Past the window with no claim, no output, no stored terminal → re-drivable (branch 5).
+        state = store.resolve(
+            key, A, now=T0 + LIFETIME + 1, is_done=_never_done, peek=_never_claimed
+        )
         assert state == JobState("failed-redrivable", "no-live-work")
 
     def test_every_deterministic_generation_block_is_skipped(self, store):
@@ -320,11 +327,14 @@ class TestSpawnPrimitive:
         # The orphan spawn file is cleaned up; the durable job record is untouched.
         assert not (jobs_dir / f"spawn-{key}.json").exists()
         assert (jobs_dir / key).exists()
-        # Past grace, no claim, no output → the record resolves re-drivable AND a re-submit steals.
-        state = store.resolve(key, A, now=T0 + GRACE + 1, is_done=_never_done, peek=_never_claimed)
+        # Past the window, no claim, no output → the record resolves re-drivable AND a re-submit
+        # steals (the runner died before acquiring a claim; the durable record is re-spawnable).
+        state = store.resolve(
+            key, A, now=T0 + LIFETIME + 1, is_done=_never_done, peek=_never_claimed
+        )
         assert state == JobState("failed-redrivable", "no-live-work")
         again = store.submit(
-            (A,), IDK, now=T0 + GRACE + 1, is_done=_never_done, peek=_never_claimed
+            (A,), IDK, now=T0 + LIFETIME + 1, is_done=_never_done, peek=_never_claimed
         )
         assert again.disposition == "stolen" and again.spawn is True
 
