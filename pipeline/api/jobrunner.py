@@ -353,14 +353,33 @@ def run_job(
 
 def main(argv: list[str] | None = None) -> int:
     """`python -m pipeline.api.jobrunner <spawn_file>` — the detached entry point. Reads the spawn
-    spec, runs the job, and deletes the transient spawn file. A truly-unexpected exception
-    propagates (non-zero exit, no terminal); the spawn file is cleaned up either way."""
+    spec, WIRES the production handler surface, runs the job, and deletes the transient spawn file.
+    A truly-unexpected exception propagates (non-zero exit, no terminal); the spawn file is cleaned
+    up either way.
+
+    **The runner is a FRESH process, so it MUST wire its own registry (mirrors `serve()`).** The
+    detached runner is launched as `python -m pipeline.api.jobrunner <spawn_file>` — a brand-new
+    interpreter whose GLOBAL `invoke` handler registry is EMPTY. `run_job` re-enters the SAME
+    synchronous `invoke()` a CLI caller would (§21.9), which dispatches against that registry; if
+    nothing wires it, EVERY real Tier-B job hits `HandlerNotWired` → a `runner-failed` terminal, and
+    the whole DR-1 async door (submit → detached run → materialize) is INERT. So this calls the SAME
+    single production startup wiring `http_shim.serve()` runs — `register_api_handlers()` — BEFORE
+    `run_job(spec)`. The import is FUNCTION-SCOPED (exactly like `serve()`), so importing this
+    module never wires verbs the empty-registry gate tests (`test_session`/`test_workspace_name`)
+    rely on staying empty — registration is RUNTIME-only, never at import. `register_handler` is
+    overwrite-safe, so this wiring is idempotent."""
     args = sys.argv[1:] if argv is None else argv
     if len(args) != 1:
         print("usage: python -m pipeline.api.jobrunner <spawn_file>", file=sys.stderr)
         return 2
     spawn_file = Path(args[0])
     spec = JobSpec.from_json(spawn_file.read_text(encoding="utf-8"))
+    # Wire the production handler surface into this fresh process's (empty) global registry BEFORE
+    # dispatch, so the runner's `invoke()` reaches the REAL handlers instead of the empty-registry
+    # `HandlerNotWired` seam. Function-scoped like `serve()`: import-time stays registration-free.
+    from pipeline.api.session import register_api_handlers
+
+    register_api_handlers()
     try:
         run_job(spec)
     finally:

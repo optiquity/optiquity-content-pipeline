@@ -29,7 +29,8 @@ import sys
 
 import pytest
 
-from pipeline.api.invoke import HandlerNotWired
+import pipeline.api.invoke as invoke_mod
+from pipeline.api.invoke import KNOWN_VERBS, HandlerNotWired
 from pipeline.api.jobrunner import (
     RE_DRIVABLE_CODE,
     RUNNER_MODULE,
@@ -55,6 +56,22 @@ LIFETIME = float(JOB_LIFETIME_SECONDS)  # the running-vs-dead / job-lifetime win
 NASCENT = float(NASCENT_RECORD_GRACE_SECONDS)  # the short torn/nascent-record grace (seconds-scale)
 WS = "ws"
 IDK = "idk-1"
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry():
+    """Snapshot/restore the invoke dispatch registry (the house pattern of `test_http_shim`/
+    `test_action_completeness`). REQUIRED because the non-injected `main()` test now calls
+    `register_api_handlers()` IN-PROCESS: without restore the real handlers would LEAK into the
+    empty-registry gate tests (`test_session`/`test_workspace_name`), which assert the registry is
+    unwired. Every other test here injects the `invoke` seam and never registers, so the snapshot is
+    a no-op for them."""
+    snapshot = dict(invoke_mod._VERB_HANDLERS)
+    try:
+        yield
+    finally:
+        invoke_mod._VERB_HANDLERS.clear()
+        invoke_mod._VERB_HANDLERS.update(snapshot)
 
 
 def _never_done(_id: str) -> bool:
@@ -371,3 +388,74 @@ class TestMain:
         from pipeline.api import jobrunner
 
         assert jobrunner.main([]) == 2
+
+    def test_main_non_injected_registers_then_dispatches_to_the_real_handler(self, tmp_path):
+        """DR-1 rework W2 (the inert-runner regression guard): the detached runner is a FRESH
+        process whose `invoke()` dispatches against the GLOBAL registry, so `main()` MUST wire it
+        (`register_api_handlers()`, like `serve()`) BEFORE `run_job`, or every real Tier-B job hits
+        `HandlerNotWired` → a `runner-failed` terminal and the whole async door is inert.
+
+        Proven WITHOUT the injected `invoke`/handlers seam that hid the bug: the REAL registry, the
+        REAL `invoke`, a REAL `JobStore`. No LLM — a TOKEN-LESS `generate-next` returns the
+        token-required BLOCK inside the real handler BEFORE any transport, so the runner records a
+        plain re-drivable terminal. If `main()` forgot to register, `invoke` would raise
+        `HandlerNotWired` and the terminal would be `runner-failed` instead — the assertion below
+        pins the difference."""
+        from pipeline.api import jobrunner
+
+        # (b) The IMPORT-EMPTY gate holds at test entry: importing `pipeline.api.jobrunner` (top of
+        # this module) wired NOTHING. main() must register at RUNTIME, never at import.
+        assert not (set(KNOWN_VERBS) & set(invoke_mod._VERB_HANDLERS))
+
+        # A REAL JobStore at the EXACT path main() resolves (`_store_for`), with the record already
+        # written by submit (record → spawn → claim). No injected store, no injected invoke.
+        key = job_key((A,), IDK)
+        spec = JobSpec(
+            key=key,
+            verb="continue-session",
+            workspace=WS,
+            params={"action": "generate-next"},  # token-less → the real handler blocks, no LLM
+            idempotency_key=IDK,
+            root=str(tmp_path),
+        )
+        job_store = jobrunner._store_for(spec)  # the SAME store main() records into
+        submitted = job_store.submit((A,), IDK, now=T0, is_done=_never_done, peek=_never_claimed)
+        assert submitted.key == key
+
+        spawn_dir = tmp_path / "spawn"
+        spawn_dir.mkdir()
+        spawn_file = spawn_dir / "spawn.json"
+        spawn_file.write_text(spec.as_json(), encoding="utf-8")
+
+        assert jobrunner.main([str(spawn_file)]) == 0
+        assert not spawn_file.exists()  # the transient spawn file is always cleaned up
+
+        # (a) main() REGISTERED the whole production surface — the closed verb map is wired now.
+        assert set(KNOWN_VERBS) <= set(invoke_mod._VERB_HANDLERS)
+
+        # The runner DISPATCHED to the REAL handler (not the empty-registry seam): a token-less
+        # generate-next is a code-less block → a RE_DRIVABLE terminal. With the bug (no
+        # registration) invoke would raise HandlerNotWired → a `runner-failed` terminal instead.
+        terminal = job_store.load(key).terminal
+        assert terminal is not None
+        assert terminal.code == RE_DRIVABLE_CODE
+        assert terminal.code != TERMINAL_FAILED_CODE  # NOT the HandlerNotWired `runner-failed` path
+
+    def test_module_import_does_not_register_in_a_fresh_process(self):
+        """The import-empty gate, proven in a genuinely FRESH interpreter (exactly the real detached
+        process): importing `pipeline.api.jobrunner` must NOT wire any verb — registration is
+        RUNTIME-only (inside `main()`, function-scoped like `serve()`). A module-level register
+        import would silently break the empty-registry gate tests (`test_session`/
+        `test_workspace_name`); this catches that independently of in-process test ordering."""
+        probe = (
+            "import pipeline.api.jobrunner\n"
+            "import pipeline.api.invoke as i\n"
+            "leaked = set(i.KNOWN_VERBS) & set(i._VERB_HANDLERS)\n"
+            "assert not leaked, sorted(leaked)\n"
+            "print('import-empty-ok')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "import-empty-ok" in proc.stdout
