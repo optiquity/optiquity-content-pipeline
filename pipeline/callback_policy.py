@@ -89,9 +89,10 @@ class CallbackPolicyError(ValueError):
 
 def _default_resolve(host: str) -> list[str]:
     """The default DNS resolver: every A/AAAA address the host resolves to, as IP strings. Used
-    ONLY when a caller passes no `resolve` (tests always inject a fake). `getaddrinfo` raising
-    (e.g. an unknown host → gaierror, a subclass of OSError) is caught by the caller and turned
-    into a fail-closed `unresolvable` rejection."""
+    ONLY when a caller passes no `resolve` (tests always inject a fake). `getaddrinfo` raising —
+    an unknown host (gaierror, an OSError subclass) OR an IDNA-hostile host (UnicodeError, a
+    ValueError subclass) — is caught by the caller and turned into a fail-closed `unresolvable`
+    rejection."""
     infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     return [info[4][0] for info in infos]
 
@@ -119,15 +120,21 @@ def _ip_is_globally_safe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> b
 def _resolved_ips(host: str, resolve: Resolver) -> list[ipaddress._BaseAddress]:
     """Return the IPs to SSRF-check for `host`. A literal-IP host is classified DIRECTLY (never
     resolved — the injected resolver stays untouched for literals). A DNS name is resolved via the
-    injected `resolve`; a resolver that raises `OSError`, returns nothing, or returns an
-    unparseable address is a fail-closed `unresolvable` rejection."""
+    injected `resolve`; a resolver that raises `OSError`/`UnicodeError`, returns nothing, or
+    returns an unparseable address is a fail-closed `unresolvable` rejection."""
     try:
         return [ipaddress.ip_address(host)]  # a literal IPv4/IPv6 host — no DNS needed
     except ValueError:
         pass  # not a literal — a DNS name; fall through to resolution
     try:
         raw = resolve(host)
-    except OSError as exc:  # gaierror (unknown host) and friends — fail closed
+    except (OSError, UnicodeError) as exc:  # unresolvable — fail closed (see below)
+        # gaierror (unknown host) is an OSError subclass; an IDNA-hostile host (a DNS label >63
+        # chars or a name >255 total) makes `getaddrinfo` raise UnicodeError — a ValueError
+        # subclass, NOT an OSError. Catching BOTH keeps this helper (and thus
+        # `validate_callback_url`) raising ONLY `CallbackPolicyError`, never a bare UnicodeError
+        # that would break the module's contract (and, at delivery-time, escape the runner's
+        # caught set).
         raise CallbackPolicyError(
             "unresolvable",
             "callback host could not be resolved — a callback target must resolve to at least "

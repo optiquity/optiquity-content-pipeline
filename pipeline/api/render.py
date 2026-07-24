@@ -365,8 +365,9 @@ def _render(
     item, fitted_id = fit.item, fit.fitted_id
     # GAP-10: ONE workspace-scoped claim registry (fresh minted holder, RV-4) brackets BOTH paid
     # mints below — the SAME §22.3 acquire→work→release the generate-next spine runs (spine S1→S6).
-    # Constructing it is side-effect-free (no I/O until `acquire`), so the cache-hit path that never
-    # acquires stays behaviour-neutral.
+    # Constructing it touches only the workspace `claims/` dir (a `mkdir` via `store.claims_dir`),
+    # never a claim file — so the no-acquire cache-hit path stays behaviour-neutral (an empty dir
+    # is invisible to the byte-snapshots, and a cache-hit implies a prior mint already created it).
     registry = registry_for(ctx.store)
 
     # GAP-10: bracket the PAID fit mint in a §22.3 claim (mirror the generate-next spine S1→S6).

@@ -486,6 +486,36 @@ class TestResolutionFailures:
             )
         assert exc.value.reason == "unresolvable"
 
+    def test_resolver_raising_unicode_error_is_rejected(self):
+        # An IDNA-hostile host makes the stdlib resolver raise UnicodeError — a ValueError
+        # subclass, NOT an OSError. The guard must convert it to the typed `unresolvable`
+        # rejection, never let a bare UnicodeError escape: that would break the module's "raises
+        # only CallbackPolicyError" contract (and, at delivery-time, escape the runner's caught
+        # set). This locks the broadened `except (OSError, UnicodeError)` — under the old
+        # OSError-only except this test goes RED (UnicodeError propagates instead).
+        def _idna_boom(host: str) -> list[str]:
+            raise UnicodeError("label empty or too long")
+
+        with pytest.raises(CallbackPolicyError) as exc:
+            validate_callback_url(
+                "https://allowed.host/hook", allowed_hosts=ALLOWED, resolve=_idna_boom
+            )
+        assert exc.value.reason == "unresolvable"
+
+    def test_idna_hostile_host_via_default_resolver_is_rejected_not_crashed(self):
+        # DRIVEN BY THE REAL DEFAULT RESOLVER (no `resolve=` injected): a DNS label of 64 'a's is
+        # IDNA-illegal (>63 chars), so `socket.getaddrinfo` raises UnicodeError during IDNA
+        # encoding — BEFORE any network call (deterministic, offline). The broadened except must
+        # catch it and surface `unresolvable`, not a bare UnicodeError. Proves the fix on the REAL
+        # resolution path, not just an injected fake.
+        hostile = "a" * 64 + ".example"
+        with pytest.raises(CallbackPolicyError) as exc:
+            validate_callback_url(
+                f"https://{hostile}/hook",
+                allowed_hosts=frozenset({hostile}),
+            )
+        assert exc.value.reason == "unresolvable"
+
 
 # ---------------------------------------------------------------------------
 # MALFORMED — empty / garbage / non-string / bad port / no host.
