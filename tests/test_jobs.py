@@ -183,6 +183,28 @@ class TestSubmitLifecycle:
         assert record["spawn_time"] == T0
         assert record["terminal"] is None
         assert record["target_ids"] == sorted([A, B])  # canonical order
+        assert record["callback_url"] is None  # W3b: absent ⇒ None (poll-only)
+
+    def test_submit_stores_callback_url_and_it_round_trips(self, store, auth, jobs_dir):
+        # W3b: submit threads an ALREADY-validated callback_url onto the FRESH record (lossy
+        # bookkeeping, no version bump) and it round-trips through (de)serialization via `load`.
+        cb = "http://hooks.example.com/exec-1"
+        out = store.submit(
+            (A, B), "idk-1", now=T0, is_done=auth.is_done, peek=auth.peek, callback_url=cb
+        )
+        assert out.disposition == "spawned"
+        assert json.loads((jobs_dir / out.key).read_bytes())["callback_url"] == cb
+        assert store.load(out.key).callback_url == cb
+
+    def test_a_non_string_callback_url_makes_the_record_unreadable(self, store, auth):
+        # Lossy discipline mirrors idempotency_key: a callback_url that is neither None nor a string
+        # is a torn/foreign record → `load` resolves it as absent (None), never a crash.
+        out = self._submit(store, auth, now=T0)
+        path = store.path_for(out.key)
+        obj = json.loads(path.read_bytes())
+        obj["callback_url"] = 12345  # not a string / not None
+        path.write_bytes((json.dumps(obj) + "\n").encode("utf-8"))
+        assert store.load(out.key) is None
 
     def test_a_one_shot_iterator_input_is_materialized_once(self, store, auth, jobs_dir):
         # REGRESSION: target_ids may be a one-shot generator. submit must materialize it EXACTLY

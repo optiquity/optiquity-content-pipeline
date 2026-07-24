@@ -70,3 +70,27 @@
 #   allowed:
 #     - "acme"                        # only these named workspaces are served (403 otherwise)
 #     - "self"
+
+# --- callbacks.allowed_hosts (DR-1 W3b; OPTIONAL webhook callback ALLOW-LIST) ------------------
+# The operator-approved set of hosts a `generate-next` submit's OPTIONAL `callback_url` may point
+# at. A submit MAY carry `callback_url` in params; on completion the pipeline POSTs a small WAKEUP
+# to it (the client then FETCHES the result via the authenticated poll — the callback is never the
+# result payload). Validated at SUBMIT time (a bad/not-approved URL → 400 BEFORE any paid run).
+#
+# OPT-IN / FAIL-CLOSED — this is STRICTER than workspaces.allowed on purpose (outbound egress is a
+# higher-risk surface):
+#   * UNSET (omit `callbacks:` or leave `allowed_hosts` empty) — the DEFAULT: callbacks are
+#     DISABLED. Any submit carrying `callback_url` is refused 400 (`callbacks-disabled`). Poll
+#     still works unchanged; only the webhook is off.
+#   * CONFIGURED (a non-empty list) — ONLY a callback_url whose HOST (or `host:port`) is listed is
+#     accepted, AND it must additionally clear the SSRF guard (the host must resolve only to
+#     globally-routable addresses — loopback / link-local incl. 169.254.169.254 cloud-metadata /
+#     private / unspecified / multicast / reserved are always refused, allow-list or not).
+# A host allow-list (not a full URL) is the right grain: an orchestrator's resume URL carries a
+# dynamic execution-id path, so host membership matches "the operator's orchestrator" cleanly.
+# Use PLACEHOLDER hosts only below — replace them; never commit a real internal host.
+#
+# callbacks:
+#   allowed_hosts:
+#     - "hooks.example.com"           # only callback_urls at these hosts are accepted (400 otherwise)
+#     - "automation.example.com:5678"

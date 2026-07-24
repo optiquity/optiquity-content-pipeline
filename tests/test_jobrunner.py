@@ -321,6 +321,23 @@ class TestSpawnPrimitive:
         # Returned immediately, never waited on.
         assert handle.pid == 4242 and popen.waited is False
 
+    def test_callback_url_rides_the_spawn_file_round_trip(self):
+        # W3b: the (already submit-validated) callback_url rides the JobSpec spawn FILE to the
+        # detached runner (W3c will deliver it) — as_json/from_json round-trip it; absent ⇒ None.
+        cb = "http://hooks.example.com/exec-1"
+        spec = JobSpec(
+            key=job_key((A,), IDK),
+            verb="continue-session",
+            workspace=WS,
+            params={"action": "generate-next"},
+            idempotency_key=IDK,
+            root="/repo-root",
+            callback_url=cb,
+        )
+        assert JobSpec.from_json(spec.as_json()).callback_url == cb
+        # A spec with no callback_url round-trips to None (poll-only).
+        assert JobSpec.from_json(_spec(job_key((A,), IDK)).as_json()).callback_url is None
+
     def test_spawn_uses_real_popen_default(self):
         # The default `popen` seam IS `subprocess.Popen` (the real detached primitive) — pinned so a
         # refactor that drops the default is caught (the injection is a TEST seam, not the default).

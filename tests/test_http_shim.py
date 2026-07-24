@@ -66,14 +66,16 @@ def running_server(
     max_body_bytes: int = http_shim.DEFAULT_MAX_BODY_BYTES,
     socket_timeout: float = http_shim.DEFAULT_SOCKET_TIMEOUT_SECONDS,
     allowed_workspaces: frozenset[str] = frozenset(),
+    allowed_callback_hosts: frozenset[str] = frozenset(),
     spawn_fn=None,
     plan_targets_fn=None,
     clock_fn=None,
 ) -> Iterator[tuple[str, int]]:
     """Start the shim on an ephemeral loopback port in a daemon thread; yield (host, port). A
     non-empty `secrets` set is required (fail-closed); the harness defaults it to a test secret.
-    `allowed_workspaces` drives the Commit-5c served-workspace allow-list (default: unset).
-    `spawn_fn`/`plan_targets_fn`/`clock_fn` are the Commit-6 Tier-B seams (default: the real
+    `allowed_workspaces` drives the Commit-5c served-workspace allow-list (default: unset);
+    `allowed_callback_hosts` drives the W3b webhook callback allow-list (default: unset = callbacks
+    off). `spawn_fn`/`plan_targets_fn`/`clock_fn` are the Commit-6 Tier-B seams (default: the real
     ones)."""
     server = http_shim.make_server(
         "127.0.0.1",
@@ -84,6 +86,7 @@ def running_server(
         max_body_bytes=max_body_bytes,
         socket_timeout=socket_timeout,
         allowed_workspaces=allowed_workspaces,
+        allowed_callback_hosts=allowed_callback_hosts,
         spawn_fn=spawn_fn,
         plan_targets_fn=plan_targets_fn,
         clock_fn=clock_fn,
@@ -714,6 +717,37 @@ class TestAllowListAndBindConfig:
         cfg = http_shim.load_shim_config(str(tmp_path), env={})
         assert cfg.bind_host == "0.0.0.0"
 
+    def test_callback_hosts_load_from_shim_yaml(self, tmp_path: Path) -> None:
+        # W3b: callbacks.allowed_hosts loads from instance/shim.yaml as a SET (env-independent),
+        # mirroring workspaces.allowed. Placeholder hosts only.
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "shim.yaml").write_text(
+            "auth:\n  secrets:\n    - file-secret\n"
+            "callbacks:\n  allowed_hosts:\n    - hooks.example.com\n    - other.example.com:5678\n",
+            encoding="utf-8",
+        )
+        cfg = http_shim.load_shim_config(str(tmp_path), env={})
+        assert cfg.allowed_callback_hosts == frozenset(
+            {"hooks.example.com", "other.example.com:5678"}
+        )
+
+    def test_callback_hosts_single_string_is_one_element(self, tmp_path: Path) -> None:
+        # A single string under callbacks.allowed_hosts is accepted as a one-element allow-list.
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "shim.yaml").write_text(
+            "auth:\n  secrets:\n    - file-secret\n"
+            "callbacks:\n  allowed_hosts: hooks.example.com\n",
+            encoding="utf-8",
+        )
+        cfg = http_shim.load_shim_config(str(tmp_path), env={})
+        assert cfg.allowed_callback_hosts == frozenset({"hooks.example.com"})
+
+    def test_callback_hosts_unset_is_empty_opt_in_off(self, tmp_path: Path) -> None:
+        # No callbacks block → the allow-list is UNSET (empty) → callbacks are OPT-IN OFF (a submit
+        # carrying callback_url is later refused 400 `callbacks-disabled`).
+        cfg = http_shim.load_shim_config(str(tmp_path), env={"OPTIQUITY_SHIM_SECRET": "s"})
+        assert cfg.allowed_callback_hosts == frozenset()
+
     def test_config_allow_list_drives_server_enforcement(self, tmp_path: Path) -> None:
         # END-TO-END: the allow-list loaded from instance/shim.yaml DRIVES the server — a listed
         # workspace dispatches (200), a non-listed one is refused 403 without reaching invoke().
@@ -740,7 +774,7 @@ class TestAllowListAndBindConfig:
 #
 # These drive the REAL contained store (a tmp `workspaces/wsA/`) but inject the LIGHT seams the task
 # sanctions — the SPAWNER (no real subprocess) and the PLAN-TARGETS resolver (no heavy plan setup) —
-# plus a settable clock to drive the startup-grace / re-drivable windows. The REAL detached spawn +
+# plus a settable clock to drive the job-lifetime / re-drivable windows. The REAL detached spawn +
 # real plan resolution are the Commit-I integration harness.
 
 #: A generic §7.4 artifact id the plan-targets stub hands back as the predictable target.
@@ -790,7 +824,7 @@ def _fetch_stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN20
 
 
 class _FakeClock:
-    """A settable clock for driving the startup-grace / re-drivable windows deterministically."""
+    """A settable clock for driving the job-lifetime / re-drivable windows deterministically."""
 
     def __init__(self, now: float = 1_000_000.0) -> None:
         self.now = now
@@ -810,15 +844,21 @@ def poll(host, port, *, workspace, key, target_ids, auth=TEST_SECRET):  # noqa: 
     )
 
 
-def _submit_gen_next(host, port, *, workspace="wsA", idem="exec-1", token=None):  # noqa: ANN001, ANN201
-    """POST a generate-next submit (a valid token by default)."""
+def _submit_gen_next(  # noqa: ANN201
+    host, port, *, workspace="wsA", idem="exec-1", token=None, callback_url=None
+):  # noqa: ANN001
+    """POST a generate-next submit (a valid token by default). `callback_url`, when given, rides in
+    params (W3b) — omitted entirely when None so the poll-only path is exercised unchanged."""
+    params = {"action": "generate-next", "idempotency_key": idem}
+    if callback_url is not None:
+        params["callback_url"] = callback_url
     return post(
         host,
         port,
         {
             "verb": "continue-session",
             "workspace": workspace,
-            "params": {"action": "generate-next", "idempotency_key": idem},
+            "params": params,
             "token": token if token is not None else _valid_token(workspace),
         },
     )
@@ -941,13 +981,151 @@ class TestTierBSubmit:
         assert not calls
 
 
+# Literal global / SSRF IPs → the W3a guard classifies a literal IP DIRECTLY (no DNS), so these
+# callback tests are fully hermetic (they never touch real resolution). 8.8.8.8 is globally
+# routable; 169.254.169.254 is the link-local cloud-metadata address the SSRF guard always refuses.
+_GLOBAL_CB_HOST = "8.8.8.8"
+_METADATA_CB_HOST = "169.254.169.254"
+
+
+class TestTierBCallbackSubmit:
+    """W3b: the OPTIONAL webhook `callback_url` is VALIDATED at submit (allow-list + SSRF guard,
+    BEFORE any run) and, on accept, STORED on both the job record and the spawn spec. No delivery
+    here (that is W3c) — these prove accept/reject + storage only."""
+
+    def test_allowed_callback_url_rides_to_record_and_spec(self, root: str) -> None:
+        # An allowed callback_url (host in the allow-list, resolves global) → 202, and the URL is
+        # STORED on BOTH the spawn spec (→ W3c's detached runner) and the lossy job record.
+        from pipeline.jobs import job_key
+
+        calls: list = []
+        cb = f"http://{_GLOBAL_CB_HOST}/hooks/exec-1"
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+            allowed_callback_hosts=frozenset({_GLOBAL_CB_HOST}),
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port, callback_url=cb)
+        assert status == 202 and body["status"] == "accepted"
+        assert len(calls) == 1
+        spec, _spawn_dir = calls[0]
+        assert spec.callback_url == cb  # rides the spawn spec
+        key = job_key([ART_ID], "exec-1")
+        record = json.loads((Path(root) / "workspaces" / "wsA" / "jobs" / key).read_bytes())
+        assert record["callback_url"] == cb  # rides the stored record
+
+    def test_callback_url_when_disabled_is_400_before_any_run(self, root: str) -> None:
+        # The allow-list is UNSET (default) → callbacks OPT-IN OFF: a submit with callback_url is
+        # refused 400 `callbacks-disabled` BEFORE any store access / plan / spawn — the injected
+        # invoke()/spawner are NEVER reached.
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+        ) as (host, port):
+            status, body = _submit_gen_next(
+                host, port, callback_url=f"http://{_GLOBAL_CB_HOST}/h"
+            )
+        assert status == 400
+        assert body["error"] == "callback-url-rejected"
+        assert body["reason"] == "callbacks-disabled"
+        assert not calls  # no spawn
+
+    def test_callback_url_ssrf_metadata_address_is_400_no_spawn(self, root: str) -> None:
+        # Defense in depth: an ALLOW-LISTED host that is an SSRF target (the 169.254.169.254
+        # cloud-metadata IP) still fails the INDEPENDENT SSRF guard → 400 `non-global-address`, no
+        # spawn (the allow-list is never sufficient on its own).
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            allowed_callback_hosts=frozenset({_METADATA_CB_HOST}),
+        ) as (host, port):
+            status, body = _submit_gen_next(
+                host, port, callback_url=f"http://{_METADATA_CB_HOST}/latest/meta-data/"
+            )
+        assert status == 400
+        assert body["error"] == "callback-url-rejected"
+        assert body["reason"] == "non-global-address"
+        assert not calls
+
+    def test_callback_url_non_allowed_host_is_400_no_spawn(self, root: str) -> None:
+        # A callback host NOT in the allow-list → 400 `host-not-allowed` (rejected before any DNS),
+        # no spawn.
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            allowed_callback_hosts=frozenset({_GLOBAL_CB_HOST}),
+        ) as (host, port):
+            status, body = _submit_gen_next(
+                host, port, callback_url="http://not-approved.example.com/h"
+            )
+        assert status == 400
+        assert body["error"] == "callback-url-rejected"
+        assert body["reason"] == "host-not-allowed"
+        assert not calls
+
+    def test_no_callback_url_is_202_poll_only_and_record_url_is_none(self, root: str) -> None:
+        # NO callback_url → the unchanged 202 poll-only path; the stored record's callback_url is
+        # None (poll-only, no webhook registered).
+        from pipeline.jobs import job_key
+
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_fetch_stub,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            clock_fn=_FakeClock(),
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port)  # no callback_url
+        assert status == 202 and body["status"] == "accepted"
+        spec, _spawn_dir = calls[0]
+        assert spec.callback_url is None
+        key = job_key([ART_ID], "exec-1")
+        record = json.loads((Path(root) / "workspaces" / "wsA" / "jobs" / key).read_bytes())
+        assert record["callback_url"] is None
+
+    def test_rejection_body_does_not_echo_the_callback_url(self, root: str) -> None:
+        # SECURITY: the 400 rejection names only the reason CLASS + a fixed rule — it NEVER echoes
+        # the URL, host, or credentials (an SSRF guard that leaked "10.0.0.5 is private" would leak
+        # the very topology it protects). Probe with a credential-bearing URL and assert none of its
+        # distinctive substrings appear anywhere in the response body.
+        secret_host = "secret-internal.example.com"
+        cb = f"http://user:pa55w0rd@{secret_host}/private/path"
+        calls: list = []
+        with running_server(
+            root=root,
+            invoke_fn=_never_invoked,
+            spawn_fn=_spawn_recorder(calls),
+            plan_targets_fn=_fixed_targets([ART_ID]),
+            allowed_callback_hosts=frozenset({_GLOBAL_CB_HOST}),
+        ) as (host, port):
+            status, body = _submit_gen_next(host, port, callback_url=cb)
+        assert status == 400 and body["error"] == "callback-url-rejected"
+        blob = json.dumps(body)
+        for leak in (cb, secret_host, "pa55w0rd", "user:pa55w0rd", "/private/path"):
+            assert leak not in blob
+        assert not calls
+
+
 class TestTierBPoll:
     def _submit(self, host, port, clock):  # noqa: ANN001, ANN202
         _s, ack = _submit_gen_next(host, port)
         return ack["job"]["key"]
 
     def test_poll_running_before_then_done_with_fetch(self, root: str) -> None:
-        # Poll BEFORE materialization (within the startup grace) → 202 running; after the output
+        # Poll BEFORE materialization (within the job-lifetime window) → 202 running; after output
         # exists → 200 done + the fetched output (via the existing fetch-by-id handler).
         from pipeline.store import WorkspaceStore
 

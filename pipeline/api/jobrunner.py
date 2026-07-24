@@ -133,7 +133,13 @@ class JobSpec:
     workspace store (→ the `jobs/` dir) for `record_terminal`; `params`/`token`/`pins` are the
     `invoke()` arguments. This crosses the process boundary as a small JSON SPAWN FILE (not argv)
     so structured params ride cleanly and NO secret is placed on argv — `token` is a §20 cursor,
-    not a credential, and the subscription transport carries no API key at all (F10)."""
+    not a credential, and the subscription transport carries no API key at all (F10).
+
+    `callback_url` is the OPTIONAL, already-validated (submit-time allow-list + SSRF guard, W3b)
+    webhook the runner will POST a completion WAKEUP to once delivery lands (W3c). It rides the
+    spawn file so the detached runner — the only component that outlives the shim and knows the
+    job finished — has it in hand; it is transient invocation input, never identity (no version
+    bump). None ⇒ poll-only (no callback registered)."""
 
     key: str
     verb: str
@@ -143,11 +149,13 @@ class JobSpec:
     root: str
     token: Any = None
     pins: Any = None
+    callback_url: str | None = None
 
     def as_json(self) -> str:
         """Canonical JSON for the spawn file (byte-stable, matching the repo convention)."""
         return canonical_json_str(
             {
+                "callback_url": self.callback_url,
                 "idempotency_key": self.idempotency_key,
                 "key": self.key,
                 "params": dict(self.params),
@@ -175,6 +183,7 @@ class JobSpec:
             root=obj["root"],
             token=obj.get("token"),
             pins=obj.get("pins"),
+            callback_url=obj.get("callback_url"),
         )
 
 

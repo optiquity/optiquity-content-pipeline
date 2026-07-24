@@ -40,8 +40,8 @@ race spawns up to N runners) — never a double OUTPUT, because the S1 claim adm
 id and `commit_new` admits one output (§22.3).
 
 The JOB-LIFETIME window (`JOB_LIFETIME_SECONDS`, 22 min) is ONE GENEROUS "assume still running"
-line — above one full paid call, below the lease TTL. It REPLACES the old 120 s startup grace as
-the running-vs-dead boundary: the live-claim check remains the authority for active work of any
+line — above one full paid call, below the lease TTL. It REPLACES the old 120 s grace as the
+running-vs-dead boundary: the live-claim check remains the authority for active work of any
 duration, so the record window only ever governs the brief NO-CLAIM spans (startup / between
 artifacts / the commit tail) — now with a ~10× margin, so a legitimately-running slow job is NEVER
 told to resend (which had caused a double paid run).
@@ -72,7 +72,7 @@ Evaluated in THIS order (the load-bearing state machine):
    EXITED — surface the reason PROMPTLY, never mask a real failure as RUNNING for the full job
    lifetime. → **FAILED** (the HTTP layer maps the code to a re-drivable 504 vs a terminal FAILED).
 4. record present AND `now < spawn_time + JOB_LIFETIME_SECONDS` — the assume-still-running window
-   (a slow start or a brief no-claim gap; peek still None). REPLACES the old 120 s startup grace →
+   (a slow start or a brief no-claim gap; peek still None). REPLACES the old 120 s grace →
    a legitimately-running slow job resolves RUNNING, never redrivable. → **RUNNING**.
 5. else → **FAILED-re-drivable** — past the window, nothing live/done, no stored reason: safe to
    re-submit by the same key. A deterministic block (un-stored, N-5) and a deleted record both
@@ -203,13 +203,19 @@ class JobTerminal:
 class JobRecord:
     """One §22.7-class LOSSY job record. Present-but-output-absent is NEVER DONE; a missing record
     still resolves safely (→ re-drivable). `spawn_time` anchors the job-lifetime window; `terminal`
-    is set only by `record_terminal` for a nondeterministic failure."""
+    is set only by `record_terminal` for a nondeterministic failure.
+
+    `callback_url` is the OPTIONAL webhook the submit ALREADY validated (allow-list + SSRF guard,
+    W3b) and stored for the detached runner's completion WAKEUP (delivery is W3c). Like every field
+    here it is LOSSY bookkeeping, not identity: a lost/absent value just means the client falls back
+    to the always-available poll — no version bump, no correctness authority. None ⇒ poll-only."""
 
     target_ids: tuple[str, ...]
     idempotency_key: str | None
     spawn_time: float
     status: str
     terminal: JobTerminal | None = None
+    callback_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -250,11 +256,11 @@ def resolve_job_state(
     now: float,
     is_done: IsDone,
     peek: Peek,
-    startup_grace: float = JOB_LIFETIME_SECONDS,
+    job_lifetime: float = JOB_LIFETIME_SECONDS,
 ) -> JobState:
     """Resolve a poll for `target_id` against the (lossy) `record` — the reshaped truth-table, in
-    order. `startup_grace` is the ASSUME-STILL-RUNNING window (`JOB_LIFETIME_SECONDS`); the legacy
-    param name is retained because the shim's poll call-site passes it as a keyword.
+    order. `job_lifetime` is the ASSUME-STILL-RUNNING window (`JOB_LIFETIME_SECONDS`) — the
+    running-vs-dead line the shim's poll call-site passes as a keyword.
 
     `record is None` covers a MISSING or unreadable record: it flows through steps 1/2 (the §22.7
     authorities are record-independent) and lands at step 5 (re-drivable) unless the output exists
@@ -279,7 +285,7 @@ def resolve_job_state(
     #    grace boundary: the generous window governs only the no-claim spans (the live-claim check
     #    at step 2 covers active work of any duration), so a legitimately-running slow job is NEVER
     #    told to resend. This is the anti-double-charge guarantee on the poll side.
-    if record is not None and now < record.spawn_time + startup_grace:
+    if record is not None and now < record.spawn_time + job_lifetime:
         return JobState("running", "within-lifetime")
     # 5. Past the window, nothing live/done, no stored reason → safe to re-submit by the same key.
     return JobState("failed-redrivable", "no-live-work")
@@ -301,6 +307,7 @@ def _record_bytes(record: JobRecord) -> bytes:
         }
     )
     obj = {
+        "callback_url": record.callback_url,
         "idempotency_key": record.idempotency_key,
         "spawn_time": record.spawn_time,
         "status": record.status,
@@ -322,6 +329,7 @@ def _parse_record(obj: object) -> JobRecord | Literal["unreadable"]:
     spawn_time = obj.get("spawn_time")
     status = obj.get("status")
     idempotency_key = obj.get("idempotency_key")
+    callback_url = obj.get("callback_url")
     terminal_raw = obj.get("terminal")
     if not isinstance(target_ids, list) or not all(isinstance(t, str) for t in target_ids):
         return "unreadable"
@@ -334,6 +342,8 @@ def _parse_record(obj: object) -> JobRecord | Literal["unreadable"]:
     if not isinstance(status, str) or not status:
         return "unreadable"
     if idempotency_key is not None and not isinstance(idempotency_key, str):
+        return "unreadable"
+    if callback_url is not None and not isinstance(callback_url, str):
         return "unreadable"
     terminal: JobTerminal | None = None
     if terminal_raw is not None:
@@ -351,6 +361,7 @@ def _parse_record(obj: object) -> JobRecord | Literal["unreadable"]:
         spawn_time=float(spawn_time),
         status=status,
         terminal=terminal,
+        callback_url=callback_url,
     )
 
 
@@ -365,10 +376,8 @@ class JobStore:
     tree (a `WorkspaceStore.jobs_dir` in production; any tmp dir in tests) — the only handle it
     holds. Two DISTINCT windows (the Commit-6 double-meaning is now split):
 
-    - `startup_grace` — the ASSUME-STILL-RUNNING / job-lifetime window (`JOB_LIFETIME_SECONDS`,
+    - `job_lifetime` — the ASSUME-STILL-RUNNING / job-lifetime window (`JOB_LIFETIME_SECONDS`,
       22 min): the running-vs-dead line for the resolver + submit's "already in progress" guard.
-      (The legacy field name is retained because the shim's poll call-site reads it by that name;
-      the honest rename to `job_lifetime` waits on the shim rework.)
     - `nascent_grace` — the SHORT §22.3 torn/nascent-record grace (`NASCENT_RECORD_GRACE_SECONDS`,
       seconds-scale), used ONLY by `submit` for the just-created-but-torn-record race.
 
@@ -376,7 +385,7 @@ class JobStore:
     call (never held), so every branch is drivable in a unit test without a live transport."""
 
     jobs_dir: Path
-    startup_grace: float = JOB_LIFETIME_SECONDS
+    job_lifetime: float = JOB_LIFETIME_SECONDS
     nascent_grace: float = NASCENT_RECORD_GRACE_SECONDS
 
     def __post_init__(self) -> None:
@@ -419,9 +428,16 @@ class JobStore:
         now: float,
         is_done: IsDone,
         peek: Peek,
+        callback_url: str | None = None,
     ) -> SubmitOutcome:
         """Submit a job (H2): create-exclusive the record, else resolve the incumbent WITHOUT
         double-spawning (DONE / existing / STEAL). Returns whether the caller should spawn a runner.
+
+        `callback_url` (OPTIONAL) is the ALREADY-validated (allow-list + SSRF guard, done by the
+        shim BEFORE this call, W3b) completion webhook, stored on the FRESH record so the detached
+        runner can deliver a wakeup (W3c). It is lossy bookkeeping: it rides a `spawned`/`stolen`
+        fresh record, is preserved as-is on the `existing`/`done` incumbent (no re-write), and is
+        never a spawn-decision input. None ⇒ poll-only.
         """
         # Materialize the iterable EXACTLY ONCE — `target_ids` may be a one-shot iterator, and both
         # `job_key` and the record write below must consume the SAME targets (a second `list(...)`
@@ -436,6 +452,7 @@ class JobStore:
             spawn_time=now,
             status="running",
             terminal=None,
+            callback_url=callback_url,
         )
         fresh_bytes = _record_bytes(fresh)
         for _ in range(_SUBMIT_RETRIES):
@@ -478,7 +495,7 @@ class JobStore:
             # (3) Within the job-lifetime window OR a live claim on any target → a slow start / a
             #     no-claim gap / an actively-running runner. EXISTING job, NO re-spawn — the core
             #     anti-double-charge guard: a legitimately-running slow job is never re-spawned.
-            within_lifetime = now < current.spawn_time + self.startup_grace
+            within_lifetime = now < current.spawn_time + self.job_lifetime
             if within_lifetime or any(_claim_is_live(peek(t), now) for t in current.target_ids):
                 return SubmitOutcome(key=key, disposition="existing", spawn=False, record=current)
             # (4) STALE: past the window, no live claim, not done, no terminal → the runner died.
@@ -529,5 +546,5 @@ class JobStore:
             now=now,
             is_done=is_done,
             peek=peek,
-            startup_grace=self.startup_grace,
+            job_lifetime=self.job_lifetime,
         )

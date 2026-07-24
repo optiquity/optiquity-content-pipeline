@@ -101,8 +101,8 @@ handler); `existing` (a legitimate in-flight 202→S1 window) → **202** ack (n
 `spawned`/`stolen` (`.spawn is True`) → detach the runner, then **202** ack.
 
 **Tier-B poll states (Commit 6, `pipeline.jobs.resolve_job_state`) → HTTP:** `done` (OUTPUT
-existence, §22.7) → **200** + fetched output; `running` (a live claim/lease OR the startup
-grace) → **202**; a stored `failed` terminal → the terminal envelope + its MAPPED status
+existence, §22.7) → **200** + fetched output; `running` (a live claim/lease OR the job-lifetime
+window) → **202**; a stored `failed` terminal → the terminal envelope + its MAPPED status
 (timeout-class / `re-drivable` → **504** re-drivable; `rate-limit-backpressure` → **429**;
 an envelope code maps via the fatal table; any other terminal → **500**); `failed-redrivable`
 (nothing live, nothing done, no stored reason) → **409** telling the caller to re-submit with
@@ -136,6 +136,7 @@ from typing import Any
 from pipeline.api import results
 from pipeline.api import token as token_mod
 from pipeline.api.invoke import KNOWN_VERBS, HandlerNotWired, invoke
+from pipeline.callback_policy import CallbackPolicyError, validate_callback_url
 from pipeline.canonical import canonical_json_str
 
 __all__ = [
@@ -253,13 +254,21 @@ class ShimConfig:
     that passes the GAP-9 resolve-and-contain gate inside `invoke()`. Non-empty means only listed
     workspaces are served (a non-member → 403 `workspace-not-served`). `bind_host` is the bind
     address; it DEFAULTS TO LOOPBACK — a non-loopback bind is a conscious operator choice requiring
-    an external TLS/auth proxy."""
+    an external TLS/auth proxy.
+
+    `allowed_callback_hosts` (W3b, OPTIONAL, `provenance: instance`) is the operator-approved set of
+    webhook callback hosts. Unlike the workspace allow-list, it is OPT-IN / FAIL-CLOSED: EMPTY (the
+    default) DISABLES callbacks — a submit carrying `callback_url` is refused 400
+    `callbacks-disabled` (per `callback_policy.validate_callback_url`). Outbound egress is a
+    higher-risk surface, so the operator must consciously name their orchestrator host(s) to enable
+    callbacks at all."""
 
     secrets: frozenset[str]
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     socket_timeout_seconds: float = DEFAULT_SOCKET_TIMEOUT_SECONDS
     allowed_workspaces: frozenset[str] = frozenset()
     bind_host: str = DEFAULT_HOST
+    allowed_callback_hosts: frozenset[str] = frozenset()
 
 
 def load_shim_config(root: str = ".", *, env: Mapping[str, str] | None = None) -> ShimConfig:
@@ -274,13 +283,16 @@ def load_shim_config(root: str = ".", *, env: Mapping[str, str] | None = None) -
 
     Commit-5c policy knobs (file-only, env-independent): `workspaces.allowed` → the served-
     workspace ALLOW-LIST (empty/absent = UNSET = serve any GAP-9-contained workspace); `bind.host`
-    → the bind address (default loopback `DEFAULT_HOST`). Both are `provenance: instance`."""
+    → the bind address (default loopback `DEFAULT_HOST`). W3b: `callbacks.allowed_hosts` → the
+    webhook callback host allow-list (empty/absent = OPT-IN OFF = callbacks DISABLED). All are
+    `provenance: instance`."""
     env = os.environ if env is None else env
     secrets: set[str] = set()
     max_body_bytes = DEFAULT_MAX_BODY_BYTES
     socket_timeout = DEFAULT_SOCKET_TIMEOUT_SECONDS
     allowed_workspaces: set[str] = set()
     bind_host = DEFAULT_HOST
+    allowed_callback_hosts: set[str] = set()
 
     cfg_path = Path(root) / "instance" / "shim.yaml"
     if cfg_path.exists():
@@ -326,6 +338,18 @@ def load_shim_config(root: str = ".", *, env: Mapping[str, str] | None = None) -
             host_val = bind_cfg.get("host")
             if isinstance(host_val, str) and host_val.strip():
                 bind_host = host_val.strip()
+        # W3b — the webhook callback host ALLOW-LIST (a NAME/`host[:port]` set, mirrors
+        # workspaces.allowed). A single string is accepted as a one-element list. Empty/absent
+        # leaves the set EMPTY → callbacks OPT-IN OFF (a submit with callback_url → 400
+        # `callbacks-disabled`, per callback_policy). This is policy only — the SSRF guard +
+        # per-request validation live in `callback_policy.validate_callback_url`, not here.
+        cb_cfg = data.get("callbacks") or {}
+        if isinstance(cb_cfg, Mapping):
+            hosts = cb_cfg.get("allowed_hosts")
+            if isinstance(hosts, str):
+                hosts = [hosts]
+            if isinstance(hosts, (list, tuple)):
+                allowed_callback_hosts.update(str(h).strip() for h in hosts if str(h).strip())
 
     single = (env.get(ENV_SECRET) or "").strip()
     if single:
@@ -344,6 +368,7 @@ def load_shim_config(root: str = ".", *, env: Mapping[str, str] | None = None) -
         socket_timeout,
         frozenset(allowed_workspaces),
         bind_host,
+        frozenset(allowed_callback_hosts),
     )
 
 
@@ -521,6 +546,7 @@ class ShimServer(ThreadingHTTPServer):
         max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
         socket_timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS,
         allowed_workspaces: frozenset[str] = frozenset(),
+        allowed_callback_hosts: frozenset[str] = frozenset(),
         spawn_fn: Callable[..., Any] | None = None,
         plan_targets_fn: Callable[..., Sequence[str]] | None = None,
         clock_fn: Callable[[], float] | None = None,
@@ -539,12 +565,16 @@ class ShimServer(ThreadingHTTPServer):
         #: The served-workspace allow-list (NAME set). Empty = unset = serve any GAP-9-contained
         #: workspace; the per-request check lives in `_ShimRequestHandler._deny_unserved_workspace`.
         self.allowed_workspaces = frozenset(allowed_workspaces)
+        #: The webhook callback host allow-list (W3b). Empty = OPT-IN OFF = callbacks disabled (a
+        #: submit with callback_url → 400 `callbacks-disabled`). Passed to
+        #: `callback_policy.validate_callback_url` at submit-time; never a spawn-decision input.
+        self.allowed_callback_hosts = frozenset(allowed_callback_hosts)
         #: Commit-6 Tier-B seams (all `None` → the real defaults; tests inject light stubs so the
         #: unit suite never spawns a real subprocess or resolves a live plan — the REAL detached
         #: spawn + real plan resolution are the Commit-I integration harness). `spawn_fn` detaches
         #: the runner (`jobrunner.spawn_runner`); `plan_targets_fn` resolves the predictable
         #: target-id set LLM-free (`_default_plan_targets`); `clock_fn` is the poll/submit clock
-        #: (`time.time`) — injectable so a test can drive the startup-grace / re-drivable windows.
+        #: (`time.time`) — injectable so a test can drive the job-lifetime / re-drivable windows.
         self.spawn_fn = spawn_fn
         self.plan_targets_fn = plan_targets_fn
         self.clock_fn = clock_fn
@@ -705,7 +735,13 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
     ) -> None:
         """The Tier-B `continue-session{generate-next}` SUBMIT (Commit 6): resolve the predictable
         target-ids LLM-free, `JobStore.submit` a lossy idempotency record, detach a runner, and
-        return a 202 ack (or 200 on an already-done idempotent re-submit)."""
+        return a 202 ack (or 200 on an already-done idempotent re-submit).
+
+        W3b: an OPTIONAL `callback_url` in params is VALIDATED (operator allow-list + SSRF guard,
+        `callback_policy.validate_callback_url`) BEFORE any store access or spawn — a rejection is a
+        400 naming only the reason CLASS (never the URL). On accept it is threaded into BOTH the
+        job record (`JobStore.submit`) and the spawn `JobSpec` so it reaches the detached runner for
+        the completion wakeup (delivery is W3c). Absent ⇒ poll-only (unchanged)."""
         # (a) The idempotency_key is REQUIRED so a retry collides on ONE job (N-2; n8n: $execution
         #     .id). Missing → 400 BEFORE any store access.
         idempotency_key = params.get("idempotency_key")
@@ -733,6 +769,30 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+
+        # (a2) OPTIONAL webhook callback (W3b). VALIDATE it — operator allow-list + SSRF guard — at
+        #      SUBMIT time, BEFORE any store access / plan resolution / spawn, so a bad or
+        #      not-enabled callback is a 400 before any paid run. The guard is the W3a
+        #      `callback_policy` (never re-implemented here); with an EMPTY allow-list callbacks are
+        #      OPT-IN OFF → `callbacks-disabled`. A rejection names only the reason CLASS + the
+        #      fixed rule (neither echoes the URL/host/IP — no topology/secret leak). Absent ⇒
+        #      poll-only.
+        callback_url = params.get("callback_url")
+        if callback_url is not None:
+            try:
+                validate_callback_url(
+                    callback_url, allowed_hosts=server.allowed_callback_hosts
+                )
+            except CallbackPolicyError as exc:
+                self._respond(
+                    _HTTP_BAD_REQUEST,
+                    {
+                        "error": "callback-url-rejected",
+                        "reason": exc.reason,
+                        "detail": exc.detail,
+                    },
+                )
+                return
 
         # (b) Build the CONTAINED store (delegated GAP-9 — an escaping name RAISES → 403).
         try:
@@ -781,7 +841,12 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         # (e) Submit (create-exclusive + H2 steal) → disposition → HTTP.
         now = (server.clock_fn if server.clock_fn is not None else time.time)()
         outcome = job_store.submit(
-            target_ids, idempotency_key, now=now, is_done=is_done_fn, peek=claims.peek
+            target_ids,
+            idempotency_key,
+            now=now,
+            is_done=is_done_fn,
+            peek=claims.peek,
+            callback_url=callback_url,
         )
         if outcome.disposition == "done":
             # The whole job already materialized (an idempotent re-submit after completion) → 200 +
@@ -805,6 +870,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 root=str(server.root),
                 token=token,
                 pins=pins,
+                callback_url=callback_url,
             )
             spawn = server.spawn_fn if server.spawn_fn is not None else _default_spawn
             spawn(spec, spawn_dir=store.jobs_dir)
@@ -869,7 +935,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 now=now,
                 is_done=is_done_fn,
                 peek=claims.peek,
-                startup_grace=job_store.startup_grace,
+                job_lifetime=job_store.job_lifetime,
             )
             for tid in target_ids
         ]
@@ -893,7 +959,10 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 {
                     "status": "running",
                     "job": job_ref,
-                    "detail": "the job is still working (a live claim/lease or the startup grace)",
+                    "detail": (
+                        "the job is still working (a live claim/lease or the job-lifetime "
+                        "window)"
+                    ),
                 },
             )
             return
@@ -1046,6 +1115,7 @@ def make_server(
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
     socket_timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS,
     allowed_workspaces: frozenset[str] = frozenset(),
+    allowed_callback_hosts: frozenset[str] = frozenset(),
     spawn_fn: Callable[..., Any] | None = None,
     plan_targets_fn: Callable[..., Sequence[str]] | None = None,
     clock_fn: Callable[[], float] | None = None,
@@ -1053,8 +1123,9 @@ def make_server(
     """Build (but do not start) the shim server. `port=0` binds an ephemeral port (tests read
     `server.server_address`). The caller is responsible for wiring handlers (`serve()` does).
     `allowed_workspaces` is the Commit-5c served-workspace allow-list (empty = unset = serve any
-    GAP-9-contained workspace). `spawn_fn`/`plan_targets_fn`/`clock_fn` are the Commit-6 Tier-B
-    seams (None = the real defaults; tests inject light stubs).
+    GAP-9-contained workspace); `allowed_callback_hosts` is the W3b webhook callback allow-list
+    (empty = opt-in OFF = callbacks disabled). `spawn_fn`/`plan_targets_fn`/`clock_fn` are the
+    Commit-6 Tier-B seams (None = the real defaults; tests inject light stubs).
 
     FAIL-CLOSED: an empty `secrets` set raises `ShimConfigError` (via `ShimServer`) — the server
     is never built wide open."""
@@ -1066,6 +1137,7 @@ def make_server(
         max_body_bytes=max_body_bytes,
         socket_timeout=socket_timeout,
         allowed_workspaces=allowed_workspaces,
+        allowed_callback_hosts=allowed_callback_hosts,
         spawn_fn=spawn_fn,
         plan_targets_fn=plan_targets_fn,
         clock_fn=clock_fn,
@@ -1104,6 +1176,7 @@ def serve(
         max_body_bytes=config.max_body_bytes,
         socket_timeout=config.socket_timeout_seconds,
         allowed_workspaces=config.allowed_workspaces,
+        allowed_callback_hosts=config.allowed_callback_hosts,
     )
     bound_host, bound_port = server.server_address
     if bind_host not in _LOOPBACK_HOSTS:
@@ -1118,11 +1191,16 @@ def serve(
         if config.allowed_workspaces
         else "allow-list: unset (any GAP-9-contained workspace)"
     )
+    callback_note = (
+        f"callbacks: {len(config.allowed_callback_hosts)} approved host(s)"
+        if config.allowed_callback_hosts
+        else "callbacks: disabled (opt-in; no approved hosts)"
+    )
     print(
         f"pipeline serve: listening on http://{bound_host}:{bound_port} "
         f"(POST {INVOKE_PATH} + POST {POLL_PATH}; auth: required, {len(config.secrets)} secret(s); "
-        f"{allow_note}; Tier-A synchronous; Tier-B generate-next 202+poll; render/begin-session "
-        "async doors land in a later DR-1 commit)",
+        f"{allow_note}; {callback_note}; Tier-A synchronous; Tier-B generate-next 202+poll; "
+        "render/begin-session async doors land in a later DR-1 commit)",
         file=sys.stderr,
     )
     try:
