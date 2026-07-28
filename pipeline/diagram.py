@@ -1,13 +1,17 @@
-"""The ``{type=diagram}`` node/edge grammar + parser (increment C, Commit C1).
+"""The ``{type=diagram}`` node/edge grammar + parser + HARD grounding gate (increment C, C1+C2).
 
 INERT LIBRARY. This module is imported by NOTHING on the compose path yet: a ``{type=diagram}``
 section still fails closed via ``sections.UnknownSectionTypeError`` (``"diagram"`` is not in
-``SECTION_TYPES``) until the C4 flip wires the transform. C1 ships only the pure GRAMMAR half —
-no I/O, no subprocess, no grounding gate (C2), no ``dot``/``d2`` compile (C3). Later commits layer
-onto ``DiagramSpec``:
+``SECTION_TYPES``) until the C4 flip wires the transform. C1 shipped the pure GRAMMAR half; C2
+adds :func:`gate_diagram` — the HARD grounding gate — still with no I/O, no subprocess, and no
+``dot``/``d2`` compile (C3). The gate is a LIBRARY function, called only by its own test today;
+C4 runs it inside ``compose`` BEFORE any picture is drawn, so a diagram that would lie is REFUSED
+before a single SVG byte exists. Later commits layer onto ``DiagramSpec``:
 
-* C2 runs the HARD grounding gate over ``spec.edges``, re-scanning each edge's ``citation_span``
-  with :func:`pipeline.ir.extract_fact_refs` + the reused tier check;
+* C2 (THIS commit) runs the HARD grounding gate (:func:`gate_diagram`) over ``spec.edges``:
+  per-edge REF-COUNT coverage (re-scanning each edge's verbatim ``citation_span`` with
+  :func:`pipeline.ir.extract_fact_refs`) + the reused :func:`pipeline.ir.validate_refs` tier
+  check + always-on endpoint integrity;
 * C3 compiles the same ``DiagramSpec`` to a content-addressed SVG.
 
 Grammar (strict, line-oriented — a parseable list, NOT a free-text DSL)::
@@ -49,6 +53,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Any
 
 from pipeline import ir
 
@@ -57,8 +62,10 @@ __all__ = [
     "POSTURE_ILLUSTRATIVE",
     "DiagramEdge",
     "DiagramGrammarError",
+    "DiagramGroundingError",
     "DiagramNode",
     "DiagramSpec",
+    "gate_diagram",
     "parse_diagram",
 ]
 
@@ -98,6 +105,26 @@ class DiagramGrammarError(ir.SchemaViolation):
     """
 
     code = "diagram-grammar-invalid"
+
+
+class DiagramGroundingError(ir.IRError):
+    """A grounded ``{type=diagram}`` edge is uncited or its endpoint is not a declared node (§C C2).
+
+    Raised by :func:`gate_diagram` for the two refusals the gate OWNS: (b) an edge that resolves to
+    ZERO known facts — REF-COUNT coverage, never span-presence (BLOCKER-1) — and (c) an edge whose
+    endpoint is not a declared node. The other two grounded-edge refusals (an UNKNOWN fact-id, an
+    INFERRED/AMBIGUOUS drawn as EXTRACTED) are the REUSED :class:`pipeline.ir.UnknownFactError` /
+    :class:`pipeline.ir.TierViolation` — one place of record for the tier-honesty rule.
+
+    An :class:`pipeline.ir.IRError` subclass (like the reused refusals), so C4's dedicated
+    ``except`` — placed AHEAD of the generic ``except ir.IRError`` — catches this alongside
+    :class:`DiagramGrammarError` and routes all of them to the single
+    ``diagram-grounding-violation`` compose code. ``code`` is the machine-checkable umbrella; the
+    message discriminates the coverage refusal (``grounding-uncovered: ...``) from the endpoint
+    refusal (``diagram-grounding: ...``).
+    """
+
+    code = "grounding-uncovered"
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,3 +405,67 @@ def parse_diagram(section_body: str) -> DiagramSpec:
         posture=_resolve_posture(posture),
         style_ref=None,
     )
+
+
+def gate_diagram(spec: DiagramSpec, ledger: Mapping[str, Any]) -> None:
+    """The HARD grounding gate (§C C2, BLOCKER-1): a grounded diagram cannot lie. Raises on refuse.
+
+    Runs BEFORE any picture is drawn (C4 calls it inside compose ahead of the compiler). For a
+    ``grounded``-posture spec — the C1 fail-closed default for an absent/unrecognized posture —
+    EVERY edge must resolve to at least one known, tier-honest source fact, or the whole document
+    is REFUSED (never warned, never repaired). The three grounded refusals:
+
+    * ``grounding-uncovered`` (:class:`DiagramGroundingError`) — an edge that resolves to ZERO
+      facts. Coverage is **REF-COUNT, never span-presence**: a ``[routes]{.EXTRACTED}`` span with
+      no ``data-fact`` yields ``()`` from :func:`pipeline.ir.extract_fact_refs`, and the vacuous
+      ``validate_refs(())`` would pass — so the ``len(refs) < 1`` guard runs FIRST, making that
+      vacuous pass unreachable. A green-looking tier class that names no fact is the exact bypass
+      BLOCKER-1 names, and it is closed here.
+    * ``ir-unknown-fact`` (REUSED :class:`pipeline.ir.UnknownFactError`) — an edge's ``data-fact``
+      names a fact-id absent from the ledger.
+    * ``ir-tier-violation`` (REUSED :class:`pipeline.ir.TierViolation`) — an INFERRED/AMBIGUOUS lead
+      drawn as an EXTRACTED fact (tier promotion), or a class-less grounded ref.
+
+    The unknown-id / tier refusals reuse :func:`pipeline.ir.validate_refs` UNCHANGED — the identical
+    existence+tier check the IR body gate runs — so there is ONE place of record for the honesty
+    rule and a diagram edge can never be held to a weaker bar than prose.
+
+    ENDPOINT INTEGRITY (c) fires for BOTH postures, ALWAYS (it is not a grounding-honesty claim, so
+    an illustrative sketch is still held to it). It is defense-in-depth: :func:`parse_diagram`
+    already refuses a dangling endpoint, but a directly-constructed :class:`DiagramSpec` is
+    re-checked here.
+
+    ILLUSTRATIVE BYPASS skips coverage + tier (a)+(b) ONLY, never endpoint (c), and ONLY for the
+    C1-resolved EXPLICIT ``illustrative`` token — never a silent bypass (SERIOUS-2: an absent, typo,
+    or garbage posture already resolved to ``grounded`` in the parser, so it can never reach this
+    branch). The bypass is not a free pass to ship uncited: an illustrative diagram renders only
+    carrying the reader-visible "illustrative — not source-checked" stamp (baked into the SVG at C3,
+    written into the alt/caption at C4). C2 only skips the grounding requirement for that explicit
+    opt-in; ``spec.posture`` IS the flag C3/C4 read.
+
+    ``ledger`` is the §15 grounding ledger: ``{fact_id: {"tier": <TIER>, ...}}``.
+    """
+    node_ids = {node.id for node in spec.nodes}
+    # (c) ENDPOINT INTEGRITY — both postures, always (defense-in-depth over parse_diagram).
+    for edge in spec.edges:
+        if edge.src_id not in node_ids or edge.dst_id not in node_ids:
+            raise DiagramGroundingError(
+                f"diagram-grounding: edge {edge.src_id}->{edge.dst_id} endpoint is not a "
+                "declared node"
+            )
+    # ILLUSTRATIVE BYPASS — skips (a)+(b) ONLY, never (c); only the C1-resolved explicit token.
+    if spec.posture == POSTURE_ILLUSTRATIVE:
+        return
+    # GROUNDED posture (the fail-closed default): every edge >= 1 known, tier-honest fact.
+    for edge in spec.edges:
+        refs = ir.extract_fact_refs(
+            edge.citation_span or "", where=f"diagram edge {edge.src_id}->{edge.dst_id}"
+        )
+        if len(refs) < 1:  # (b) COVERAGE = REF-COUNT — a classed span with no data-fact -> () here.
+            raise DiagramGroundingError(
+                f"grounding-uncovered: diagram edge {edge.src_id}->{edge.dst_id} cites no known "
+                "fact (a citation span without a data-fact is not coverage)"
+            )
+        # (a) TIER-HONESTY — the REUSED ir check; runs AFTER coverage, so validate_refs(()) is
+        #     unreachable. Raises ir.UnknownFactError (unknown id) / ir.TierViolation (bad tier).
+        ir.validate_refs(refs, ledger)

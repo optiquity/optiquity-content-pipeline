@@ -115,6 +115,7 @@ __all__ = [
     "unwrap_ir",
     "validate_grounding_ledger",
     "validate_ir",
+    "validate_refs",
 ]
 
 #: §15 RI4 render-reproducibility stamps. `ir_version` is the IR schema generation; the IR
@@ -703,10 +704,15 @@ def validate_grounding_ledger(ledger: Any, *, where: str = "grounding") -> None:
 # ---------------------------------------------------------------------------
 
 
-def _validate_refs(refs: Sequence[FactRef], ledger: Mapping[str, Any]) -> None:
+def validate_refs(refs: Sequence[FactRef], ledger: Mapping[str, Any]) -> None:
     """Every `data-fact` reference names a ledger fact-id AND carries that fact's exact
     ledger tier as its class (§17 RI8). This one check subsumes "unknown fact-id" and
-    "non-EXTRACTED asserted as fact / tier promotion" (§6.5/§16)."""
+    "non-EXTRACTED asserted as fact / tier promotion" (§6.5/§16).
+
+    PUBLIC surface (§C C2, MINOR-2): promoted from `_validate_refs` so the `{type=diagram}`
+    grounding gate (`pipeline.diagram.gate_diagram`) can run the IDENTICAL existence+tier check
+    over an edge's `data-fact` refs — one place of record for the honesty rule, reused, never
+    re-implemented. The rename is behavior-neutral: every IR path calls the same logic."""
     for ref in refs:
         if ref.fact_id not in ledger:
             raise UnknownFactError(
@@ -780,7 +786,7 @@ def _validate_part(part: Any, artifact_id: str, index: int, ledger: Mapping[str,
             isinstance(part["constraints"], Mapping),
             f"{loc}.constraints must be a map (per-part values; interpretation deferred, §26)",
         )
-    _validate_refs(extract_fact_refs(part["body"], where=f"{loc}.body"), ledger)
+    validate_refs(extract_fact_refs(part["body"], where=f"{loc}.body"), ledger)
     return role
 
 
@@ -1025,7 +1031,7 @@ def validate_ir(doc: Any) -> None:
     )
     if has_body:
         _require_substance(doc["body"], "flat body")  # §15 substance floor (GAP-6) — precedes refs
-        _validate_refs(extract_fact_refs(doc["body"], where="body"), ledger)
+        validate_refs(extract_fact_refs(doc["body"], where="body"), ledger)
         return
     parts = doc["parts"]
     _require(isinstance(parts, list), "parts must be an ordered JSON list (§15 RI2)")

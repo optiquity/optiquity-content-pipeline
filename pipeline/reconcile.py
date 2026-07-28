@@ -26,7 +26,7 @@ Design authority: `docs/design.md`
         module constant here (the drift.py `CODE_*` pattern).
 
 **Reuse, never reinvent.** Fidelity validation rides `pipeline.ir` — `extract_fact_refs`
-(balanced-bracket-aware), `_validate_refs`/`validate_ir` (structural + tier machinery), and
+(balanced-bracket-aware), `validate_refs`/`validate_ir` (structural + tier machinery), and
 the typed errors `TierViolation`/`UnknownFactError`/`SchemaViolation`. The id family rides
 `pipeline.ids` (`fitted_id` + the `fit_revision` qualifier, `delta_vs_floor`); digests ride
 `pipeline.canonical` (`digest_hex12` for the preimage/qualifier); the reconciler LLM call
