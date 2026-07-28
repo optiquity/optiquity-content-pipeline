@@ -7,6 +7,7 @@ Before a first run, put these in place:
 - **The runtime toolchain.** The mission's dependency table names Homebrew... Node.js (current LTS)... Claude Code CLI... Python (current supported 3.x)... uv or pipx... Tailscale... n8n. The pinned Python dependencies live in the repo's pyproject.toml... uv.lock.
 - **Pandoc for the render pass.** The serialize step is rendered by Pandoc, and Pandoc's binary version and AST api-version are pinned — a hard build requirement.
 - **At least one bound source.** The pipeline reads client repos three ways; all read-only — a Graphify graph by path, an MCP query, or a wiki export. The matching readers live in pipeline/adapters/... folder.py, fsast.py, graphify.py, mock.py.
+- **MCP servers: none required.** Of those three bound-source options, a graph by path is the default and needs no MCP server — the pipeline reads the graph straight from a file. Running `graphify-mcp` is optional: it serves a graph on an always-on host so a workstation can query it across machines over Tailscale (`code-review-graph` (CRG) is an optional alternative). See [Claude Code usage](../claude-code-usage.md#read-only-source-access-the-core-safety-pattern) for that optional setup.
 - **The Claude subscription transport.** Composition runs through Claude Code: the pipeline is a headless Claude Code CLI invocation authenticated on the Claude SUBSCRIPTION — never API keys, never ANTHROPIC_API_KEY.
 
 ## Setup
