@@ -26,9 +26,11 @@ from pathlib import Path
 
 import pytest
 
+from pipeline import diagram
 from pipeline import dispatch as D
 from pipeline.asset_loader import AssetEmbedError, hash_embedded_assets
 from pipeline.asset_ref import AssetRefError
+from pipeline.canonical import sha256_hex
 from pipeline.serialize import (
     is_ci,
     pandoc_available,
@@ -280,3 +282,60 @@ def test_non_embed_writer_does_not_run_the_gate_on_a_legacy_ref(tmp_path):
     for writer in ("markdown", "plain", "json"):
         assert hash_embedded_assets(_uncontained_ast(), writer, store_root=root) == ()
         assert hash_embedded_assets(_raw_img_ast(), writer, store_root=root) == ()
+
+
+# --- increment C (C4): a compose-minted diagram SVG rides B's embed on every target --------------
+
+
+def _store_with_diagram_svg(tmp_path: Path) -> tuple[Path, str]:
+    """A store root carrying a REAL `dot`-compiled diagram SVG under `assets/diagrams/<hash>.svg`
+    (exactly what the C4 compose transform mints via `store.commit_asset`)."""
+    spec = diagram.parse_diagram(
+        "nodes:\n- gw: Gateway\n- auth: Auth\n"
+        'edges:\n- gw -> auth [routes]{.EXTRACTED data-fact="f1"}\n'
+    )
+    svg = diagram.compile_diagram(spec, tool="dot").svg
+    digest = sha256_hex(svg)
+    target = tmp_path / "store" / "assets" / "diagrams" / f"{digest}.svg"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(svg)
+    return tmp_path / "store", digest
+
+
+def _diagram_figure_ast(digest: str) -> dict:
+    """The AST for the C4-persisted figure body `![alt](assets/diagrams/<hash>.svg)`."""
+    body = f"![architecture](assets/diagrams/{digest}.svg)"
+    return serialize_fitted({"grounding": {}, "body": body})[0].ast
+
+
+def test_diagram_svg_embeds_on_html5_as_a_data_uri(tmp_path):
+    root, digest = _store_with_diagram_svg(tmp_path)
+    dout, embedded, _ = _render_leg(_diagram_figure_ast(digest), "html5", root)
+    assert dout.assets_embedded is True
+    assert b"data:image/svg+xml" in dout.output_bytes  # the diagram SVG is INLINED into the html
+    assert f"assets/diagrams/{digest}.svg".encode() not in dout.output_bytes  # path gone (embedded)
+
+
+def test_diagram_svg_docx_carries_a_native_media_part(tmp_path):
+    # C0 guarantees a docx SVG embed refuses when rsvg-convert is absent; here it IS installed, so
+    # the diagram rides into a real word/media/ part (with the rsvg PNG fallback).
+    root, digest = _store_with_diagram_svg(tmp_path)
+    dout, _, _ = _render_leg(_diagram_figure_ast(digest), "docx", root)
+    assert dout.assets_embedded is True
+    zf = zipfile.ZipFile(__import__("io").BytesIO(dout.output_bytes))
+    media = [n for n in zf.namelist() if n.startswith("word/media/")]
+    assert media, "docx must carry the embedded diagram as a word/media/ part"
+
+
+def test_diagram_svg_markdown_keeps_it_by_reference(tmp_path):
+    root, digest = _store_with_diagram_svg(tmp_path)
+    dout, embedded, resource_paths = _render_leg(_diagram_figure_ast(digest), "markdown", root)
+    assert embedded == () and dout.assets_embedded is False
+    assert f"assets/diagrams/{digest}.svg".encode() in dout.output_bytes  # md points at the file
+
+
+def test_diagram_svg_plain_shows_the_alt_only(tmp_path):
+    root, digest = _store_with_diagram_svg(tmp_path)
+    dout, _, _ = _render_leg(_diagram_figure_ast(digest), "plain", root)
+    text = dout.output_bytes.decode("utf-8")
+    assert "architecture" in text and f"assets/diagrams/{digest}.svg" not in text

@@ -99,7 +99,10 @@ __all__ = [
 # The OPEN, one-file-add carrier of genre-NEUTRAL STRUCTURAL section KINDS (v1). Adding a kind is
 # a ONE-LINE change here; C2 builds the conformance layer on this set. These are STRUCTURAL kinds,
 # NOT roles: `abstract`/`methods`/`results` are ROLES (carried by `{#id}`) and never appear here.
-SECTION_TYPES = frozenset({"prose", "figure", "table", "callout"})
+# `diagram` (increment C, C4) is the ATOMIC FLIP: adding it here is the SAME commit that wires the
+# compose parse->gate->compile->store->embed transform, so a `{type=diagram}` section goes from
+# refused (`UnknownSectionTypeError`) straight to fully gated — never an ungated raw-list window.
+SECTION_TYPES = frozenset({"prose", "figure", "table", "callout", "diagram"})
 
 # The default `type` when a heading declares no `type=` kv.
 DEFAULT_SECTION_TYPE = "prose"

@@ -213,7 +213,7 @@ def test_roles_are_never_types_abstract_methods_results():
 
 
 def test_carrier_is_the_open_one_file_add_surface():
-    assert SECTION_TYPES == frozenset({"prose", "figure", "table", "callout"})
+    assert SECTION_TYPES == frozenset({"prose", "figure", "table", "callout", "diagram"})
     assert DEFAULT_SECTION_TYPE == "prose" and DEFAULT_SECTION_TYPE in SECTION_TYPES
 
 

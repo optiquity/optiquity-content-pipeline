@@ -30,8 +30,10 @@ dot 15.1.0, d2 0.7.1) — no LLM, no network. The suite pins:
   malformed source is caught by `-Tcanon` (`DiagramCompileError`) and a missing binary raises the
   loud `DiagramToolUnavailableError`; the SVG bytes store cleanly under `assets/diagrams/<hash>.svg`
   via `commit_asset` (the C4 contract, exercised here);
-- INERTNESS: `{type=diagram}` still fails closed via `sections.UnknownSectionTypeError` — nothing
-  added to `SECTION_TYPES`; the gate + compiler are imported by this test only, no live path.
+- THE C4 FLIP: `diagram` is now IN `SECTION_TYPES`, so `sections.parse_sections` accepts a
+  `{type=diagram}` heading (no longer `UnknownSectionTypeError`) — the atomic flip added the type
+  and wired the compose parse->gate->compile->store->embed transform in the SAME commit (the
+  end-to-end wiring lives in `tests/test_compose.py`).
 """
 
 from __future__ import annotations
@@ -449,15 +451,17 @@ def test_grounding_error_is_ir_error_family():
 
 
 # --------------------------------------------------------------------------- #
-# Inertness — C1+C2 are a library only; the type is not wired, the gate is     #
-# imported by this test only.                                                  #
+# The C4 FLIP — `diagram` is now a live, gated section type (the atomic flip    #
+# added it to SECTION_TYPES + wired the compose transform in the SAME commit).  #
 # --------------------------------------------------------------------------- #
 
 
-def test_diagram_type_still_fails_closed_in_sections():
-    assert "diagram" not in sections.SECTION_TYPES
-    with pytest.raises(sections.UnknownSectionTypeError):
-        sections.parse_sections("## Architecture {type=diagram}\n\nbody\n")
+def test_diagram_type_is_now_a_live_section_type():
+    # C4 ATOMIC FLIP: `diagram` is IN the carrier and `parse_sections` no longer refuses it — the
+    # compose transform (test_compose.py) is what gates + compiles + rewrites the section.
+    assert "diagram" in sections.SECTION_TYPES
+    parsed = sections.parse_sections("## Architecture {type=diagram}\n\nbody\n")
+    assert parsed[0].type == "diagram"
 
 
 # --------------------------------------------------------------------------- #
@@ -684,6 +688,6 @@ def test_same_spec_recompiles_to_the_same_hash():
     )
 
 
-def test_compiler_is_still_inert_no_section_type():
-    # C3 adds the compiler but wires nothing: `diagram` is still not a live section type.
-    assert "diagram" not in sections.SECTION_TYPES
+def test_diagram_is_a_live_section_type_after_the_flip():
+    # C4 flipped it on: the C1-C3 library is now reachable through the compose transform.
+    assert "diagram" in sections.SECTION_TYPES

@@ -90,6 +90,38 @@ heading skeleton:
 - **Never invent a fact to satisfy a required section.** An unsupported point stays an
   INFERRED/AMBIGUOUS lead or is left out — the grounding discipline still binds every claim.
 
+## Diagram sections (`{type=diagram}` — a grounded node/edge list)
+
+When you want a diagram (an architecture picture, a flow, a set of boxes and arrows), author it as
+a `{type=diagram}` section: a `##` heading carrying the `{type=diagram}` attribute, followed by a
+STRICT node/edge list (NOT free text, NOT Mermaid, NOT an image — the pipeline draws the picture
+for you and stamps its provenance). The heading text becomes the figure's caption.
+
+```
+## System architecture {type=diagram}
+
+nodes:
+- gw: API Gateway
+- auth: Auth Service
+edges:
+- gw -> auth [validates every request against]{.EXTRACTED data-fact="f0"}
+```
+
+Rules (HARD — a diagram that would misrepresent a source is REFUSED before any picture is drawn):
+
+- **`nodes:`** then one `- <id>: <label>` per box. Each `<id>` is unique and made of letters,
+  digits, `_`, `-` (it keys the graph); `<label>` is the visible box text.
+- **`edges:`** then one `- <src> -> <dst> <citation>` per arrow. `<src>`/`<dst>` MUST be declared
+  node ids. **Every edge MUST cite at least one real fact** as a Pandoc span
+  `[label]{.TIER data-fact="fN"}` — the SAME grounding + tier discipline as prose (rules 1–4): the
+  `data-fact` id must be a listed `fact_id` at its EXACT tier. An arrow that cites no fact, an
+  unknown id, or a promoted tier REFUSES the whole document.
+- **`posture:`** (OPTIONAL, on its own line) — omit it (or write `posture: grounded`) for a normal
+  source-checked diagram; the strict per-edge grounding above then applies. Write
+  `posture: illustrative` ONLY for a non-source-claiming sketch — it skips per-edge grounding but
+  ships carrying a visible "illustrative — not source-checked" warning on every target. A missing
+  or unrecognized posture is treated as **grounded** (never illustrative).
+
 ## Output shape (return this and only this)
 
 Flat (`shape: "flat"`):

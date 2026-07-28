@@ -80,7 +80,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pipeline import asset_ref, ir, review, serialize
+from pipeline import asset_ref, diagram, ir, review, serialize
 from pipeline.api.results import (
     CODE_ASSET_REF_INVALID,
     CODE_ASSET_REF_UNCONTAINED,
@@ -102,6 +102,7 @@ from pipeline.sections import (
     Order,
     Presence,
     Schema,
+    Section,
     SectionGrammarError,
     Selector,
     Violation,
@@ -119,6 +120,7 @@ __all__ = [
     "CODE_BODY_RAW_MARKUP_FORBIDDEN",
     "CODE_CITATION_UNRESOLVED",
     "CODE_CONTRACT_VIOLATION",
+    "CODE_DIAGRAM_GROUNDING_VIOLATION",
     "CODE_SECTION_CONFORMANCE_VIOLATION",
     "DEFAULT_MAX_ATTEMPTS",
     "WRITER_TEMPLATE",
@@ -143,6 +145,14 @@ DEFAULT_MAX_ATTEMPTS = 3
 
 #: §21.7-style code: the writer never produced a contract-valid IR within the re-ask bound.
 CODE_CONTRACT_VIOLATION = "compose-contract-violation"
+
+#: Increment C (C4, SERIOUS-4): the SINGLE never-persisted code every `{type=diagram}` REFUSAL
+#: routes to — the grammar/grounding errors the diagram gate OWNS (`DiagramGrammarError` /
+#: `DiagramGroundingError`) AND the reused `ir` tier errors it raises (`UnknownFactError` /
+#: `TierViolation`). A compose-local code (the sibling of `compose-contract-violation`, NOT a reuse
+#: of the taxonomy's `grounding-uncovered`); the driver folds an unregistered stage code to None
+#: exactly as it does for `compose-contract-violation` (driver.py `outcome.code in ALL_CODES`).
+CODE_DIAGRAM_GROUNDING_VIOLATION = "diagram-grounding-violation"
 
 
 class ComposeError(RuntimeError):
@@ -548,6 +558,111 @@ def _asset_containment_note(
 
 
 # ---------------------------------------------------------------------------
+# Increment C (C4) — the `{type=diagram}` compose transform (the ATOMIC FLIP consumer). Post-parse
+# of the writer envelope, BEFORE `_assemble_ir`, each `{type=diagram}` section is
+# parse -> HARD grounding gate -> compile -> content-addressed store -> body-REWRITE to a contained
+# `![<alt>](assets/diagrams/<hash>.svg)` figure. Running BEFORE `_assemble_ir` means a diagram's
+# node/edge `data-fact` spans are CONSUMED (never double-validated as prose) and the PERSISTED body
+# carries the FIGURE — which A's containment gate + B's embed then handle — NEVER the raw list. The
+# HARD gate runs before a single SVG byte is stored, so a diagram that would lie is REFUSED first.
+#
+# SERIOUS-3: the transform operates on the `parse_writer_output` parts-DICT DIRECTLY (a flat `body`
+# or a `{role: body}` map) — it must NOT reuse `_doc_leaf_bodies`, which expects the ASSEMBLED-IR
+# list shape. Each leaf is normalized ONCE (so `Section.span` line offsets line up — splicing raw
+# with normalized offsets would mis-slice and could persist an ungated raw list) then spliced.
+# MINOR-5: the transform runs UNCONDITIONALLY (never under the `base_schema is not None` branch), so
+# a schema-LESS format can never skip it and persist a raw list. Diagram-section presence is decided
+# SOLELY by the AUTHORITATIVE `parse_sections` (a pure line scan, no subprocess) — NEVER a cheap
+# substring probe, which UNDER-matches the parser (a backslash-escaped `{type=diagr\am}` still
+# parses as a `diagram`) and would let a raw list slip the gate; a diagram-free body returns the RAW
+# bytes unchanged. SERIOUS-1(b): an illustrative diagram's reader-visible marker goes into the
+# Markdown alt/caption (so it shows on plain-text / alt-text), COMPLEMENTING C3's SVG-baked stamp.
+# ---------------------------------------------------------------------------
+
+#: The C4 HARD-PINNED diagram tool (the amendment default). C5 replaces this ONE pin by threading a
+#: resolved `tool` (the `diagram-styles/` knob) onto `ComposeRequest`; C4 must not foreclose that,
+#: so the pin lives in exactly one place here.
+_DIAGRAM_TOOL_PIN = diagram.TOOL_DOT
+
+#: The section `type` this transform consumes.
+_DIAGRAM_SECTION_TYPE = "diagram"
+
+
+def _escape_alt(text: str) -> str:
+    """Escape a heading for use as Markdown image alt/caption text, so a literal bracket in the
+    heading can never break the `![...]` figure (which would otherwise make A's containment gate see
+    a malformed/uncontained image reference)."""
+    return text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+
+
+def _diagram_alt(section: Section, spec: diagram.DiagramSpec) -> str:
+    """The figure's alt/caption text: the section heading, PLUS — for an `illustrative` spec — the
+    mandatory reader-visible marker (SERIOUS-1(b)). The Markdown alt is where the stamp shows on the
+    plain-text / alt-text targets, COMPLEMENTING C3's SVG-baked stamp; a grounded diagram carries
+    none. Empty headings fall back to the section-type word so the figure always has alt text."""
+    caption = _escape_alt(section.heading) or _DIAGRAM_SECTION_TYPE
+    if spec.posture == diagram.POSTURE_ILLUSTRATIVE:
+        return f"{caption} ({diagram.ILLUSTRATIVE_STAMP})"
+    return caption
+
+
+def _transform_leaf_body(
+    body: str, ledger: Mapping[str, Any], store: WorkspaceStore
+) -> str:
+    """Normalize-then-splice one leaf body's `{type=diagram}` sections into contained figures.
+
+    The presence of a diagram section is decided SOLELY by the AUTHORITATIVE `parse_sections` — not
+    a cheap substring probe, which under-matches the parser (e.g. a backslash-escaped attribute
+    value `{type=diagr\\am}` still parses as a `diagram` section) and would let a raw node/edge list
+    PERSIST ungated as prose. `normalize_outline` + `parse_sections` are BOTH PURE (no subprocess),
+    so running them on every leaf is cheap; a diagram-FREE body returns the RAW `body` UNCHANGED
+    (byte-identical — the persisted bytes are never a normalized copy). When a diagram section IS
+    present the body is normalized ONCE, each `{type=diagram}` section is
+    parse -> gate -> compile -> store'd, and its body is REWRITTEN to
+    `![<alt>](assets/diagrams/<hash>.svg)` (the raw node/edge list is GONE). Sections are spliced
+    LAST-to-FIRST so each rewrite leaves the earlier sections' spans valid. Raises the diagram
+    REFUSALS (`ir.IRError` from parse/gate — grammar / grounding / the reused tier errors / the
+    fail-closed `extract_fact_refs` backstop) and the LOUD tool/compile errors for the caller to
+    route; a `SectionGrammarError` (an unknown section `type=`) also propagates for the re-ask."""
+    normalized = normalize_outline(body)  # PURE — no subprocess (nor does parse_sections below)
+    sections = parse_sections(normalized)
+    if not any(section.type == _DIAGRAM_SECTION_TYPE for section in sections):
+        return body  # no diagram section -> RAW body UNCHANGED (byte-identical, never normalized)
+    lines = normalized.split("\n")
+    for section in reversed(sections):  # LAST-to-FIRST keeps earlier spans valid across splices
+        if section.type != _DIAGRAM_SECTION_TYPE:
+            continue
+        spec = diagram.parse_diagram(section.body)
+        diagram.gate_diagram(spec, ledger)  # HARD gate BEFORE a single SVG byte is stored (C2/C4)
+        artifact = diagram.compile_diagram(spec, tool=_DIAGRAM_TOOL_PIN)
+        asset_path = store.commit_asset(artifact.svg, subdir="diagrams", extension="svg")
+        rel = asset_path.relative_to(store.root).as_posix()  # assets/diagrams/<hash>.svg
+        figure = f"![{_diagram_alt(section, spec)}]({rel})"
+        start, end = section.span
+        lines[start + 1 : end] = ["", figure, ""]  # heading kept; body -> the contained figure
+    while lines and lines[-1] == "":  # trim the trailing blank a last-section splice leaves
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _apply_diagram_transform(
+    writer_out: Mapping[str, Any], ledger: Mapping[str, Any], store: WorkspaceStore
+) -> dict[str, Any]:
+    """Run the C4 diagram transform over the writer's parts-DICT (a flat `body` OR a `{role: body}`
+    map — SERIOUS-3: the DICT shape, NOT the assembled-IR list), returning a NEW `writer_out` whose
+    `{type=diagram}` sections are contained figures. A diagram-free envelope is returned
+    byte-identical (no section is rewritten). Runs BEFORE `_assemble_ir` in its OWN try/except."""
+    if "body" in writer_out:
+        return {"body": _transform_leaf_body(writer_out["body"], ledger, store)}
+    return {
+        "parts": {
+            role: _transform_leaf_body(part_body, ledger, store)
+            for role, part_body in writer_out["parts"].items()
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
 # The writer prompt (§15 contract): template + grounded facts + effective values +
 # Format part structure + the roster context slot (§9.6 — context, never identity).
 # ---------------------------------------------------------------------------
@@ -839,6 +954,8 @@ def _reask_note(violations: Sequence[str], failure_code: str) -> str:
     latest = violations[-1] if violations else "unspecified"
     if failure_code == CODE_SECTION_CONFORMANCE_VIOLATION:
         return _base_structural_reask_note(latest)
+    if failure_code == CODE_DIAGRAM_GROUNDING_VIOLATION:
+        return _diagram_reask_note(latest)
     if failure_code == CODE_CITATION_UNRESOLVED:
         return _citation_reask_note(latest)
     if failure_code in (
@@ -882,6 +999,23 @@ def _asset_reask_note(latest: str) -> str:
         "HTML/TeX passthrough (e.g. `<img …>`, `\\includegraphics{…}`) — each is refused to keep "
         "one client's document from reaching another client's files (CLAUDE.md rule 2, §10). "
         "Return the SAME JSON shape."
+    )
+
+
+def _diagram_reask_note(latest: str) -> str:
+    """The corrective note for a C4 `{type=diagram}` REFUSAL (grammar / grounding / tier). The
+    specific breach + the diagram authoring contract, machine-derived — it invents NO new
+    requirement (§3.1): author a strict node/edge list where EVERY edge cites a real, honest-tier
+    fact, or declare the diagram `illustrative` (which ships carrying a visible warning)."""
+    return (
+        f"Your previous `{{type=diagram}}` section was REFUSED: {latest}. Author the diagram as a "
+        "strict node/edge list: a `nodes:` block of `- <id>: <label>` items, then an `edges:` "
+        'block of `- <src> -> <dst> [label]{.TIER data-fact="fN"}` items. EVERY edge MUST cite at '
+        "least one real fact-id listed under `grounded_facts`, at its HONEST tier — an uncited "
+        "edge, an unknown fact-id, or a promoted tier (e.g. an INFERRED lead asserted as "
+        "EXTRACTED) is refused again. If the diagram makes NO source claim, declare `posture: "
+        'illustrative` on its own line (it ships carrying a visible "illustrative — not '
+        'source-checked" warning). Return the SAME JSON shape.'
     )
 
 
@@ -1200,11 +1334,55 @@ def compose_artifact(
                 )
             try:
                 writer_out = parse_writer_output(transport.text, request)
+            except ir.IRError as exc:
+                # A CONTRACT violation rides this catch → `violations` → the bounded re-ask:
+                # unparseable/mis-shaped JSON. On exhaustion it is caught and NEVER persisted
+                # (`compose-contract-violation`); the message surfaces via `_reask_note`.
+                violations.append(f"[{exc.code}] {exc}")
+                last_failure_code = CODE_CONTRACT_VIOLATION
+                continue  # bounded re-ask (§21.9)
+            # Increment C (C4) — the `{type=diagram}` transform in its OWN try/except (SERIOUS-4),
+            # BEFORE `_assemble_ir` so a diagram's `data-fact` spans are CONSUMED and the persisted
+            # body carries a CONTAINED figure, never an ungated raw list. The gate runs before a
+            # single SVG byte is stored. A SEPARATE try is REQUIRED: `gate_diagram` raises the SAME
+            # `ir.UnknownFactError`/`ir.TierViolation` types a PROSE citation does in `_assemble_ir`
+            # — only a scoped try can route the diagram refusals to their own code without
+            # mislabeling a prose refusal.
+            try:
+                writer_out = _apply_diagram_transform(writer_out, ledger, store)
+            except (diagram.DiagramToolUnavailableError, diagram.DiagramCompileError):
+                # A host/tooling failure (a missing pinned `dot`, or a broken compile) is NOT a
+                # writer content defect and NEVER a re-ask: it is LOUD, per the diagram module's
+                # PA-12 install-signal contract (the `DiagramToolUnavailableError` docstring). Let
+                # it propagate like a `ComposeError` wiring defect (the `finally` still cleans up
+                # the scratch cwd). C5's `tool` knob keeps this loud posture.
+                raise
+            except ir.IRError as exc:
+                # SERIOUS-4: route EVERY diagram REFUSAL — which is EXACTLY an `ir.IRError` raised
+                # from inside the transform (`DiagramGrammarError`/`DiagramGroundingError` the gate
+                # owns; the reused `ir.UnknownFactError`/`ir.TierViolation`; AND the fail-closed
+                # `ir.SchemaViolation` backstop `extract_fact_refs` raises on a doubled `data-fact`)
+                # — to the SINGLE never-persisted `diagram-grounding-violation` code with a
+                # diagram-specific re-ask note. This is a SCOPED catch on the transform's OWN try,
+                # so it never sees a PROSE `ir.IRError` (those raise in `_assemble_ir`'s own try);
+                # the loud tool/compile errors are already re-raised above. Every path REFUSES —
+                # never a crash, never a persist.
+                violations.append(f"[{CODE_DIAGRAM_GROUNDING_VIOLATION}] {exc}")
+                last_failure_code = CODE_DIAGRAM_GROUNDING_VIOLATION
+                continue  # bounded re-ask (§21.9)
+            except SectionGrammarError as exc:
+                # The diagram body carried an UNKNOWN section `type=` (a writer content defect the
+                # base gate also re-asks). Feed it to the SAME bounded re-ask as a contract
+                # violation rather than crashing loudly (never persist the raw list either way).
+                violations.append(f"[{exc.code}] {exc}")
+                last_failure_code = CODE_CONTRACT_VIOLATION
+                continue  # bounded re-ask (§21.9)
+            try:
                 doc = _assemble_ir(writer_out, request, ledger)
             except ir.IRError as exc:
-                # A CONTRACT violation rides this ONE catch → `violations` → the bounded re-ask:
-                # unparseable/mis-shaped JSON, unknown fact-id, tier mismatch, AND the §15 substance
-                # floor `ir.EmptySubstanceError` (`ir-empty-substance`, GAP-6 — a `"..."` or a
+                # A CONTRACT violation rides this catch → `violations` → the bounded re-ask:
+                # unknown fact-id, tier mismatch, AND the §15 substance floor
+                # `ir.EmptySubstanceError` (`ir-empty-substance`, GAP-6 — a `"..."` or a
                 # markup-wrapped placeholder that PARSES yet ships empty). On exhaustion it is
                 # caught and NEVER persisted (`compose-contract-violation`); the substance-specific
                 # message surfaces to the model via `_reask_note` (`violations[-1]`).

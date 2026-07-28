@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,7 @@ from pipeline.compose import (
     CODE_BODY_RAW_MARKUP_FORBIDDEN,
     CODE_CITATION_UNRESOLVED,
     CODE_CONTRACT_VIOLATION,
+    CODE_DIAGRAM_GROUNDING_VIOLATION,
     CODE_SECTION_CONFORMANCE_VIOLATION,
     ComposeError,
     ComposeRequest,
@@ -54,6 +56,7 @@ from pipeline.ir import SchemaViolation, SecretShapedValueError, build_ir, valid
 from pipeline.outline import normalize_outline, outline_digest
 from pipeline.serialize import (
     PANDOC_API_VERSION,
+    PANDOC_BINARY_DEFAULT,
     PandocOutcome,
     is_ci,
     pandoc_available,
@@ -1765,3 +1768,335 @@ class TestC4CitationResolution:
         )
         assert outcome.status == "error" and outcome.code == "citation-unresolved"
         assert not store.output_path(request.artifact_id).exists()
+
+
+# ---------------------------------------------------------------------------
+# Increment C (C4) — the ATOMIC FLIP: `{type=diagram}` composes end-to-end.
+# ---------------------------------------------------------------------------
+
+#: A well-formed GROUNDED diagram flat body citing the single `make_request` fact `f0` (EXTRACTED).
+GROUNDED_DIAGRAM = (
+    "## System architecture {type=diagram}\n\n"
+    "nodes:\n- gw: Gateway\n- auth: Auth\n"
+    'edges:\n- gw -> auth [routes]{.EXTRACTED data-fact="f0"}\n'
+)
+
+#: The contained figure the transform rewrites a diagram section to — capture its content hash.
+DIAGRAM_FIGURE_RE = re.compile(r"!\[[^\]]*\]\(assets/diagrams/([0-9a-f]{64})\.svg\)")
+
+
+def _diagram_body(edges: str, *, nodes="- gw: Gateway\n- auth: Auth\n", header="",
+                  heading="Arch") -> str:
+    """A flat writer body: one `{type=diagram}` section with the named parts swapped in."""
+    return f"## {heading} {{type=diagram}}\n\n{header}nodes:\n{nodes}edges:\n{edges}"
+
+
+class TestDiagramComposeTransform:
+    """Increment C (C4) — the ATOMIC FLIP. A `{type=diagram}` section composes end-to-end:
+    parse -> HARD grounding gate -> compile (real `dot`) -> content-addressed store -> the section
+    body is REWRITTEN to a contained `![alt](assets/diagrams/<hash>.svg)` figure (which A's
+    containment gate + B's embed then handle). A diagram that would lie is REFUSED with the SINGLE
+    `diagram-grounding-violation` code and NEVER persists an ungated raw node/edge list. No LLM —
+    the writer output is injected; the rewritten figure parses through the pinned pandoc reader."""
+
+    # -- the grounded end-to-end path ------------------------------------------------------
+
+    def test_grounded_diagram_mints_svg_rewrites_body_and_persists(self, store, claims):
+        _requires_pandoc()  # the rewritten `![…]` figure parses through the A-gate pinned reader
+        request = make_request()
+        runner = ScriptedRunner([writer_ok({"body": GROUNDED_DIAGRAM})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert (outcome.status, outcome.code, outcome.attempts) == ("ok", "ok", 1)
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        validate_ir(persisted)
+        body = persisted["body"]
+        match = DIAGRAM_FIGURE_RE.search(body)
+        assert match, f"the persisted body must carry the contained figure, got {body!r}"
+        svg = store.root / "assets" / "diagrams" / f"{match.group(1)}.svg"
+        assert svg.exists() and svg.read_bytes()[:5] == b"<?xml"  # a real dot-compiled SVG
+        # THE atomic-flip guarantee: the raw node/edge list is GONE from the persisted body.
+        for residue in ("nodes:", "edges:", "->", "data-fact"):
+            assert residue not in body, f"residual {residue!r} in persisted body {body!r}"
+
+    def test_type_diagram_no_longer_raises_unknown_section_type(self, store, claims):
+        # Pre-C4 a `{type=diagram}` heading refused as `UnknownSectionTypeError`; the flip makes it
+        # a live, gated type that composes cleanly.
+        _requires_pandoc()
+        request = make_request()
+        runner = ScriptedRunner([writer_ok({"body": GROUNDED_DIAGRAM})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok" and outcome.code == "ok"
+
+    def test_schemaless_format_still_fires_the_transform(self, store, claims):
+        # MINOR-5: `make_request` declares NO `section_schema`, yet the transform must fire (it is
+        # gated on the type marker, NOT under the base-schema branch) — else a schema-less format
+        # would persist a raw ungated list.
+        _requires_pandoc()
+        request = make_request()
+        assert "section_schema" not in request.effective_values.get("format", {})
+        runner = ScriptedRunner([writer_ok({"body": GROUNDED_DIAGRAM})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        body = json.loads(store.output_path(request.artifact_id).read_bytes())["body"]
+        assert DIAGRAM_FIGURE_RE.search(body) and "->" not in body
+
+    def test_diagram_in_a_part_body_is_transformed(self, store, claims):
+        # SERIOUS-3: the transform runs over the parts-DICT leaf directly. Only the diagram part is
+        # rewritten; a diagram-free part is returned byte-identical.
+        _requires_pandoc()
+        request = make_request(format_parts=("slides", "notes"))
+        runner = ScriptedRunner(
+            [writer_ok({"parts": {"slides": GROUNDED_DIAGRAM,
+                                  "notes": "Speaker notes, ungrounded prose."}})]
+        )
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())
+        slides = next(p["body"] for p in persisted["parts"] if p["role"] == "slides")
+        notes = next(p["body"] for p in persisted["parts"] if p["role"] == "notes")
+        assert DIAGRAM_FIGURE_RE.search(slides) and "->" not in slides
+        assert notes == "Speaker notes, ungrounded prose."  # untouched (byte-identical)
+
+    def test_diagram_and_a_brought_figure_both_pass_the_asset_gate(self, store, claims):
+        _requires_pandoc()
+        (store.root / "assets").mkdir(parents=True, exist_ok=True)
+        (store.root / "assets" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n fake image bytes")
+        request = make_request()
+        body = (
+            "Here is the logo.\n\n![logo](assets/logo.png)\n\n" + GROUNDED_DIAGRAM
+        )
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"  # both the brought figure AND the diagram figure pass A
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())["body"]
+        assert "assets/logo.png" in persisted  # the brought figure survived
+        assert DIAGRAM_FIGURE_RE.search(persisted)  # the diagram is now a contained figure
+
+    # -- refusals: EVERY diagram violation -> the SINGLE never-persisted code ---------------
+
+    def _assert_refused(self, outcome, store, request, *, marker):
+        assert outcome.status == "error"
+        assert outcome.code == CODE_DIAGRAM_GROUNDING_VIOLATION == "diagram-grounding-violation"
+        assert outcome.ir is None
+        assert not store.output_path(request.artifact_id).exists()  # NEVER persisted
+        assert any(marker in v for v in outcome.violations)
+
+    def test_uncited_edge_refuses_with_the_single_diagram_code(self, store, claims):
+        request = make_request()
+        runner = ScriptedRunner([writer_ok({"body": _diagram_body("- gw -> auth\n")})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        self._assert_refused(outcome, store, request, marker="grounding-uncovered")
+        # gate refused BEFORE compile -> no SVG minted for a single-diagram refusal (gate-first)
+        assert not (store.root / "assets" / "diagrams").exists()
+        # re-asked to the bound with the diagram-specific note
+        assert outcome.attempts == 3 and runner.calls == 3
+        assert "strict node/edge list" in runner.requests[1].stdin_text
+
+    def test_span_present_but_no_data_fact_refuses(self, store, claims):
+        # BLOCKER-1: a green-looking `[routes]{.EXTRACTED}` span that cites NO fact is not coverage.
+        request = make_request()
+        body = _diagram_body('- gw -> auth [routes]{.EXTRACTED}\n')
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        self._assert_refused(outcome, store, request, marker="grounding-uncovered")
+
+    def test_unknown_fact_id_refuses(self, store, claims):
+        request = make_request()
+        body = _diagram_body('- gw -> auth [x]{.EXTRACTED data-fact="f9"}\n')  # f9 not in ledger
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        self._assert_refused(outcome, store, request, marker="ir-unknown-fact")
+
+    def test_tier_promotion_refuses(self, store, claims):
+        # The ledger fact f0 is INFERRED; drawing it as EXTRACTED is a tier promotion (reused ir).
+        request = make_request(grounded_facts=(make_fact(tier="INFERRED"),))
+        body = _diagram_body('- gw -> auth [x]{.EXTRACTED data-fact="f0"}\n')
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        self._assert_refused(outcome, store, request, marker="ir-tier-violation")
+
+    def test_diagram_heading_with_non_diagram_body_refuses(self, store, claims):
+        request = make_request()
+        body = "## Arch {type=diagram}\n\nThis is prose, not a node/edge list.\n"
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        self._assert_refused(outcome, store, request, marker="diagram-grammar-invalid")
+
+    def test_injection_label_is_escaped_end_to_end(self, store, claims):
+        # BLOCKER-2 end-to-end: an LLM-authored node label full of `"`, `->`, `{`, `;` renders as
+        # LITERAL text — the compiled SVG keeps EXACTLY the gated node/edge count, no injected graph
+        # element. C3's escaping holds through the C4 compose transform.
+        _requires_pandoc()
+        request = make_request()
+        body = (
+            "## Arch {type=diagram}\n\n"
+            'nodes:\n- gw: Gateway" ]; injected_a -> injected_b [label="pwned\n- auth: Auth\n'
+            'edges:\n- gw -> auth [routes]{.EXTRACTED data-fact="f0"}\n'
+        )
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())["body"]
+        digest = DIAGRAM_FIGURE_RE.search(persisted).group(1)
+        svg = (store.root / "assets" / "diagrams" / f"{digest}.svg").read_bytes()
+        assert svg.count(b'class="node"') == 2  # exactly the 2 declared nodes (no injected node)
+        assert svg.count(b'class="edge"') == 1  # exactly the 1 declared edge (no injected edge)
+        assert b"injected_a" in svg  # …the metacharacter tokens survive ONLY as literal label text
+
+    def test_backslash_escaped_type_is_still_gated(self, store, claims):
+        # FINDING 1 (BLOCKER): `{type=diagr\am}` PARSES as a `diagram` section (the attribute reader
+        # consumes the backslash → value "diagram"), but a cheap substring probe MISSED it — which
+        # would let the raw node/edge list PERSIST ungated as prose. The transform now relies SOLELY
+        # on `parse_sections`, so an uncited edge in this form REFUSES and never persists as prose.
+        request = make_request()
+        body = (
+            "## Arch {type=diagr\\am}\n\n"  # the backslash-escape form the substring probe missed
+            "nodes:\n- gw: Gateway\n- auth: Auth\n"
+            "edges:\n- gw -> auth\n"  # UNCITED
+        )
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        self._assert_refused(outcome, store, request, marker="grounding-uncovered")
+        assert not (store.root / "assets" / "diagrams").exists()  # gate-first: no SVG minted
+
+    def test_doubled_data_fact_backstop_refuses_never_crashes(self, store, claims):
+        # FINDING 2: a doubled `data-fact` on one edge trips `extract_fact_refs`'s fail-closed
+        # backstop, which raises `ir.SchemaViolation` (NOT a Diagram*/UnknownFact/Tier error). The
+        # transform's broadened `except ir.IRError` routes it to the single diagram-grounding-
+        # violation re-ask — never an UNCAUGHT crash out of `compose_artifact`, never a persist.
+        request = make_request()
+        body = _diagram_body('- gw -> auth [x]{.EXTRACTED data-fact="f0" data-fact="f0"}\n')
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        self._assert_refused(outcome, store, request, marker="ir-schema-invalid")
+
+    def test_plain_body_is_byte_identical_through_the_always_parse_transform(self, store, claims):
+        # FINDING 1 corollary: dropping the substring short-circuit means EVERY leaf now runs the
+        # pure normalize+parse — a diagram-free body must still persist BYTE-IDENTICAL (the RAW
+        # writer bytes, never a normalized copy). Use a body whose raw form DIFFERS from its
+        # normalized form (trailing blanks) to prove the raw bytes are what persist.
+        request = make_request()
+        content = {"body": 'A [claim]{.EXTRACTED data-fact="f0"} here.\n\n\n'}
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=ScriptedRunner([writer_ok(content)])
+        )
+        assert outcome.status == "ok"
+        persisted = store.output_path(request.artifact_id).read_bytes()
+        ledger, _ = build_grounding_ledger(
+            request.grounded_facts, source_repos=request.source_repos
+        )
+        expected = build_ir(
+            artifact_id=request.artifact_id,
+            preimage=request.preimage,
+            grounding=ledger,
+            body=content["body"],
+        )
+        assert persisted == canonical_json_bytes(expected)  # RAW bytes persisted, never normalized
+
+    # -- SERIOUS-3 splice correctness + determinism ----------------------------------------
+
+    def test_no_residual_list_with_odd_blank_prose(self, store, claims):
+        # SERIOUS-3: normalize-then-splice must leave a CLEAN figure with the raw list fully gone,
+        # even when the non-diagram prose has odd blank runs (raw offsets would mis-slice).
+        _requires_pandoc()
+        request = make_request()
+        body = (
+            "Intro paragraph.\n\n\n\n"
+            "## Arch {type=diagram}\n\n"
+            "nodes:\n- gw: Gateway\n- auth: Auth\n"
+            'edges:\n- gw -> auth [routes]{.EXTRACTED data-fact="f0"}\n\n\n'
+            "## Wrap up\n\n\nTrailing prose, no arrows here.\n"
+        )
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())["body"]
+        assert DIAGRAM_FIGURE_RE.search(persisted)
+        for residue in ("nodes:", "edges:", "->", "data-fact", "- gw", "- auth"):
+            assert residue not in persisted, f"residual {residue!r} in {persisted!r}"
+        assert "Intro paragraph." in persisted and "Wrap up" in persisted  # prose survived
+
+    def test_diagram_svg_is_byte_deterministic_across_stores(self, store, claims, tmp_path):
+        # Determinism: the SAME grounded body compiles to the SAME `<hash>.svg` in a fresh store
+        # (idempotent `commit_asset`), so the figure reference is reproducible.
+        _requires_pandoc()
+
+        def compose_into(root: Path) -> str:
+            st = WorkspaceStore(root)
+            cl = ClaimRegistry(
+                st.claims_dir, holder="w", ttl_seconds=60.0, clock=lambda: 1_000_000.0
+            )
+            req = make_request()
+            out = compose_artifact(
+                req, store=st, claims=cl,
+                runner=ScriptedRunner([writer_ok({"body": GROUNDED_DIAGRAM})]),
+            )
+            assert out.status == "ok"
+            body = json.loads(st.output_path(req.artifact_id).read_bytes())["body"]
+            return DIAGRAM_FIGURE_RE.search(body).group(1)
+
+        assert compose_into(tmp_path / "s1") == compose_into(tmp_path / "s2")
+
+    # -- SERIOUS-1(b): the illustrative marker in BOTH the alt/caption AND the SVG ----------
+
+    def test_illustrative_diagram_stamps_alt_and_svg_and_survives_plain(self, store, claims):
+        _requires_pandoc()
+        request = make_request()
+        body = (
+            "## Sketch {type=diagram}\n\n"
+            "posture: illustrative\n"
+            "nodes:\n- a: Box A\n- b: Box B\n"
+            "edges:\n- a -> b\n"  # uncited is allowed under the explicit illustrative posture
+        )
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())["body"]
+        match = DIAGRAM_FIGURE_RE.search(persisted)
+        assert match
+        # SERIOUS-1(b): the reader-visible marker rides the Markdown alt/caption (plain-text too)
+        assert "(illustrative — not source-checked)" in persisted
+        # C3: the SVG bytes ALSO bake the stamp
+        svg = (store.root / "assets" / "diagrams" / f"{match.group(1)}.svg").read_bytes()
+        assert b"illustrative" in svg
+        # it survives to the pandoc `plain` writer (an alt-text-only target)
+        plain = subprocess.run(
+            [PANDOC_BINARY_DEFAULT, "-f", "markdown", "-t", "plain"],
+            input=persisted.encode("utf-8"), capture_output=True, check=True,
+        ).stdout.decode("utf-8")
+        assert "illustrative — not source-checked" in plain
+
+    def test_grounded_diagram_carries_no_illustrative_marker(self, store, claims):
+        _requires_pandoc()
+        request = make_request()
+        runner = ScriptedRunner([writer_ok({"body": GROUNDED_DIAGRAM})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert outcome.status == "ok"
+        persisted = json.loads(store.output_path(request.artifact_id).read_bytes())["body"]
+        assert "illustrative" not in persisted  # a grounded diagram carries NO warning
+
+    # -- MINOR-5 cheap-gate correctness: a diagram-free body is byte-identical --------------
+
+    def test_type_diagram_in_prose_without_a_section_is_byte_identical(self, store, claims):
+        # The cheap marker CAN false-fire on the literal `type=diagram` in prose; the AUTHORITATIVE
+        # `parse_sections` re-check then finds no diagram section and returns the RAW body — so a
+        # diagram-free body is byte-identical (never a normalized copy).
+        request = make_request()
+        content = {
+            "body": 'The `type=diagram` attribute [declares]{.EXTRACTED data-fact="f0"} a part.'
+        }
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=ScriptedRunner([writer_ok(content)])
+        )
+        assert outcome.status == "ok"
+        persisted = store.output_path(request.artifact_id).read_bytes()
+        ledger, _ = build_grounding_ledger(
+            request.grounded_facts, source_repos=request.source_repos
+        )
+        expected = build_ir(
+            artifact_id=request.artifact_id,
+            preimage=request.preimage,
+            grounding=ledger,
+            body=content["body"],
+        )
+        assert persisted == canonical_json_bytes(expected)  # byte-for-byte, the pre-C4 golden
