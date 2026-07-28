@@ -446,3 +446,115 @@ def test_csl_style_override_changes_the_resolved_bytes(tmp_path):
     assert out.output_bytes == with_csl  # dispatch appended exactly `--citeproc --csl=<path>`
     assert out.output_bytes != default  # the style override altered the resolved bytes
     assert b"(Acme, n.d.)" not in out.output_bytes  # the default author-date is gone (numeric)
+
+
+# ---------------------------------------------------------------------------
+# C0 (increment C, BLOCKER-3): the docx SVG-embed CAPABILITY GATE. A docx render that would embed an
+# SVG needs `rsvg-convert` to rasterize the PNG fallback; when it is absent pandoc exits 0 and ships
+# a blank-in-Word docx. The dispatcher REFUSES up front (precheck) and reads the stderr backstop the
+# exit code hides. Scoped to docx-over-SVG: raster docx, html5-SVG and md-SVG are untouched.
+# ---------------------------------------------------------------------------
+
+
+def _image_ast(target):
+    """A minimal single-Image AST pointing at `target` (e.g. `assets/diagrams/<hash>.svg`)."""
+    return {
+        "pandoc-api-version": [1, 23, 1, 2],
+        "meta": {},
+        "blocks": [
+            {"t": "Para", "c": [
+                {"t": "Image", "c": [["", [], []], [{"t": "Str", "c": "cap"}], [target, ""]]},
+            ]},
+        ],
+    }
+
+
+def _stub_bytes(monkeypatch, *, returncode=0, stdout=b"DOCXBYTES", stderr=""):
+    """Monkeypatch `dispatch.run_pandoc_bytes` to return a FIXED outcome (no real writer run) and
+    record that it ran. Returns the call-log list (empty ⇒ the render never reached pandoc)."""
+    from pipeline.serialize import PandocBytesOutcome
+
+    calls: list[tuple[str, ...]] = []
+
+    def _stub(args, stdin_bytes, *, binary=D.PANDOC_BINARY_DEFAULT):
+        calls.append(args)
+        return PandocBytesOutcome(returncode, stdout, stderr)
+
+    monkeypatch.setattr(D, "run_pandoc_bytes", _stub)
+    return calls
+
+
+def test_docx_svg_embed_refuses_when_rsvg_absent(monkeypatch):
+    # (1) docx writer + an `assets/…svg` target + rsvg absent ⇒ CapabilityInfeasibleError, and the
+    # render NEVER reaches pandoc → no silently-degraded (blank-in-Word) docx bytes.
+    monkeypatch.setattr(D, "rsvg_available", lambda: False)
+    calls = _stub_bytes(monkeypatch)
+    with pytest.raises(D.CapabilityInfeasibleError) as exc:
+        D.dispatch(
+            D.RenderTarget(writer="docx", side="internal"),
+            _image_ast("assets/diagrams/abc123.svg"),
+        )
+    assert exc.value.code == "capability-infeasible"
+    assert calls == []  # refused BEFORE the writer ran
+
+
+def test_docx_svg_embed_renders_when_rsvg_present(monkeypatch):
+    # (2) same shape, rsvg PRESENT ⇒ the precheck passes and the docx renders normally.
+    monkeypatch.setattr(D, "rsvg_available", lambda: True)
+    calls = _stub_bytes(monkeypatch, stdout=b"REALDOCX")
+    out = D.dispatch(
+        D.RenderTarget(writer="docx", side="internal"),
+        _image_ast("assets/diagrams/abc123.svg"),
+    )
+    assert out.output_bytes == b"REALDOCX"
+    assert len(calls) == 1  # the writer ran exactly once
+
+
+def test_docx_stderr_backstop_fails_a_returncode_zero_convert_failure(monkeypatch):
+    # (3) rsvg PRESENT but conversion FAILED: pandoc exits 0 yet warns `Could not convert image`.
+    # The backstop reads that stderr and raises loudly (never ships the blank docx). A png AST keeps
+    # the PRECHECK a non-factor → this isolates the backstop.
+    _stub_bytes(
+        monkeypatch,
+        returncode=0,
+        stdout=b"",
+        stderr="[WARNING] Could not convert image 'assets/diagrams/x.svg': check rsvg",
+    )
+    with pytest.raises(D.SerializeError) as exc:
+        D.dispatch(
+            D.RenderTarget(writer="docx", side="internal"),
+            _image_ast("assets/x.png"),
+        )
+    assert "could not convert" in str(exc.value).lower()
+    assert not isinstance(exc.value, D.CapabilityInfeasibleError)  # the backstop, not the precheck
+
+
+def test_raster_only_docx_never_probes_rsvg_and_is_unaffected(monkeypatch):
+    # (4) a raster-only docx (png) is byte-identical: the gate SHORT-CIRCUITS before probing rsvg —
+    # a raster docx must never call rsvg_available (byte-neutral for the existing raster corpus).
+    probed: list[int] = []
+    monkeypatch.setattr(D, "rsvg_available", lambda: probed.append(1) or False)
+    _stub_bytes(monkeypatch, stdout=b"RASTERDOCX")
+    out = D.dispatch(
+        D.RenderTarget(writer="docx", side="internal"),
+        _image_ast("assets/x.png"),
+        resource_paths=("STORE", "REPO"),
+    )
+    assert out.output_bytes == b"RASTERDOCX"
+    assert out.assets_embedded is True
+    assert probed == []  # rsvg never probed for a raster docx
+
+
+def test_html5_svg_and_md_svg_are_unaffected_by_the_docx_gate(monkeypatch):
+    # (5) html5-SVG (data-URI inline, no rsvg) and md-SVG (by-path, no embed) never trigger the
+    # docx-ONLY precheck, so neither probes rsvg and both render normally.
+    probed: list[int] = []
+    monkeypatch.setattr(D, "rsvg_available", lambda: probed.append(1) or False)
+    _stub_bytes(monkeypatch, stdout=b"OUT")
+    for writer in ("html5", "markdown"):
+        out = D.dispatch(
+            D.RenderTarget(writer=writer, side="internal"),
+            _image_ast("assets/diagrams/abc123.svg"),
+        )
+        assert out.output_bytes == b"OUT"
+    assert probed == []  # non-docx writers never probe rsvg

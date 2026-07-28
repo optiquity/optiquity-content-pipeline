@@ -39,6 +39,7 @@ from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id
 from pipeline.ir import PANDOC_API_VERSION, build_ir, extract_fact_refs
 from pipeline.serialize import (
     READER_PIN,
+    RSVG_BINARY_DEFAULT,
     DuplicatePartIdError,
     PandocOutcome,
     PandocParseError,
@@ -56,6 +57,7 @@ from pipeline.serialize import (
     pandoc_gate,
     parse_to_ast,
     plan_documents,
+    rsvg_available,
     run_pandoc,
     serialize_digest,
     serialize_fitted,
@@ -763,6 +765,39 @@ def test_missing_binary_raises_loudly_not_silently():
     assert pandoc_available(binary="/nonexistent/pandoc-xyz") is False
     with pytest.raises(PandocUnavailableError):
         run_pandoc(("--version",), "", binary="/nonexistent/pandoc-xyz")
+
+
+# ---------------------------------------------------------------------------
+# C0 (increment C, BLOCKER-3): the `rsvg-convert` presence probe (mirror of `pandoc_available`).
+# ---------------------------------------------------------------------------
+
+
+def test_rsvg_binary_default_pin():
+    # The pin is the plain `rsvg-convert` executable name (resolved on PATH), like the pandoc pin.
+    assert RSVG_BINARY_DEFAULT == "rsvg-convert"
+
+
+def test_rsvg_available_true_when_probe_exits_zero():
+    # A `--version` probe that exits 0 ⇒ available. Runner seam ⇒ no rsvg install required in CI.
+    def _ok(args, stdin_text):
+        assert args == ("--version",)
+        return PandocOutcome(0, "rsvg-convert version 2.62.3", "")
+
+    assert rsvg_available(runner=_ok) is True
+
+
+def test_rsvg_available_false_when_probe_exits_nonzero():
+    # A non-zero `--version` exit ⇒ NOT available (never raises).
+    def _fail(args, stdin_text):
+        return PandocOutcome(1, "", "boom")
+
+    assert rsvg_available(runner=_fail) is False
+
+
+def test_rsvg_available_missing_binary_is_false_not_raising():
+    # A bad binary path is caught (PandocUnavailableError) and returned as False — the probe never
+    # raises, so the dispatcher's precheck sees a clean bool. Loud refusal lives in the dispatcher.
+    assert rsvg_available(binary="/nonexistent/rsvg-convert-xyz") is False
 
 
 # ---------------------------------------------------------------------------

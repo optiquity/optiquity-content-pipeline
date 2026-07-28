@@ -51,6 +51,7 @@ from pipeline.serialize import (
     PANDOC_BINARY_DEFAULT,
     PandocUnavailableError,
     SerializeError,
+    rsvg_available,
     run_pandoc_bytes,
 )
 from pipeline.store import WorkspaceStore
@@ -323,6 +324,23 @@ def dispatch(
         args = (*args, f"--resource-path={os.pathsep.join(resource_paths)}")
         if target.writer == "html5":
             args = (*args, "--embed-resources", "--standalone")
+    # C0 (increment C, BLOCKER-3): the docx SVG-embed CAPABILITY PRECHECK (the PA-12 mirror). pandoc
+    # rasterizes an embedded SVG into a docx PNG fallback by shelling out to `rsvg-convert`; when it
+    # is ABSENT pandoc STILL exits 0 and ships a docx carrying the raw SVG media part but NO PNG
+    # (blank/broken in Word), warning only on the stderr the returncode check below never reads. So
+    # when a docx render embeds an `.svg` and `rsvg-convert` is missing, REFUSE loudly up front —
+    # never a silently-degraded document. Scoped to a docx writer over an `.svg` target: the `and`
+    # short-circuits so a raster-only docx (png/jpg) never even probes rsvg → byte-identical; html5
+    # (SVG data-URI, no rsvg) and markdown (SVG by-path, no embed) are untouched.
+    if (
+        target.writer == "docx"
+        and any(t.endswith(".svg") for t in embeddable_image_targets(render_ast, target.writer))
+        and not rsvg_available()
+    ):
+        raise CapabilityInfeasibleError(
+            "capability-infeasible: a docx diagram embed requires rsvg-convert on the render host; "
+            "install it or route the SVG to html5/markdown"
+        )
     try:
         outcome = run_pandoc_bytes(args, canonical_json_bytes(render_ast), binary=binary)
     except PandocUnavailableError:
@@ -331,6 +349,14 @@ def dispatch(
         raise SerializeError(
             f"serialize-error: internal writer {target.writer!r} exited {outcome.returncode} — "
             f"{outcome.stderr.strip()!r}"
+        )
+    # C0 backstop (increment C, BLOCKER-3): the precheck cannot see a PRESENT-but-FAILING rsvg. A
+    # docx render whose conversion failed exits 0 yet warns `Could not convert image` on stderr and
+    # ships a PNG-less docx. Read the stderr the exit code hides and fail loudly (never blank docx).
+    if target.writer == "docx" and "Could not convert image" in outcome.stderr:
+        raise SerializeError(
+            "serialize-error: docx render could not convert an embedded image (rsvg-convert failed "
+            f"or the SVG is unconvertible) — {outcome.stderr.strip()!r}"
         )
     return DispatchOutcome(
         side="internal",

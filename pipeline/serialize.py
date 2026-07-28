@@ -67,6 +67,7 @@ __all__ = [
     "PANDOC_API_VERSION",
     "PANDOC_BINARY_DEFAULT",
     "PANDOC_VERSION_PIN",
+    "RSVG_BINARY_DEFAULT",
     "READER_PIN",
     "CODE_ALREADY_MATERIALIZED",
     "CODE_RE_SERIALIZED",
@@ -99,6 +100,7 @@ __all__ = [
     "pandoc_available",
     "pandoc_gate",
     "pandoc_version",
+    "rsvg_available",
     "parse_render_binding",
     "parse_to_ast",
     "pin_bundle",
@@ -126,6 +128,13 @@ PANDOC_VERSION_PIN = "3.10"
 #: The default pandoc executable (resolved on PATH). Injectable at every entry point so a test
 #: can point at a bad path to exercise the unavailable branch without uninstalling pandoc.
 PANDOC_BINARY_DEFAULT = "pandoc"
+
+#: The default `rsvg-convert` executable (increment C). pandoc SHELLS OUT to this helper to
+#: rasterize an embedded SVG into the docx PNG fallback; when it is ABSENT pandoc still exits 0 and
+#: ships a docx with the raw SVG media part but no PNG (blank/broken in Word). The dispatcher probes
+#: for it up front (`rsvg_available`) and REFUSES a docx SVG-embed loudly rather than degrade
+#: silently. Injectable like `PANDOC_BINARY_DEFAULT` so a test can point at a bad path.
+RSVG_BINARY_DEFAULT = "rsvg-convert"
 
 #: The pinned version of the body-figure EMBED behavior (increment B). Bumped only when the embed
 #: mechanics change the published bytes (the `--resource-path`/`--embed-resources` surface, or the
@@ -281,6 +290,24 @@ def pandoc_available(
     *, runner: PandocRunner | None = None, binary: str = PANDOC_BINARY_DEFAULT
 ) -> bool:
     """True iff pandoc can be executed (`--version` exits 0). Never raises."""
+    try:
+        return run_pandoc(("--version",), "", runner=runner, binary=binary).returncode == 0
+    except PandocUnavailableError:
+        return False
+
+
+def rsvg_available(
+    *, runner: PandocRunner | None = None, binary: str = RSVG_BINARY_DEFAULT
+) -> bool:
+    """True iff `rsvg-convert` can be executed (`--version` exits 0). Never raises.
+
+    The docx SVG-embed presence probe (increment C, the PA-12 pattern): pandoc rasterizes an
+    embedded SVG into a docx PNG fallback by shelling out to `rsvg-convert`, and when it is absent
+    pandoc STILL exits 0 while shipping a PNG-less (blank-in-Word) docx (BLOCKER-3). This probe lets
+    the dispatcher REFUSE that render loudly up front instead of degrading silently. Byte-neutral:
+    it runs ONLY on the dispatcher's docx SVG-embed path — a raster docx never probes. Mirror of
+    `pandoc_available` (the generic `run_pandoc` seam just runs `[binary, --version]`); the
+    `PandocUnavailableError` from a missing binary is caught here and never escapes."""
     try:
         return run_pandoc(("--version",), "", runner=runner, binary=binary).returncode == 0
     except PandocUnavailableError:
