@@ -472,8 +472,15 @@ class Client:
                 backoff = min(backoff * _BACKOFF_FACTOR, _BACKOFF_CAP)
             else:
                 # any other 4xx/5xx is a stored terminal failure → JobFailed (raw open-string code).
+                # Prefer the stored terminal `code`; fall back to a bare `{error: <token>}` body's
+                # token so a non-render-blocked 4xx surfaces its RAW token instead of dropping it to
+                # None (still an OPEN string — the client reports the token, never switches on it).
                 raise JobFailed(
-                    code=body.get("code") if isinstance(body, Mapping) else None,
+                    code=(
+                        (body.get("code") or body.get("error"))
+                        if isinstance(body, Mapping)
+                        else None
+                    ),
                     redrivable=bool(body.get("redrivable")) if isinstance(body, Mapping) else False,
                     terminal=body.get("terminal") if isinstance(body, Mapping) else None,
                 )

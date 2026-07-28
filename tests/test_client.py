@@ -507,6 +507,21 @@ def test_poll_failed_open_string_code_surfaced_raw(recorded_sleeps: list[float])
     assert exc.value.code == "api-error"
 
 
+def test_poll_failed_bare_error_token_surfaced_as_code(recorded_sleeps: list[float]) -> None:
+    """(N1) A bare non-render-blocked 4xx ``{error: <token>}`` body — no top-level ``code`` —
+    surfaces the RAW error token as ``JobFailed.code`` (never ``None``), still within the
+    open-string contract (§1.6). Without the fallback the raw token would be silently dropped."""
+    shim = _ScriptedShim()
+    # A refused 4xx with ONLY an `error` token (no `code`), and it is NOT render-blocked.
+    shim.invoke_script = [{"status": 400, "json": {"error": "handler-not-wired"}}]
+    with _scripted_server(shim) as url:
+        with pytest.raises(JobFailed) as exc:
+            Client(url, "sek", poll_interval=0.1, timeout=5).render_and_wait(
+                "wsA", "i", "p", "en", "post"
+            )
+    assert exc.value.code == "handler-not-wired"  # the raw token is surfaced, not None
+
+
 def test_await_deadline_yields_jobtimeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """(e) A tiny ``max_poll_seconds`` with an always-202 wire ⇒ JobTimeout(redrivable=True); the
     fake clock advances only via the recorded sleeps (fully deterministic, no real server)."""
