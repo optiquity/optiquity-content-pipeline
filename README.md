@@ -62,7 +62,8 @@ Read these in order:
 2. [Getting started](docs/guide/getting-started.md) — requirements, setup, and running it.
 3. [Architecture](docs/guide/architecture.md) — repository layout, file reference, internal design.
 4. [Interfaces](docs/guide/interfaces.md) — the user-facing surface and HTTP access.
-5. [Extending it](docs/guide/extending.md) — extension points and known issues.
+5. [Clients](docs/guide/clients.md) — the wire contract and the language-neutral client surface (Python + C++ wrappers).
+6. [Extending it](docs/guide/extending.md) — extension points and known issues.
 
 ## Further reading
 

@@ -24,5 +24,7 @@ So a typical remote generation is: open a session (a quick verb, returns a token
 
 **Safety is fail-closed throughout.** `pipeline serve` refuses to start unless an auth secret is configured — it never accepts an anonymous caller. It binds to loopback (`127.0.0.1`) by default; exposing it to the network is a deliberate choice that expects a TLS/auth proxy in front. It serves only workspaces on an operator allow-list, and only calls webhook addresses on a separate, opt-in allow-list — never internal or cloud-metadata addresses, and it re-checks the address again at delivery time. It also caps how many paid jobs run at once. Every knob lives in `instance/shim.template.yaml`; copy it to `instance/shim.yaml` and fill it in.
 
+For the full wire contract — every endpoint, status code, and error/status token — plus the language-neutral client surface that the Python and C++ wrappers both implement, see the [Clients guide](clients.md).
+
 ---
-[← Manual home](../../README.md) · Previous: [Architecture](architecture.md) · Next: [Extending it](extending.md)
+[← Manual home](../../README.md) · Previous: [Architecture](architecture.md) · Next: [Clients](clients.md)

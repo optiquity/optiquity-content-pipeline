@@ -22,4 +22,4 @@ Some things are deliberately deferred; treat the tracker as the authority, not t
 - **Presentation-asset lowering on the production path.** This manual has no grounded fact fixing whether presentation-asset lowering runs on the production path, so it stays a lead to verify in the known-issues tracker rather than a claim stated here.
 
 ---
-[← Manual home](../../README.md) · Previous: [Interfaces](interfaces.md)
+[← Manual home](../../README.md) · Previous: [Clients](clients.md)
