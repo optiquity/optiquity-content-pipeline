@@ -774,6 +774,89 @@ def test_production_loader_is_byte_and_id_identical_to_the_reference_loader(tmp_
 
 
 # ---------------------------------------------------------------------------
+# (B) The DefaultRenderEngine leg EMBEDS a body figure end-to-end (two-phase: the preimage folds
+# the figure by content-hash; mint_deliverable inlines it), and the stored embedded deliverable
+# reports NO phantom drift through the live currency resolver (F2). Reuses the real registries.
+# ---------------------------------------------------------------------------
+
+_EMBED_PNG = __import__("base64").b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def _embed_leg(root, fitted_ir, *, body_png=_EMBED_PNG):
+    """A SerializeLeg for a figure-bearing html render on the real registries, with the figure at
+    `store.root/assets/x.png` and a persisted fit record so `mint_deliverable` can read its ref."""
+    from pipeline.api.render import SerializeLeg
+    from pipeline.reconcile import build_fit_binding
+
+    store = WorkspaceStore(root / "workspaces" / WS)
+    store.ensure_layout()
+    (store.root / "assets").mkdir(parents=True, exist_ok=True)
+    (store.root / "assets" / "x.png").write_bytes(body_png)
+    fb = build_fit_binding(
+        artifact_id="a-0123456789abcdef",
+        platform="linkedin",
+        language="en",
+        preimage={"strategy": {}, "hard-limits": {}, "advisory": {}, "render-dims": {}},
+        strategy="pass",
+        localize_languages=[],
+        gate_outcome="ok",
+        revision=False,
+        minted_ts="2026-01-01T00:00:00+00:00",
+    )
+    store.output_path(fb["fitted_id"]).parent.mkdir(parents=True, exist_ok=True)
+    store.output_path(fb["fitted_id"]).write_bytes(
+        (json.dumps({"ir": {"body": "x"}, "binding": fb}) + "\n").encode()
+    )
+    return SerializeLeg(
+        root=root,
+        workspace=WS,
+        store=store,
+        fitted_id=fb["fitted_id"],
+        fitted_ir=fitted_ir,
+        output_type="html",
+        presentation="plain",
+    )
+
+
+def test_default_render_engine_embeds_a_body_figure_end_to_end(tmp_path):
+    """B end-to-end through the REAL render leg: an html render of a figure body folds the figure
+    by content-hash into the preimage AND inlines it in the minted bytes; editing the figure bytes
+    re-mints the deliverable-id; and the stored embedded deliverable reports NO phantom drift."""
+    _requires_pandoc()
+    from pipeline.api.render import DefaultRenderEngine
+
+    root = _build_root(tmp_path)
+    fitted_ir = {"grounding": {}, "body": "![alt text](assets/x.png)"}
+    engine = DefaultRenderEngine()
+
+    leg = _embed_leg(root, fitted_ir)
+    preimage = engine.serialize_preimage(leg)
+    assert "asset_embed_version" in preimage["tool_bundle"]  # the embed pin rode the identity
+    assert preimage["render_inputs"]["embedded_assets"][0][0] == "assets/x.png"
+
+    mint = engine.mint_deliverable(leg, preimage=preimage, serialize_revision=False)
+    assert mint.side == "internal"
+    assert b'src="data:image/png;base64,' in mint.output_bytes  # the figure is INLINED
+    assert str(leg.store.root).encode() not in mint.output_bytes  # no absolute path leak
+
+    # F2: the live currency resolver reports NO phantom drift for the picture-bearing deliverable.
+    resolver = discovery.DefaultCurrencyResolver()
+    current = resolver.current_serialize_digest(
+        root=root, workspace=WS, deliverable_id="pic", stored_preimage=preimage
+    )
+    assert current == serialize_digest(preimage)
+
+    # Editing the figure bytes re-mints the html deliverable-id (honest identity). The fold reads
+    # the figure fresh, so rewriting the SAME path's bytes changes the preimage digest (same AST).
+    edited_png = _EMBED_PNG[:-1] + bytes([_EMBED_PNG[-1] ^ 0xFF])
+    (leg.store.root / "assets" / "x.png").write_bytes(edited_png)
+    preimage2 = engine.serialize_preimage(leg)
+    assert serialize_digest(preimage2) != serialize_digest(preimage)
+
+
+# ---------------------------------------------------------------------------
 # (C) The three journal looks load + lower cleanly (variables + highlight_style + C11 csl style).
 # ---------------------------------------------------------------------------
 

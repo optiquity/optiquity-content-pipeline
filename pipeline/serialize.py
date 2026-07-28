@@ -63,6 +63,7 @@ from pipeline.ids import IdError, PreimageError, deliverable_id, delta_vs_floor
 from pipeline.ir import PANDOC_API_VERSION, match_bracket
 
 __all__ = [
+    "ASSET_EMBED_VERSION",
     "PANDOC_API_VERSION",
     "PANDOC_BINARY_DEFAULT",
     "PANDOC_VERSION_PIN",
@@ -125,6 +126,14 @@ PANDOC_VERSION_PIN = "3.10"
 #: The default pandoc executable (resolved on PATH). Injectable at every entry point so a test
 #: can point at a bad path to exercise the unavailable branch without uninstalling pandoc.
 PANDOC_BINARY_DEFAULT = "pandoc"
+
+#: The pinned version of the body-figure EMBED behavior (increment B). Bumped only when the embed
+#: mechanics change the published bytes (the `--resource-path`/`--embed-resources` surface, or the
+#: writer set that embeds). It rides the serialize preimage OMIT-WHEN-ABSENT — present only when a
+#: render actually embedded a figure (`assets_embedded`), so the pre-B render-digest corpus is
+#: byte-identical. Defined HERE (not in `asset_loader`) to keep the module graph acyclic: importing
+#: it from `asset_loader` would create serialize→asset_loader→dispatch→serialize (PART 3).
+ASSET_EMBED_VERSION = "v0"
 
 #: The provenance kv keys the emitter materializes onto a claim Span (RI8). `data-fact` (the
 #: fact anchor) rides in from compose; the emitter ENRICHES with the ledger's provenance.
@@ -738,6 +747,8 @@ def serialize_inputs_preimage(
     section_attr_transformed: bool = False,
     citeproc_enabled: bool = False,
     csl: tuple[str, str] | None = None,
+    assets_embedded: bool = False,
+    embedded_assets: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Any]:
     """Build the COMPLETE canonical serialize-inputs preimage (§17 FR7.1).
 
@@ -780,6 +791,17 @@ def serialize_inputs_preimage(
        the S3×S4 identity gate); a citing render includes it, so an edited csl churns the digest for
        citing renders only. It is a Presentation ASSET, so it rides `render_inputs`, NOT the
        `tool_bundle` version surface (the SIBLING gate of `citeproc_enablement_version`).
+
+    Increment B (body-figure EMBED) adds ONE more OMIT-WHEN-ABSENT pair, gated on `assets_embedded`
+    (True only for an html5/docx render that actually inlined an `assets/…` body figure — the embed
+    writers): (a) the `asset_embed_version` PIN joins `tool_bundle` (the exact twin of the
+    section-attr / citeproc version keys — present only when embedding altered the bytes, so a
+    NON-embedding render is byte-identical to pre-B); (b) each embedded figure's `(rel-path,
+    content-hash)` joins `render_inputs["embedded_assets"]` (a CONTENT hash, kept DISJOINT from the
+    presentation `assets` list) so an edited image byte re-mints the html/docx deliverable. The
+    Markdown/plain writers embed nothing → `assets_embedded=False` → both keys are absent → their
+    by-reference deliverable-id is unchanged (an image edit never re-mints md). `embedded_assets` is
+    the sorted/deduped set (F7), so identity is order-stable.
 
     The `render-inputs` **exclusion set** — the inputs that are deliberately NOT part of the
     serialize-inputs IDENTITY (§17 FR7.1) — is:
@@ -826,6 +848,13 @@ def serialize_inputs_preimage(
     # independently, and either present alone still leaves every other pin literal.
     if citeproc_enabled:
         tool_bundle["citeproc_enablement_version"] = CITEPROC_ENABLEMENT_VERSION
+    # OMIT-WHEN-ABSENT (B, §17 FR7.1): record the body-figure embed version ONLY when the render
+    # actually embedded a figure (`assets_embedded` — an html5/docx render over an `assets/…` body
+    # image). Absent for every NON-embedding render (md/plain, or an image-less html/docx) → the
+    # bundle bytes are byte-identical to pre-B → the golden render-digest corpus is unchanged. The
+    # SIBLING content half (`embedded_assets`) rides `render_inputs` below.
+    if assets_embedded:
+        tool_bundle["asset_embed_version"] = ASSET_EMBED_VERSION
     # C7 (S3×S4, §17 FR7.1): the `csl` Presentation STYLE asset — a `(path, content-hash)` — enters
     # the `render_inputs` component ONLY when citeproc actually ran (`citeproc_enabled`). It is the
     # OMIT-WHEN-ABSENT SIBLING of `citeproc_enablement_version`, but a Presentation ASSET (a content
@@ -838,6 +867,13 @@ def serialize_inputs_preimage(
     render_inputs_component = dict(render_inputs)
     if citeproc_enabled and csl is not None:
         render_inputs_component["csl"] = [csl[0], csl[1]]
+    # B (§17 FR7.1): the SIBLING content half of `asset_embed_version` — each embedded body figure
+    # by `(rel-path, content-hash)`, gated on `assets_embedded` and a non-empty set. Kept DISJOINT
+    # from the presentation `assets` list (a body figure is not a presentation asset). An empty set
+    # (image-less embed writer) or a non-embedding writer leaves `render_inputs` untouched → the
+    # preimage is byte-identical to pre-B. Threaded as lists so the value is canonical pure-JSON.
+    if assets_embedded and embedded_assets:
+        render_inputs_component["embedded_assets"] = [[rel, hex_] for rel, hex_ in embedded_assets]
     preimage = {
         "tool_bundle": tool_bundle,
         "render_target": target_values,

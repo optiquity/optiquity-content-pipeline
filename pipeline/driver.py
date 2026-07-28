@@ -54,7 +54,7 @@ from pipeline import presentation as _presentation
 from pipeline.adapters import default_adapters
 from pipeline.adapters.base import SourceAdapter
 from pipeline.api import results
-from pipeline.asset_loader import filesystem_asset_loader
+from pipeline.asset_loader import filesystem_asset_loader, hash_embedded_assets
 from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.cascade import (
     CascadeEnv,
@@ -576,7 +576,18 @@ def _run_deliverable(
     render_inputs = _presentation.lower(
         pres, target.writer, d.output_type, target_engine=target.engine
     )
-    dout = dispatch(target, ast, render_inputs=render_inputs)
+    # B (body-figure EMBED, F1/F5): compute the containment base ONCE — `store.root`, the SAME base
+    # A's compose gate proved (asset_ref.py:13-19, S5). `hash_embedded_assets` re-runs A's FULL gate
+    # on the persisted AST BEFORE any embed flag is emitted (an uncontained `../` or raw-`<img>`
+    # body REFUSES here and is never opened), then returns the `(rel, hex)` fold for an html5/docx
+    # figure; md/plain embed nothing → `()`. `resource_paths` is emitted ONLY when a figure embeds,
+    # ordered store-root FIRST, repo-root (`env.root`) SECOND (a same-named framework asset can
+    # never shadow the client figure); repo-root also resolves any repo-relative `--csl` a citing
+    # render feeds.
+    base = store.root
+    embedded_assets = hash_embedded_assets(ast, target.writer, store_root=base)
+    resource_paths = (str(base), str(env.root)) if embedded_assets else ()
+    dout = dispatch(target, ast, render_inputs=render_inputs, resource_paths=resource_paths)
     if dout.output_bytes is None:
         raise DriverError(
             f"driver-error: internal render-target {d.output_type!r} produced no layer-2 "
@@ -598,6 +609,11 @@ def _run_deliverable(
         # C7 (S3×S4): the csl asset (path, hash) — labeled on RenderInputs, kept OUT of the manual
         # `render_inputs_view` above. It enters the preimage's render_inputs ONLY when citeproc ran.
         csl=render_inputs.csl,
+        # B (§17 FR7.1): the body-figure embed fold — the `asset_embed_version` pin + each embedded
+        # figure's content hash enter the preimage ONLY when a figure embedded (an html5/docx
+        # `assets/…` render). An image-less/md/plain render leaves them absent → byte-identical id.
+        assets_embedded=bool(embedded_assets),
+        embedded_assets=embedded_assets,
     )
     render_binding = build_render_binding(
         fitted_id=fitted_id,

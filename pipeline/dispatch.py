@@ -36,11 +36,12 @@ No SSOT import (INV-CORRECTNESS, §22.7): this module advances the SSOT only via
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pipeline import review
+from pipeline import asset_ref, review
 from pipeline.canonical import canonical_json_bytes
 from pipeline.filters.citeproc_enablement import has_citations
 from pipeline.filters.provenance_strip import should_strip, strip_provenance
@@ -56,6 +57,7 @@ from pipeline.store import WorkspaceStore
 from pipeline.transport import Runner
 
 __all__ = [
+    "EMBED_WRITERS",
     "EXTERNAL_DEFERRED",
     "INTERNAL_WRITERS",
     "PASSTHROUGH_WRITER",
@@ -65,6 +67,7 @@ __all__ = [
     "RenderTarget",
     "capability_check",
     "dispatch",
+    "embeddable_image_targets",
     "lower_plain",
     "render_target_from_entry",
     "review_deliverable",
@@ -80,6 +83,29 @@ PASSTHROUGH_WRITER = "json"
 #: v1 external targets (epub3/pptx/pdf) are dispatched but DEFERRED here — the AST (stripped for
 #: public writers) is persisted + handed off; the external actor renders layer-4 (gate step 3).
 EXTERNAL_DEFERRED = "deferred-external"
+
+#: The internal writers that ACTIVELY embed a body figure — the ONLY writers that emit a pandoc
+#: `--resource-path` and open+copy the referenced file (increment B). html5 inlines the image as a
+#: data URI (`--embed-resources`); docx carries it as a native `word/media/` part (native embed via
+#: `--resource-path` alone). `markdown` keeps the figure BY REFERENCE (`![](assets/…)` passthrough —
+#: no embed, no file opened) and `plain` shows only the caption; neither is here, so neither ever
+#: emits a resource-path or triggers the render-time embed gate
+#: (`asset_loader.hash_embedded_assets`).
+EMBED_WRITERS = frozenset({"html5", "docx"})
+
+
+def embeddable_image_targets(ast: dict[str, Any], writer: str) -> tuple[str, ...]:
+    """The SORTED, DEDUPED `assets/…` body-image targets an EMBED writer will inline (F7 dedup).
+
+    Empty for a NON-embed writer (`markdown`/`plain`/`json`/external) — those open no file, so they
+    never fold a body figure into identity. For an embed writer it is the `assets/`-prefixed subset
+    of `asset_ref.iter_image_targets(ast)` (which may repeat a target), sorted+deduped so the
+    serialize preimage shape is order-stable regardless of body order. Pure — no filesystem read;
+    the read (and A's full containment re-gate) lives in `asset_loader.hash_embedded_assets`."""
+    if writer not in EMBED_WRITERS:
+        return ()
+    prefix = f"{asset_ref.ASSETS_DIRNAME}/"
+    return tuple(sorted({t for t in asset_ref.iter_image_targets(ast) if t.startswith(prefix)}))
 
 
 class CapabilityInfeasibleError(SerializeError):
@@ -178,7 +204,12 @@ class DispatchOutcome:
     the serialize preimage's transform-version record, §17 FR7.1). `citeproc_enabled` records
     whether the AST carried a citation (`Cite` node) so `--citeproc` was appended (C6, the
     CONTENT-driven twin of `section_attr_transformed`: True for ANY writer over a citing AST — the
-    signal that keys the preimage's `citeproc_enablement_version` record, §17 R-4 family)."""
+    signal that keys the preimage's `citeproc_enablement_version` record, §17 R-4 family).
+    `assets_embedded` (increment B) records whether this render actually EMBEDDED ≥1 body figure —
+    True only for an html5/docx writer handed a non-empty `resource_paths` (an `assets/…` figure was
+    inlined). It is the dispatch-level twin of the driver/render legs' `bool(embedded_assets)` and
+    keys the serialize preimage's OMIT-WHEN-ABSENT `asset_embed_version`; False for md/plain, an
+    image-less html/docx, the json passthrough, and every external target."""
 
     side: str
     writer: str
@@ -188,6 +219,7 @@ class DispatchOutcome:
     citeproc_enabled: bool
     output_bytes: bytes | None = None
     payload_ast: dict[str, Any] | None = None
+    assets_embedded: bool = False
 
 
 def dispatch(
@@ -195,6 +227,7 @@ def dispatch(
     ast: dict[str, Any],
     *,
     render_inputs: RenderInputs | None = None,
+    resource_paths: tuple[str, ...] = (),
     binary: str = PANDOC_BINARY_DEFAULT,
 ) -> DispatchOutcome:
     """Route one layer-3 `ast` by `target` (RI12).
@@ -225,6 +258,18 @@ def dispatch(
     neither flag → byte-identical to `plain`. Like `--citeproc`, `--csl` is a dispatch-appended ARG,
     never a `flags`/`assets` member; the csl content hash enters the serialize preimage only when
     citeproc ran (`serialize_inputs_preimage(..., citeproc_enabled=True, csl=...)`, the S3×S4 gate).
+
+    B (body-figure EMBED): a non-empty `resource_paths` (the caller passes it ONLY for an html5/docx
+    render over a gated, contained `assets/…` figure — F5 base order `(store.root, repo_root)`,
+    store-root FIRST) appends `--resource-path=<store>:<repo>` so pandoc opens the figure at the
+    client's store root (a same-named framework asset can never shadow it), plus — for html5 only —
+    `--embed-resources --standalone` so the figure inlines as a data URI in a standalone document
+    (docx embeds natively as a `word/media/` part via `--resource-path` alone). Like `--citeproc`,
+    these are dispatch-appended ARGS, never `RenderInputs.flags` members. The caller runs A's FULL
+    compose gate (`asset_loader.hash_embedded_assets`) BEFORE handing a non-empty `resource_paths`,
+    so a body about to be embedded is provably contained — an uncontained/raw-markup body refuses at
+    the caller and never reaches here. An empty `resource_paths` (md/plain, image-less html/docx)
+    appends nothing → byte-identical to pre-B.
     """
     capability_check(target)
     inputs = render_inputs if render_inputs is not None else RenderInputs()
@@ -268,6 +313,16 @@ def dispatch(
         args = (*args, "--citeproc")
         if inputs.csl is not None:  # C7: the STYLE override rides WITH --citeproc, never alone
             args = (*args, f"--csl={inputs.csl[0]}")
+    # B (body-figure EMBED): the caller passes a non-empty `resource_paths` ONLY for an EMBED writer
+    # over a gated `assets/…` figure (F5 order: store-root FIRST, repo-root SECOND). Append a single
+    # os.pathsep-joined `--resource-path` (pandoc searches it in order → the client figure wins over
+    # a same-named framework asset) and, for html5 ONLY, `--embed-resources --standalone` (data-URI
+    # inline in a standalone document; docx embeds natively via `--resource-path` alone).
+    assets_embedded = bool(resource_paths) and target.writer in EMBED_WRITERS
+    if assets_embedded:
+        args = (*args, f"--resource-path={os.pathsep.join(resource_paths)}")
+        if target.writer == "html5":
+            args = (*args, "--embed-resources", "--standalone")
     try:
         outcome = run_pandoc_bytes(args, canonical_json_bytes(render_ast), binary=binary)
     except PandocUnavailableError:
@@ -285,6 +340,7 @@ def dispatch(
         section_attr_transformed=section_attr_transformed,
         citeproc_enabled=citeproc_enabled,
         output_bytes=outcome.stdout,
+        assets_embedded=assets_embedded,
     )
 
 

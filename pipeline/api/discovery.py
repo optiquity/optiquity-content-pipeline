@@ -214,6 +214,17 @@ class DefaultCurrencyResolver:
                 isinstance(stored_tool, Mapping)
                 and "citeproc_enablement_version" in stored_tool
             )
+            # B (F2) carry-forward (the THIRD such OMIT-WHEN-ABSENT twin): an EMBEDDING
+            # deliverable's stored `tool_bundle` carries `asset_embed_version` (present only when a
+            # body figure embedded). The rebuild must re-derive it — else the rebuilt bundle omits
+            # the key, the digest differs, and a stable picture-bearing html/docx deliverable reads
+            # as SPURIOUS drift (phantom re-mint). The `embedded_assets` CONTENT half needs nothing
+            # here: it is baked into the stored `render_inputs` and passed through verbatim by the
+            # rebuild below (exactly like the stored `csl`), so re-deriving the pin flag reproduces
+            # the digest.
+            assets_embedded = (
+                isinstance(stored_tool, Mapping) and "asset_embed_version" in stored_tool
+            )
             # Rebuild with the CURRENT pinned tool bundle (serialize_inputs_preimage sources the
             # pins from the live module constants); the stored render_target/inputs are kept.
             rebuilt = serialize.serialize_inputs_preimage(
@@ -221,6 +232,7 @@ class DefaultCurrencyResolver:
                 render_inputs=render_inputs,
                 section_attr_transformed=section_attr_transformed,
                 citeproc_enabled=citeproc_enabled,
+                assets_embedded=assets_embedded,
             )
             return serialize.serialize_digest(rebuilt)
         except Exception:  # noqa: BLE001 — no detectable drift on a config-read failure

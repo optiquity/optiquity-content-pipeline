@@ -425,6 +425,78 @@ class TestC6CiteprocCurrencyCarryForward:
 
 
 # ---------------------------------------------------------------------------
+# B (F2) carry-forward: the REAL currency resolver re-derives the OMIT-WHEN-ABSENT
+# `asset_embed_version` flag from the stored tool_bundle so a picture-bearing html/docx deliverable
+# reports NO spurious drift (the THIRD such twin, after SD-5 section-attr and C6 citeproc).
+# ---------------------------------------------------------------------------
+
+
+_EMBED_RT = {"writer": "html5", "engine": "", "reference_doc": ""}
+_EMBED_RI = {"flags": [], "variables": {}, "assets": [], "engine": ""}
+_EMBED_FOLD = (("assets/x.png", "a" * 64),)
+
+
+class TestBAssetEmbedCurrencyCarryForward:
+    def test_stored_embedded_deliverable_reports_no_spurious_drift(self, tmp_path):
+        resolver = discovery.DefaultCurrencyResolver()
+        # An EMBEDDING stored preimage (a figure was inlined → the bytes carry it) mints a DIFFERENT
+        # digest than the same inputs non-embedding — so a rebuild MUST re-derive the flag.
+        embedded = serialize.serialize_inputs_preimage(
+            render_target=_EMBED_RT,
+            render_inputs=_EMBED_RI,
+            assets_embedded=True,
+            embedded_assets=_EMBED_FOLD,
+        )
+        non_embedded = serialize.serialize_inputs_preimage(
+            render_target=_EMBED_RT, render_inputs=_EMBED_RI
+        )
+        assert "asset_embed_version" in embedded["tool_bundle"]
+        assert embedded["render_inputs"]["embedded_assets"] == [["assets/x.png", "a" * 64]]
+        assert serialize.serialize_digest(embedded) != serialize.serialize_digest(non_embedded)
+
+        # The live resolver re-derives the flag from the stored bundle AND carries the stored
+        # `embedded_assets` through verbatim → the embedded deliverable reports NO phantom drift.
+        current = resolver.current_serialize_digest(
+            root=tmp_path, workspace=WS, deliverable_id="pic", stored_preimage=embedded
+        )
+        assert current == serialize.serialize_digest(embedded)
+
+    def test_non_embedded_deliverable_still_reports_no_drift(self, tmp_path):
+        # Control: additive — a by-reference (md/image-less) deliverable is unperturbed.
+        resolver = discovery.DefaultCurrencyResolver()
+        non_embedded = serialize.serialize_inputs_preimage(
+            render_target=_EMBED_RT, render_inputs=_EMBED_RI
+        )
+        assert "asset_embed_version" not in non_embedded["tool_bundle"]
+        current = resolver.current_serialize_digest(
+            root=tmp_path, workspace=WS, deliverable_id="ref", stored_preimage=non_embedded
+        )
+        assert current == serialize.serialize_digest(non_embedded)
+
+    def test_embed_composes_with_the_other_two_carry_forwards(self, tmp_path):
+        # A deliverable that is typed AND citing AND embedding carries all three keys; the resolver
+        # re-derives all three → no drift (the carry-forwards are independent and compose).
+        resolver = discovery.DefaultCurrencyResolver()
+        allthree = serialize.serialize_inputs_preimage(
+            render_target=_EMBED_RT,
+            render_inputs=_EMBED_RI,
+            section_attr_transformed=True,
+            citeproc_enabled=True,
+            assets_embedded=True,
+            embedded_assets=_EMBED_FOLD,
+        )
+        assert {
+            "section_attr_transform_version",
+            "citeproc_enablement_version",
+            "asset_embed_version",
+        } <= set(allthree["tool_bundle"])
+        current = resolver.current_serialize_digest(
+            root=tmp_path, workspace=WS, deliverable_id="all3", stored_preimage=allthree
+        )
+        assert current == serialize.serialize_digest(allthree)
+
+
+# ---------------------------------------------------------------------------
 # INV-CORRECTNESS: discovery.py is SSOT-free (§21.3/§22.7).
 # ---------------------------------------------------------------------------
 

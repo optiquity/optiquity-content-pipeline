@@ -346,6 +346,82 @@ def test_csl_none_never_emits_csl_even_when_citing(monkeypatch):
     assert not any(a.startswith("--csl=") for a in args)
 
 
+# ---------------------------------------------------------------------------
+# B: body-figure embed — writer-specific flag emission (F5 order, F6 shape). `resource_paths` is
+# appended ONLY for an EMBED writer; html5 also gets `--embed-resources --standalone`, docx not.
+# ---------------------------------------------------------------------------
+
+import os as _os  # noqa: E402 — local to the embed section
+
+
+def test_html5_embed_appends_resource_path_embed_resources_and_standalone(monkeypatch):
+    captured = _spy_run_pandoc_bytes(monkeypatch)
+    out = D.dispatch(
+        D.RenderTarget(writer="html5", side="internal"),
+        _plain_ast(),
+        resource_paths=("STORE", "REPO"),
+    )
+    assert out.assets_embedded is True
+    args = captured[0]
+    assert f"--resource-path=STORE{_os.pathsep}REPO" in args  # store-root FIRST (F5 order)
+    assert "--embed-resources" in args and "--standalone" in args  # F6 (image-bearing html5)
+
+
+def test_docx_embed_appends_resource_path_only(monkeypatch):
+    captured = _spy_run_pandoc_bytes(monkeypatch)
+    out = D.dispatch(
+        D.RenderTarget(writer="docx", side="internal"),
+        _plain_ast(),
+        resource_paths=("STORE", "REPO"),
+    )
+    assert out.assets_embedded is True
+    args = captured[0]
+    assert f"--resource-path=STORE{_os.pathsep}REPO" in args
+    assert "--embed-resources" not in args and "--standalone" not in args  # docx: native embed only
+
+
+def test_empty_resource_paths_appends_nothing_and_flag_false(monkeypatch):
+    # An image-LESS html5 render (resource_paths=()) appends NO embed flags → pre-B byte-identical.
+    captured = _spy_run_pandoc_bytes(monkeypatch)
+    target = D.RenderTarget(writer="html5", side="internal")
+    out = D.dispatch(target, _plain_ast(), resource_paths=())
+    assert out.assets_embedded is False
+    args = captured[0]
+    assert not any(a.startswith("--resource-path") for a in args)
+    assert "--embed-resources" not in args and "--standalone" not in args
+
+
+def test_non_embed_writer_never_emits_resource_path_even_if_passed(monkeypatch):
+    # Defense-in-depth: a non-embed writer (markdown) never emits embed flags, even if a caller
+    # wrongly passed resource_paths — the emission is gated on `writer in EMBED_WRITERS`.
+    captured = _spy_run_pandoc_bytes(monkeypatch)
+    out = D.dispatch(
+        D.RenderTarget(writer="markdown", side="internal"),
+        _plain_ast(),
+        resource_paths=("STORE", "REPO"),
+    )
+    assert out.assets_embedded is False
+    assert not any(a.startswith("--resource-path") for a in captured[0])
+
+
+def test_embeddable_image_targets_is_sorted_deduped_and_writer_gated():
+    ast = {
+        "pandoc-api-version": [1, 23, 1, 2],
+        "meta": {},
+        "blocks": [
+            {"t": "Para", "c": [
+                {"t": "Image", "c": [["", [], []], [], ["assets/b.png", ""]]},
+                {"t": "Image", "c": [["", [], []], [], ["assets/a.png", ""]]},
+                {"t": "Image", "c": [["", [], []], [], ["assets/a.png", ""]]},  # dup
+                {"t": "Image", "c": [["", [], []], [], ["../escape.png", ""]]},  # dropped
+            ]},
+        ],
+    }
+    assert D.embeddable_image_targets(ast, "html5") == ("assets/a.png", "assets/b.png")
+    assert D.embeddable_image_targets(ast, "docx") == ("assets/a.png", "assets/b.png")
+    assert D.embeddable_image_targets(ast, "markdown") == ()  # non-embed writer → empty
+
+
 def test_csl_style_override_changes_the_resolved_bytes(tmp_path):
     # REAL pandoc: dispatch over a citing AST with a csl-set RenderInputs emits EXACTLY
     # `--citeproc --csl=<path>` (bytes EQUAL the manual run) and the venue style ACTUALLY alters the

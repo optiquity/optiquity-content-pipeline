@@ -273,7 +273,10 @@ def _mint_external(store: WorkspaceStore, env: CascadeEnv, *, fitted_id: str) ->
     if len(units) != 1:
         raise RuntimeError("mvp-scenario: the flat MVP artifact must serialize to one document")
     ast = units[0].ast
-    dout = dispatch(target, ast)  # external → payload_ast (stripped for epub3), deferred
+    # external → payload_ast (stripped for epub3), deferred. B (F4): the EXTERNAL hand-off embeds no
+    # body figure (embedding is internal html5/docx only), so `resource_paths=()` is passed
+    # explicitly — the external deliverable-id intentionally does NOT fold body-figure content.
+    dout = dispatch(target, ast, resource_paths=())
 
     # The serialize-inputs preimage + render-binding (the deliverable-level identity, §17 RI13).
     # An external plain-floor target lowers to the empty RenderInputs (B1 parity).
@@ -283,6 +286,10 @@ def _mint_external(store: WorkspaceStore, env: CascadeEnv, *, fitted_id: str) ->
         render_inputs=render_inputs_view,
         section_attr_transformed=dout.section_attr_transformed,
         citeproc_enabled=dout.citeproc_enabled,
+        # B (F4): the external hand-off folds NO body figure — the defaults keep the external
+        # deliverable-id byte-identical to pre-B (no `asset_embed_version`, no `embedded_assets`).
+        assets_embedded=False,
+        embedded_assets=(),
     )
     render_binding = serialize.build_render_binding(
         fitted_id=fitted_id,

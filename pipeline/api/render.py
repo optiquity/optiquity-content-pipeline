@@ -41,7 +41,7 @@ from pipeline import fit_resolution, ir, payload, presentation, reconcile, seria
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import results
 from pipeline.api import token as token_mod
-from pipeline.asset_loader import filesystem_asset_loader
+from pipeline.asset_loader import filesystem_asset_loader, hash_embedded_assets
 from pipeline.canonical import canonical_json_bytes
 from pipeline.dispatch import RenderInputs, RenderTarget
 from pipeline.fit_resolution import (
@@ -804,10 +804,17 @@ class DefaultRenderEngine:
         # pre-C6/pre-RT corpus. (The provenance strip is order-independent for both detections, so
         # it need not run here.)
         units = self._fitted_units(leg)
+        target = render_target_from_entry(target_values)
         citeproc_enabled = any(has_citations(unit.ast) for unit in units)
         section_attr_transformed = False
-        if should_strip(render_target_from_entry(target_values).writer):
+        if should_strip(target.writer):
             section_attr_transformed = any(strip_section_attrs(unit.ast)[1] for unit in units)
+        # B (F1/F5): the SAME containment base `store.root` A proved (asset_ref.py:13-19, S5). The
+        # two-phase seam re-runs A's FULL gate here on `units[0].ast` (BEFORE dispatch) so the id it
+        # mints records EXACTLY the fold `mint_deliverable` will dispatch. An uncontained/raw-markup
+        # body REFUSES the whole render (no bytes read); md/plain embed nothing → `()` → zero churn.
+        base = leg.store.root
+        embedded_assets = hash_embedded_assets(units[0].ast, target.writer, store_root=base)
         # C7 (S3×S4): thread the lowered `RenderInputs.csl` labeled field (kept OUT of the
         # `render_inputs_view` by `render_inputs_to_mapping`). It enters the preimage's
         # render_inputs ONLY when `citeproc_enabled` — so a citation-less csl-set render matches
@@ -819,6 +826,9 @@ class DefaultRenderEngine:
             section_attr_transformed=section_attr_transformed,
             citeproc_enabled=citeproc_enabled,
             csl=render_inputs.csl,
+            # B: the body-figure embed fold — present ONLY for an html5/docx figure render.
+            assets_embedded=bool(embedded_assets),
+            embedded_assets=embedded_assets,
         )
 
     def mint_deliverable(
@@ -835,10 +845,19 @@ class DefaultRenderEngine:
                 f"standalone render expects one serialized document, got {len(units)}"
             )
         target = render_target_from_entry(target_values)
+        # B (F1/F5): recompute the fold at mint time (the F1 gate re-runs on the persisted AST
+        # BEFORE dispatch — an uncontained/raw-markup body refuses and never reaches pandoc). `base`
+        # is `store.root` (S5); `resource_paths` is emitted ONLY for a figure-bearing embed writer,
+        # ordered store-root FIRST then repo-root (`leg.root`) — the SAME base the preimage folded.
+        base = leg.store.root
+        embedded_assets = hash_embedded_assets(units[0].ast, target.writer, store_root=base)
+        resource_paths = (str(base), str(leg.root)) if embedded_assets else ()
         # `serialize_fitted` shells the pinned pandoc READER (§17 RI7) both sides; the external
         # dispatch itself is pure-Python (persist AST + hand off, dispatch.py) — the pandoc
         # dependency is the reader, not an epub/pptx binary (why the C6 tests ride the pandoc gate).
-        dout = dispatch(target, units[0].ast, render_inputs=render_inputs)
+        dout = dispatch(
+            target, units[0].ast, render_inputs=render_inputs, resource_paths=resource_paths
+        )
         fit_record = _read_record(leg.store, leg.fitted_id)
         fit_binding = fit_record.get("binding", {}) if isinstance(fit_record, Mapping) else {}
         render_binding = serialize.build_render_binding(

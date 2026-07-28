@@ -175,6 +175,46 @@ def test_edited_asset_revert_self_heals():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# B: the body-figure embed fold rides the serialize identity exactly like csl — an edited figure
+# auto-mints a revision and a revert self-heals to the baseline; an image-less render is zero-churn.
+# ---------------------------------------------------------------------------
+
+
+def _embed_preimage(fold):
+    ri = lower(plain_presentation(), "html5", "html")
+    return serialize_inputs_preimage(
+        render_target=RT,
+        render_inputs=render_inputs_to_mapping(ri),
+        assets_embedded=bool(fold),
+        embedded_assets=fold,
+    )
+
+
+def test_image_less_embed_params_are_zero_churn():
+    # An image-LESS html render (assets_embedded=False) has a preimage byte-identical to pre-B —
+    # so the entire existing render-digest corpus is UNMOVED by the new fold.
+    assert _embed_preimage(()) == preimage_for()
+
+
+def test_edited_figure_auto_mints_a_revision_and_reverts_self_heal():
+    base_fold = (("assets/x.png", "a" * 64),)
+    edited_fold = (("assets/x.png", "b" * 64),)  # the SAME path, EDITED image bytes
+    p0 = _embed_preimage(base_fold)
+    baseline = binding_for(p0, minted_ts="2026-01-01T00:00:00+00:00")
+
+    # editing the figure bytes changes the serialize inputs → auto-mint a revision (like a css edit)
+    edited = _embed_preimage(edited_fold)
+    out = resolve_deliverable(COORD, [baseline], edited)
+    assert out.disposition == DISPOSITION_REVISION and out.code == CODE_RE_SERIALIZED
+    revision = binding_for(edited, revision=True, minted_ts="2026-02-01T00:00:00+00:00")
+
+    # REVERT the figure → the baseline binding's digest matches again → a HIT, no re-mint (heals).
+    healed = resolve_deliverable(COORD, [baseline, revision], p0)
+    assert healed.disposition == DISPOSITION_HIT
+    assert healed.selected.digest == baseline["digest"]
+
+
 def test_same_inputs_compute_the_same_deliverable_id():
     p0 = preimage_for()
     p1 = preimage_for(_css_presentation(b"x{}"))
