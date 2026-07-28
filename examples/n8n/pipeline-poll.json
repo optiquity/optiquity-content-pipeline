@@ -1,0 +1,393 @@
+{
+  "name": "Optiquity content pipeline — POLL (render)",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## POLL flow — the always-works baseline\n\nDrives the optiquity-content-pipeline HTTP shim with **no inbound reachability** required, so it works from **localhost / LAN / self-hosted** n8n.\n\n**Before you run:**\n1. Create an **HTTP Header Auth** credential — Name `Authorization`, Value `Bearer <SHIM_SECRET>` (or Name `X-API-Key`, Value `<SHIM_SECRET>`) — and select it on every HTTP Request node here.\n2. Replace `<WORKSPACE>` and `<ARTIFACT_ID>` in **Submit render**. The base URL `http://127.0.0.1:8787` is the shim's loopback default; change it if you bind elsewhere behind a proxy.\n\nThe Tier-B verb is `render` (token-free / content-addressed): a retry collides on the same job key with no session handshake.",
+        "height": 360,
+        "width": 460,
+        "color": 4
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Sticky: how to use",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### render returns 200 OR 202\n**200** = sync cache-hit / fast local serialize → `body.results` is already here.\n**202** = accepted → keep `body.job.key` + `body.job.target_ids` and poll.\nA caller MUST handle both — do not assume 202.\n\nA **400** `render-blocked` (bad coordinates) surfaces `body.block` — inspect it if neither branch fires.",
+        "height": 260,
+        "width": 360,
+        "color": 5
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Sticky: 200 vs 202",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        360,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### /poll states\n**200 done** → `body.results`.\n**202 running** → wait and poll again.\nElse the job **failed / re-drivable** (409/429/504): read `body.code` and `body.redrivable`; re-submit with the same request (or the same `idempotency_key`) to re-drive.",
+        "height": 260,
+        "width": 360,
+        "color": 3
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Sticky: poll states",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        620
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        60,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8787/invoke",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"verb\": \"render\",\n  \"workspace\": \"<WORKSPACE>\",\n  \"params\": {\n    \"item\": \"<ARTIFACT_ID>\",\n    \"platform\": \"linkedin\",\n    \"language\": \"en\",\n    \"output_type\": \"docx\",\n    \"presentation\": \"plain\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Submit render",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Optiquity Shim Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c3000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "Sync cache-hit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "Wait between polls",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        420
+      ],
+      "webhookId": "d4000000-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8787/poll",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"workspace\": \"<WORKSPACE>\",\n  \"key\": \"{{ $('Submit render').item.json.body.job.key }}\",\n  \"target_ids\": {{ JSON.stringify($('Submit render').item.json.body.job.target_ids) }}\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "Poll job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Optiquity Shim Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c3000000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "name": "Poll: done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c3000000-0000-4000-8000-000000000003",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 202,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "Poll: still running?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1420,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e5000000-0000-4000-8000-000000000001",
+              "name": "job_key",
+              "type": "string",
+              "value": "={{ $json.body.job.key }}"
+            },
+            {
+              "id": "e5000000-0000-4000-8000-000000000002",
+              "name": "results",
+              "type": "array",
+              "value": "={{ $json.body.results }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000008",
+      "name": "Surface result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1640,
+        280
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b2000000-0000-4000-8000-000000000009",
+      "name": "Job failed / re-drivable",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1640,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Submit render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit render": {
+      "main": [
+        [
+          {
+            "node": "Sync cache-hit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync cache-hit?": {
+      "main": [
+        [
+          {
+            "node": "Surface result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait between polls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait between polls": {
+      "main": [
+        [
+          {
+            "node": "Poll job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll job": {
+      "main": [
+        [
+          {
+            "node": "Poll: done?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll: done?": {
+      "main": [
+        [
+          {
+            "node": "Surface result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll: still running?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll: still running?": {
+      "main": [
+        [
+          {
+            "node": "Wait between polls",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Job failed / re-drivable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

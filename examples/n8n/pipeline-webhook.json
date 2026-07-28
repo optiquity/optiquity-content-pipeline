@@ -1,0 +1,329 @@
+{
+  "name": "Optiquity content pipeline — WEBHOOK (render)",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## WEBHOOK flow — lower latency, one real constraint\n\nSame `render` submit as the POLL example, but it hands the shim a `callback_url` = **`{{ $execution.resumeUrl }}`** and pauses on a **Wait (On Webhook Call)** node. When the job settles the pipeline POSTs a **wake-up** to that URL (a nudge, never the result), the execution resumes, and we still fetch the finished output through the authenticated `/poll`.\n\n**⚠ The constraint (read before using):** the shim's callback guard is **opt-in** and **fail-closed**. It only calls back to a host that is (a) listed in `callbacks.allowed_hosts` in `instance/shim.yaml` **and** (b) resolves to a **public** IP. A **localhost / LAN / behind-NAT** n8n cannot receive the callback (its resume-URL host is non-global → refused by the SSRF block). So this flow needs **n8n Cloud** or a **self-hosted n8n on a public domain / tunnel**, with that host allow-listed in the shim. Otherwise use `pipeline-poll.json` — the poll needs no inbound reachability.",
+        "height": 380,
+        "width": 520,
+        "color": 3
+      },
+      "id": "a1000000-0000-4000-8000-000000000101",
+      "name": "Sticky: webhook caveat",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### The Wait (On Webhook Call) node\nSet **HTTP Method = POST** and **Authentication = None** — the pipeline's wake-up POST carries no auth secret (the security boundary is the shim's outbound allow-list + SSRF guard, not this inbound node).\n\nThe wake-up body arrives here as `$json.body`:\n`{ event, job:{key,workspace,target_ids}, poll, [code, redrivable] }`.",
+        "height": 240,
+        "width": 380,
+        "color": 5
+      },
+      "id": "a1000000-0000-4000-8000-000000000102",
+      "name": "Sticky: wait node",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        620,
+        -180
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b2000000-0000-4000-8000-000000000101",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        60,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8787/invoke",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"verb\": \"render\",\n  \"workspace\": \"<WORKSPACE>\",\n  \"params\": {\n    \"item\": \"<ARTIFACT_ID>\",\n    \"platform\": \"linkedin\",\n    \"language\": \"en\",\n    \"output_type\": \"docx\",\n    \"presentation\": \"plain\",\n    \"callback_url\": \"{{ $execution.resumeUrl }}\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000102",
+      "name": "Submit render + callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        320
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Optiquity Shim Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c3000000-0000-4000-8000-000000000101",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000103",
+      "name": "Sync cache-hit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "responseCode": 200,
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000104",
+      "name": "Wait for callback",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        440
+      ],
+      "webhookId": "d4000000-0000-4000-8000-000000000101"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c3000000-0000-4000-8000-000000000102",
+              "leftValue": "={{ $json.body.event }}",
+              "rightValue": "job.done",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000105",
+      "name": "job.done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        980,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8787/poll",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"workspace\": \"{{ $('Wait for callback').item.json.body.job.workspace }}\",\n  \"key\": \"{{ $('Wait for callback').item.json.body.job.key }}\",\n  \"target_ids\": {{ JSON.stringify($('Wait for callback').item.json.body.job.target_ids) }}\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000106",
+      "name": "Fetch result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        380
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Optiquity Shim Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e5000000-0000-4000-8000-000000000101",
+              "name": "job_key",
+              "type": "string",
+              "value": "={{ $json.body.job.key }}"
+            },
+            {
+              "id": "e5000000-0000-4000-8000-000000000102",
+              "name": "results",
+              "type": "array",
+              "value": "={{ $json.body.results }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000107",
+      "name": "Surface result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1420,
+        220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b2000000-0000-4000-8000-000000000108",
+      "name": "Job failed",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        580
+      ]
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Submit render + callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit render + callback": {
+      "main": [
+        [
+          {
+            "node": "Sync cache-hit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync cache-hit?": {
+      "main": [
+        [
+          {
+            "node": "Surface result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for callback": {
+      "main": [
+        [
+          {
+            "node": "job.done?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "job.done?": {
+      "main": [
+        [
+          {
+            "node": "Fetch result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Job failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch result": {
+      "main": [
+        [
+          {
+            "node": "Surface result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
