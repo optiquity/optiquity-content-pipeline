@@ -587,6 +587,11 @@ def _run_deliverable(
     base = store.root
     embedded_assets = hash_embedded_assets(ast, target.writer, store_root=base)
     resource_paths = (str(base), str(env.root)) if embedded_assets else ()
+    # C3 (S5 drift-catcher, asset_ref.py:13-19): pin guard base == hash base == resource_paths[0]
+    # == store.root. A refactor that drifts B's base off `store.root` (e.g. to `store.root/assets`)
+    # trips HERE at runtime AND in tests/test_asset_base_contract.py. No behavior change — the pin
+    # holds today (empty when nothing embeds; else store-root FIRST, repo-root SECOND).
+    assert resource_paths in ((), (str(store.root), str(env.root)))
     dout = dispatch(target, ast, render_inputs=render_inputs, resource_paths=resource_paths)
     if dout.output_bytes is None:
         raise DriverError(

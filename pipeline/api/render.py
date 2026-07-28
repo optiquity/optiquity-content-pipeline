@@ -852,6 +852,11 @@ class DefaultRenderEngine:
         base = leg.store.root
         embedded_assets = hash_embedded_assets(units[0].ast, target.writer, store_root=base)
         resource_paths = (str(base), str(leg.root)) if embedded_assets else ()
+        # C3 (S5 drift-catcher, asset_ref.py:13-19): pin guard base == hash base ==
+        # resource_paths[0] == store.root. A refactor drifting B's base off `store.root` trips HERE
+        # at runtime AND in tests/test_asset_base_contract.py. No behavior change — the pin holds
+        # today (empty when nothing embeds; else store-root FIRST, repo-root SECOND).
+        assert resource_paths in ((), (str(leg.store.root), str(leg.root)))
         # `serialize_fitted` shells the pinned pandoc READER (§17 RI7) both sides; the external
         # dispatch itself is pure-Python (persist AST + hand off, dispatch.py) — the pandoc
         # dependency is the reader, not an epub/pptx binary (why the C6 tests ride the pandoc gate).
