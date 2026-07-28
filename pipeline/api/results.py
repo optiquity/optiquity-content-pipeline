@@ -63,6 +63,9 @@ __all__ = [
     # generation-tier codes (§21.7)
     "CODE_ADVISORY_CONSTRAINT_OVERRIDDEN",
     "CODE_AMBIGUOUS_MIGRATION_DECISIONS",
+    "CODE_ASSET_REF_INVALID",
+    "CODE_ASSET_REF_UNCONTAINED",
+    "CODE_BODY_RAW_MARKUP_FORBIDDEN",
     "CODE_CAPABILITY_INFEASIBLE",
     "CODE_CITATION_UNRESOLVED",
     "CODE_DRIFT_BLOCK",
@@ -156,6 +159,9 @@ CODE_AMBIGUOUS_MIGRATION_DECISIONS = "ambiguous-migration-decisions"  # needs-in
 CODE_GROUNDING_UNCOVERED = "grounding-uncovered"  # block, §6.5/§19
 CODE_SECTION_CONFORMANCE_VIOLATION = "section-conformance-violation"  # block, §15/§16 (DR-4)
 CODE_CITATION_UNRESOLVED = "citation-unresolved"  # block, §15/§16 (DR-5 C4)
+CODE_ASSET_REF_UNCONTAINED = "asset-ref-uncontained"  # block, §15/§16/§10 (DR-7 A, rule 2)
+CODE_ASSET_REF_INVALID = "asset-ref-invalid"  # block, §15/§16 (DR-7 A, broken-link quality)
+CODE_BODY_RAW_MARKUP_FORBIDDEN = "body-raw-markup-forbidden"  # block, §15/§16/§10 (DR-7 A, rule 2)
 
 # --- contract tier (§21.7) --------------------------------------------------
 CODE_UNKNOWN_VERB = "unknown-verb"  # block (envelope-fatal), §21.1
@@ -298,6 +304,27 @@ CODES: dict[str, CodeSpec] = {
             "A composed body cited a `[@key]` that does not resolve to a projected reference (or "
             "used an invalid bare/braced citation form) and persisted the failure across the "
             "bounded re-ask; blocked, never persisted (DR-5 C4).",
+            remediation_action=None,
+        ),
+        _spec(
+            CODE_ASSET_REF_UNCONTAINED, TIER_GENERATION, ("block",), "§15/§16/§10",
+            "A composed body's image reference escapes (or tries to escape) the client's own "
+            "asset root — a client-isolation breach caught at compose and persisted across the "
+            "bounded re-ask; blocked, never persisted (CLAUDE.md rule 2 / DR-7 A).",
+            remediation_action=None,
+        ),
+        _spec(
+            CODE_ASSET_REF_INVALID, TIER_GENERATION, ("block",), "§15/§16",
+            "A composed body's image reference is empty/malformed or points to no file — a benign "
+            "broken image link (honestly NOT an isolation escape) that persisted across the "
+            "bounded re-ask; blocked, never persisted (DR-7 A).",
+            remediation_action=None,
+        ),
+        _spec(
+            CODE_BODY_RAW_MARKUP_FORBIDDEN, TIER_GENERATION, ("block",), "§15/§16/§10",
+            "A composed body carried raw HTML/markup passthrough (which can smuggle an image "
+            "reference past the containment guard) — a persisted body may carry no raw passthrough "
+            "node; blocked, never persisted across the bounded re-ask (CLAUDE.md rule 2 / DR-7 A).",
             remediation_action=None,
         ),
         # contract tier (§21.7)

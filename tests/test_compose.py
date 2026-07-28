@@ -32,6 +32,9 @@ from pipeline.adapters.base import Anchor
 from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.claims import ClaimRegistry
 from pipeline.compose import (
+    CODE_ASSET_REF_INVALID,
+    CODE_ASSET_REF_UNCONTAINED,
+    CODE_BODY_RAW_MARKUP_FORBIDDEN,
     CODE_CITATION_UNRESOLVED,
     CODE_CONTRACT_VIOLATION,
     CODE_SECTION_CONFORMANCE_VIOLATION,
@@ -56,7 +59,7 @@ from pipeline.serialize import (
     pandoc_available,
     pandoc_gate,
 )
-from pipeline.store import WorkspaceStore
+from pipeline.store import WorkspaceStore, is_done
 from pipeline.transport import ProcessOutcome, ProcessRequest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1210,6 +1213,117 @@ class TestReferencesProjectionGate:
         )
         validate_ir(doc)  # no raise — unique ids, each with a non-empty-string id (C1)
         assert [r["id"] for r in doc["references"]] == ["s0", "s1"]
+
+
+class TestAssetContainmentGate:
+    """DR-7 A rule-2 asset-containment gate (wired), post-mint, PRE-persist, INSIDE the bounded
+    re-ask. Every composed body's image reference must be a shape-clean, CONTAINED `assets/...`
+    path; raw HTML/markup passthrough is refused OUTRIGHT (B1). GATED on `![`/`<`/`\\` — an
+    image-less/raw-less body never parses, so the existing corpus stays byte-identical and fires no
+    pandoc subprocess. A violation re-asks then blocks as a NEVER-persisted asset code, with the two
+    outcomes honestly split: an escape is `asset-ref-uncontained`, a benign broken link
+    `asset-ref-invalid`."""
+
+    def _seed_asset(self, store, relpath: str) -> None:
+        """Place a real file under `<store.root>/assets/` so the existence check (step 9) passes."""
+        target = store.root / "assets" / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"\x89PNG\r\n\x1a\n fake image bytes")
+
+    def test_contained_present_image_passes_and_persists(self, store, claims):
+        _requires_pandoc()  # a body carrying `![` now parses through the pinned reader
+        self._seed_asset(store, "throughput.png")
+        request = make_request()
+        body = (
+            'The parser [runs in linear time]{.EXTRACTED data-fact="f0"}.\n\n'
+            "![throughput](assets/throughput.png)"
+        )
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
+        assert (outcome.status, outcome.code, outcome.attempts) == ("ok", "ok", 1)
+        assert store.output_path(request.artifact_id).exists()
+
+    def test_uncontained_image_blocks_and_is_never_persisted(self, store, claims):
+        _requires_pandoc()
+        request = make_request()
+        body = (
+            'A [claim]{.EXTRACTED data-fact="f0"}.\n\n'
+            "![x](../../workspaces/other/secret.png)"
+        )
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=runner, max_attempts=3
+        )
+        assert outcome.status == "error"
+        assert outcome.code == CODE_ASSET_REF_UNCONTAINED == "asset-ref-uncontained"
+        assert outcome.ir is None
+        assert outcome.attempts == 3 and runner.calls == 3  # re-asked then blocked
+        assert len(outcome.violations) == 3
+        # NEVER persisted — an escaping body can never be written (rule 2).
+        assert is_done(store, request.artifact_id) is False
+        assert not store.output_path(request.artifact_id).exists()
+        assert not store.artifacts_dir.joinpath(request.artifact_id).exists()
+
+    def test_raw_html_img_blocks_as_raw_markup_forbidden(self, store, claims):
+        # The B1 vector: raw HTML `<img>` is invisible to the Markdown `Image` walk, so it is
+        # refused OUTRIGHT as `body-raw-markup-forbidden` (the `<` marker fires the parse).
+        _requires_pandoc()
+        request = make_request()
+        body = (
+            'A [claim]{.EXTRACTED data-fact="f0"}.\n\n'
+            '<img src="../../workspaces/other/secret.png">'
+        )
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=runner, max_attempts=2
+        )
+        assert outcome.status == "error"
+        assert outcome.code == CODE_BODY_RAW_MARKUP_FORBIDDEN == "body-raw-markup-forbidden"
+        assert outcome.ir is None
+        assert is_done(store, request.artifact_id) is False
+        assert not store.output_path(request.artifact_id).exists()
+
+    def test_contained_but_missing_image_blocks_as_invalid_not_uncontained(self, store, claims):
+        # A shape-clean, CONTAINED reference to an absent file is a benign broken link — the honest
+        # `asset-ref-invalid`, NEVER the security label `asset-ref-uncontained` (S2 split).
+        _requires_pandoc()
+        request = make_request()
+        body = 'A [claim]{.EXTRACTED data-fact="f0"}.\n\n![x](assets/missing.png)'
+        runner = ScriptedRunner([writer_ok({"body": body})])
+        outcome = compose_artifact(
+            request, store=store, claims=claims, runner=runner, max_attempts=2
+        )
+        assert outcome.status == "error"
+        assert outcome.code == CODE_ASSET_REF_INVALID == "asset-ref-invalid"
+        assert outcome.code != CODE_ASSET_REF_UNCONTAINED  # a broken link is not a breach
+        assert is_done(store, request.artifact_id) is False
+        assert not store.output_path(request.artifact_id).exists()
+
+    def test_image_less_body_is_byte_identical_and_never_invokes_pandoc(self, store, claims):
+        # The inertness proof: an image-less/raw-less body composes with the containment check
+        # SHORT-CIRCUITED — the injected `pandoc_runner` raises if called, so a green compose proves
+        # NO pandoc subprocess fired, and the persisted bytes equal the pre-DR-7 golden exactly.
+        request = make_request()
+        content = {"body": 'A [claim]{.EXTRACTED data-fact="f0"}.'}
+        outcome = compose_artifact(
+            request,
+            store=store,
+            claims=claims,
+            runner=ScriptedRunner([writer_ok(content)]),
+            pandoc_runner=_forbidden_pandoc_runner,
+        )
+        assert (outcome.status, outcome.code) == ("ok", "ok")
+        persisted = store.output_path(request.artifact_id).read_bytes()
+        ledger, _ = build_grounding_ledger(
+            request.grounded_facts, source_repos=request.source_repos
+        )
+        expected = build_ir(
+            artifact_id=request.artifact_id,
+            preimage=request.preimage,
+            grounding=ledger,
+            body=content["body"],
+        )
+        assert persisted == canonical_json_bytes(expected)  # byte-for-byte the pre-DR-7 golden
 
 
 # --- DR-5 C3: the writer is TAUGHT the projected citation keys + FORBIDDEN from authoring refs ---

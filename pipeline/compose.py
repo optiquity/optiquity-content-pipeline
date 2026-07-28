@@ -80,8 +80,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pipeline import ir, review, serialize
-from pipeline.api.results import CODE_CITATION_UNRESOLVED, CODE_SECTION_CONFORMANCE_VIOLATION
+from pipeline import asset_ref, ir, review, serialize
+from pipeline.api.results import (
+    CODE_ASSET_REF_INVALID,
+    CODE_ASSET_REF_UNCONTAINED,
+    CODE_BODY_RAW_MARKUP_FORBIDDEN,
+    CODE_CITATION_UNRESOLVED,
+    CODE_SECTION_CONFORMANCE_VIOLATION,
+)
 from pipeline.canonical import canonical_json_bytes
 from pipeline.claims import ClaimRegistry
 from pipeline.grounding import GroundedFact
@@ -108,6 +114,9 @@ from pipeline.store import AlreadyMaterializedError, WorkspaceStore, is_done, wr
 from pipeline.transport import Runner, TransportResult, invoke_headless
 
 __all__ = [
+    "CODE_ASSET_REF_INVALID",
+    "CODE_ASSET_REF_UNCONTAINED",
+    "CODE_BODY_RAW_MARKUP_FORBIDDEN",
     "CODE_CITATION_UNRESOLVED",
     "CODE_CONTRACT_VIOLATION",
     "CODE_SECTION_CONFORMANCE_VIOLATION",
@@ -489,6 +498,55 @@ def _citation_resolution_note(
     return None
 
 
+def _asset_containment_note(
+    doc: Mapping[str, Any],
+    store: WorkspaceStore,
+    *,
+    runner: serialize.PandocRunner | None = None,
+    binary: str = serialize.PANDOC_BINARY_DEFAULT,
+) -> tuple[str, str] | None:
+    """The DR-7 A rule-2 asset gate: return `(violation-note, result-code)` when a composed leaf
+    body carries raw-markup passthrough OR an image reference that is not a shape-clean, contained
+    `assets/...` path; None when every leaf body is clean (or carries no file-reference-capable
+    construct). The `(note, code)` the compose loop appends to `violations` + sets as the exhaustion
+    code, so an offending body re-asks then blocks and is NEVER persisted.
+
+    Cost containment (mirroring the DR-5 cite gate): a body with NO `![`, `<`, or `\\` marker — a
+    strict SUPERSET of every file-reference-capable construct (Markdown image `![`, raw HTML `<`,
+    raw TeX `\\`) — is skipped with NO pandoc parse, so the whole image-less/raw-less corpus is
+    byte-identical and fires ZERO new pandoc subprocesses. A marked body is parsed ONCE through the
+    SINGLE pinned reader (`serialize.parse_to_ast`): a raw passthrough node (`RawInline`/`RawBlock`,
+    which can smuggle an `<img src=...>` past the Markdown-`Image` walk, B1) is refused OUTRIGHT as
+    `body-raw-markup-forbidden`; otherwise every `Image` URL is resolve-and-contained by
+    `asset_ref.assert_asset_refs_contained` with the containment base == `store.root` — the S5
+    invariant that this base equals increment B's render `--resource-path`/cwd base, so a
+    compose-time pass covers the render-time read. An escape maps to `asset-ref-uncontained` (rule
+    2); a merely empty/dangling reference to `asset-ref-invalid` (a benign broken link, honestly NOT
+    a breach). NEVER mutates `doc` (it parses the leaf bodies, not a persisted copy)."""
+    for body in _doc_leaf_bodies(doc):
+        if "![" not in body and "<" not in body and "\\" not in body:
+            continue  # no file-reference-capable marker → NO pandoc parse → byte-identical
+        ast = serialize.parse_to_ast(body, runner=runner, binary=binary)
+        if asset_ref.has_raw_markup(ast):
+            return (
+                "the composed body contains raw HTML/markup passthrough (e.g. an `<img>` tag or a "
+                "raw-TeX `\\includegraphics{…}`) — a persisted body may not carry ANY raw "
+                "passthrough node; author every image ONLY as a contained Markdown image "
+                "`![alt](assets/…)` (CLAUDE.md rule 2, §10)",
+                CODE_BODY_RAW_MARKUP_FORBIDDEN,
+            )
+        try:
+            asset_ref.assert_asset_refs_contained(
+                asset_ref.iter_image_targets(ast), workspace_root=store.root
+            )
+        except asset_ref.AssetRefError as exc:
+            code = (
+                CODE_ASSET_REF_UNCONTAINED if exc.kind == "uncontained" else CODE_ASSET_REF_INVALID
+            )
+            return (f"[{code}] {exc}", code)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # The writer prompt (§15 contract): template + grounded facts + effective values +
 # Format part structure + the roster context slot (§9.6 — context, never identity).
@@ -783,6 +841,12 @@ def _reask_note(violations: Sequence[str], failure_code: str) -> str:
         return _base_structural_reask_note(latest)
     if failure_code == CODE_CITATION_UNRESOLVED:
         return _citation_reask_note(latest)
+    if failure_code in (
+        CODE_ASSET_REF_UNCONTAINED,
+        CODE_ASSET_REF_INVALID,
+        CODE_BODY_RAW_MARKUP_FORBIDDEN,
+    ):
+        return _asset_reask_note(latest)
     return (
         f"Your previous output was REJECTED by the IR contract: {latest}. Return ONLY the "
         "JSON object in the exact shape the compose context's `structure.output_contract` "
@@ -803,6 +867,21 @@ def _citation_reask_note(latest: str) -> str:
         "plain bracketed Pandoc citation `[@key]` (e.g. `[@s0]`) — NEVER a bare in-text `@key`, "
         "NEVER a braced `[@key]{…}`, and NEVER a key absent from `available_citations` (the "
         "pipeline PROJECTS the reference list; you may not invent one). Return the SAME JSON shape."
+    )
+
+
+def _asset_reask_note(latest: str) -> str:
+    """The corrective note for a DR-7 A asset gate derail (uncontained / invalid / raw-markup): the
+    specific breach + the asset-reference contract. Machine-derived — it invents NO new requirement
+    (§3.1): reference an image ONLY as a contained `assets/...` Markdown path, never raw markup."""
+    return (
+        f"Your previous output had a FORBIDDEN image reference: {latest}. Reference EVERY image "
+        "ONLY as a plain Markdown image with a contained, workspace-relative path — "
+        "`![alt](assets/…)` (nesting is fine, e.g. `![d](assets/diagrams/x.svg)`). NEVER use a "
+        "`..` segment, an absolute `/…` path, a `%`-encoded or backslash path, and NEVER use raw "
+        "HTML/TeX passthrough (e.g. `<img …>`, `\\includegraphics{…}`) — each is refused to keep "
+        "one client's document from reaching another client's files (CLAUDE.md rule 2, §10). "
+        "Return the SAME JSON shape."
     )
 
 
@@ -1132,6 +1211,22 @@ def compose_artifact(
                 violations.append(f"[{exc.code}] {exc}")
                 last_failure_code = CODE_CONTRACT_VIOLATION
                 continue  # bounded re-ask (§21.9)
+            # DR-7 A rule-2 asset-containment gate — the FIRST post-mint gate (M4),
+            # post-`_assemble_ir`, PRE-persist, INSIDE the bounded re-ask. Every composed leaf
+            # body's image references must be shape-clean, CONTAINED `assets/...` paths (containment
+            # base == store.root == B's render resource-path base, S5); raw HTML/markup passthrough
+            # is refused OUTRIGHT (B1). A violation feeds the SAME re-ask; a PERSISTENT one blocks
+            # as the NEW never-persisted asset code (`asset-ref-uncontained` = rule-2 escape,
+            # `asset-ref-invalid` = empty/dangling, `body-raw-markup-forbidden` = raw passthrough) —
+            # a SIBLING of the contract violation. GATED on `![`/`<`/`\` (a SUPERSET of every
+            # file-reference-capable construct): an image-less/raw-less body never parses
+            # (byte-identical, no pandoc subprocess). NEVER mutates `doc`.
+            asset_gate = _asset_containment_note(doc, store, runner=pandoc_runner)
+            if asset_gate is not None:
+                asset_note, asset_code = asset_gate
+                violations.append(asset_note)
+                last_failure_code = asset_code
+                continue  # bounded re-ask (§21.9)
             # DR-4 C5 base structural gate (platform-NEUTRAL), post-mint, INSIDE the bounded re-ask:
             # an ERROR-severity base violation (required-missing / forbidden-present / order) feeds
             # the SAME re-ask with a correction note; a PERSISTENT failure blocks as the NEW
@@ -1172,9 +1267,10 @@ def compose_artifact(
                 review=maybe_review(doc),  # §19: Review 1, post-mint, on the fresh IR
             )
         # Re-ask bound exhausted: caught, and NEVER persisted (§21.9). The exhaustion CODE is the
-        # LAST derail's kind — `section-conformance-violation` (DR-4 base structural gate),
-        # `citation-unresolved` (DR-5 C4 citation gate), else `compose-contract-violation` (the
-        # IR/grounding contract).
+        # LAST derail's kind — an asset gate code (DR-7 A: `asset-ref-uncontained` /
+        # `asset-ref-invalid` / `body-raw-markup-forbidden`), `section-conformance-violation` (DR-4
+        # base structural gate), `citation-unresolved` (DR-5 C4 citation gate), else
+        # `compose-contract-violation` (the IR/grounding contract).
         return ComposeOutcome(
             status="error",
             code=last_failure_code,
