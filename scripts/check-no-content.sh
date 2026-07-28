@@ -50,6 +50,9 @@
 #   workspace-content     tracked path under workspaces/ outside workspace.template/
 #                         (client isolation, CLAUDE.md rule 2/4; no template exemption —
 #                         the path alone names a client, RV-1)
+#   framework-asset       tracked file under the top-level framework asset home assets/
+#                         other than README.md (S3; the emptiness arm below — assets/ is
+#                         outside $SCOPES, so a stray binary would ship UNFLAGGED)
 #
 # TEST INTERFACE (REC-3): --root DIR (default: the repo root) and --mode tracked|all
 # (default: tracked). tests/test_guard.py exercises copied fixture trees with
@@ -179,6 +182,35 @@ while IFS= read -r schema; do
   leak unknown-registry-root "$root_dir" \
     "registry-shaped directory (SV4 marker: a co-located ${root_dir}/_schema.yaml) is NOT in REGISTRY_ROOTS, so its contents are NEVER scanned by this guard — add '${root_dir}' to REGISTRY_ROOTS in scripts/check-no-content.sh so the public-boundary scan covers it (GAP-4a)"
 done < <(list_schema_roots)
+
+# S3 — FRAMEWORK ASSET-HOME EMPTINESS ARM (mixed-media increment A1). The top-level `assets/`
+# directory is the framework example-image / content-asset home (assets/README.md documents the
+# `provenance: framework` convention). It is DELIBERATELY OUTSIDE $SCOPES: binaries carry no
+# `provenance:` frontmatter to default-deny on, and the GAP-4a coverage check keys on a co-located
+# `_schema.yaml` an image home will never have — so a stray client image dropped here would ship in
+# the PUBLIC repo UNFLAGGED (a client-isolation hole, CLAUDE.md rules 2/4). Until a filename/path
+# client-name scan ships, this home admits ONLY its README; this arm makes that emptiness a real,
+# tested MECHANISM rather than hope. Honors --mode exactly like list_files (tracked = git ls-files,
+# all = every file/symlink on disk). Additive — it never alters the existing scope scan above.
+list_asset_home() {
+  if [ "$MODE" = "tracked" ]; then
+    git ls-files -- assets
+  else
+    if [ -d assets ]; then
+      find assets \( -type f -o -type l \)
+    fi
+  fi
+}
+
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  # The convention doc is the only permitted resident of the framework asset home.
+  case "$f" in
+    assets/README.md) continue ;;
+  esac
+  leak framework-asset "$f" \
+    "tracked file under the framework asset home assets/ other than README.md — admits only the convention doc until a client-name path scan ships; a binary here would ship in the public repo UNFLAGGED (CLAUDE.md rules 2/4)"
+done < <(list_asset_home)
 
 while IFS= read -r f; do
   [ -n "$f" ] || continue

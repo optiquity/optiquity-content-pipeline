@@ -425,6 +425,48 @@ def test_nested_schema_manifest_is_not_a_top_level_registry_root(tmp_path):
 
 
 # -----------------------------------------------------------------------------------
+# S3: the framework asset-home emptiness arm (mixed-media increment A1)
+# -----------------------------------------------------------------------------------
+
+
+def test_framework_asset_home_readme_only_passes(tmp_path):
+    """S3: the top-level `assets/` framework example-image home admits ONLY its
+    convention doc — a README-only home is clean (`--mode all`)."""
+    root = tmp_path / "asset-home-clean"
+    (root / "assets").mkdir(parents=True)
+    (root / "assets" / "README.md").write_text(
+        "---\nprovenance: framework\n---\n# synthetic asset-home convention doc\n",
+        encoding="utf-8",
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK:" in proc.stdout
+    assert "LEAK[" not in proc.stdout
+
+
+def test_framework_asset_home_stray_file_leaks(tmp_path):
+    """S3: any tracked file under top-level `assets/` other than README.md would ship in
+    the PUBLIC repo UNFLAGGED (it carries no provenance frontmatter and assets/ is outside
+    the content SCOPES) — the emptiness arm flags it as framework-asset (CLAUDE.md rules
+    2/4). This is the S3 mechanism that turns 'empty at MVP' from hope into a real guard."""
+    root = tmp_path / "asset-home-leak"
+    (root / "assets").mkdir(parents=True)
+    (root / "assets" / "README.md").write_text(
+        "---\nprovenance: framework\n---\n# synthetic asset-home convention doc\n",
+        encoding="utf-8",
+    )
+    (root / "assets" / "logo.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n synthetic non-real image bytes - never a client asset"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LEAK[framework-asset] assets/logo.png" in proc.stdout
+    # README.md is the ONLY permitted resident: the stray binary is the sole finding.
+    leaks = [line for line in proc.stdout.splitlines() if line.startswith("LEAK[")]
+    assert len(leaks) == 1, proc.stdout
+
+
+# -----------------------------------------------------------------------------------
 # CLI contract
 # -----------------------------------------------------------------------------------
 
