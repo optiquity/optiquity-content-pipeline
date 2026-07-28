@@ -940,6 +940,85 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     `ir_version`, §6.3/§12.1 `grounding_posture` cascade, §6.5/§19/§21.7 the advisory audit + abstain) and
     a small `ir.py` module-docstring note — proposed, not yet landed (edits the ratified design SSOT).
 
+### DR-7 — Mixed-media documents: existing images + captions AND generated diagrams in one document — design ratified, not built
+- **Status:** Deferred (not in v1) — **design RATIFIED across ~15 architect passes (base → amendment →
+  grouping → box initial/adversarial); recorded here, NOT yet built.** Build scope **A→D** is plannable;
+  the enclosing-subsystem box (E) is **DEFERRED** behind a grounding-layer rebuild.
+- **The capability (plain English):** put an **existing picture** (a client image asset + its caption)
+  AND a **pipeline-generated diagram** side by side inside **one** document, each declared with a single
+  `{type=…}` section marker (`type=figure` = a brought image; `type=diagram` = a generated one) in the
+  **same outline** the author already writes prose in. One template, one marker vocabulary — no second
+  "diagram file," no "which do I use?" fork.
+- **The honest promise (the whole point): a diagram cannot lie by ADDING, HIDING, or GROUPING.** A
+  generated diagram is not a picture an AI draws freehand — it is a grounded **node/edge list**, and it
+  passes a **HARD, blocking fact-check gate BEFORE any picture is drawn**: every edge must cite a checked
+  source at an honest tier or the document is refused (not warned). It cannot lie by **adding** (no arrow
+  exists that wasn't checked), by **hiding** (the whole checked list is drawn 1:1 — there is no "tidy it
+  up" knob that drops boxes), or by **grouping** (no label or box asserts a membership/name a source fact
+  didn't ground). After the gate passes, deterministic code compiles the list to a **stored SVG asset**
+  at compose-time (content-addressed, so "same input → same bytes" holds; render is pure embedding). A
+  genuinely non-source-claiming sketch is allowed only if it renders with a visible, non-optional
+  "illustrative — not source-checked" stamp.
+- **Build scope A→D (paid once for the capability; adding a value stays one file after):**
+  - **A — Content-asset foundation (MVP; needed by BOTH brought figures and generated diagrams):** a
+    compose-time content-asset store; an **intra-body path containment guard** (a `![alt](path)` cannot
+    reach across into another client's files — blocking at compose, closes a live cross-client read;
+    reuses GAP-9's resolve-and-contain *shape* at path granularity, but is a NEW check); and the two
+    **framework/instance provenance homes** (framework example assets in a public `assets/…`; client
+    assets in `workspaces/<client>/assets/…`, gitignored + isolated) + a shipped
+    `workspaces/workspace.template/assets/.gitkeep`.
+  - **B — Binary-target image embedding (MVP):** build the **deferred filesystem asset loader** (today a
+    loud RAISE, deferred to §17/step-29) + emit `--resource-path` (and `--embed-resources --standalone`
+    for self-contained HTML) in the Presentation lowering, so images actually **embed in HTML/docx** —
+    not merely referenced-by-path (which is all Markdown needs). Stated plainly: HTML/docx images cannot
+    ship until this loader is built.
+  - **C — Flat honest generated diagrams (behind a spike — now RUN and de-risked):** a structured
+    node/edge writer grammar (extends the compose envelope) + the **HARD grounding gate** + a multi-tool
+    auto-render — **Graphviz `dot` (pinned default) / `d2` (selectable) / `auto` (opt-in ONLY, for
+    locked environments)** — compiled to a stored SVG + the `diagram-styles/` **referenced registry** +
+    exactly **one** honesty-safe knob, `tool` (it changes only HOW the same checked boxes/arrows are
+    drawn, never WHICH exist). The masking knobs `detail` / `altitude` / `connectivity` were **CUT** —
+    each could make a diagram quietly lie past an edge-only gate; over-granularity is fixed honestly at
+    authoring (write at a citable altitude), not by a hiding dial. Mermaid is dropped (renders as raw
+    code in 3 of 4 outputs; not groundable; non-deterministic).
+  - **D — Honest BADGE grouping (fast-follow, behind its own small spike):** each node carries a small
+    **badge** naming its cited subsystem — a **grounded group name + grounded membership**, both run
+    through the existing existence+tier gate — plus a **mandatory plain-text legend** ("a badge marks a
+    cited group; it is not a claim that badged nodes interact; an un-badged node's group is simply not
+    shown"). **No enclosing box.** Strictly additive: an ungrouped diagram is byte-identical to a flat
+    one, so sequencing D after C costs zero rework.
+- **DEFERRED — E (the enclosing subsystem box):** the one thing a badge cannot do — a **closed "these are
+  ALL and ONLY the members" boundary claim.** DEFERRED (plain reason): **today's grounding layer cannot
+  produce complete, EXTRACTED-tier membership to back a box, so enforcing one would fake "all members."**
+  Verified: source queries are **budget-truncated and ranked** (`graphify.py:156`, default budget 2000 +
+  a `truncated` marker), so an "enumerate all members" answer is really a bounded query window, not "all
+  the source knows"; the honesty ledger records only **that** a fact exists (not what it says) and facts
+  are **edges, not node-memberships** (`graphify.py:50-54`); and the only grouping datum, `community=`,
+  is an **algorithmic inference below the EXTRACTED publish floor** (`grounding.py:387`). An enforced box
+  on this substrate certifies a completeness nobody checked — the exact masking the maintainer distrusts,
+  and the adversarial pass's verdict was **stop at badges (D).** E needs a **grounding-layer rebuild**
+  (structured enumerable membership across every adapter + a set-equality gate + a cluster-determinism
+  spike) AND a real, named closed-world need; build it THEN, re-derived from scratch. The badge (D) is
+  the honest place to stop.
+- **Identity / boundary posture (design-level, for the future build):** a generated SVG is a
+  **content-addressed stored asset** folded into render identity by content hash (the existing asset
+  mechanism); the `(tool, version)` pin rides the author-time compile provenance (an env change re-mints
+  on the next re-compose, like the existing asset-version posture), NOT the serialize preimage — so no
+  new `artifact-id` component is introduced by the design. `auto` is opt-in precisely because keying SVG
+  bytes on the ambient install-set would make identity machine-dependent.
+- **Design status (2026-07-24 → 07-27) — RATIFIED (design; not built):** designed via a base architect
+  pass (initial → adversarial → reconciliation), an amendment pass (multi-tool + diagram knobs), a
+  grouping pass (box vs badge), and a box pass (initial → adversarial), all read-only against `main @
+  cc42c54`. The load-bearing records (3 reconciliations + the 2 box records) are archived at
+  `docs/archive/design-record/mixed-media/` with a `README.md` index naming each record's role and the
+  final decision; the code citations resolve there. **Full build order:** `A → B → C → D`, **E deferred.**
+- **Not built:** the whole feature (A–D) and E — this is a recorded design decision, not code. The
+  figure/image half (A+B) is READY FOR THE PLANNER; C's spike has been run (no open fork); D carries its
+  own small required determinism/citation spike.
+- **Source:** maintainer requirement — mixed-media documents (existing images + captions plus generated
+  diagrams in one document), with the explicit north star that a generated diagram must never be able to
+  lie (no invented arrow may ship dressed as a checked fact).
+
 ---
 
 ## Resolved
