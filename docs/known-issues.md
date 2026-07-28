@@ -940,11 +940,11 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     `ir_version`, §6.3/§12.1 `grounding_posture` cascade, §6.5/§19/§21.7 the advisory audit + abstain) and
     a small `ir.py` module-docstring note — proposed, not yet landed (edits the ratified design SSOT).
 
-### DR-7 — Mixed-media documents: existing images + captions AND generated diagrams in one document — design ratified; increment A (asset foundation) BUILT, B–D not built
+### DR-7 — Mixed-media documents: existing images + captions AND generated diagrams in one document — design ratified; increments A+B BUILT (asset foundation + binary-target image embedding), C–D not built
 - **Status:** Partially built — **design RATIFIED across ~15 architect passes (base → amendment →
-  grouping → box initial/adversarial); increment A (the asset foundation) is now BUILT; B–D remain
-  designed-not-built.** Build scope **A→D** is plannable; the enclosing-subsystem box (E) is **DEFERRED**
-  behind a grounding-layer rebuild.
+  grouping → box initial/adversarial); increments A (the asset foundation) AND B (binary-target image
+  embedding) are now BUILT; C–D remain designed-not-built.** Build scope **A→D** is plannable; the
+  enclosing-subsystem box (E) is **DEFERRED** behind a grounding-layer rebuild.
 - **The capability (plain English):** put an **existing picture** (a client image asset + its caption)
   AND a **pipeline-generated diagram** side by side inside **one** document, each declared with a single
   `{type=…}` section marker (`type=figure` = a brought image; `type=diagram` = a generated one) in the
@@ -972,12 +972,30 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     `workspaces/workspace.template/assets/.gitkeep`. **Delivered:** the two asset homes + the
     content-addressed store + the compose-time client-isolation containment guard (refuses any body image
     reference escaping the client's own `assets/`, incl. `..`/absolute/`%2e%2e`/backslash/NUL/raw-`<img>`/symlink)
-    + the raw-markup ban; suite 3001→3055; adversarially reviewed. **B/C/D remain designed-not-built.**
-  - **B — Binary-target image embedding (MVP):** build the **deferred filesystem asset loader** (today a
-    loud RAISE, deferred to §17/step-29) + emit `--resource-path` (and `--embed-resources --standalone`
-    for self-contained HTML) in the Presentation lowering, so images actually **embed in HTML/docx** —
-    not merely referenced-by-path (which is all Markdown needs). Stated plainly: HTML/docx images cannot
-    ship until this loader is built.
+    + the raw-markup ban; suite 3001→3055; adversarially reviewed. **B is now BUILT (below); C/D remain designed-not-built.**
+  - **B — Binary-target image embedding (MVP) — BUILT:** (commits `17a8e8e` C1 real filesystem asset
+    loader fenced to `presentations/` + `--resource-path` plumbing (replaces both deferred RAISEs),
+    `6db2ec1` C2 figure embedding + render-time isolation re-gate + embed-gated content-hash identity
+    fold + discovery carry-forward, `8469980` C3 the A↔B base-equality contract drift-catcher, + this C4
+    docs/SSOT sync) the once-deferred filesystem asset loader is now real (was a loud RAISE, deferred to
+    §17/step-29) and **fenced to `presentations/`** (rule-2 client isolation — a styling file can never
+    reach into another client's `workspaces/…`); the Presentation lowering emits `--embed-resources
+    --standalone` for html5 and native `--resource-path` embedding for docx, so a client figure now
+    **embeds in HTML/docx** (a `data:` image in a self-contained HTML document, a real `word/media/` part
+    in the .docx) rather than surviving only as a path — Markdown keeps referencing by path (all it
+    needs), plain text keeps showing the caption only. **Delivered:** the two deferred asset loaders
+    replaced by one `presentations/`-fenced filesystem loader; the `--resource-path`/`--embed-resources
+    --standalone` (html5) + native-embed (docx) lowering so images embed in html/docx; a **render-time
+    FULL A-gate re-check** on the persisted AST before any embed flag is emitted (every image target +
+    the raw-markup refusal — a tampered `../other-client` document fails loudly at render and its bytes
+    are never copied); and an **embed-gated content-hash identity fold** (`asset_embed_version`
+    OMIT-WHEN-ABSENT, mirroring the C7 `csl` pattern exactly) so an edited figure re-mints the html/docx
+    deliverable while the by-path Markdown id is byte-identical (image-less and md renders unperturbed —
+    zero churn). Suite 3055→3102; adversarially reviewed (F1–F7 + FWD reconciled).
+    **Carry-forward to C (F4/FWD):** SVG-in-docx embedding is UNVERIFIED by B (PNG proven only) — C's
+    spike MUST confirm it under the pinned pandoc (may need `rsvg-convert`); and the EXTERNAL hand-off
+    does not yet fold body-figure content (`assets_embedded` is internal html5/docx only) — extend the
+    fold when external rendering lands. **C/D remain designed-not-built; E deferred.**
   - **C — Flat honest generated diagrams (behind a spike — now RUN and de-risked):** a structured
     node/edge writer grammar (extends the compose envelope) + the **HARD grounding gate** + a multi-tool
     auto-render — **Graphviz `dot` (pinned default) / `d2` (selectable) / `auto` (opt-in ONLY, for
@@ -1018,9 +1036,10 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   cc42c54`. The load-bearing records (3 reconciliations + the 2 box records) are archived at
   `docs/archive/design-record/mixed-media/` with a `README.md` index naming each record's role and the
   final decision; the code citations resolve there. **Full build order:** `A → B → C → D`, **E deferred.**
-- **Not built:** B–D and E — a recorded design decision, not code (increment A is now BUILT, above). The
-  figure/image half's remaining piece (B) is READY FOR THE PLANNER; C's spike has been run (no open fork);
-  D carries its own small required determinism/citation spike.
+- **Not built:** C–D and E — a recorded design decision, not code (increments A+B are now BUILT, above).
+  The figure/image half (A+B) is now COMPLETE — brought figures embed in html/docx; C's spike has been
+  run (no open fork) and reuses B's loader/resource-path/embed/identity-fold machinery unchanged; D
+  carries its own small required determinism/citation spike.
 - **Source:** maintainer requirement — mixed-media documents (existing images + captions plus generated
   diagrams in one document), with the explicit north star that a generated diagram must never be able to
   lie (no invented arrow may ship dressed as a checked fact).

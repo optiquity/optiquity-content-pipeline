@@ -1903,6 +1903,32 @@ survive. The old never-block text must not re-enter from any archived source.
   render-digest churn) and a citing render re-mints its deliverable loudly (FR7.3). The two version
   keys are DISJOINT and INDEPENDENT (section-attr is writer-gated, citeproc content-driven). No
   `schema_version` bump.
+- **DR-7 increment B — binary-target image embedding + the render-time isolation re-gate + the
+  embed-gated content-hash fold (BUILT; `docs/known-issues.md`).** Increment B makes a client body
+  figure carry its actual bytes into the two BINARY internal outputs. The Presentation lowering emits
+  **`--embed-resources --standalone`** for html5 (the image inlines as a `data:` URI in a self-contained
+  document) and native **`--resource-path`** embedding for docx (a real `word/media/` part); `markdown`
+  keeps the figure BY REFERENCE (`![](assets/…)` passthrough) and `plain` shows the caption only — so a
+  `--resource-path` is emitted ONLY for an EMBED writer (html5/docx). The once-deferred filesystem asset
+  loader is now real and **FENCED to `presentations/`** (rule-2 client isolation — a styling `.csl`/CSS
+  file resolves against the repo root but is refused unless it lands inside `<root>/presentations`, so a
+  tampered/legacy entry can never pull another client's `workspaces/…` file). Because embedding OPENS and
+  COPIES whatever a figure points at, before ANY embed flag is emitted the render leg **re-runs A's FULL
+  compose-time containment gate** on the persisted AST — every image target (not just the tidy `assets/…`
+  subset) plus the raw-markup refusal — and REFUSES the whole render if anything is off, so a tampered
+  `../other-client` document fails loudly at render (`asset-ref-uncontained` / `body-raw-markup-forbidden`)
+  and its bytes are never copied; the file pandoc opens is provably the file A proved safe. The two-base
+  `--resource-path` is order-pinned `(store.root, repo_root)` (client figure FIRST, so a same-named
+  framework asset can never shadow it; the repo-root base preserves a co-occurring `--csl` resolution).
+  Identity is honest and captured **OMIT-WHEN-ABSENT** (the C7 `csl` pattern exactly): an
+  `asset_embed_version` tool-bundle key plus the embedded figures' content hashes join the
+  serialize-inputs preimage ONLY for an embedding html5/docx render, so an edited figure re-mints the
+  html/docx deliverable loudly (FR7.3) while the by-path `markdown` id is byte-identical (image-less and
+  md/plain renders unperturbed — zero churn), and `discovery.py` re-derives `assets_embedded` from the
+  stored bundle so an embedded deliverable never phantom-drifts. No `schema_version`/`ir_version` bump.
+  (C — generated diagrams — reuses this loader/resource-path/embed/identity-fold machinery UNCHANGED; two
+  carry-forwards remain: SVG-in-docx embedding is a C-spike unproven by B, and the external hand-off's
+  body-figure fold is deferred — `docs/known-issues.md` DR-7 F4/FWD.)
 - **One AST per physical output document; the pipeline orchestrates N** (RI9): the per-part
   `packaging_hint` decides — `in-document` parts co-render into one file/one AST (slides + notes →
   one pptx); `standalone` parts are N files/N ASTs, each `(artifact-id, part-id)`-addressable. The
