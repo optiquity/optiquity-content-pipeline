@@ -3,16 +3,27 @@
 INERT LIBRARY. This module is imported by NOTHING on the compose path yet: a ``{type=diagram}``
 section still fails closed via ``sections.UnknownSectionTypeError`` (``"diagram"`` is not in
 ``SECTION_TYPES``) until the C4 flip wires the transform. C1 shipped the pure GRAMMAR half; C2
-adds :func:`gate_diagram` — the HARD grounding gate — still with no I/O, no subprocess, and no
-``dot``/``d2`` compile (C3). The gate is a LIBRARY function, called only by its own test today;
-C4 runs it inside ``compose`` BEFORE any picture is drawn, so a diagram that would lie is REFUSED
-before a single SVG byte exists. Later commits layer onto ``DiagramSpec``:
+added :func:`gate_diagram` — the HARD grounding gate; C3 (THIS commit) adds the ``dot``/``d2``
+compiler (:func:`to_dot`/:func:`to_d2`/:func:`compile_diagram`) — the FIRST subprocess in this
+module, shelling to the pinned ``dot``/``d2`` binary (the ``serialize._subprocess_pandoc`` seam,
+mirrored) to render a gated spec to SVG BYTES. Every function here is a LIBRARY function called
+only by its own test today; C4 runs the gate + compile inside ``compose`` BEFORE any picture is
+referenced, then stores the returned bytes via ``store.commit_asset(..., subdir="diagrams",
+extension="svg")`` — so a diagram that would lie is REFUSED before a single SVG byte is stored.
+The pieces layered onto ``DiagramSpec``:
 
-* C2 (THIS commit) runs the HARD grounding gate (:func:`gate_diagram`) over ``spec.edges``:
-  per-edge REF-COUNT coverage (re-scanning each edge's verbatim ``citation_span`` with
-  :func:`pipeline.ir.extract_fact_refs`) + the reused :func:`pipeline.ir.validate_refs` tier
-  check + always-on endpoint integrity;
-* C3 compiles the same ``DiagramSpec`` to a content-addressed SVG.
+* C2 runs the HARD grounding gate (:func:`gate_diagram`) over ``spec.edges``: per-edge REF-COUNT
+  coverage (re-scanning each edge's verbatim ``citation_span`` with
+  :func:`pipeline.ir.extract_fact_refs`) + the reused :func:`pipeline.ir.validate_refs` tier check
+  + always-on endpoint integrity;
+* C3 (THIS commit) compiles the same ``DiagramSpec`` to deterministic SVG bytes
+  (:func:`compile_diagram`), MANDATORY-ESCAPING every node/edge label so an LLM-authored label can
+  never inject a node or edge (BLOCKER-2 — the ``-Tcanon``/self-compile step is a malformed-source
+  catch, explicitly NOT the injection defense), and baking the reader-visible
+  ``illustrative — not source-checked`` stamp into an illustrative diagram's SVG (SERIOUS-1(a); the
+  alt-text half is C4/SERIOUS-1(b)). The compile is byte-deterministic (same spec -> byte-identical
+  SVG), so the content hash keys the stored ``assets/diagrams/<hash>.svg``; ``(tool, version)`` is
+  returned as author-time provenance, NOT identity-bearing (§O3).
 
 Grammar (strict, line-oriented — a parseable list, NOT a free-text DSL)::
 
@@ -50,7 +61,8 @@ REFUSALS. Every malformed list raises a typed :class:`DiagramGrammarError` (a
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+import subprocess
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -58,15 +70,27 @@ from typing import Any
 from pipeline import ir
 
 __all__ = [
+    "D2_BINARY_DEFAULT",
+    "DOT_BINARY_DEFAULT",
+    "ILLUSTRATIVE_STAMP",
     "POSTURE_GROUNDED",
     "POSTURE_ILLUSTRATIVE",
+    "TOOL_D2",
+    "TOOL_DOT",
+    "DiagramArtifact",
+    "DiagramCompileError",
     "DiagramEdge",
     "DiagramGrammarError",
     "DiagramGroundingError",
     "DiagramNode",
+    "DiagramRunOutcome",
     "DiagramSpec",
+    "DiagramToolUnavailableError",
+    "compile_diagram",
     "gate_diagram",
     "parse_diagram",
+    "to_d2",
+    "to_dot",
 ]
 
 #: The two recognized diagram postures. ``grounded`` (the fail-closed default) subjects every edge
@@ -469,3 +493,247 @@ def gate_diagram(spec: DiagramSpec, ledger: Mapping[str, Any]) -> None:
         # (a) TIER-HONESTY — the REUSED ir check; runs AFTER coverage, so validate_refs(()) is
         #     unreachable. Raises ir.UnknownFactError (unknown id) / ir.TierViolation (bad tier).
         ir.validate_refs(refs, ledger)
+
+
+# --------------------------------------------------------------------------- #
+# C3 — the dot/d2 compiler: escaped source -> deterministic SVG bytes.         #
+# (INERT: called only by this module's own test today; C4 wires it in.)        #
+# --------------------------------------------------------------------------- #
+
+#: The two supported diagram tools + their pinned binaries. ``dot`` is the default (the amendment
+#: pin); C5 wires the selectable ``tool`` knob. Both are hierarchical layout engines run on a
+#: content-addressed SVG, so a tool swap can only change bytes/hash, never add/drop/rename an edge.
+TOOL_DOT = "dot"
+TOOL_D2 = "d2"
+DOT_BINARY_DEFAULT = "dot"
+D2_BINARY_DEFAULT = "d2"
+_TOOL_BINARY = {TOOL_DOT: DOT_BINARY_DEFAULT, TOOL_D2: D2_BINARY_DEFAULT}
+
+#: The MANDATORY, reader-visible illustrative marker (SERIOUS-1). C3 bakes it into an illustrative
+#: diagram's SVG (this module); C4 ALSO writes it into the Markdown alt/caption so it shows on
+#: plain-text/alt-text — the SVG bake alone is invisible to the ``plain`` writer (SERIOUS-1(b)).
+ILLUSTRATIVE_STAMP = "illustrative — not source-checked"
+
+
+class DiagramToolUnavailableError(ir.IRError):
+    """The pinned ``dot``/``d2`` binary could not be executed (§C C3).
+
+    A LOUD refusal (never a silent no-op / empty SVG), the diagram-compiler twin of
+    :class:`pipeline.serialize.PandocUnavailableError` — the same PA-12 presence discipline. Raised
+    by the real runner when the tool binary is absent; C4/C5 surface it as an install signal.
+    """
+
+    code = "diagram-tool-unavailable"
+
+
+class DiagramCompileError(ir.IRError):
+    """The tool RAN but rejected the emitted source / failed to render (§C C3).
+
+    Distinct from :class:`DiagramToolUnavailableError` (binary missing): the tool is present but the
+    pre-store ``dot -Tcanon`` / d2 self-compile step (a MALFORMED-SOURCE catch, NOT the injection
+    defense — escaping is) or the SVG render exited non-zero. In practice the escaped emitter never
+    trips this; it is defense-in-depth over a directly-broken source.
+    """
+
+    code = "diagram-compile-failed"
+
+
+@dataclass(frozen=True)
+class DiagramRunOutcome:
+    """One diagram-tool subprocess result: BYTE stdout (the SVG), text stderr (the tool log)."""
+
+    returncode: int
+    stdout: bytes
+    stderr: str
+
+
+#: The process seam (default ``runner=None`` -> :func:`_subprocess_diagram`). ``(binary, args,
+#: stdin_bytes) -> DiagramRunOutcome`` — injectable so a test can stub the tool, no subprocess.
+DiagramRunner = Callable[[str, tuple[str, ...], bytes], "DiagramRunOutcome"]
+
+
+@dataclass(frozen=True, slots=True)
+class DiagramArtifact:
+    """A compiled diagram: the SVG bytes + the author-time compile provenance.
+
+    * ``svg``     — the rendered SVG bytes (byte-deterministic for a given spec+tool+version). C4
+      stores these via ``store.commit_asset(svg, subdir="diagrams", extension="svg")``, so the
+      content hash IS the identity — ``assets/diagrams/<sha256hex>.svg``.
+    * ``tool``    — ``"dot"`` / ``"d2"``, the engine that produced the bytes.
+    * ``version`` — the tool version string (``dot`` 15.1.0 / ``d2`` 0.7.1). Recorded as author-time
+      provenance ONLY (§O3); it is NOT part of the render preimage/identity (a tool upgrade re-mints
+      a new content hash = new identity, exactly as the design wants — MINOR-4).
+    """
+
+    svg: bytes
+    tool: str
+    version: str
+
+
+def _escape_label(text: str) -> str:
+    r"""Escape an LLM-authored label for a ``dot``/``d2`` DOUBLE-QUOTED string (BLOCKER-2).
+
+    Both tools read a ``"..."``-wrapped label as a C-style quoted string, so ONE escape neutralizes
+    both: backslash -> ``\\`` FIRST (so a literal ``\N``/``\l``/``\n`` can never become a tool
+    escape/justify), ``"`` -> ``\"`` (so a label can never close its own quote and inject the tokens
+    after it), and every control char (newline/CR/tab, anything < 0x20, or DEL) -> a single space
+    (so a label can never open a new line / shape / edge). With no surviving unescaped ``"`` a
+    metacharacter like ``->``, ``{``, or ``;`` is inert literal text INSIDE the quotes — THIS is the
+    injection defense; the later ``-Tcanon``/self-compile is only a malformed-source catch. Proven
+    against dot 15.1.0 + d2 0.7.1: an all-metacharacter label renders as literal text and the graph
+    keeps EXACTLY the spec's node/edge count.
+    """
+    out: list[str] = []
+    for ch in text:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch in "\n\r" or ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _quoted(text: str) -> str:
+    """A double-quoted, escaped ``dot``/``d2`` string literal (shared — both use the same form)."""
+    return f'"{_escape_label(text)}"'
+
+
+def to_dot(spec: DiagramSpec) -> str:
+    r"""Emit Graphviz DOT source for ``spec`` — every node/edge label ESCAPED (BLOCKER-2). PURE.
+
+    Hierarchical ``dot`` engine, ``rankdir=TB`` (NOT neato/fdp). Node ids — already restricted to
+    ``[A-Za-z0-9_][A-Za-z0-9_-]*`` by :func:`parse_diagram` — are quoted so a hyphenated id is legal
+    DOT; every LLM-authored label is escaped via :func:`_escape_label`. An illustrative spec bakes
+    the MANDATORY ``illustrative — not source-checked`` graph caption (SERIOUS-1(a)) at the bottom —
+    it cannot be emitted without it. String in, string out; no I/O.
+    """
+    lines = ["digraph G {", "  rankdir=TB;"]
+    if spec.posture == POSTURE_ILLUSTRATIVE:
+        lines.append(f"  label={_quoted(ILLUSTRATIVE_STAMP)};")
+        lines.append('  labelloc="b";')
+    for node in spec.nodes:
+        lines.append(f"  {_quoted(node.id)} [label={_quoted(node.label)}];")
+    for edge in spec.edges:
+        head = f"  {_quoted(edge.src_id)} -> {_quoted(edge.dst_id)}"
+        if edge.label is not None:
+            lines.append(f"{head} [label={_quoted(edge.label)}];")
+        else:
+            lines.append(f"{head};")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def to_d2(spec: DiagramSpec) -> str:
+    r"""Emit D2 source for ``spec`` — every node/edge label a double-quoted, ESCAPED string. PURE.
+
+    Node ids and labels are double-quoted (the d2-0.7.1 quoted-string form, empirically confirmed):
+    :func:`_escape_label` neutralizes ``"``, ``\``, and every control char so a label can never open
+    a new shape or connection. An illustrative spec appends the MANDATORY
+    ``illustrative — not source-checked`` stamp as a borderless ``shape: text`` near the bottom
+    (SERIOUS-1(a)). String in, string out; no I/O.
+    """
+    lines: list[str] = []
+    for node in spec.nodes:
+        lines.append(f"{_quoted(node.id)}: {_quoted(node.label)}")
+    for edge in spec.edges:
+        conn = f"{_quoted(edge.src_id)} -> {_quoted(edge.dst_id)}"
+        lines.append(f"{conn}: {_quoted(edge.label)}" if edge.label is not None else conn)
+    if spec.posture == POSTURE_ILLUSTRATIVE:
+        stamp = _quoted(ILLUSTRATIVE_STAMP)
+        lines.append(f"_diagram_stamp: {stamp} {{shape: text; near: bottom-center}}")
+    return "\n".join(lines) + "\n"
+
+
+def _subprocess_diagram(binary: str, args: tuple[str, ...], stdin: bytes) -> DiagramRunOutcome:
+    """The real runner: list-form exec (no shell), stdin-fed BYTES, on the pinned binary.
+
+    Mirrors :func:`pipeline.serialize.run_pandoc_bytes` (serialize.py) — a missing binary raises the
+    loud :class:`DiagramToolUnavailableError` (never a silent no-op), the same PA-12 presence gate
+    the pandoc seam uses. Deterministic: no timestamps/env leak into stdout for either tool.
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603 — list-form, fixed binary slot, no shell
+            [binary, *args],
+            input=stdin,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise DiagramToolUnavailableError(
+            f"{DiagramToolUnavailableError.code}: executable {binary!r} not found — install the "
+            "pinned diagram tool (dot 15.1.0 / d2 0.7.1); never a silent no-op (§17 PA-12 pattern)"
+        ) from exc
+    return DiagramRunOutcome(
+        completed.returncode, completed.stdout, completed.stderr.decode("utf-8", "replace")
+    )
+
+
+_DOT_VERSION_RE = re.compile(r"version\s+(?P<v>\S+)")
+
+
+def _tool_version(tool: str, binary: str, run: DiagramRunner) -> str:
+    """The tool's version string — author-time provenance only (NOT identity-bearing, §O3).
+
+    ``dot -V`` prints ``dot - graphviz version 15.1.0 (...)`` to STDERR; ``d2 --version`` prints
+    ``0.7.1`` to STDOUT. Best-effort: falls back to the raw first line if the shape ever changes.
+    """
+    if tool == TOOL_DOT:
+        out = run(binary, ("-V",), b"")
+        text = out.stderr.strip() or out.stdout.decode("utf-8", "replace").strip()
+        match = _DOT_VERSION_RE.search(text)
+        return match.group("v") if match else text
+    out = run(binary, ("--version",), b"")
+    return out.stdout.decode("utf-8", "replace").strip() or out.stderr.strip()
+
+
+def compile_diagram(
+    spec: DiagramSpec, *, tool: str = TOOL_DOT, runner: DiagramRunner | None = None
+) -> DiagramArtifact:
+    """Compile a gated ``spec`` to deterministic SVG bytes with ``tool`` (§C C3). INERT LIBRARY.
+
+    The caller (C4) has ALREADY run :func:`gate_diagram`; this function only draws. Steps mirror the
+    plan: (1) emit ESCAPED source for ``tool`` (:func:`to_dot`/:func:`to_d2` — the injection
+    defense, BLOCKER-2); (2) pre-store validate (``dot -Tcanon`` / d2's own compile) as a
+    malformed-source catch only; (3) render to SVG via the pinned binary through the ``runner`` seam
+    — a missing
+    binary raises the loud :class:`DiagramToolUnavailableError`; (4) an illustrative spec already
+    carries its baked stamp from step 1 (SERIOUS-1(a)); (5) return the bytes + ``(tool, version)``
+    author-time provenance. The bytes are byte-deterministic for a given spec+tool, so C4's
+    ``store.commit_asset(artifact.svg, subdir="diagrams", extension="svg")`` is content-addressed.
+
+    ``tool`` defaults to ``"dot"`` (the C4 hard-pin / C5 default); ``runner`` defaults to the real
+    subprocess seam. Raises :class:`DiagramCompileError` if the tool rejects the source or fails to
+    render, :class:`DiagramToolUnavailableError` if the binary is absent.
+    """
+    if tool not in _TOOL_BINARY:
+        raise DiagramCompileError(
+            f"{DiagramCompileError.code}: unknown diagram tool {tool!r} "
+            f"(expected one of {sorted(_TOOL_BINARY)})"
+        )
+    run = runner if runner is not None else _subprocess_diagram
+    binary = _TOOL_BINARY[tool]
+    if tool == TOOL_DOT:
+        source_bytes = to_dot(spec).encode("utf-8")
+        # (2) pre-store validate — MALFORMED-SOURCE catch ONLY, explicitly NOT the injection defense
+        #     (escaping in to_dot is; -Tcanon errors only on a genuine syntax break).
+        canon = run(binary, ("-Tcanon",), source_bytes)
+        if canon.returncode != 0:
+            raise DiagramCompileError(
+                f"{DiagramCompileError.code}: `dot -Tcanon` rejected the emitted source "
+                f"(exit {canon.returncode}): {canon.stderr.strip()}"
+            )
+        rendered = run(binary, ("-Tsvg",), source_bytes)
+    else:  # TOOL_D2 — the single self-compile IS the malformed-source validation
+        source_bytes = to_d2(spec).encode("utf-8")
+        rendered = run(binary, ("-", "-"), source_bytes)
+    if rendered.returncode != 0:
+        raise DiagramCompileError(
+            f"{DiagramCompileError.code}: `{tool}` failed to render the diagram "
+            f"(exit {rendered.returncode}): {rendered.stderr.strip()}"
+        )
+    return DiagramArtifact(
+        svg=rendered.stdout, tool=tool, version=_tool_version(tool, binary, run)
+    )

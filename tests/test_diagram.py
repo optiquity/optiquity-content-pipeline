@@ -1,7 +1,8 @@
-"""Increment C, Commit C1+C2 tests: `pipeline/diagram.py` — the INERT {type=diagram} node/edge
-grammar + parser (C1) and the HARD grounding gate (C2).
+"""Increment C, Commit C1+C2+C3 tests: `pipeline/diagram.py` — the INERT {type=diagram} node/edge
+grammar + parser (C1), the HARD grounding gate (C2), and the dot/d2 compiler (C3).
 
-No LLM, no subprocess, no network — pure grammar + the pure gate. The suite pins:
+C1+C2 are pure (no LLM/subprocess/network); C3 shells to the REAL `dot`/`d2` (both installed:
+dot 15.1.0, d2 0.7.1) — no LLM, no network. The suite pins:
 
 - a valid grounded list parses (nodes, edges, fail-closed posture) — the plan's literal
   verification (`2 1 grounded '[routes]{.EXTRACTED data-fact="f1"}'`);
@@ -21,26 +22,46 @@ No LLM, no subprocess, no network — pure grammar + the pure gate. The suite pi
   the SAME `ir.UnknownFactError` / `ir.TierViolation` the IR body gate raises (via the promoted
   `ir.validate_refs`). Endpoint integrity fires for BOTH postures; the illustrative bypass skips
   grounding ONLY for the explicit token;
+- C3 — the dot/d2 compiler (`to_dot`/`to_d2`/`compile_diagram`): a gated spec compiles to
+  BYTE-DETERMINISTIC SVG for both tools; a tool switch changes bytes (hence the content hash);
+  BLOCKER-2 — a node/edge label full of `"`, a newline, `->`, `{`, `;` renders as LITERAL text and
+  the compiled graph keeps EXACTLY the spec's node/edge count (no injected node/edge) for BOTH
+  tools; SERIOUS-1(a) — an illustrative spec bakes the reader-visible stamp into the SVG; a
+  malformed source is caught by `-Tcanon` (`DiagramCompileError`) and a missing binary raises the
+  loud `DiagramToolUnavailableError`; the SVG bytes store cleanly under `assets/diagrams/<hash>.svg`
+  via `commit_asset` (the C4 contract, exercised here);
 - INERTNESS: `{type=diagram}` still fails closed via `sections.UnknownSectionTypeError` — nothing
-  added to `SECTION_TYPES`; the gate is imported by this test only, no live path touched.
+  added to `SECTION_TYPES`; the gate + compiler are imported by this test only, no live path.
 """
 
 from __future__ import annotations
 
+import re
+import subprocess
+
 import pytest
 
-from pipeline import ir, sections
+from pipeline import diagram, ir, sections
+from pipeline.canonical import sha256_hex
 from pipeline.diagram import (
+    ILLUSTRATIVE_STAMP,
     POSTURE_GROUNDED,
     POSTURE_ILLUSTRATIVE,
+    DiagramArtifact,
+    DiagramCompileError,
     DiagramEdge,
     DiagramGrammarError,
     DiagramGroundingError,
     DiagramNode,
     DiagramSpec,
+    DiagramToolUnavailableError,
+    compile_diagram,
     gate_diagram,
     parse_diagram,
+    to_d2,
+    to_dot,
 )
+from pipeline.store import WorkspaceStore
 
 NODES = "- gw: Gateway\n- auth: Auth\n"
 EDGE = '- gw -> auth [routes]{.EXTRACTED data-fact="f1"}\n'
@@ -437,3 +458,232 @@ def test_diagram_type_still_fails_closed_in_sections():
     assert "diagram" not in sections.SECTION_TYPES
     with pytest.raises(sections.UnknownSectionTypeError):
         sections.parse_sections("## Architecture {type=diagram}\n\nbody\n")
+
+
+# --------------------------------------------------------------------------- #
+# C3 — the dot/d2 compiler (real dot 15.1.0 / d2 0.7.1; no LLM, no network).   #
+# --------------------------------------------------------------------------- #
+
+TOOLS = ["dot", "d2"]
+
+
+def _dot_plain_counts(spec: DiagramSpec) -> tuple[int, int]:
+    """Re-run `dot -Tplain` on the emitted source; count top-level node/edge RECORDS. `-Tplain`
+    emits exactly one `node `/`edge ` line per real element regardless of label content (labels are
+    quoted on the same line), so an injected element would show as an extra line — the authoritative
+    BLOCKER-2 count."""
+    plain = subprocess.run(
+        ["dot", "-Tplain"], input=to_dot(spec).encode("utf-8"), capture_output=True, check=True
+    ).stdout.decode("utf-8")
+    nodes = sum(1 for line in plain.splitlines() if line.startswith("node "))
+    edges = sum(1 for line in plain.splitlines() if line.startswith("edge "))
+    return nodes, edges
+
+
+def _d2_shape_count(svg: bytes) -> int:
+    """Count d2 shapes in the rendered SVG — one `class="shape"` per real node (the plan's d2
+    invariant: shape count == spec node count; an injected shape would bump it)."""
+    return svg.count(b'class="shape"')
+
+
+# ---- deterministic compile + tool switch ----
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+def test_grounded_spec_compiles_to_byte_deterministic_svg(tool):
+    spec = parse_diagram(GROUNDED)
+    first = compile_diagram(spec, tool=tool)
+    second = compile_diagram(spec, tool=tool)
+    assert isinstance(first, DiagramArtifact)
+    assert first.svg == second.svg  # byte-identical across two runs (content-addressable)
+    assert first.svg[:5] == b"<?xml"  # it is an SVG document
+    assert first.tool == tool
+
+
+def test_compile_records_tool_and_version_provenance():
+    dot = compile_diagram(parse_diagram(GROUNDED), tool="dot")
+    d2 = compile_diagram(parse_diagram(GROUNDED), tool="d2")
+    # (tool, version) is author-time provenance (NOT identity-bearing): both tools self-report.
+    assert dot.tool == "dot" and dot.version.startswith("15.")
+    assert d2.tool == "d2" and d2.version.startswith("0.7")
+
+
+def test_tool_switch_changes_bytes_hence_hash():
+    spec = parse_diagram(GROUNDED)
+    dot = compile_diagram(spec, tool="dot")
+    d2 = compile_diagram(spec, tool="d2")
+    assert dot.svg != d2.svg  # different engine -> different bytes
+    assert sha256_hex(dot.svg) != sha256_hex(d2.svg)  # -> different content hash (identity)
+
+
+def test_compile_defaults_to_dot():
+    assert compile_diagram(parse_diagram(GROUNDED)).tool == "dot"  # amendment pin
+
+
+# ---- BLOCKER-2: label injection is neutralized (EXACT node/edge count, BOTH tools) ----
+
+#: A directly-constructed HOSTILE spec — a node label AND an edge label each packed with every
+#: dot/d2 metacharacter the task names (`"`, a real newline, `->`, `{`, `;`), plus a would-be
+#: injected node/edge. A parsed body cannot carry a newline inside a label (the grammar is
+#: line-oriented), so this is built straight from the dataclasses to prove the ESCAPING — not the
+#: parser — is the injection defense, even for a spec that never came from `parse_diagram`.
+_HOSTILE_NODE_LABEL = 'Gateway"]; injnode_a -> injnode_b [label="z {  ; \n injline: pwned\n x -> y'
+_HOSTILE_EDGE_LABEL = 'routes"]; injedge_a -> injedge_b [label="q {  ; \n more'
+
+
+def _hostile_spec() -> DiagramSpec:
+    return DiagramSpec(
+        nodes=(
+            DiagramNode(id="n0", label=_HOSTILE_NODE_LABEL),
+            DiagramNode(id="n1", label="Auth"),
+        ),
+        edges=(
+            DiagramEdge(
+                src_id="n0",
+                dst_id="n1",
+                citation_span='[routes]{.EXTRACTED data-fact="f1"}',
+                label=_HOSTILE_EDGE_LABEL,
+            ),
+        ),
+        posture=POSTURE_GROUNDED,
+    )
+
+
+def test_injection_dot_keeps_exact_node_edge_count():
+    # BLOCKER-2 (dot): the escaped source renders every metacharacter as literal label text; the
+    # canonical graph has EXACTLY 2 nodes + 1 edge — no injected node, no injected edge.
+    spec = _hostile_spec()
+    assert _dot_plain_counts(spec) == (2, 1)
+    svg = compile_diagram(spec, tool="dot").svg
+    assert b"pwned" in svg  # the hostile text survives as LITERAL label content
+    assert b"injnode_a" in svg  # the would-be-injected token is present only as label text...
+    # ...never as a graph node: the plain-format node names are exactly n0 and n1.
+    plain = subprocess.run(
+        ["dot", "-Tplain"], input=to_dot(spec).encode("utf-8"), capture_output=True, check=True
+    ).stdout.decode("utf-8")
+    node_names = {line.split()[1] for line in plain.splitlines() if line.startswith("node ")}
+    assert node_names == {"n0", "n1"}
+
+
+def test_injection_d2_keeps_exact_shape_count():
+    # BLOCKER-2 (d2): the escaped source renders as literal text; the SVG has EXACTLY 2 shapes
+    # (one per real node) — no injected shape/connection.
+    spec = _hostile_spec()
+    svg = compile_diagram(spec, tool="d2").svg
+    assert _d2_shape_count(svg) == 2  # == spec node count; an injected shape would bump this
+    assert b"pwned" in svg  # the hostile text survives as literal label content
+
+
+def test_injection_via_parsed_body_dot_and_d2():
+    # The plan's literal-verification vector, parsed from a real body: a node label carrying
+    # `"`, `]`, `;`, `->`, `[label="` renders as text; both tools keep exactly 2 nodes / 1 edge.
+    body_src = (
+        'nodes:\n- n0: Gateway" ]; injected_a -> injected_b [label="pwned\n'
+        "- n1: Auth\n"
+        'edges:\n- n0 -> n1 [x]{.EXTRACTED data-fact="f1"}\n'
+    )
+    spec = parse_diagram(body_src)
+    assert (len(spec.nodes), len(spec.edges)) == (2, 1)
+    assert _dot_plain_counts(spec) == (2, 1)  # dot: no injected_a -> injected_b edge
+    assert _d2_shape_count(compile_diagram(spec, tool="d2").svg) == 2  # d2: no injected shape
+
+
+def test_escape_label_leaves_no_unescaped_quote():
+    # The core invariant behind BLOCKER-2: after escaping, no `"` can close the wrapping quote and
+    # no control char survives — so a metacharacter can only ever be inert literal text.
+    escaped = diagram._escape_label('a"b\\c\nd\te ->{;')
+    # every `"` is preceded by a `\`; no raw newline/tab remains.
+    assert '\n' not in escaped and '\t' not in escaped
+    for i, ch in enumerate(escaped):
+        if ch == '"':
+            assert escaped[i - 1] == "\\"
+
+
+# ---- SERIOUS-1(a): the illustrative stamp is baked into the SVG ----
+
+_STAMP_FRAGMENTS = (b"illustrative", b"not source", b"checked")
+
+
+def _illustrative_spec() -> DiagramSpec:
+    return parse_diagram("posture: illustrative\nnodes:\n- a: A\n- b: B\nedges:\n- a -> b\n")
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+def test_illustrative_spec_bakes_stamp_into_svg(tool):
+    # SERIOUS-1(a): an illustrative diagram's SVG carries the reader-visible marker. (Asserted on
+    # robust ASCII fragments — dot entity-encodes the hyphen as `not source&#45;checked`.)
+    svg = compile_diagram(_illustrative_spec(), tool=tool).svg
+    for fragment in _STAMP_FRAGMENTS:
+        assert fragment in svg, f"{tool} SVG missing stamp fragment {fragment!r}"
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+def test_grounded_spec_carries_no_stamp(tool):
+    # A grounded diagram makes a source claim and must NOT wear the illustrative marker.
+    svg = compile_diagram(parse_diagram(GROUNDED), tool=tool).svg
+    assert b"illustrative" not in svg
+
+
+def test_illustrative_source_cannot_be_emitted_without_the_stamp():
+    # The bake is non-optional: it lives in the emitted SOURCE for both tools.
+    assert ILLUSTRATIVE_STAMP in to_dot(_illustrative_spec())
+    assert ILLUSTRATIVE_STAMP in to_d2(_illustrative_spec())
+    assert ILLUSTRATIVE_STAMP not in to_dot(parse_diagram(GROUNDED))
+
+
+# ---- malformed source + missing binary + unknown tool ----
+
+
+def test_broken_source_is_caught_by_canon(monkeypatch):
+    # The pre-store `-Tcanon` catch (malformed-source ONLY): a directly-broken source refuses. In
+    # practice the escaped emitter never produces one — this is defense-in-depth, forced here.
+    monkeypatch.setattr(diagram, "to_dot", lambda spec: "digraph G { a -> }")
+    with pytest.raises(DiagramCompileError) as exc:
+        compile_diagram(parse_diagram(GROUNDED), tool="dot")
+    assert exc.value.code == "diagram-compile-failed"
+
+
+def test_missing_binary_raises_tool_unavailable():
+    # A bogus binary path -> a LOUD refusal (never a silent empty SVG), the PA-12 presence gate.
+    def bogus_runner(binary, args, stdin):
+        return diagram._subprocess_diagram("no-such-diagram-binary-xyz", args, stdin)
+
+    with pytest.raises(DiagramToolUnavailableError) as exc:
+        compile_diagram(parse_diagram(GROUNDED), tool="dot", runner=bogus_runner)
+    assert exc.value.code == "diagram-tool-unavailable"
+
+
+def test_unknown_tool_refuses():
+    with pytest.raises(DiagramCompileError):
+        compile_diagram(parse_diagram(GROUNDED), tool="mermaid")
+
+
+# ---- the store contract: SVG bytes land under assets/diagrams/<hash>.svg (C4 uses this) ----
+
+
+def test_compiled_svg_stores_content_addressed_under_assets_diagrams(tmp_path):
+    spec = parse_diagram(GROUNDED)
+    artifact = compile_diagram(spec, tool="dot")
+    ws = WorkspaceStore(tmp_path / "ws")
+    path = ws.commit_asset(artifact.svg, subdir="diagrams", extension="svg")
+    # assets/diagrams/<64hex>.svg — a PATTERN (MINOR-4: never a frozen golden; a tool upgrade
+    # re-mints a new hash by design).
+    assert path.parent == ws.root / "assets" / "diagrams"
+    assert re.fullmatch(r"[0-9a-f]{64}\.svg", path.name)
+    assert path.stem == sha256_hex(artifact.svg)
+    assert path.read_bytes() == artifact.svg
+    # idempotent re-commit of identical bytes -> same path, no raise (content-addressed no-op).
+    assert ws.commit_asset(artifact.svg, subdir="diagrams", extension="svg") == path
+
+
+def test_same_spec_recompiles_to_the_same_hash():
+    # Determinism -> stable identity: a re-compile of the same spec yields the same content hash.
+    spec = parse_diagram(GROUNDED)
+    assert sha256_hex(compile_diagram(spec, tool="dot").svg) == sha256_hex(
+        compile_diagram(spec, tool="dot").svg
+    )
+
+
+def test_compiler_is_still_inert_no_section_type():
+    # C3 adds the compiler but wires nothing: `diagram` is still not a live section type.
+    assert "diagram" not in sections.SECTION_TYPES
