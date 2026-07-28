@@ -140,6 +140,7 @@ REGISTRY_ROOTS = (
     "render-targets",
     "recipes",
     "folio-types",
+    "diagram-styles",  # mixed-media increment C: the referenced diagram-style registry
 )
 
 #: Scanned subtrees beyond the registry roots (PA-1): collections discovered by their

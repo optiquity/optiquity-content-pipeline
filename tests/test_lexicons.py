@@ -183,10 +183,11 @@ def test_house_standard_is_generic_framework_content():
 
 def test_all_registry_schemas_share_the_global_schema_version():
     """SV2 (§11.2): the ONE global `schema_version` is copied across every top-level
-    `_schema.yaml`. Adding `lexicons` makes fifteen files, and version-equality holds — all
-    at v1 — so the skew lint stays green and the lexicon ships with zero id churn."""
+    `_schema.yaml`. `lexicons` + increment C's `diagram-styles` make SIXTEEN files, and
+    version-equality holds — all at v1 — so the skew lint stays green with zero id churn."""
     schema_files = sorted(REPO_ROOT.glob("*/_schema.yaml"))
     versions = {p.parent.name: load_schema(p).schema_version for p in schema_files}
     assert versions["lexicons"] == 1
-    assert len(versions) == 15
+    assert versions["diagram-styles"] == 1
+    assert len(versions) == 16
     assert set(versions.values()) == {1}

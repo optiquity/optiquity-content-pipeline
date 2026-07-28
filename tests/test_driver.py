@@ -278,12 +278,22 @@ class TestOutlineBriefLoad:
                 voice=SimpleNamespace(values={}, entry_id="v"),
                 goals=(),
                 lexicon=None,  # DR-2: the real ComposeResolution.lexicon (None = no lexicon)
+                # C5: the real ComposeResolution.recipe (ResolvedEntry). No `diagram_style` set →
+                # the "" floor → the driver resolves the framework `default` style (pinned dot).
+                recipe=SimpleNamespace(effective={}),
             ),
         )
 
     def _run(self, store, claims, ssot, plan, item):
         return driver._run_artifact(
-            env=SimpleNamespace(workspace="ws"),
+            # C5: `_run_artifact` resolves the diagram-style tool via `env.resolver` — stub it to
+            # return the framework default (pinned dot), matching the real CascadeEnv.resolver.
+            env=SimpleNamespace(
+                workspace="ws",
+                resolver=SimpleNamespace(
+                    resolve=lambda coll, eid: SimpleNamespace(effective={"tool": "dot"})
+                ),
+            ),
             store=store,
             claims=claims,
             ssot=ssot,

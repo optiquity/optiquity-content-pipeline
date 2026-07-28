@@ -56,7 +56,14 @@ PROBE_ID = "one-file-add-probe"
 #: to exactly this set so the parameterization can never silently narrow.
 CONTENT_AXES = ("topics", "personas", "formats", "voices", "goals")
 RENDERING_AXES = ("platforms", "languages", "output-types", "presentations")
-OTHER_REGISTRIES = ("content-kinds", "sources", "render-targets", "recipes", "folio-types")
+OTHER_REGISTRIES = (
+    "content-kinds",
+    "sources",
+    "render-targets",
+    "recipes",
+    "folio-types",
+    "diagram-styles",  # mixed-media increment C: the referenced diagram-style registry
+)
 
 
 def copy_scan_scope(dst: Path) -> None:

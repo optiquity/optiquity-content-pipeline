@@ -49,7 +49,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from pipeline import ir
+from pipeline import diagram, ir
 from pipeline import presentation as _presentation
 from pipeline.adapters import default_adapters
 from pipeline.adapters.base import SourceAdapter
@@ -799,6 +799,16 @@ def _run_artifact(
     )
     format_parts = tuple(compose.format.values.get("parts") or ())
 
+    # C5: resolve the diagram-style `tool` knob (mixed-media amendment §2.K, Open Item O2). The
+    # recipe's `diagram_style` ref (already validated loudly at M1 inside `resolve_compose`) selects
+    # a diagram-style entry; an unset ref ("" floor) rides the framework `default` style (pinned
+    # `dot`). The style's raw `tool` value (`dot`/`d2`/`auto`) is threaded onto the request; the
+    # compose transform resolves `auto` -> a concrete installed tool LAZILY, only for an artifact
+    # that actually carries a `{type=diagram}` section (so a diagram-free run never probes tools).
+    diagram_style_id = compose.recipe.effective.get("diagram_style") or "default"
+    diagram_style = env.resolver.resolve("diagram-styles", diagram_style_id)
+    diagram_tool = diagram_style.effective.get("tool", diagram.TOOL_DOT)
+
     # DR-3 (horn (a)): load the DRIVING outline brief from the pre-compose outline store by the
     # item's `outline-digest`. The digest already rode identity (item.preimage carries it); the
     # brief is the compose INPUT the digest-fidelity guard binds to that identity. An item that
@@ -827,6 +837,9 @@ def _run_artifact(
         # feed the prompt-only house-style block — so the compose-context lexicon is provably
         # the same entry whose id is in the preimage. None -> no block (omit-when-absent).
         lexicon=compose.lexicon.effective if compose.lexicon is not None else None,
+        # C5: the resolved diagram-style tool (replaces the C4 hard-pin). Byte-identical to the
+        # pre-C5 default when the recipe selects no style (the `default` style pins `dot`).
+        diagram_tool=diagram_tool,
     )
     log(f"  compose: LIVE writer call ({len(published)} grounded fact(s))...")
     cout = compose_artifact(

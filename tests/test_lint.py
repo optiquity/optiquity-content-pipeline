@@ -893,9 +893,11 @@ def test_git_baseline_reader_on_this_repo():
     assert read("no/such/path.yaml") is None
 
 
-def test_registry_roots_are_the_fourteen_named_dimensions():
-    assert len(REGISTRY_ROOTS) == 14
+def test_registry_roots_are_the_fifteen_named_dimensions():
+    # Mixed-media increment C added `diagram-styles` (the referenced diagram-style registry) — 15.
+    assert len(REGISTRY_ROOTS) == 15
     assert "recipes" in REGISTRY_ROOTS and "folio-types" in REGISTRY_ROOTS
+    assert "diagram-styles" in REGISTRY_ROOTS
 
 
 def test_schema_lint_script_delegates(tmp_path):

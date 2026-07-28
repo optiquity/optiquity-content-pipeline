@@ -1,0 +1,40 @@
+# diagram-styles/_schema.yaml — co-located schema for the diagram-style registry
+# (mixed-media increment C; amendment §2.F/§2.K). Framework mechanism (provenance/
+# scope: §10). NOT a matrix dimension: a diagram-style is a REFERENCED registry — the
+# `content-kinds`/`sources` precedent (m1.py `("sources","content_kind")` /
+# `("recipes","diagram_style")`), NOT a tenth axis (DIMENSION_COLLECTIONS at m1.py has
+# nine; diagram-styles is absent → referenced, resolved by a ref-attribute row). A small
+# collection like any other (§6.1): provenance guard (§10), schema-versioning (§11.7
+# SV10), one-file-add (§5.4 — a new style is ONE conforming file, nothing else).
+#
+# A diagram-style holds diagram PRESENTATION knobs only (never edge sources): it decides
+# HOW the author's already-gated node/edge list is DRAWN, never WHICH boxes/arrows exist.
+# The base HARD grounding gate runs on the author's list BEFORE any style is consulted, so
+# no style can add, drop, or rename a checked edge — the whole style surface is honesty-safe
+# by construction (amendment §2.F/§2.A property (c)).
+#
+# The ONE surviving knob is `tool` (amendment §2.F): the dangerous knobs (`detail`,
+# `altitude`, `connectivity`) were CUT because each could make the diagram lie past an
+# edge-only gate; the layout knobs (`direction`, `size`) are DEFERRED one-line adds. A new
+# honesty-safe knob is a one-line `attributes:` add here (§5.4); a new tool is a one-line
+# `tool` enum widening (+ its compiler emitter) — the author side never changes.
+schema_version: 1
+attributes:
+  tool:
+    type:
+      type: enum
+      values: [dot, d2, auto]
+    default: dot
+    definition: >-
+      Which deterministic compiler draws the SAME gated node/edge list to SVG (amendment
+      §2.D/§2.F). `dot` (Graphviz, the PINNED default) is the lightest, byte-deterministic
+      hierarchical engine — same source in, same picture out, on every machine. `d2` is the
+      selectable alternative for a more polished/grouped look (also spike-proven
+      byte-deterministic per machine). `auto` is an EXPLICIT opt-in probe that picks the
+      first installed of (`dot`, `d2`) — it is NEVER the default because it keys the picture
+      on the ambient install-set (environment-dependent identity), so it is for locked/known
+      environments ONLY. A chosen-but-missing tool at compile time is a LOUD
+      `DiagramToolUnavailableError` (never a silent half-diagram). It is a COMPILE TARGET,
+      not an edge source: `to_dot`/`to_d2` both emit from the identical spec, so a tool swap
+      can only change the SVG bytes/hash, never the grounded structure (honesty-safe, §2.F).
+    definition_version: 1

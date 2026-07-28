@@ -75,7 +75,7 @@ import json
 import re
 import shutil
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -199,6 +199,13 @@ class ComposeRequest:
     #: the writer prompt (prompt-only application, §2.2). None -> no block -> the compose
     #: context is byte-identical to the pre-DR-2 assembly (the omit-when-absent posture).
     lexicon: Mapping[str, Any] | None = None
+    #: Increment C (C5): the diagram-style `tool` knob, resolved from the recipe's
+    #: `diagram_style` ref (or the framework `default` style) by the driver and threaded here
+    #: — it REPLACES the C4 hard-pin. Carries the style's raw enum value (`dot`/`d2`/`auto`);
+    #: the diagram transform resolves `auto` -> a concrete installed tool LAZILY (only when a
+    #: diagram section is present, so a non-diagram artifact never probes). Defaults to `dot`
+    #: (the pinned, byte-deterministic default), so every pre-C5 caller is byte-identical.
+    diagram_tool: str = diagram.TOOL_DOT
 
     @property
     def is_flat(self) -> bool:
@@ -579,13 +586,60 @@ def _asset_containment_note(
 # Markdown alt/caption (so it shows on plain-text / alt-text), COMPLEMENTING C3's SVG-baked stamp.
 # ---------------------------------------------------------------------------
 
-#: The C4 HARD-PINNED diagram tool (the amendment default). C5 replaces this ONE pin by threading a
-#: resolved `tool` (the `diagram-styles/` knob) onto `ComposeRequest`; C4 must not foreclose that,
-#: so the pin lives in exactly one place here.
-_DIAGRAM_TOOL_PIN = diagram.TOOL_DOT
-
 #: The section `type` this transform consumes.
 _DIAGRAM_SECTION_TYPE = "diagram"
+
+#: C5: the diagram-style `tool` enum. `dot`/`d2` are concrete compilers (`diagram.compile_diagram`
+#: targets); `auto` is the explicit opt-in probe resolved HERE to a concrete tool. `auto` is NEVER
+#: the framework default (the `default` style pins `dot`), so it only reaches `_select_diagram_tool`
+#: when a style explicitly declared it — "honored ONLY as an opt-in" (amendment §2.D).
+_DIAGRAM_TOOL_AUTO = "auto"
+
+#: `auto`'s fixed probe preference: the pinned deterministic default first, then the alternative.
+#: Deterministic WITHIN an environment (env-dependent identity is exactly why `auto` is opt-in).
+_DIAGRAM_AUTO_PREFERENCE = (diagram.TOOL_DOT, diagram.TOOL_D2)
+
+#: tool token -> its pinned binary (for the `auto` presence probe). Sourced from `diagram` so the
+#: binary pins live in ONE place (the diagram module), never duplicated here.
+_DIAGRAM_TOOL_BINARY = {
+    diagram.TOOL_DOT: diagram.DOT_BINARY_DEFAULT,
+    diagram.TOOL_D2: diagram.D2_BINARY_DEFAULT,
+}
+
+
+def _diagram_tool_installed(tool: str) -> bool:
+    """Is `tool`'s pinned binary on PATH? A cheap, no-subprocess presence probe (`shutil.which`)
+    for the `auto` opt-in; the real compile still raises the loud `DiagramToolUnavailableError` if a
+    picked binary vanishes between probe and exec (no silent degrade)."""
+    return shutil.which(_DIAGRAM_TOOL_BINARY[tool]) is not None
+
+
+def _select_diagram_tool(tool: str, *, installed: Callable[[str], bool] | None = None) -> str:
+    """Resolve a diagram-style `tool` value to a CONCRETE compiler for `diagram.compile_diagram`.
+
+    `dot`/`d2` pass through unchanged. `auto` (the explicit opt-in ONLY — never the framework
+    default) probes the installed tools in `_DIAGRAM_AUTO_PREFERENCE` order and returns the first
+    present, keying the picture on the ambient install-set (env-dependent identity, accepted
+    knowingly); none installed -> a LOUD `DiagramToolUnavailableError` (never a silent no-op). Any
+    other value is an unknown tool -> `DiagramCompileError` (a fail-closed backstop over the schema
+    enum, which already restricts a style's `tool` to dot/d2/auto)."""
+    if tool in (diagram.TOOL_DOT, diagram.TOOL_D2):
+        return tool
+    if tool == _DIAGRAM_TOOL_AUTO:
+        probe = installed if installed is not None else _diagram_tool_installed
+        for candidate in _DIAGRAM_AUTO_PREFERENCE:
+            if probe(candidate):
+                return candidate
+        raise diagram.DiagramToolUnavailableError(
+            f"{diagram.DiagramToolUnavailableError.code}: diagram-style tool 'auto' found none of "
+            f"{list(_DIAGRAM_AUTO_PREFERENCE)} installed — install a diagram tool, or pin a "
+            "concrete 'dot'/'d2' style; 'auto' is an opt-in probe for locked environments "
+            "(never a no-op)"
+        )
+    raise diagram.DiagramCompileError(
+        f"{diagram.DiagramCompileError.code}: unknown diagram-style tool {tool!r} "
+        f"(expected one of {[diagram.TOOL_DOT, diagram.TOOL_D2, _DIAGRAM_TOOL_AUTO]})"
+    )
 
 
 def _escape_alt(text: str) -> str:
@@ -607,7 +661,7 @@ def _diagram_alt(section: Section, spec: diagram.DiagramSpec) -> str:
 
 
 def _transform_leaf_body(
-    body: str, ledger: Mapping[str, Any], store: WorkspaceStore
+    body: str, ledger: Mapping[str, Any], store: WorkspaceStore, tool: str
 ) -> str:
     """Normalize-then-splice one leaf body's `{type=diagram}` sections into contained figures.
 
@@ -634,7 +688,9 @@ def _transform_leaf_body(
             continue
         spec = diagram.parse_diagram(section.body)
         diagram.gate_diagram(spec, ledger)  # HARD gate BEFORE a single SVG byte is stored (C2/C4)
-        artifact = diagram.compile_diagram(spec, tool=_DIAGRAM_TOOL_PIN)
+        # C5: the style-driven `tool` (C4's hard-pin is gone). `auto` resolves to a concrete
+        # installed tool HERE — lazily, only now that a diagram section is confirmed present.
+        artifact = diagram.compile_diagram(spec, tool=_select_diagram_tool(tool))
         asset_path = store.commit_asset(artifact.svg, subdir="diagrams", extension="svg")
         rel = asset_path.relative_to(store.root).as_posix()  # assets/diagrams/<hash>.svg
         figure = f"![{_diagram_alt(section, spec)}]({rel})"
@@ -646,17 +702,20 @@ def _transform_leaf_body(
 
 
 def _apply_diagram_transform(
-    writer_out: Mapping[str, Any], ledger: Mapping[str, Any], store: WorkspaceStore
+    writer_out: Mapping[str, Any], ledger: Mapping[str, Any], store: WorkspaceStore, tool: str
 ) -> dict[str, Any]:
     """Run the C4 diagram transform over the writer's parts-DICT (a flat `body` OR a `{role: body}`
     map — SERIOUS-3: the DICT shape, NOT the assembled-IR list), returning a NEW `writer_out` whose
     `{type=diagram}` sections are contained figures. A diagram-free envelope is returned
-    byte-identical (no section is rewritten). Runs BEFORE `_assemble_ir` in its OWN try/except."""
+    byte-identical (no section is rewritten). Runs BEFORE `_assemble_ir` in its OWN try/except.
+
+    `tool` (C5) is the resolved diagram-style knob (`dot`/`d2`/`auto`) threaded from
+    `ComposeRequest.diagram_tool`; it drives EVERY diagram section in this envelope identically."""
     if "body" in writer_out:
-        return {"body": _transform_leaf_body(writer_out["body"], ledger, store)}
+        return {"body": _transform_leaf_body(writer_out["body"], ledger, store, tool)}
     return {
         "parts": {
-            role: _transform_leaf_body(part_body, ledger, store)
+            role: _transform_leaf_body(part_body, ledger, store, tool)
             for role, part_body in writer_out["parts"].items()
         }
     }
@@ -1349,7 +1408,9 @@ def compose_artifact(
             # — only a scoped try can route the diagram refusals to their own code without
             # mislabeling a prose refusal.
             try:
-                writer_out = _apply_diagram_transform(writer_out, ledger, store)
+                writer_out = _apply_diagram_transform(
+                    writer_out, ledger, store, request.diagram_tool
+                )
             except (diagram.DiagramToolUnavailableError, diagram.DiagramCompileError):
                 # A host/tooling failure (a missing pinned `dot`, or a broken compile) is NOT a
                 # writer content defect and NEVER a re-ask: it is LOUD, per the diagram module's

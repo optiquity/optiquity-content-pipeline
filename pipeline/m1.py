@@ -183,6 +183,15 @@ REF_ATTRIBUTE_TARGETS: dict[tuple[str, str], str] = {
 TEXT_REF_ATTRIBUTE_TARGETS: dict[tuple[str, str], str] = {
     ("recipes", "topic"): "topics",  # §8; topics are workspace editorial data (§5.2)
     ("platforms", "default_output_type"): "output-types",  # §5.3/§12.3 weak default
+    # increment C (amendment §2.K, Open Item O2): the diagram-style ref SOURCE is a recipe
+    # attribute — the ratified `(collection, attribute) -> diagram-styles` row shape, mirroring
+    # the `("recipes","topic"):"topics"` recipe→referenced-registry precedent right above. It
+    # rides the TEXT table (empty "" floor) rather than the ref table for the same reason `topic`
+    # does: an unset diagram-style is the honest floor ("no explicit style — draw with the
+    # framework default"), which the ref slug alphabet cannot express, and a text/"" add is
+    # additive-at-floor (§11.2) so it needs no global schema_version bump. A NON-empty value
+    # resolves loudly at M1 against the diagram-styles registry (§11.1); "" resolves nothing.
+    ("recipes", "diagram_style"): "diagram-styles",
 }
 
 #: map attributes whose KEYS are format entry ids (§12.3: Platform's per-format

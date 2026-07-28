@@ -45,6 +45,22 @@ attributes:
       `artifact-id` as its resolved `{entry, delta}` over ATTRIBUTES (never the entry
       body) and supplies the prompt-only compose house-style block (DR-2 §2.2).
     definition_version: 1
+  diagram_style:
+    type: text
+    default: ""
+    definition: >-
+      The diagram-style entry id this recipe binds (mixed-media increment C; amendment
+      §2.K, Open Item O2) — HOW a `{type=diagram}` section's already-gated node/edge list
+      is DRAWN, never WHICH boxes/arrows exist. Declared as text with an empty floor — not
+      ref — exactly like `topic`/`lexicon`: the honest floor is "unset — draw with the
+      framework `default` style (pinned `dot`)", which the ref slug alphabet cannot express
+      (the `platforms.default_output_type` empty-floor precedent). A non-empty value resolves
+      at M1 against the `diagram-styles` registry (loud on an unknown id, §11.1); its `tool`
+      knob (`dot`/`d2`/`auto`) is threaded onto the compose transform. A diagram-style holds
+      PRESENTATION only — it is honesty-safe by construction (the HARD grounding gate already
+      ran on the author's list, amendment §2.F), rides NO artifact identity (a compile target,
+      not an edge source), and the empty floor churns no artifact id (§7.2).
+    definition_version: 1
   persona:
     type: ref
     default: technical-evaluator

@@ -95,6 +95,7 @@ RECIPE_SLOTS = frozenset(
     {
         "topic",
         "lexicon",
+        "diagram_style",  # mixed-media increment C: the recipe's diagram-style pin (amendment §2.K)
         "persona",
         "format",
         "voice",
