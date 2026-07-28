@@ -1044,6 +1044,44 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   diagrams in one document), with the explicit north star that a generated diagram must never be able to
   lie (no invented arrow may ship dressed as a checked fact).
 
+### DR-8 — General multi-language API client (CLI + library + language-neutral contract + C++ POC) — BUILT
+- **Status:** BUILT (2026-07-28) — **shipped as a language-neutral canonical-surface + wire contract
+  (`docs/guide/clients.md`) that every wrapper implements identically, a stdlib-only Python library +
+  CLI, and a C++ proof-of-concept: 4 gated commits, zero new dependency, suite 3001→3158. The one
+  deferral (a formal OpenAPI spec) is registered below.**
+- **The capability (plain English):** a friendly, consistent way to call the pipeline's HTTP shim
+  (the DR-1 door) from **any** language. `docs/guide/clients.md` is the **single neutral source** — a
+  canonical client-surface spec **plus** the wire contract — that every wrapper reads and implements
+  identically. Shipped wrappers: a stdlib-only **Python library** (`from pipeline.client import
+  Client`) + **CLI** (`python -m pipeline.client`), and a **C++ proof-of-concept** (`examples/cpp/`,
+  libcurl + nlohmann/json). **No language is privileged:** the method set, the outcome semantics, the
+  poll state machine, and the error taxonomy are **canonical** (identical everywhere); only the
+  transport substrate and the error channel are per-language idiom — Python `raise`, C++ `throw`, and
+  a return-based channel are all conformant.
+- **The anti-drift guarantee:** `tests/test_clients_doc_contract.py` **imports the server's own
+  constants**, so the documented wire-code set can never silently omit a code that a wrapper needs —
+  the doc contract cannot fall behind the code.
+- **Zero new dependency:** the Python library + CLI are **stdlib-only**, preserving the framework's
+  no-new-dependency posture (the C++ POC's libcurl / nlohmann-json are example-only, never pipeline
+  deps).
+- **Commits:** `1b2d3bf` (the neutral contract + the import-derived anti-drift test) · `315267a` (the
+  stdlib Python library) · `4e309b5` (the CLI + a raw-error-token fix) · `f05d2c7` (the C++ POC).
+  Suite **3001→3158**.
+- **Related:** the `examples/n8n/` workflows (poll + webhook) are a **third** worked shim-consumer,
+  beside the Python and C++ wrappers.
+- **Honest DEFERRAL (registered, not hidden) — a formal OpenAPI spec:** OpenAPI describes only the
+  **wire**, not the **client-side surface** that makes the languages consistent (the method set /
+  outcome semantics / poll state machine); it would have to be **hand-authored** (the response shapes
+  are not reflectable from the code); and **no machine-codegen consumer exists yet**. Add it when one
+  does — until then it is a second hand-maintained contract with nothing to generate.
+- **Cross-ref:** `docs/guide/clients.md` (the single neutral client source — wire contract + canonical
+  surface); the **DR-1** HTTP shim (the door these wrappers call) above.
+- **Gate:** `uv run pytest -q` = **3158 passed** (docs-only entry — unchanged from the build);
+  `uv run ruff check .` clean; `scripts/check-no-content.sh` OK. Client build reports under
+  `ops-handoff/api-client/`.
+- **Source:** maintainer requirement — a general, multi-language-friendly way to call the pipeline's
+  HTTP API from any language, with one neutral contract every wrapper obeys.
+
 ---
 
 ## Resolved
