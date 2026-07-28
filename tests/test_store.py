@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 import pipeline.store as store_module
+from pipeline.canonical import sha256_hex
 from pipeline.ids import IdError, parse_id
 from pipeline.store import (
     STORE_SUBDIRS,
@@ -87,7 +88,7 @@ class TestLayout:
         }
 
     def test_subdir_set_is_exactly_the_section_23_tree(self):
-        # `jobs` is the DR-1 async-coordination subdir, APPENDED (additive; see
+        # `jobs` (DR-1) and `assets` (increment A) are APPENDED subdirs (additive; see
         # test_store_subdirs_is_additive_over_the_original_seven) — identity-inert.
         assert STORE_SUBDIRS == (
             "artifacts",
@@ -98,12 +99,14 @@ class TestLayout:
             "select",
             "output",
             "jobs",
+            "assets",
         )
 
     def test_store_subdirs_is_additive_over_the_original_seven(self):
-        # DR-1 Commit 2: adding `jobs` must be PURELY ADDITIVE — every original §23 subdir keeps
-        # its exact position (byte-identical prefix) and `jobs` is the appended tail. This is the
-        # tuple half of the identity-inertness claim; the routing half is TestJobsBoundary.
+        # DR-1 Commit 2 + increment A: adding `jobs` then `assets` must be PURELY ADDITIVE — every
+        # original §23 subdir keeps its exact position (byte-identical prefix) and the appended tail
+        # is `("jobs", "assets")`. This is the tuple half of the identity-inertness claim; the
+        # routing half is TestJobsBoundary (jobs) and TestContentAssets (assets).
         original_seven = (
             "artifacts",
             "deliverables",
@@ -114,7 +117,7 @@ class TestLayout:
             "output",
         )
         assert STORE_SUBDIRS[: len(original_seven)] == original_seven  # prefix unchanged
-        assert STORE_SUBDIRS[len(original_seven) :] == ("jobs",)  # jobs appended, nothing else
+        assert STORE_SUBDIRS[len(original_seven) :] == ("jobs", "assets")  # appended, nothing else
 
     def test_jobs_dir_created_on_demand(self, tmp_path):
         # DR-1 Commit 2: `jobs_dir` is created on first access, like every other store, and
@@ -273,6 +276,95 @@ class TestJobsBoundary:
         # The identity half of the pin: the documented job key parses as a run id, NOT an
         # artifact id, so it can never collide with an artifact/fitted/deliverable output name.
         assert parse_id(JOB_KEY).family == "run"
+
+
+# ---------------------------------------------------------------------------
+# Content-addressed content assets (increment A): a DISTINCT keying scheme +
+# the idempotent `commit_asset` write helper.
+# ---------------------------------------------------------------------------
+
+
+class TestContentAssets:
+    """Increment A: the content-addressed content-asset store. Assets are keyed by the SHA-256 of
+    their own BYTES (extension-bearing), a DISTINCT scheme from the id-addressed records — never a
+    `parse_id`-valid id, never routed through `output_path`/`is_done`. `commit_asset` writes
+    idempotently (identical bytes → identical path → the swallowed `already-materialized` no-op)."""
+
+    def test_asset_path_is_sha256_named_extension_bearing_under_assets(self, ws):
+        content = b"a throughput chart, as PNG bytes\n"
+        path = ws.asset_path(content, extension="png")
+        assert path == ws.root / "assets" / f"{sha256_hex(content)}.png"
+        assert path.parent == ws.root / "assets"
+        assert path.parent.is_dir()  # assets/ created on demand (as output_path mkdirs artifacts/)
+        assert path.suffix == ".png"
+        assert path.stem == sha256_hex(content)  # the filename IS the content hash
+
+    def test_asset_path_nests_under_a_subdir(self, ws):
+        # The generated-SVG home: assets/diagrams/<sha256hex>.svg (increment C rides this path).
+        content = b"<svg>...generated diagram...</svg>"
+        path = ws.asset_path(content, subdir="diagrams", extension="svg")
+        assert path == ws.root / "assets" / "diagrams" / f"{sha256_hex(content)}.svg"
+        assert (ws.root / "assets" / "diagrams").is_dir()  # the nested dir is created on demand
+
+    def test_assets_dir_is_the_home_root_created_on_demand(self, tmp_path):
+        ws = WorkspaceStore(tmp_path / "lazy-assets")
+        assert not (tmp_path / "lazy-assets").exists()  # construction touches nothing
+        assets = ws.assets_dir
+        assert assets == ws.root / "assets"
+        assert assets.is_dir()
+        assert not (tmp_path / "lazy-assets" / "artifacts").exists()  # only assets/ was asked for
+
+    def test_assets_dir_materialized_by_ensure_layout(self, ws):
+        # `ensure_layout()` iterates STORE_SUBDIRS, so `assets/` is materialized and returned.
+        created = ws.ensure_layout()
+        assert (ws.root / "assets").is_dir()
+        assert ws.assets_dir in set(created)
+
+    def test_commit_asset_writes_bytes_and_returns_the_content_addressed_path(self, ws):
+        content = b"PNG-bytes-v1\n"
+        path = ws.commit_asset(content, extension="png")
+        assert path == ws.asset_path(content, extension="png")
+        assert path.read_bytes() == content
+        assert not [n for n in os.listdir(path.parent) if is_temp_name(n)]  # no temp left behind
+
+    def test_commit_asset_is_idempotent_identical_bytes_same_path_no_raise(self, ws):
+        # S4: content-addressing ⇒ identical bytes resolve to the identical path; the second write
+        # is the DESIGNED already-materialized no-op, SWALLOWED (never raises), winner bytes intact.
+        content = b"identical-asset-bytes\n"
+        first = ws.commit_asset(content, extension="png")
+        second = ws.commit_asset(content, extension="png")  # must NOT raise
+        assert first == second
+        assert first.read_bytes() == content
+        assert not [n for n in os.listdir(first.parent) if is_temp_name(n)]
+
+    def test_commit_asset_is_idempotent_in_a_subdir(self, ws):
+        content = b"<svg>diagram</svg>"
+        first = ws.commit_asset(content, subdir="diagrams", extension="svg")
+        second = ws.commit_asset(content, subdir="diagrams", extension="svg")  # must NOT raise
+        assert first == second == ws.root / "assets" / "diagrams" / f"{sha256_hex(content)}.svg"
+        assert first.read_bytes() == content
+
+    def test_different_bytes_yield_different_paths_no_same_path_collision(self, ws):
+        # Different content ⇒ different hash ⇒ different path, so a same-path DIFFERENT-content
+        # collision cannot arise by construction (the write is only ever an identical-bytes no-op).
+        a = ws.commit_asset(b"asset-A\n", extension="png")
+        b = ws.commit_asset(b"asset-B\n", extension="png")
+        assert a != b
+        assert a.read_bytes() == b"asset-A\n"
+        assert b.read_bytes() == b"asset-B\n"
+
+    def test_asset_filename_is_content_addressed_not_a_parse_id_valid_id(self, ws):
+        # The content-asset boundary: an asset filename is a bare SHA-256 hex + extension — a
+        # DISTINCT keying scheme, deliberately NOT a §7.4 id. `asset_path`/`commit_asset` never call
+        # `parse_id`, and the produced name is not even a valid id (parse_id refuses it), so assets
+        # can never route through the id-addressed `output_path`/`is_done` surface.
+        content = b"content-addressed, id-free\n"
+        path = ws.commit_asset(content, extension="png")
+        assert path.name == f"{sha256_hex(content)}.png"
+        with pytest.raises(IdError):
+            parse_id(path.name)  # a content-hash-plus-extension filename is not a valid pipeline id
+        with pytest.raises(IdError):
+            parse_id(path.stem)  # nor is the bare 64-hex digest (no §7.4 family prefix)
 
 
 # ---------------------------------------------------------------------------

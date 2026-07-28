@@ -25,6 +25,21 @@ module never names or creates any instance workspace itself):
     <root>/jobs/<run-id>    DR-1 async job/idempotency records — §22.7-class LOSSY
                             bookkeeping, keyed by a NON-artifact run-family id (never an
                             output route; see "The DR-1 jobs/ boundary" below)
+    <root>/assets/[subdir/]<sha256hex>.<ext>   content-addressed content assets (images,
+                            generated SVG diagrams under assets/diagrams/) — a DISTINCT
+                            CONTENT-HASH keying scheme, never routed by `output_path`/`is_done`
+                            (see "The content-asset boundary" below)
+
+**The content-asset boundary** (increment A — the mixed-media asset foundation): a content
+asset lives at `assets/[subdir/]<sha256hex>.<ext>` and is keyed by the SHA-256 of its own
+BYTES (`sha256_hex(content)`), not by a §7.4 id. This is a DISTINCT keying scheme from every
+id-addressed record above — the asset filename is a bare content digest + a conventional
+extension, so it is deliberately NOT a `parse_id`-valid id and NEVER routes through
+`output_path`/`is_done` (which parse and refuse non-artifact ids). Content-addressing makes the
+write idempotent by construction: identical bytes yield the identical path, so a re-write is the
+designed `already-materialized` no-op (`commit_asset` swallows it — the `jobs/` precedent for an
+additive, identity-inert store). The client surface is `workspaces/<client>/assets/`; the
+containment guard (increment A, at compose) refuses any body image reference that escapes it.
 
 **The DR-1 `jobs/` boundary** (async subsystem; the subdir + this keying convention land here,
 the `JobStore` record logic lands in DR-1 Commit 3): a `jobs/` record is §22.7-class LOSSY
@@ -84,7 +99,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pipeline.canonical import canonical_json_str
+from pipeline.canonical import canonical_json_str, sha256_hex
 from pipeline.ids import output_filename, parse_id
 
 __all__ = [
@@ -105,9 +120,10 @@ __all__ = [
 ]
 
 #: §23: the per-client stores created on demand under `workspaces/<client>/`. `jobs/` (DR-1)
-#: is an ADDITIVE async-coordination subdir consumed ONLY by `ensure_layout` here — it is in
-#: NO id/preimage/digest and `output_path` routes by id family (never this tuple), so appending
-#: it is identity-inert (no `schema_version`/`ir_version` bump).
+#: and `assets/` (increment A) are ADDITIVE subdirs consumed ONLY by `ensure_layout` here —
+#: each is in NO id/preimage/digest and `output_path` routes by id family (never this tuple), so
+#: appending them is identity-inert (no `schema_version`/`ir_version` bump). `assets/` is the
+#: content-addressed content-asset home (see "The content-asset boundary" in the module docstring).
 STORE_SUBDIRS = (
     "artifacts",
     "deliverables",
@@ -117,6 +133,7 @@ STORE_SUBDIRS = (
     "select",
     "output",
     "jobs",
+    "assets",
 )
 
 #: Staged-temp filenames start with this. A leading dot can never collide with an id
@@ -239,6 +256,17 @@ class WorkspaceStore:
         """
         return self._dir("jobs")
 
+    @property
+    def assets_dir(self) -> Path:
+        """Content-addressed content assets: `assets/[subdir/]<sha256hex>.<ext>` (increment A).
+
+        A DISTINCT CONTENT-HASH keying scheme (see "The content-asset boundary" in the module
+        docstring), never routed by `output_path`/`is_done`. This is the store ROOT of the
+        home; `asset_path`/`commit_asset` derive the per-asset content-addressed path (and the
+        nested `assets/diagrams/` generated-SVG path) beneath it.
+        """
+        return self._dir("assets")
+
     def ensure_layout(self) -> tuple[Path, ...]:
         """Materialize the full §23 tree (idempotent); returns the created directories."""
         dirs = tuple(self._dir(name) for name in STORE_SUBDIRS)
@@ -328,6 +356,41 @@ class WorkspaceStore:
                 f"deliverable-ids only (§19), got {id_str!r}"
             )
         return self.reviews_dir / id_str
+
+    # -- content-addressed content assets (increment A; a DISTINCT keying scheme) ----
+
+    def asset_path(self, content: bytes, *, subdir: str = "", extension: str) -> Path:
+        """The content-addressed location for an asset: `assets/[subdir/]<sha256hex>.<ext>`.
+
+        Keyed by the SHA-256 of the asset's own BYTES (`sha256_hex(content)`), NOT by a §7.4 id —
+        the "content-asset boundary" (module docstring): the filename is a bare content digest plus
+        a conventional extension, deliberately NOT `parse_id`-valid, and never routed through
+        `output_path`/`is_done`. `subdir` nests the asset — e.g. `subdir="diagrams"` yields the
+        generated-SVG path `assets/diagrams/<sha256hex>.<ext>`. The containing `assets/[subdir/]`
+        directory is created on demand (exactly as `output_path` materializes `artifacts/`). This
+        is a pure calculator (plus the mkdir); `commit_asset` writes the bytes idempotently.
+        """
+        return self._dir("assets", subdir) / f"{sha256_hex(content)}.{extension}"
+
+    def commit_asset(self, content: bytes, *, subdir: str = "", extension: str) -> Path:
+        """Idempotently write a content asset; return its content-addressed path (§22.3/§22.7).
+
+        Rides the existing no-replace `write_new` commit but SWALLOWS `AlreadyMaterializedError`:
+        because the asset is content-addressed, identical bytes always resolve to the identical
+        path, so a re-write is the DESIGNED `already-materialized` no-op — the winner's
+        byte-identical content stands untouched (mirroring `build_outline_ir`'s idempotent-emit
+        pattern in `compose.py`). Different content yields a different hash, hence a different path,
+        so a same-path collision with DIFFERENT bytes cannot arise by construction. This is the
+        reusable primitive later increments consume to persist figures (B) and generated diagrams
+        (C); `asset_path` alone is only the calculator. Returns the path whether the bytes were
+        newly committed or already present.
+        """
+        path = self.asset_path(content, subdir=subdir, extension=extension)
+        try:
+            write_new(path, content)
+        except AlreadyMaterializedError:
+            pass  # idempotent: content-addressed ⇒ identical bytes already present (§22.7)
+        return path
 
 
 # ---------------------------------------------------------------------------
