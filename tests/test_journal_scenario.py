@@ -49,6 +49,7 @@ import pytest
 
 from pipeline import driver, ir
 from pipeline.api import discovery
+from pipeline.asset_loader import filesystem_asset_loader
 from pipeline.cascade import CascadeEnv
 from pipeline.compose import ComposeRequest, compose_artifact
 from pipeline.dispatch import dispatch, render_target_from_entry
@@ -94,11 +95,12 @@ LOOK_CSL = {
 
 
 def _load_shipped_asset(path: str) -> bytes:
-    """The INJECTED Presentation `load_asset` (DR-5 C11): read a SHIPPED framework asset (a `.csl`
-    style) by its declared repo-root-relative path. It stands in for the deferred §17/step-29
-    PRODUCTION loader (`driver._deferred_asset_loader`, which raises loudly), so the e2e validates
-    the ACTUAL shipped `.csl` bytes — a citing render through a csl-set look resolves under the real
-    style, and its content hash rides the serialize preimage (§17 FR7.1)."""
+    """The REFERENCE Presentation `load_asset` (DR-5 C11 → B/C1): read a SHIPPED framework asset (a
+    `.csl` style) by its declared repo-root-relative path, straight off the REAL repo root. The
+    production path now uses the real `filesystem_asset_loader` (fenced to `<root>/presentations`);
+    this reference reader reads the SAME repo-root-relative path from `REPO_ROOT`, so the B/C1 F7
+    identity test can assert the swap is ZERO-CHURN (same bytes → same csl content hash → same
+    rendered bytes AND same deliverable serialize digest, §17 FR7.1)."""
     return (REPO_ROOT / path).read_bytes()
 
 
@@ -476,24 +478,29 @@ def test_one_paper_three_journals_block_fit_set_and_siblings_continue(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _serialize_html(env: CascadeEnv, fitted_ir: dict, presentation: str):
+def _serialize_html(env: CascadeEnv, fitted_ir: dict, presentation: str, *, load_asset=None):
     """Serialize a fitted IR to the `html` public writer through the REAL serialize leg — the SAME
     threaded sequence `driver._run_deliverable` uses (serialize_fitted -> dispatch ->
     serialize_inputs_preimage(section_attr_transformed=dout.section_attr_transformed,
     citeproc_enabled=dout.citeproc_enabled, csl=render_inputs.csl)).
 
-    DR-5 C11: the looks now declare a `csl` STYLE asset, so `load_asset` is the SHIPPED-asset reader
-    (`_load_shipped_asset`) — NOT an assert-never no-op — mirroring the deferred §17/step-29
-    production loader. The `csl` labeled field is threaded into the preimage EXACTLY as the driver
-    does; `serialize_inputs_preimage` adds it to the `render_inputs` component ONLY when citeproc
-    ran (a non-citing render through a csl-set look stays byte-identical to the floor, C7 S4)."""
+    B/C1: the looks declare a `csl` STYLE asset, and `load_asset` now defaults to the REAL
+    production `filesystem_asset_loader` (fenced to `<root>/presentations`, F3) — the SAME loader
+    the driver + render legs wire. A caller passes `load_asset=` to compare against the reference
+    reader for the F7 zero-churn identity assertion. The `csl` labeled field is threaded into the
+    preimage EXACTLY as the driver does; `serialize_inputs_preimage` adds it to the `render_inputs`
+    component ONLY when citeproc ran (a non-citing render through a csl-set look stays
+    byte-identical to the floor, C7 S4)."""
     ast = serialize_fitted(fitted_ir)[0].ast
     target_values = driver._render_target_values(env, "html")
     target = render_target_from_entry(target_values)
     pentry = env.resolver.resolve("presentations", presentation)
+    loader = load_asset or filesystem_asset_loader(
+        resolve_base=env.root, contain_root=env.root / "presentations"
+    )
     pres = presentation_from_entry(
         {**pentry.defaults(), **pentry.effective, "id": pentry.id},
-        load_asset=_load_shipped_asset,
+        load_asset=loader,
         defaults=pentry.defaults(),
     )
     render_inputs = lower(pres, target.writer, "html", target_engine=target.engine)
@@ -533,21 +540,18 @@ def test_fitted_typed_deliverable_renders_valid_public_bytes(tmp_path):
     assert 'id="abstract"' in text
 
 
-def test_two_phase_render_engine_records_the_typed_version(monkeypatch, tmp_path):
+def test_two_phase_render_engine_records_the_typed_version(tmp_path):
     """RT: `DefaultRenderEngine.serialize_preimage` runs BEFORE dispatch (two-phase), so it
     computes the SD-5 flag from the fitted AST itself (gated by `should_strip`). A TYPED
     deliverable's preimage therefore records `section_attr_transform_version` — the SAME conclusion
     dispatch reaches — so a typed standalone-API render mints an id matching its bytes."""
     _requires_pandoc()
-    from pipeline.api import render as render_api
     from pipeline.api.render import DefaultRenderEngine, SerializeLeg
 
-    # DR-5 C11: `journal-strict-look` now declares `csl`, which the render engine's OWN deferred
-    # asset loader (`render._deferred_asset_loader`) raises on. Inject the shipped-asset reader (the
-    # deferred §17/step-29 production loader) so the two-phase engine lowers the real style; the
-    # deliverable is NON-citing, so csl never enters the preimage (this test still probes SD-5).
-    monkeypatch.setattr(render_api, "_deferred_asset_loader", _load_shipped_asset)
-
+    # B/C1: `journal-strict-look` declares `csl`; the render engine's `_lower_for_leg` now uses the
+    # REAL `filesystem_asset_loader` (fenced to `<leg.root>/presentations`), so the two-phase engine
+    # lowers the real style with NO injection — the tmp world copies `presentations/` under the same
+    # root. The deliverable is NON-citing, so csl never enters the preimage (this test probes SD-5).
     root = _build_root(tmp_path)
     env = CascadeEnv(root, workspace=WS)
     fit = _reconcile_at(env, _compose_conforming_ir(root), "journal-strict")
@@ -689,21 +693,19 @@ def test_fitted_citing_deliverable_resolves_bibliography_and_records_version(tmp
     assert preimage["render_inputs"]["csl"][0] == LOOK_CSL["journal-strict-look"]
 
 
-def test_two_phase_render_engine_records_the_citeproc_version(monkeypatch, tmp_path):
+def test_two_phase_render_engine_records_the_citeproc_version(tmp_path):
     """RT: `DefaultRenderEngine.serialize_preimage` runs BEFORE dispatch (two-phase), so it computes
     the C6 citeproc flag from the fitted AST itself — UNCONDITIONALLY (content-driven, not
     writer-gated). A CITING deliverable's preimage therefore records `citeproc_enablement_version`
     — the SAME conclusion dispatch reaches — so a citing standalone-API render mints an id matching
     its resolved bytes (the twin of the SD-5 two-phase parity test)."""
     _requires_pandoc()
-    from pipeline.api import render as render_api
     from pipeline.api.render import DefaultRenderEngine, SerializeLeg
 
-    # DR-5 C11: `journal-strict-look` now declares `csl`; inject the shipped-asset reader so the
-    # render engine's own deferred loader does not raise (the §17/step-29 production loader). This
-    # deliverable CITES, so the csl STYLE asset also enters the preimage's render_inputs.
-    monkeypatch.setattr(render_api, "_deferred_asset_loader", _load_shipped_asset)
-
+    # B/C1: `journal-strict-look` declares `csl`; the render engine's `_lower_for_leg` now uses the
+    # REAL fenced `filesystem_asset_loader` (no injection) — the tmp world copies `presentations/`
+    # under the leg root. This deliverable CITES, so the csl STYLE asset enters the preimage's
+    # render_inputs.
     root = _build_root(tmp_path)
     env = CascadeEnv(root, workspace=WS)
     citing_ir = _citing_paper_ir()
@@ -745,6 +747,32 @@ def test_stored_citing_deliverable_reports_no_spurious_drift(tmp_path):
     assert current == serialize_digest(serialize_preimage)  # NO spurious drift
 
 
+def test_production_loader_is_byte_and_id_identical_to_the_reference_loader(tmp_path):
+    """B/C1 (F7): swapping the deferred-then-injected `_load_shipped_asset` for the REAL production
+    `filesystem_asset_loader` (fenced to `<root>/presentations`) is ZERO-CHURN — it resolves the
+    SAME repo-root-relative `.csl` path to the SAME bytes, so a CITING journal render is
+    BYTE-IDENTICAL and its serialize digest (the deliverable-id component) is IDENTICAL under both
+    loaders. Asserted, not assumed."""
+    _requires_pandoc()
+    root = _build_root(tmp_path)
+    env = CascadeEnv(root, workspace=WS)
+    citing_ir = _citing_paper_ir()
+
+    # (a) reference: read the shipped `.csl` straight off the REAL repo root.
+    dout_ref, preimage_ref = _serialize_html(
+        env, citing_ir, "journal-strict-look", load_asset=_load_shipped_asset
+    )
+    # (b) production: the REAL loader, FENCED to `<root>/presentations` (F3), reads the copied
+    #     `.csl` under the tmp root (default `load_asset=None` → `_serialize_html` builds it).
+    dout_real, preimage_real = _serialize_html(env, citing_ir, "journal-strict-look")
+
+    assert dout_real.output_bytes == dout_ref.output_bytes  # byte-identical rendered deliverable
+    assert serialize_digest(preimage_real) == serialize_digest(preimage_ref)  # id-identical
+    # and the numeric csl STYLE really rode the preimage under BOTH loaders (citing render):
+    assert preimage_real["render_inputs"]["csl"][0] == LOOK_CSL["journal-strict-look"]
+    assert preimage_ref["render_inputs"]["csl"][0] == LOOK_CSL["journal-strict-look"]
+
+
 # ---------------------------------------------------------------------------
 # (C) The three journal looks load + lower cleanly (variables + highlight_style + C11 csl style).
 # ---------------------------------------------------------------------------
@@ -761,7 +789,11 @@ def test_journal_looks_load_and_lower_to_valid_render_inputs(tmp_path, look):
 
     pres = presentation_from_entry(
         {**pentry.defaults(), **pentry.effective, "id": pentry.id},
-        load_asset=_load_shipped_asset,  # DR-5 C11: the looks now declare a `csl` STYLE asset
+        # B/C1: load the `csl` STYLE asset through the REAL production loader (fenced to
+        # `<root>/presentations`) — the tmp world copies the shipped `.csl` under that fence.
+        load_asset=filesystem_asset_loader(
+            resolve_base=root, contain_root=root / "presentations"
+        ),
         defaults=pentry.defaults(),
     )
     render_inputs = lower(pres, "html5", "html", target_engine="")

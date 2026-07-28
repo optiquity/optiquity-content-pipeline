@@ -54,6 +54,7 @@ from pipeline import presentation as _presentation
 from pipeline.adapters import default_adapters
 from pipeline.adapters.base import SourceAdapter
 from pipeline.api import results
+from pipeline.asset_loader import filesystem_asset_loader
 from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.cascade import (
     CascadeEnv,
@@ -95,28 +96,6 @@ __all__ = [
 ]
 
 Log = Callable[[str], None]
-
-
-def _deferred_asset_loader(path: str) -> bytes:
-    """The production-path Presentation asset loader (B1) — a DEFERRED, loud no-op.
-
-    `presentation.presentation_from_entry` invokes this for any entry declaring a FILE-BACKED asset
-    lever — `css`/`template`/`reference_doc` AND (DR-5 C7/C11) `csl`. That last note is now RELAXED:
-    the three shipped journal looks (`presentations/journal-*-look.md`) DO declare a `csl` path
-    (`presentations/assets/csl/*.csl`), so this loader IS reachable on the production generate-next
-    path for a CITING journal deliverable (a non-citing render never lowers a style to bytes it
-    would use, but `presentation_from_entry` still resolves the path here). It remains a DEFERRED,
-    loud raise: production asset-LOWERING — resolving a declared asset path to bytes, `csl` INCLUDED
-    — rides the SAME §17/step-29 filesystem loader as css/reference_doc (one asset-path resolution
-    convention, not a per-lever special case); raising here (vs the old `lower_plain` silent
-    lever-drop) is strictly more honest (§3.1). The DR-5 C11 citation-style e2e injects its OWN
-    `load_asset` (reading the shipped `.csl` bytes), so it validates the real styles WITHOUT this
-    deferred loader; shipping the real filesystem resolver is §17/step-29 scope."""
-    raise _presentation.PresentationError(
-        "presentation-error: asset levers (css/template/reference_doc) are not yet lowerable on "
-        f"the production generate-next path — deferred to §17/step-29; an entry declares a "
-        f"file-backed asset lever referencing {path!r}"
-    )
 
 
 class DriverError(RuntimeError):
@@ -586,7 +565,12 @@ def _run_deliverable(
     # styled entry lowers to real `--variable`/`--highlight-style` flags + a variables snapshot.
     pres = _presentation.presentation_from_entry(
         {**render.presentation.values, "id": render.presentation.entry_id},
-        load_asset=_deferred_asset_loader,
+        # B (§17/step-29): the REAL filesystem asset loader replaces the deferred raise, FENCED to
+        # `<root>/presentations` (F3, CLAUDE.md rule 2) — a css/csl/template path resolves against
+        # `env.root` and must land inside `presentations/`, never a client `workspaces/…`.
+        load_asset=filesystem_asset_loader(
+            resolve_base=env.root, contain_root=env.root / "presentations"
+        ),
         defaults=render.presentation.entry.defaults(),
     )
     render_inputs = _presentation.lower(

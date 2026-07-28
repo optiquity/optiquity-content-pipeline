@@ -41,6 +41,7 @@ from pipeline import fit_resolution, ir, payload, presentation, reconcile, seria
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import results
 from pipeline.api import token as token_mod
+from pipeline.asset_loader import filesystem_asset_loader
 from pipeline.canonical import canonical_json_bytes
 from pipeline.dispatch import RenderInputs, RenderTarget
 from pipeline.fit_resolution import (
@@ -713,18 +714,6 @@ def _claim_held(
 # ---------------------------------------------------------------------------
 
 
-def _deferred_asset_loader(path: str) -> bytes:
-    """The render-verb Presentation asset loader (B1) — a DEFERRED, loud no-op. Invoked ONLY for
-    an entry declaring a `css`/`template`/`reference_doc` lever (no framework entry does — only
-    `plain.md` ships — and the MVP styled entry is asset-free), so it never fires on any existing
-    or MVP path; raising (vs the old silent lever-drop) is strictly more honest (§3.1). A real
-    filesystem asset loader is §17/step-29 scope, not this step."""
-    raise presentation.PresentationError(
-        "presentation-error: asset levers (css/template/reference_doc) are not yet lowerable on "
-        f"the render-verb path — deferred to §17/step-29; an entry references asset {path!r}"
-    )
-
-
 def _lower_for_leg(env: Any, leg: SerializeLeg, target: RenderTarget) -> RenderInputs:
     """Lower the resolved presentation for one serialize leg (B1) — the ONE lowering both
     `_serialize_inputs` (the preimage) and `mint_deliverable` (the dispatched flags) consume, so
@@ -735,7 +724,12 @@ def _lower_for_leg(env: Any, leg: SerializeLeg, target: RenderTarget) -> RenderI
     entry = env.resolver.resolve("presentations", leg.presentation)
     pres = presentation.presentation_from_entry(
         {**entry.defaults(), **entry.effective, "id": entry.id},
-        load_asset=_deferred_asset_loader,
+        # B (§17/step-29): the REAL filesystem asset loader replaces the deferred raise, FENCED to
+        # `<root>/presentations` (F3, CLAUDE.md rule 2) — resolves the asset path against `leg.root`
+        # and refuses anything outside `presentations/` (no client `workspaces/…` reach-in).
+        load_asset=filesystem_asset_loader(
+            resolve_base=leg.root, contain_root=leg.root / "presentations"
+        ),
         defaults=entry.defaults(),
     )
     return presentation.lower(pres, target.writer, leg.output_type, target_engine=target.engine)
