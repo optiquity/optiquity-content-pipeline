@@ -940,10 +940,11 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     `ir_version`, §6.3/§12.1 `grounding_posture` cascade, §6.5/§19/§21.7 the advisory audit + abstain) and
     a small `ir.py` module-docstring note — proposed, not yet landed (edits the ratified design SSOT).
 
-### DR-7 — Mixed-media documents: existing images + captions AND generated diagrams in one document — design ratified, not built
-- **Status:** Deferred (not in v1) — **design RATIFIED across ~15 architect passes (base → amendment →
-  grouping → box initial/adversarial); recorded here, NOT yet built.** Build scope **A→D** is plannable;
-  the enclosing-subsystem box (E) is **DEFERRED** behind a grounding-layer rebuild.
+### DR-7 — Mixed-media documents: existing images + captions AND generated diagrams in one document — design ratified; increment A (asset foundation) BUILT, B–D not built
+- **Status:** Partially built — **design RATIFIED across ~15 architect passes (base → amendment →
+  grouping → box initial/adversarial); increment A (the asset foundation) is now BUILT; B–D remain
+  designed-not-built.** Build scope **A→D** is plannable; the enclosing-subsystem box (E) is **DEFERRED**
+  behind a grounding-layer rebuild.
 - **The capability (plain English):** put an **existing picture** (a client image asset + its caption)
   AND a **pipeline-generated diagram** side by side inside **one** document, each declared with a single
   `{type=…}` section marker (`type=figure` = a brought image; `type=diagram` = a generated one) in the
@@ -960,13 +961,18 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   genuinely non-source-claiming sketch is allowed only if it renders with a visible, non-optional
   "illustrative — not source-checked" stamp.
 - **Build scope A→D (paid once for the capability; adding a value stays one file after):**
-  - **A — Content-asset foundation (MVP; needed by BOTH brought figures and generated diagrams):** a
+  - **A — Content-asset foundation (MVP; needed by BOTH brought figures and generated diagrams) — BUILT:**
+    (commits `c5f8918` A1 homes + framework-assets guard, `d836b41` A2 content-addressed store,
+    `7b5b338` A3 containment-guard library, `86bf4e8` A4 wired blocking gate + raw-markup ban) a
     compose-time content-asset store; an **intra-body path containment guard** (a `![alt](path)` cannot
     reach across into another client's files — blocking at compose, closes a live cross-client read;
     reuses GAP-9's resolve-and-contain *shape* at path granularity, but is a NEW check); and the two
     **framework/instance provenance homes** (framework example assets in a public `assets/…`; client
     assets in `workspaces/<client>/assets/…`, gitignored + isolated) + a shipped
-    `workspaces/workspace.template/assets/.gitkeep`.
+    `workspaces/workspace.template/assets/.gitkeep`. **Delivered:** the two asset homes + the
+    content-addressed store + the compose-time client-isolation containment guard (refuses any body image
+    reference escaping the client's own `assets/`, incl. `..`/absolute/`%2e%2e`/backslash/NUL/raw-`<img>`/symlink)
+    + the raw-markup ban; suite 3001→3055; adversarially reviewed. **B/C/D remain designed-not-built.**
   - **B — Binary-target image embedding (MVP):** build the **deferred filesystem asset loader** (today a
     loud RAISE, deferred to §17/step-29) + emit `--resource-path` (and `--embed-resources --standalone`
     for self-contained HTML) in the Presentation lowering, so images actually **embed in HTML/docx** —
@@ -1012,9 +1018,9 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   cc42c54`. The load-bearing records (3 reconciliations + the 2 box records) are archived at
   `docs/archive/design-record/mixed-media/` with a `README.md` index naming each record's role and the
   final decision; the code citations resolve there. **Full build order:** `A → B → C → D`, **E deferred.**
-- **Not built:** the whole feature (A–D) and E — this is a recorded design decision, not code. The
-  figure/image half (A+B) is READY FOR THE PLANNER; C's spike has been run (no open fork); D carries its
-  own small required determinism/citation spike.
+- **Not built:** B–D and E — a recorded design decision, not code (increment A is now BUILT, above). The
+  figure/image half's remaining piece (B) is READY FOR THE PLANNER; C's spike has been run (no open fork);
+  D carries its own small required determinism/citation spike.
 - **Source:** maintainer requirement — mixed-media documents (existing images + captions plus generated
   diagrams in one document), with the explicit north star that a generated diagram must never be able to
   lie (no invented arrow may ship dressed as a checked fact).
