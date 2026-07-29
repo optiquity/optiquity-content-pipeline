@@ -82,6 +82,17 @@ templates · **DR-5** style-placement · **DR-6** general grounding. All tracked
 22 design records archived under `docs/archive/design-record/dr-design-passes/` (18 from this program +
 4 DR-1 records added 2026-07-24 — see the DR-1 subsection below).
 
+- **Most recent post-delivery arc (2026-07-24 → 07-29) — tracked in `docs/known-issues.md`, not yet fully
+  narrated here:** the README front-door split; **DR-1** HTTP shim (poll/webhook — BUILT, narrated below);
+  **DR-7** mixed-media documents (increments **A** asset foundation + **B** binary-target image embedding +
+  **C** flat honest generated diagrams — all BUILT; **D** badge grouping designed-not-built; E deferred);
+  **DR-8** general multi-language API client (CLI + stdlib library + language-neutral wire contract + C++
+  POC — BUILT); and the `lexicons`→schema-lint discharge (this commit). `docs/known-issues.md`
+  (DR-1/DR-7/DR-8) is the CURRENT authority for these; a full state.md narration + the user-facing
+  `docs/guide/*` sync ride the end-of-arc documentation pass (after increment D is decided and runnable
+  end-to-end examples verify the feature), per the maintainer's "update the guide only when it is done and
+  tested and works correctly."
+
 - **DR-6 increment 1 — BUILT (Option A, advisory).** Four gated commits, each coder → reviewer → (fix →
   re-review) to CLEAN, commits under the maintainer's standing approval:
   - `0f6d401` **F-a** — `ir_version`→2 + generation-tolerant validation (old IRs re-reconcile; coverage

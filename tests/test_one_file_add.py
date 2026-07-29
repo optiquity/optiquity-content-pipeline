@@ -62,6 +62,7 @@ OTHER_REGISTRIES = (
     "render-targets",
     "recipes",
     "folio-types",
+    "lexicons",  # DR-2 class-(ii) house-style registry (non-axis); deferral discharged 2026-07-29
     "diagram-styles",  # mixed-media increment C: the referenced diagram-style registry
 )
 

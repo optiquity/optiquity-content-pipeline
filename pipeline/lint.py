@@ -140,6 +140,7 @@ REGISTRY_ROOTS = (
     "render-targets",
     "recipes",
     "folio-types",
+    "lexicons",  # DR-2 discharge: schema-lint scans the class-(ii) lexicons registry too
     "diagram-styles",  # mixed-media increment C: the referenced diagram-style registry
 )
 

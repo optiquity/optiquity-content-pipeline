@@ -893,11 +893,13 @@ def test_git_baseline_reader_on_this_repo():
     assert read("no/such/path.yaml") is None
 
 
-def test_registry_roots_are_the_fifteen_named_dimensions():
-    # Mixed-media increment C added `diagram-styles` (the referenced diagram-style registry) — 15.
-    assert len(REGISTRY_ROOTS) == 15
+def test_registry_roots_are_the_sixteen_named_dimensions():
+    # Increment C added `diagram-styles`; the DR-2 discharge added `lexicons` (schema-lint now
+    # scans the class-(ii) lexicons registry too, matching the guard scope) — 16.
+    assert len(REGISTRY_ROOTS) == 16
     assert "recipes" in REGISTRY_ROOTS and "folio-types" in REGISTRY_ROOTS
     assert "diagram-styles" in REGISTRY_ROOTS
+    assert "lexicons" in REGISTRY_ROOTS
 
 
 def test_schema_lint_script_delegates(tmp_path):

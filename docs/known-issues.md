@@ -407,15 +407,24 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     entries are validated by `tests/test_lexicons.py`, NOT by the CI schema-lint scan. (The CONTENT
     guard `scripts/check-no-content.sh` DOES scan `lexicons/` — its `REGISTRY_ROOTS` is 14→15 — this
     deferral is about the SCHEMA lint only.)
+    **✅ DISCHARGED 2026-07-29 (increment-C closeout):** `lexicons` was added to `lint.py::REGISTRY_ROOTS`,
+    so schema-lint now scans `lexicons/` too (collections 15→16; the schema-lint and content-guard
+    `REGISTRY_ROOTS` are now the identical 16-member set). A fresh ops-architect pass found the original
+    "class-(ii), not a §5.4 axis" rationale insufficient: the `diagram-styles` registry added in DR-7/C is
+    equally non-axis yet IS linted, and — unlike diagram-styles — a lexicon's `{entry, delta}` RIDES the
+    artifact-id preimage, so it needs SV11 schema-evolution discipline (bump-on-meaning-change + a migration
+    step) MORE, not less. Verified green (schema-lint clean at 16 collections; the `tests/test_lexicons.py`
+    all-schemas version-equality test still passes). See `ops-handoff/lexicon-analysis/architect-initial.md`.
   - **L6 (run) selection-level DEFERRED** — the lexicon has no run-override surface in v1 (F4a keeps it
     workspace/recipe-scoped); adding L6 is a later additive change.
   - **§12.6(b) lexicon-scope-default + brand-lock(b) DEFERRED** — brand-lock is Voice-only in v1; the
     `authoritative`-style lexicon-scope-default (elevate a house lexicon above the recipe/run) is a
     flagged §12.6 extension, not built.
 - **Gate:** final `uv run pytest -q` = **2546 passed** (C4); `ruff check .` clean;
-  `scripts/check-no-content.sh` OK; `scripts/schema-lint.sh` clean (its 14-collection matrix; the
-  class-(ii) `lexicons/` is validated by `tests/test_lexicons.py`, not this scan). Coder/reviewer
-  reports under `ops-handoff/dr2-build/`.
+  `scripts/check-no-content.sh` OK; `scripts/schema-lint.sh` clean (its 14-collection matrix **at the DR-2
+  gate**; the class-(ii) `lexicons/` was then validated by `tests/test_lexicons.py`, not this scan —
+  **`lexicons` was later brought under schema-lint on 2026-07-29; see the ✅ DISCHARGED note above**).
+  Coder/reviewer reports under `ops-handoff/dr2-build/`.
 
 ### DR-3 — Optional artifact outline (pre-generation; dual output + input; outline-driven precedence) — design question
 - **Status:** Deferred (not in v1) — **requirement + open design questions recorded; to be designed
@@ -940,10 +949,11 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     `ir_version`, §6.3/§12.1 `grounding_posture` cascade, §6.5/§19/§21.7 the advisory audit + abstain) and
     a small `ir.py` module-docstring note — proposed, not yet landed (edits the ratified design SSOT).
 
-### DR-7 — Mixed-media documents: existing images + captions AND generated diagrams in one document — design ratified; increments A+B BUILT (asset foundation + binary-target image embedding), C–D not built
+### DR-7 — Mixed-media documents: existing images + captions AND generated diagrams in one document — design ratified; increments A+B+C BUILT (asset foundation + binary-target image embedding + flat honest generated diagrams), D not built
 - **Status:** Partially built — **design RATIFIED across ~15 architect passes (base → amendment →
-  grouping → box initial/adversarial); increments A (the asset foundation) AND B (binary-target image
-  embedding) are now BUILT; C–D remain designed-not-built.** Build scope **A→D** is plannable; the
+  grouping → box initial/adversarial); increments A (the asset foundation), B (binary-target image
+  embedding), AND C (flat honest generated diagrams) are now BUILT; D remains designed-not-built.**
+  Build scope **A→D** is plannable (D, honest badge grouping, is the last flat-model increment); the
   enclosing-subsystem box (E) is **DEFERRED** behind a grounding-layer rebuild.
 - **The capability (plain English):** put an **existing picture** (a client image asset + its caption)
   AND a **pipeline-generated diagram** side by side inside **one** document, each declared with a single
@@ -992,19 +1002,35 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     OMIT-WHEN-ABSENT, mirroring the C7 `csl` pattern exactly) so an edited figure re-mints the html/docx
     deliverable while the by-path Markdown id is byte-identical (image-less and md renders unperturbed —
     zero churn). Suite 3055→3102; adversarially reviewed (F1–F7 + FWD reconciled).
-    **Carry-forward to C (F4/FWD):** SVG-in-docx embedding is UNVERIFIED by B (PNG proven only) — C's
-    spike MUST confirm it under the pinned pandoc (may need `rsvg-convert`); and the EXTERNAL hand-off
-    does not yet fold body-figure content (`assets_embedded` is internal html5/docx only) — extend the
-    fold when external rendering lands. **C/D remain designed-not-built; E deferred.**
-  - **C — Flat honest generated diagrams (behind a spike — now RUN and de-risked):** a structured
-    node/edge writer grammar (extends the compose envelope) + the **HARD grounding gate** + a multi-tool
-    auto-render — **Graphviz `dot` (pinned default) / `d2` (selectable) / `auto` (opt-in ONLY, for
-    locked environments)** — compiled to a stored SVG + the `diagram-styles/` **referenced registry** +
-    exactly **one** honesty-safe knob, `tool` (it changes only HOW the same checked boxes/arrows are
-    drawn, never WHICH exist). The masking knobs `detail` / `altitude` / `connectivity` were **CUT** —
-    each could make a diagram quietly lie past an edge-only gate; over-granularity is fixed honestly at
-    authoring (write at a citable altitude), not by a hiding dial. Mermaid is dropped (renders as raw
-    code in 3 of 4 outputs; not groundable; non-deterministic).
+    **Carry-forward to C (F4/FWD) — RESOLVED in C:** SVG-in-docx embedding (UNVERIFIED by B, PNG proven
+    only) is now handled by C0's LOUD `rsvg-convert` capability gate — a docx that embeds an SVG diagram
+    requires `rsvg-convert` on the render host; absent it the render REFUSES loudly (never silently ships a
+    blank/broken docx). The EXTERNAL hand-off still does not fold body-figure content (`assets_embedded` is
+    internal html5/docx only) — extend the fold when external rendering lands. **D remains
+    designed-not-built; E deferred.**
+  - **C — Flat honest generated diagrams — BUILT:** (commits `3f0b369` C0 the LOUD `rsvg-convert`
+    docx-SVG capability gate, `96710bc` C1 the node/edge writer grammar + parser, `a1d2edf` C2 the HARD
+    grounding gate [reviewed CLEAN], `2ed5b33` C3 the multi-tool compiler → content-addressed stored SVG +
+    label escaping, `b79d7da` C4 the atomic `{type=diagram}` flip [parse → gate → compile → embed],
+    `93eb4a9` C5 the `diagram-styles/` referenced registry + the selectable `tool` knob) a structured
+    node/edge writer grammar (extends the compose envelope) + the **HARD grounding gate** (every edge must
+    resolve to ≥1 real honest-tier source fact BEFORE any SVG byte is drawn, or the whole document is
+    REFUSED — coverage is by fact-COUNT, not merely a green-looking tag) + a multi-tool auto-render —
+    **Graphviz `dot` (pinned default) / `d2` (selectable) / `auto` (opt-in ONLY, for locked
+    environments)** — compiled to a **content-addressed stored SVG** (reuses A/B's asset machinery) + the
+    `diagram-styles/` **referenced registry** + exactly **one** honesty-safe knob, `tool` (it changes only
+    HOW the same checked boxes/arrows are drawn, never WHICH exist; a dangling `diagram_style` ref or a
+    chosen-but-missing tool REFUSES loudly, never a silent fallback). The masking knobs `detail` /
+    `altitude` / `connectivity` were **CUT** — each could make a diagram quietly lie past an edge-only gate;
+    over-granularity is fixed honestly at authoring (write at a citable altitude), not by a hiding dial.
+    Mermaid is dropped (renders as raw code in 3 of 4 outputs; not groundable; non-deterministic).
+    **Delivered:** the `{type=diagram}` section grammar + the HARD compose-time fact-check gate (fail-closed;
+    only a literal `illustrative` posture opts out, and only behind a visible "illustrative — not
+    source-checked" stamp) + label escaping (a box label can no longer inject an unchecked arrow) + the
+    `dot`/`d2`/`auto` compiler to a stored SVG + the `diagram-styles/` registry (a one-file-add style entry,
+    whitelisted in the content guard the same commit) + C0's loud rsvg-convert docx gate. Suite 3102→3310;
+    each commit coder → reviewer → (fix) → CLEAN. **`rsvg-convert` is a docx-SVG render prerequisite**
+    (loudly enforced). **D remains designed-not-built; E deferred.**
   - **D — Honest BADGE grouping (fast-follow, behind its own small spike):** each node carries a small
     **badge** naming its cited subsystem — a **grounded group name + grounded membership**, both run
     through the existing existence+tier gate — plus a **mandatory plain-text legend** ("a badge marks a
@@ -1030,16 +1056,24 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   on the next re-compose, like the existing asset-version posture), NOT the serialize preimage — so no
   new `artifact-id` component is introduced by the design. `auto` is opt-in precisely because keying SVG
   bytes on the ambient install-set would make identity machine-dependent.
-- **Design status (2026-07-24 → 07-27) — RATIFIED (design; not built):** designed via a base architect
-  pass (initial → adversarial → reconciliation), an amendment pass (multi-tool + diagram knobs), a
-  grouping pass (box vs badge), and a box pass (initial → adversarial), all read-only against `main @
-  cc42c54`. The load-bearing records (3 reconciliations + the 2 box records) are archived at
-  `docs/archive/design-record/mixed-media/` with a `README.md` index naming each record's role and the
-  final decision; the code citations resolve there. **Full build order:** `A → B → C → D`, **E deferred.**
-- **Not built:** C–D and E — a recorded design decision, not code (increments A+B are now BUILT, above).
-  The figure/image half (A+B) is now COMPLETE — brought figures embed in html/docx; C's spike has been
-  run (no open fork) and reuses B's loader/resource-path/embed/identity-fold machinery unchanged; D
-  carries its own small required determinism/citation spike.
+- **Design status (2026-07-24 → 07-27) — RATIFIED; increments A+B+C BUILT (C landed 2026-07-28/29):**
+  designed via a base architect pass (initial → adversarial → reconciliation), an amendment pass
+  (multi-tool + diagram knobs), a grouping pass (box vs badge), and a box pass (initial → adversarial),
+  all read-only against `main @ cc42c54`. The load-bearing records (3 reconciliations + the 2 box records)
+  are archived at `docs/archive/design-record/mixed-media/` with a `README.md` index naming each record's
+  role and the final decision; the code citations resolve there. **Full build order:** `A → B → C → D`,
+  **E deferred** — A, B, and C are BUILT; **D (honest badge grouping) is next if the maintainer proceeds.**
+- **Not built:** D and E — a recorded design decision, not code (increments A+B+C are now BUILT, above).
+  Both the figure/image half (A+B) and the generated-diagram half (C) are now COMPLETE — brought figures
+  embed in html/docx, and generated diagrams are fact-check-gated then compiled to stored SVGs through the
+  same asset machinery. D (honest badge grouping) carries its own small required determinism/citation spike
+  and is strictly additive (an ungrouped diagram is byte-identical to a flat one, so D costs zero rework).
+- **Docs status (increment-C closeout, 2026-07-29):** this tracker (DR-7) is current. The comprehensive
+  `docs/design.md` design-authority integration for the whole mixed-media feature (A+B+C) and the
+  user-facing `docs/guide/*` walkthrough are DEFERRED to the end-of-arc documentation sync — per the
+  maintainer's instruction to update the guide "only when it is done and tested and works correctly" (i.e.
+  after increment D is decided and runnable end-to-end examples verify the feature). The load-bearing
+  design records remain archived under `docs/archive/design-record/mixed-media/`.
 - **Source:** maintainer requirement — mixed-media documents (existing images + captions plus generated
   diagrams in one document), with the explicit north star that a generated diagram must never be able to
   lie (no invented arrow may ship dressed as a checked fact).
