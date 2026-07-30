@@ -1174,10 +1174,20 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
   researcher-assisted; see `state.md`). PLUS a comprehensive, user-facing **ATTRIBUTE REFERENCE**
   documenting what every attribute MEANS and DOES (surfacing the schema `definition:` text that today is
   maintainer-only) so a user knows exactly what to author and set. Ties directly to the entry-semantics
-  finding (the meaning is written but not user-facing). Needs its own design pass (architect→plan),
-  sequenced after the CLI-UX build lands (it extends the just-built normalizer/friendly-flag surface).
+  finding (the meaning is written but not user-facing). PLUS (c) a **DIAGRAM-NUDGE** knob (maintainer ask
+  2026-07-30): a way to DETERMINISTICALLY request or suppress `{type=diagram}` sections, with the DEFAULT
+  unchanged (the WRITER decides — see the live-demo finding that the writer emitted a fact-checked diagram
+  on its own, unrequested). Maintainer's sketch: a −5…+5 slider (−5 guarantee suppress · 0 neutral/current ·
+  +5 guarantee request) — but **an architect designs the HONEST semantics**: "+5 request" cannot mean
+  *fabricate* a diagram (the HARD grounding gate still binds — a diagram may only depict grounded facts), so
+  "request" must mean "strongly require IF the content supports a grounded diagram"; "−5 suppress" can be a
+  hard drop. Open: where it lives (recipe vs format attribute, cascading), its true shape (slider vs a
+  small enum), how it maps to the writer prompt vs the compose gate, and its identity impact. **DESIGN PASS
+  IN FLIGHT** (architect→plan, kicked off 2026-07-30 after the CLI-UX build landed; extends the just-built
+  normalizer/friendly-flag surface). Records: `ops-handoff/authoring-ux/`.
 - **Source:** maintainer requirements — user-friendly invocation + recipe/entry authoring + "the user has
-  to be able to set everything, and the documentation must specify what each attribute means and does."
+  to be able to set everything, and the documentation must specify what each attribute means and does" +
+  a deterministic diagram request/suppress nudge over the writer-decides default.
 
 ---
 
