@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from pipeline import reconcile, serialize
+from pipeline import outline_store, reconcile, serialize
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import results
 from pipeline.api import token as token_mod
@@ -81,11 +81,14 @@ DATA_TYPES = (
     "dimensions",
     "dimension-entries",
     "recipes",
+    "voices",
+    "lexicons",
     "folios",
     "folio-members",
     "folio-types",
     "artifacts",
     "deliverables",
+    "outlines",
     "sources",
     "content-kinds",
     "render-targets",
@@ -104,6 +107,8 @@ _REGISTRY_DIRS: dict[str, tuple[str, str]] = {
     "dimensions": ("", ""),  # handled specially (the axis directories themselves)
     "dimension-entries": ("", ""),  # handled specially (entries across all axis dirs)
     "recipes": ("recipes", "*.md"),
+    "voices": ("voices", "*.md"),  # a §3/§4 axis dir, also directly listable by name (C3c)
+    "lexicons": ("lexicons", "*.md"),  # the §5 lexicon registry (C3c)
     "folio-types": ("folio-types", "*.md"),
     "content-kinds": ("content-kinds", "*.md"),
     "render-targets": ("render-targets", "*.md"),
@@ -651,6 +656,28 @@ def _plan_progress(store: WorkspaceStore) -> list[dict[str, Any]]:
     }]
 
 
+def _list_outlines(store: WorkspaceStore) -> list[dict[str, Any]]:
+    """The DR-3 pre-compose OUTLINE store (`<root>/outlines/<digest>`, §21.8 RETAIN-ALL): every
+    content-addressed authored/edited outline in this workspace. Read-only, ssot-free (a directory
+    listing of the OUTPUT-side store, §22.7). Each surfaces the SAME `{id, provenance, path}` shape
+    as the registry `list` types — the `id` is the bare 64-hex `outline-digest` (a content address,
+    NOT a §7.4 id), `provenance` is `instance` (workspace-authored content, like folio-members),
+    `path` is workspace-relative. The filename IS the digest (no extension)."""
+    out: list[dict[str, Any]] = []
+    outlines_dir = store.root / outline_store.OUTLINES_SUBDIR
+    if not outlines_dir.is_dir():
+        return out
+    for entry in sorted(outlines_dir.iterdir()):
+        if not entry.is_file() or is_temp_name(entry.name):
+            continue
+        out.append({
+            "id": entry.name,
+            "provenance": "instance",
+            "path": f"{outline_store.OUTLINES_SUBDIR}/{entry.name}",
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # The self-describing META-TYPES (§21.3) — LIVE constant reads, never a hardcode.
 # ---------------------------------------------------------------------------
@@ -769,6 +796,8 @@ def _enumerate(
         return _list_folio_members(store, folio_id if isinstance(folio_id, str) else None)
     if type_name == "plan-progress":
         return _plan_progress(store)
+    if type_name == "outlines":
+        return _list_outlines(store)
     if type_name == "codes":
         return _list_codes()
     if type_name == "verbs":

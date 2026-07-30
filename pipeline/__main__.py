@@ -111,6 +111,18 @@ commands:
                                add --go to spend. Direct-handler pattern (never registers a session
                                verb; §21.9 stays intact). Exit 0 ok; 1 refusal / --go spend
                                failure; 2 usage.
+  list           the FRIENDLY read-only DISCOVERY door (design §21.3, CLI-UX C3c): enumerate a
+                 discovery type by name. Usage: list <type> --workspace W [--filters JSON]
+                 [--root DIR]. Types: recipes, voices, lexicons, outlines, codes, deliverables,
+                 artifacts, folios, … (run `pipeline list types`). Tier-A, READ-ONLY — spends
+                 nothing, mints no token (direct-handler pattern; §21.9 preserved). Prints one
+                 `id [provenance path]` row per entry. Exit 0 ok; 1 refusal (unknown type /
+                 not-found — never a silent empty); 2 usage.
+  get            fetch ONE discovery entry by id (design §21.3, CLI-UX C3c). Usage: get <type>
+                 <id> --workspace W [--root DIR]. Tier-A, READ-ONLY. Enumerate-then-match keeps
+                 §10 isolation structural; the id-addressed rich get (deliverables/artifacts/
+                 folios, per-id isolation + currency detail) stays on `pipeline invoke get`.
+                 Exit 0 ok; 1 no such entry; 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -1248,6 +1260,165 @@ def _cmd_outline(
     return 2
 
 
+# ---------------------------------------------------------------------------
+# CLI-UX C3c: `pipeline list <type>` / `pipeline get <type> <id>` — the FRIENDLY read-only
+# DISCOVERY door (design §21.3). The operator-facing shell for the discovery `list`/`get` layer:
+# enumerate a closed discovery type by name (recipes, voices, lexicons, outlines, codes,
+# deliverables, …) or fetch one entry. Tier-A, READ-ONLY — no spend, no token, no idempotency key,
+# no live runner. Wired via the SAME C3a/C3b direct-handler pattern (`invoke(handlers={"list":
+# <discovery handler>})`, a PER-CALL override that never writes the module-global `_VERB_HANDLERS`),
+# so §21.9 money-safety holds by construction: `pipeline invoke begin-session` stays exit 3 and
+# these subcommands register nothing.
+#
+# WHY `get` enumerates via the `list` handler (not the discovery `get` VERB): invoke's Gate-3
+# isolation (a durable §10 boundary) refuses any `id` that is not a workspace-materialized
+# artifact/folio, so a registry NAME (`clear-explainer`) or a bare outline digest resolves nowhere
+# → `isolation-violation`. Enumerate-then-match keeps isolation STRUCTURAL (the enumeration only
+# ever sees THIS workspace's store + the framework registry) without weakening any gate. The
+# genuine id-addressed `get` (deliverables/artifacts/folios, with per-id isolation + the rich
+# currency detail) stays reachable through `pipeline invoke get`.
+# ---------------------------------------------------------------------------
+
+
+def _discovery_list_handler() -> "object":
+    """Construct the Tier-A discovery `list` handler the SAME way the production wiring does
+    (`discovery.register_discovery_handlers` / `session.py`): the default currency resolver + the
+    single-source `session.CONTINUE_ACTIONS` action vocabulary (so `list actions` is correct).
+    READ-ONLY — computes no spend, mints no token; passed as a PER-CALL `handlers=` override that
+    never writes the module-global `_VERB_HANDLERS` (§21.9). Importing `session` here registers
+    NOTHING (handler registration is explicit-only, never at import)."""
+    from pipeline.api import discovery, session
+
+    return discovery.list_handler(action_vocab=session.CONTINUE_ACTIONS)
+
+
+def _invoke_discovery_list(
+    type_name: str, workspace: str, root: str, filters: "object | None" = None
+) -> dict:
+    """Dispatch ONE discovery `list` call via the direct-handler pattern (reused by `list` + `get`,
+    both of which enumerate a type). Returns the raw `{envelope, results}` invoke output."""
+    from pipeline.api import invoke as invoke_mod
+
+    params: dict[str, object] = {"type": type_name}
+    if filters is not None:
+        params["filters"] = filters
+    return invoke_mod.invoke(
+        "list", workspace, params, handlers={"list": _discovery_list_handler()}, root=root
+    )
+
+
+def _discovery_row_tail(context: dict) -> str:
+    """The compact `{provenance, path}` tail for a discovery row — appended when the record carries
+    them (registry/outline entries), else empty (meta rows like `codes` print just the id)."""
+    parts = []
+    if context.get("provenance") is not None:
+        parts.append(f"provenance={context['provenance']}")
+    if context.get("path") is not None:
+        parts.append(f"path={context['path']}")
+    return ("  " + " ".join(parts)) if parts else ""
+
+
+def _cmd_list(argv: list[str]) -> int:
+    """CLI-UX C3c: `pipeline list <type> [--filters JSON]` — enumerate a discovery type by name
+    (design §21.3). Tier-A, READ-ONLY (no spend, no token). Prints one `id [provenance path]` row
+    per entry. An unknown type is a `not-found` refusal (exit 1, never a silent empty). Exit 0 ok;
+    1 refusal; 2 usage."""
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline list",
+        description=(
+            "Enumerate a discovery type by name (design §21.3): recipes, voices, lexicons, "
+            "outlines, codes, deliverables, artifacts, folios, … (see `pipeline list types`). "
+            "Tier-A, READ-ONLY — spends nothing, mints no token. Direct-handler pattern (§21.9 "
+            "preserved)."
+        ),
+    )
+    parser.add_argument(
+        "type", help="the discovery type to enumerate (see `pipeline list types`)"
+    )
+    parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
+    parser.add_argument(
+        "--filters",
+        default=None,
+        metavar="JSON",
+        help="§13.2 filters as JSON: a {field: value} map or a [{path,op,value}] pred list",
+    )
+    parser.add_argument(
+        "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
+    )
+    args = parser.parse_args(argv)
+
+    filters: object | None = None
+    if args.filters is not None:
+        try:
+            filters = json.loads(args.filters)
+        except json.JSONDecodeError as exc:
+            print(f"pipeline list: --filters is not valid JSON: {exc}", file=sys.stderr)
+            return 2
+
+    result = _invoke_discovery_list(args.type, args.workspace, args.root, filters)
+    if not result["envelope"]["ok"]:
+        _print_refusal("list", result)
+        return 1
+    rows = result["results"]
+    if any(r.get("status") == "block" for r in rows):  # unknown type → not-found (no silent empty)
+        _print_refusal("list", result)
+        return 1
+    print(f"=== list {args.type}: {len(rows)} entry(ies) — workspace={args.workspace} ===")
+    for r in rows:
+        print(f"  {r.get('item')}{_discovery_row_tail(r.get('context') or {})}")
+    return 0
+
+
+def _cmd_get(argv: list[str]) -> int:
+    """CLI-UX C3c: `pipeline get <type> <id>` — fetch ONE discovery entry by id (design §21.3).
+    Tier-A, READ-ONLY. Enumerates the type via the `list` handler and selects the matching id
+    (invoke's Gate-3 isolation refuses a registry NAME / bare outline digest through the `get`
+    VERB — see the section note); the id-addressed rich `get` stays on `pipeline invoke get`. Prints
+    the entry's fields. Exit 0 ok; 1 refusal / no such entry; 2 usage."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline get",
+        description=(
+            "Fetch one discovery entry by id (design §21.3): e.g. `get voices clear-explainer`. "
+            "Tier-A, READ-ONLY — spends nothing. Enumerate-then-match keeps §10 isolation "
+            "structural; the id-addressed rich `get` is on `pipeline invoke get`."
+        ),
+    )
+    parser.add_argument("type", help="the discovery type (see `pipeline list types`)")
+    parser.add_argument("id", help="the entry id to fetch")
+    parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
+    parser.add_argument(
+        "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
+    )
+    args = parser.parse_args(argv)
+
+    result = _invoke_discovery_list(args.type, args.workspace, args.root)
+    if not result["envelope"]["ok"]:
+        _print_refusal("get", result)
+        return 1
+    rows = result["results"]
+    if any(r.get("status") == "block" for r in rows):  # unknown type → not-found refusal
+        _print_refusal("get", result)
+        return 1
+    match = next((r for r in rows if r.get("item") == args.id), None)
+    if match is None:
+        print(
+            f"pipeline get: no {args.type} entry with id {args.id!r} in workspace "
+            f"{args.workspace!r} (§21.3)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"=== get {args.type} {args.id} — workspace={args.workspace} ===")
+    context = match.get("context") or {}
+    for key in sorted(context):
+        print(f"  {key}: {context[key]}")
+    return 0
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
@@ -1258,6 +1429,8 @@ _COMMANDS = {
     "preview": _cmd_preview,
     "generate": _cmd_generate,
     "outline": _cmd_outline,
+    "list": _cmd_list,
+    "get": _cmd_get,
 }
 
 

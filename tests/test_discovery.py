@@ -497,6 +497,97 @@ class TestBAssetEmbedCurrencyCarryForward:
 
 
 # ---------------------------------------------------------------------------
+# C3c: `list voices` / `list lexicons` / `list outlines` discovery types.
+# voices + lexicons read the §5 registry dirs (`_root_of(store)` grandparent), so a fixture root
+# with those dirs is needed; outlines read the workspace outline store (store.root-relative).
+# ---------------------------------------------------------------------------
+
+
+def _write_registry(path: Path, provenance: str) -> None:
+    """A minimal frontmatter-bearing registry entry (`provenance:` block + a body)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nprovenance: {provenance}\n---\n# {path.stem}\n\nbody\n", encoding="utf-8"
+    )
+
+
+@pytest.fixture()
+def registry_store(tmp_path):
+    """A store whose framework root (`_root_of` grandparent = `<root>/workspaces/<ws>` → `<root>`)
+    is a controlled fixture root carrying `voices/` + `lexicons/` registry dirs — so `list voices`
+    / `list lexicons` read real entries, off the shared repo tree."""
+    root = tmp_path / "root"
+    _write_registry(root / "voices" / "clear-explainer.md", "framework")
+    _write_registry(root / "voices" / "confident-advocate.md", "framework")
+    _write_registry(root / "voices" / "house-voice.md", "instance")
+    _write_registry(root / "voices" / "_schema.yaml", "framework")  # skipped (leading _)
+    _write_registry(root / "voices" / "voice.template.md", "framework")  # skipped (.template.)
+    _write_registry(root / "lexicons" / "house-standard.md", "framework")
+    store = WorkspaceStore(root / "workspaces" / WS)
+    store.ensure_layout()
+    return store
+
+
+class TestC3cNewListTypes:
+    def test_list_voices_enumerates_the_axis_entries(self, registry_store):
+        out = _list(registry_store, "voices")
+        assert {i["item"] for i in _items(out)} == {
+            "clear-explainer", "confident-advocate", "house-voice"
+        }
+        # SAME `{id, provenance, path}` shape as the other registry `list` types (nothing invented).
+        rec = _items(out)[0]["context"]
+        assert set(rec) == {"id", "provenance", "path"}
+        assert rec["path"].startswith("voices/")
+
+    def test_list_voices_honours_the_reserved_provenance_filter(self, registry_store):
+        # The `{id, provenance, path}` shape is filterable exactly like every other registry type.
+        instance = _list(registry_store, "voices", {"provenance": "instance"})
+        assert {i["item"] for i in _items(instance)} == {"house-voice"}
+
+    def test_list_lexicons_enumerates_the_registry(self, registry_store):
+        out = _list(registry_store, "lexicons")
+        assert {i["item"] for i in _items(out)} == {"house-standard"}
+        rec = _items(out)[0]["context"]
+        assert set(rec) == {"id", "provenance", "path"}
+        assert rec["path"] == "lexicons/house-standard.md"
+        assert rec["provenance"] == "framework"
+
+    def test_list_outlines_enumerates_the_workspace_store(self, store):
+        from pipeline import outline_store
+
+        d1 = outline_store.put_outline(store, "# Intro\n\nReal outline content one.\n")
+        d2 = outline_store.put_outline(store, "# Intro\n\nA different outline, two.\n")
+        out = _list(store, "outlines")
+        assert {i["item"] for i in _items(out)} == {d1, d2}
+        rec = _items(out)[0]["context"]
+        assert set(rec) == {"id", "provenance", "path"}
+        assert rec["provenance"] == "instance"
+        assert rec["path"].startswith("outlines/")
+        # the id is the bare 64-hex `outline-digest` (a content address, NOT a §7.4 a-/f-/r- id).
+        assert len(rec["id"]) == 64 and all(c in "0123456789abcdef" for c in rec["id"])
+
+    def test_list_outlines_is_empty_not_erroring_when_none_stored(self, store):
+        # An empty (or absent) outline store → an empty list, never a not-found / crash.
+        out = _list(store, "outlines")
+        assert out["results"] == []
+
+    def test_list_types_reports_the_three_new_types(self, store):
+        out = _list(store, "types")
+        types = {i["item"] for i in _items(out)}
+        assert {"voices", "lexicons", "outlines"} <= types
+
+    def test_recipes_and_codes_are_unchanged(self, registry_store):
+        # C3c must not perturb the pre-existing registry/meta list types.
+        root = registry_store.root.parent.parent
+        _write_registry(root / "recipes" / "explainer-post.md", "framework")
+        recipes = _list(registry_store, "recipes")
+        assert {i["item"] for i in _items(recipes)} == {"explainer-post"}
+        assert set(_items(recipes)[0]["context"]) == {"id", "provenance", "path"}
+        codes = _list(registry_store, "codes")
+        assert {i["item"] for i in _items(codes)} == set(results.CODES)
+
+
+# ---------------------------------------------------------------------------
 # INV-CORRECTNESS: discovery.py is SSOT-free (§21.3/§22.7).
 # ---------------------------------------------------------------------------
 
