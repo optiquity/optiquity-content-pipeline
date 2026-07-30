@@ -809,6 +809,12 @@ def _run_artifact(
     diagram_style = env.resolver.resolve("diagram-styles", diagram_style_id)
     diagram_tool = diagram_style.effective.get("tool", diagram.TOOL_DOT)
 
+    # C4b (DR-9): resolve the genre's `diagram_disposition` stance from the Format entry and thread
+    # it onto the request (EXACTLY like `diagram_tool`). The per-artifact require/suppress GATE
+    # reads it post-mint; the writer directives read the SAME value from `effective_values.format`.
+    # The `""` floor (an unset Format) leaves the request byte-identical to the pre-C4b assembly.
+    diagram_disposition = compose.format.values.get("diagram_disposition", "")
+
     # DR-3 (horn (a)): load the DRIVING outline brief from the pre-compose outline store by the
     # item's `outline-digest`. The digest already rode identity (item.preimage carries it); the
     # brief is the compose INPUT the digest-fidelity guard binds to that identity. An item that
@@ -840,6 +846,9 @@ def _run_artifact(
         # C5: the resolved diagram-style tool (replaces the C4 hard-pin). Byte-identical to the
         # pre-C5 default when the recipe selects no style (the `default` style pins `dot`).
         diagram_tool=diagram_tool,
+        # C4b (DR-9): the resolved genre diagram_disposition stance (default "" = neutral). The
+        # per-artifact gate acts on the HARD members (`require`/`suppress`) post-mint.
+        diagram_disposition=diagram_disposition,
     )
     log(f"  compose: LIVE writer call ({len(published)} grounded fact(s))...")
     cout = compose_artifact(

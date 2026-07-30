@@ -96,6 +96,7 @@ from pipeline.outline import normalize_outline, outline_digest
 from pipeline.prompts import load_template
 from pipeline.review import ReviewOutcome
 from pipeline.sections import (
+    AXIS_TYPE,
     SEVERITY_ERROR,
     Count,
     Length,
@@ -154,6 +155,20 @@ CODE_CONTRACT_VIOLATION = "compose-contract-violation"
 #: exactly as it does for `compose-contract-violation` (driver.py `outcome.code in ALL_CODES`).
 CODE_DIAGRAM_GROUNDING_VIOLATION = "diagram-grounding-violation"
 
+#: C4b (DR-9) — the two HARD `diagram_disposition` members the per-artifact gate ACTS on. The
+#: NEUTRAL floor `""` and the SOFT members `resist`/`prefer` are writer-DIRECTIVE-only (they ride
+#: `effective_values.format` into the prompt, `writer.md`); the gate is a NO-OP for them.
+_DISPOSITION_REQUIRE = "require"
+_DISPOSITION_SUPPRESS = "suppress"
+
+#: C4b (DR-9) — the internal re-ask ROUTING tag a diagram-disposition violation note carries. This
+#: is NOT a `results.CODES` entry: the RESULT code every disposition block routes to is the REUSED
+#: `CODE_SECTION_CONFORMANCE_VIOLATION` (a diagram-disposition breach IS a per-artifact
+#: section-conformance breach — no new code). The tag only lets `_reask_note` pick
+#: disposition-specific corrective wording over the base heading-skeleton wording, mirroring the
+#: `[<code>] <msg>` idiom the base-grammar + asset gates already use in their notes.
+_DIAGRAM_DISPOSITION_TAG = "diagram-disposition"
+
 
 class ComposeError(RuntimeError):
     """A compose-stage WIRING defect (missing source_repo, malformed request) — loud, typed,
@@ -206,6 +221,15 @@ class ComposeRequest:
     #: diagram section is present, so a non-diagram artifact never probes). Defaults to `dot`
     #: (the pinned, byte-deterministic default), so every pre-C5 caller is byte-identical.
     diagram_tool: str = diagram.TOOL_DOT
+    #: C4b (DR-9): the genre's `diagram_disposition` stance
+    #: (`""` | `suppress` | `resist` | `prefer` | `require`), resolved from the Format entry by the
+    #: driver and threaded here EXACTLY like `diagram_tool`. The HARD members drive the per-artifact
+    #: gate post-mint (`_diagram_disposition_note`): `require` demands a GROUNDED `{type=diagram}`
+    #: section (an illustrative sketch never satisfies it), `suppress` forbids any diagram section.
+    #: NEUTRAL `""` and the SOFT members `resist`/`prefer` are writer-directive-only (the directive
+    #: rode `effective_values.format` into the prompt) — the gate is a NO-OP for them. Defaults `""`
+    #: (neutral) so every pre-C4b caller is byte-identical (the empty floor never enters identity).
+    diagram_disposition: str = ""
 
     @property
     def is_flat(self) -> bool:
@@ -1012,6 +1036,12 @@ def _reask_note(violations: Sequence[str], failure_code: str) -> str:
     machine-derived — never invents new requirements (§3.1)."""
     latest = violations[-1] if violations else "unspecified"
     if failure_code == CODE_SECTION_CONFORMANCE_VIOLATION:
+        # C4b (DR-9): a diagram-disposition derail REUSES this result code but needs its OWN
+        # corrective wording (add/remove a diagram + the relax escape) — NOT the heading-skeleton
+        # note. Route by the note's internal tag (no new result code); a base-structural derail
+        # carries no such tag and falls through to the heading-skeleton note.
+        if latest.startswith(f"[{_DIAGRAM_DISPOSITION_TAG}]"):
+            return _diagram_disposition_reask_note(latest)
         return _base_structural_reask_note(latest)
     if failure_code == CODE_DIAGRAM_GROUNDING_VIOLATION:
         return _diagram_reask_note(latest)
@@ -1108,6 +1138,24 @@ def _base_structural_reask_note(latest: str) -> str:
     )
 
 
+def _diagram_disposition_reask_note(latest: str) -> str:
+    """The corrective note for a C4b (DR-9) diagram-disposition derail (require-unsatisfied /
+    suppress-present): the specific breach + how to fix it + the budget-exhaustion RELAX escape
+    (`require`→`prefer` / `suppress`→`resist`). Machine-derived — it invents NO new requirement
+    (§3.1) and NEVER licenses inventing an edge to force a `require`."""
+    return (
+        f"Your previous output VIOLATED the Format's diagram_disposition: {latest}. Under "
+        "`require`, author at least ONE GROUNDED `{type=diagram}` section that passes the strict "
+        "per-edge grounding gate above — an `illustrative` sketch does NOT satisfy `require`; "
+        "NEVER invent an edge to force one. Under `suppress`, REMOVE every `{type=diagram}` "
+        "section and convey the same content in prose, a list, or a table — KEEP every grounded "
+        "fact and its `data-fact` span (drop the diagram, never the facts). If this genre/topic "
+        "genuinely cannot satisfy the stance from the listed facts, the escape is to relax the "
+        "Format's `diagram_disposition` (`require`->`prefer`, `suppress`->`resist`). Return the "
+        "SAME JSON shape."
+    )
+
+
 def _is_outline_shaped(request: ComposeRequest) -> bool:
     """True iff this artifact's heading STRUCTURE is identity-covered by a DR-3 `outline-digest` AND
     is a single FLAT body — the precondition for the platform-NEUTRAL base gate to be meaningful
@@ -1190,6 +1238,105 @@ def _base_conformance_note(doc: Mapping[str, Any], schema: Schema) -> str | None
     if not errors:
         return None
     return "; ".join(_describe_violation(v) for v in errors)
+
+
+# ---------------------------------------------------------------------------
+# C4b (DR-9): the per-artifact diagram-disposition gate (the COMPOSE-TIME half of the knob C4a
+# DECLARED). NON-neutral HARD members ACT at the SAME post-mint, INSIDE-the-bounded-re-ask locus as
+# the base structural gate, REUSING its `section-conformance-violation` result code (a diagram
+# stance IS a per-artifact section-conformance concern — no new code). `require` demands a GROUNDED
+# `{type=diagram}` section (one that PASSED the transform's HARD grounding gate — an `illustrative`
+# sketch, which carries the reader-visible stamp, does NOT satisfy it); `suppress` forbids any
+# diagram section. NEUTRAL `""` + the SOFT members `resist`/`prefer` are writer-directive-only (they
+# rode the prompt) → the gate is a NO-OP. The D3 predicate `_schema_forbids_diagram` catches a
+# CONTRADICTORY Format (a `section_schema` that forbids the very diagram `require` demands) PRE-
+# writer, so the unwinnable re-ask never spends. The gate READS the already-transformed doc (like
+# the base/asset/cite gates) and NEVER mutates it, so a satisfying compose is byte-identical.
+# ---------------------------------------------------------------------------
+
+
+def _schema_forbids_diagram(schema: Schema) -> bool:
+    """True iff the resolved base `section_schema` STRUCTURALLY forbids a `{type=diagram}` section —
+    a `Presence(required=False)` on the diagram type, or a `Count` whose upper bound is 0 on it.
+    Used ONLY for the C4b D3 pre-writer contradiction check against `diagram_disposition: require`
+    (a schema that forbids the diagram `require` demands is an unwinnable Format defect)."""
+    for rule in schema:
+        if not isinstance(rule, (Presence, Count)):
+            continue  # only Presence/Count carry a single-section-type ceiling
+        selector = rule.selector
+        if selector.axis != AXIS_TYPE or selector.value != _DIAGRAM_SECTION_TYPE:
+            continue  # this rule targets some other section type/role — not a diagram forbid
+        if isinstance(rule, Presence) and not rule.required:
+            return True  # a FORBIDDEN diagram (Presence required=False)
+        if isinstance(rule, Count) and rule.cardinality.max == 0:
+            return True  # a diagram count capped at 0
+    return False
+
+
+def _schema_requires_diagram(schema: Schema) -> bool:
+    """The MIRROR of `_schema_forbids_diagram`: True iff the resolved base `section_schema`
+    STRUCTURALLY mandates a `{type=diagram}` section — a `Presence(required=True)` on the diagram
+    type, or a `Count` whose lower bound is >= 1 on it. Used ONLY for the C4b D3 pre-writer
+    contradiction check against `diagram_disposition: suppress` (a schema that mandates the diagram
+    `suppress` forbids is an unwinnable Format defect). A schema that merely ALLOWS a diagram — no
+    `Presence` on the diagram type, or a `Count` with a 0 lower bound (`?`/`*`) — never trips it."""
+    for rule in schema:
+        if not isinstance(rule, (Presence, Count)):
+            continue  # only Presence/Count carry a single-section-type floor
+        selector = rule.selector
+        if selector.axis != AXIS_TYPE or selector.value != _DIAGRAM_SECTION_TYPE:
+            continue  # this rule targets some other section type/role — not a diagram mandate
+        if isinstance(rule, Presence) and rule.required:
+            return True  # a REQUIRED diagram (Presence required=True)
+        if isinstance(rule, Count) and rule.cardinality.min >= 1:
+            return True  # a diagram count floored at >= 1
+    return False
+
+
+def _diagram_disposition_note(doc: Mapping[str, Any], disposition: str) -> str | None:
+    """The C4b (DR-9) per-artifact diagram-disposition gate: return a re-ask correction note when
+    the composed doc's diagram content contradicts a HARD `diagram_disposition`, else None.
+
+    Acts ONLY on the two HARD members: `require` — the artifact MUST carry at least one GROUNDED
+    `{type=diagram}` section (one that survived the transform's HARD grounding gate); an
+    `illustrative` sketch (which carries the reader-visible stamp) does NOT satisfy it, and for a
+    multi-part artifact ONE grounded diagram part is enough. `suppress` — the artifact must carry NO
+    `{type=diagram}` section at all (grounded OR illustrative). NEUTRAL `""` and the SOFT members
+    `resist`/`prefer` are writer-directive-only (the directive rode `effective_values.format` into
+    the prompt) → this returns None (a NO-OP). The note is TAGGED (`[diagram-disposition] …`) so
+    `_reask_note` routes disposition-specific corrective wording without a new result code. NEVER
+    mutates `doc` — it parses the leaf bodies (exactly like the base/asset/cite gates), so a
+    satisfying compose is byte-identical."""
+    if disposition not in (_DISPOSITION_REQUIRE, _DISPOSITION_SUPPRESS):
+        return None  # neutral / resist / prefer: directive-only, no hard gate (NO-OP)
+    grounded = 0
+    illustrative = 0
+    for body in _doc_leaf_bodies(doc):
+        for section in parse_sections(normalize_outline(body)):
+            if section.type != _DIAGRAM_SECTION_TYPE:
+                continue
+            # A grounded diagram survived the transform's HARD gate and carries NO stamp; an
+            # illustrative one carries the reader-visible marker in its rewritten figure caption.
+            if diagram.ILLUSTRATIVE_STAMP in section.body:
+                illustrative += 1
+            else:
+                grounded += 1
+    if disposition == _DISPOSITION_REQUIRE and grounded == 0:
+        why = (
+            "an `illustrative` sketch does NOT satisfy `require`"
+            if illustrative
+            else "no `{type=diagram}` section is present"
+        )
+        return (
+            f"[{_DIAGRAM_DISPOSITION_TAG}] the Format requires a GROUNDED `{{type=diagram}}` "
+            f"section but the artifact carries none ({why})"
+        )
+    if disposition == _DISPOSITION_SUPPRESS and (grounded or illustrative):
+        return (
+            f"[{_DIAGRAM_DISPOSITION_TAG}] the Format suppresses diagrams but the artifact carries "
+            "a `{type=diagram}` section"
+        )
+    return None
 
 
 def _persist(
@@ -1367,6 +1514,37 @@ def compose_artifact(
     # D-4: HARD at compose now, the advisory Review-1 check deferred).
     base_schema = _resolve_base_gate_schema(request)
 
+    # C4b (DR-9) D3 — the pre-writer CONTRADICTION refusal (ZERO spend), BOTH directions. When the
+    # base gate that WILL run and the disposition gate cannot BOTH be satisfied by any writer
+    # output, the bounded re-ask would burn the whole budget for nothing. Refuse LOUDLY here, before
+    # any writer call: a contradictory Format entry is a wiring defect (like a malformed schema),
+    # never a re-ask, never silent (§3.1). A pre-compose `formats` cross-attribute LINT is the
+    # fast-follow (fork 3); here it is a compose refusal. The two mirror-image contradictions:
+    #   * `require` + a `section_schema` that FORBIDS the diagram it demands, and
+    #   * `suppress` + a `section_schema` that REQUIRES the diagram it forbids.
+    if (
+        request.diagram_disposition == _DISPOSITION_REQUIRE
+        and base_schema is not None
+        and _schema_forbids_diagram(base_schema)
+    ):
+        raise ComposeError(
+            "compose-error: the Format's `section_schema` FORBIDS a `{type=diagram}` section while "
+            "`diagram_disposition` is 'require' (which demands a GROUNDED one) — a structural "
+            "contradiction no writer output can satisfy; fix the Format entry (never a writer "
+            "re-ask, never silent)"
+        )
+    if (
+        request.diagram_disposition == _DISPOSITION_SUPPRESS
+        and base_schema is not None
+        and _schema_requires_diagram(base_schema)
+    ):
+        raise ComposeError(
+            "compose-error: the Format's `section_schema` REQUIRES a `{type=diagram}` section "
+            "while `diagram_disposition` is 'suppress' (which forbids any diagram) — a structural "
+            "contradiction no writer output can satisfy; fix the Format entry (never a writer "
+            "re-ask, never silent)"
+        )
+
     own_cwd = cwd is None
     scratch = Path(tempfile.mkdtemp(prefix="optiquity-compose-")) if own_cwd else Path(cwd)
     extra = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
@@ -1478,6 +1656,20 @@ def compose_artifact(
                     violations.append(base_note)
                     last_failure_code = CODE_SECTION_CONFORMANCE_VIOLATION
                     continue  # bounded re-ask (§21.9 / D-2)
+            # C4b (DR-9) per-artifact diagram-disposition gate, post-mint, INSIDE the bounded
+            # re-ask, right beside the base gate. A HARD member the composed doc contradicts —
+            # `require` with no GROUNDED `{type=diagram}` section (an illustrative sketch does NOT
+            # count; one grounded part satisfies a multi-part artifact) or `suppress` with ANY
+            # diagram section — feeds the SAME re-ask with a disposition-specific note and, on
+            # exhaustion, BLOCKS as the REUSED never-persisted `section-conformance-violation` (a
+            # per-artifact section-conformance breach — NO new result code; the D3 contradiction was
+            # already refused pre-writer). NEUTRAL/resist/prefer → NO-OP. The gate reads the
+            # already-transformed doc and never mutates it, so a satisfying compose is byte-exact.
+            disposition_note = _diagram_disposition_note(doc, request.diagram_disposition)
+            if disposition_note is not None:
+                violations.append(disposition_note)
+                last_failure_code = CODE_SECTION_CONFORMANCE_VIOLATION
+                continue  # bounded re-ask (§21.9 / DR-9)
             # DR-5 C4: the HARD `[@key]`→projected-`references` resolution (D-cite-locus = COMPOSE),
             # post-mint, PRE-persist, INSIDE the bounded re-ask. A CITING body is parsed through the
             # SINGLE pinned reader and every `Cite` id is checked ⊆ the projected reference set (the
@@ -1508,7 +1700,8 @@ def compose_artifact(
         # Re-ask bound exhausted: caught, and NEVER persisted (§21.9). The exhaustion CODE is the
         # LAST derail's kind — an asset gate code (DR-7 A: `asset-ref-uncontained` /
         # `asset-ref-invalid` / `body-raw-markup-forbidden`), `section-conformance-violation` (DR-4
-        # base structural gate), `citation-unresolved` (DR-5 C4 citation gate), else
+        # base structural gate OR the DR-9 diagram-disposition gate — the SAME reused code),
+        # `citation-unresolved` (DR-5 C4 citation gate), else
         # `compose-contract-violation` (the IR/grounding contract).
         return ComposeOutcome(
             status="error",

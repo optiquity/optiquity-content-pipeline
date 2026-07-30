@@ -94,10 +94,14 @@ attributes:
   # attrtypes.py, reached through `validate_override_against_schema` at begin-session — before any
   # writer call), so an invalid value never spends a token.
   #
-  # DECLARE-ONLY in this increment: the attribute is DECLARED here (so a typo is already refused and
-  # the value is carried), but compose does not yet act on it — the per-artifact require/suppress
-  # GATE and the writer directives are wired separately (DR-9 next increment). Until then the knob
-  # is inert but fully validated.
+  # WIRED IN COMPOSE (DR-9, C4b): the per-artifact GATE and the writer directives now ACT on this
+  # knob. `require` = compose ships a GROUNDED `{type=diagram}` section (one passing the base HARD
+  # grounding gate) or REFUSES — an illustrative sketch never satisfies it; `suppress` = the
+  # artifact carries NO diagram section; `resist`/`prefer` = SOFT writer-prompt biases (a nudge, not
+  # a guarantee). A non-member typo is still refused PRE-SPEND at plan resolution (the closed-schema
+  # enum validation), before any writer call. A per-artifact contradiction between this stance and
+  # the Format's `section_schema` (e.g. a schema that forbids the diagram `require` demands) is
+  # refused LOUDLY pre-writer, ZERO spend (compose D3).
   diagram_disposition:
     type:
       type: enum

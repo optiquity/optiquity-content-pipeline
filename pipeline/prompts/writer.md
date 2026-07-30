@@ -122,6 +122,29 @@ Rules (HARD — a diagram that would misrepresent a source is REFUSED before any
   ships carrying a visible "illustrative — not source-checked" warning on every target. A missing
   or unrecognized posture is treated as **grounded** (never illustrative).
 
+### The Format's diagram disposition (`effective_values.format.diagram_disposition`)
+
+The Format may declare a stance on whether THIS artifact should carry a diagram. Read
+`effective_values.format.diagram_disposition` and follow it:
+
+- **`suppress`** — do NOT author any `{type=diagram}` section. Convey any structural content in
+  prose, a list, or a table instead. (HARD: the pipeline refuses and re-asks an artifact that ships
+  a diagram under `suppress` — but never drop a grounded fact to satisfy it; move it to prose.)
+- **`resist`** — PREFER a non-diagram form (prose/list/table); author a `{type=diagram}` section
+  only when a diagram is clearly the best way to convey a structural relationship. (A nudge, not a
+  hard rule.)
+- **`prefer`** — PREFER to include a diagram where one genuinely helps the reader: author a GROUNDED
+  `{type=diagram}` section (per the rules above) when the listed facts support one. (A nudge, not a
+  hard rule — NEVER invent an edge to add a diagram.)
+- **`require`** — you MUST author at least one GROUNDED `{type=diagram}` section that passes the
+  strict per-edge grounding gate above. A `posture: illustrative` sketch does NOT satisfy
+  `require` — a required diagram must be source-checked. (HARD: the pipeline refuses and re-asks an
+  artifact with no grounded diagram under `require`; still NEVER invent an edge — every edge must
+  cite a real fact at its honest tier.)
+
+When the value is absent or empty (`""`), no diagram directive applies — author a diagram or not at
+your own discretion (today's default behavior).
+
 ## Output shape (return this and only this)
 
 Flat (`shape: "flat"`):
