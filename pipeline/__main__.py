@@ -128,6 +128,15 @@ commands:
                  §10 isolation structural; the id-addressed rich get (deliverables/artifacts/
                  folios, per-id isolation + currency detail) stays on `pipeline invoke get`.
                  Exit 0 ok; 1 no such entry; 2 usage.
+  docs           LOCAL/operator doc generators (authoring layer D12/D13; never an HTTP door,
+                 §21.9 preserved). Subcommand:
+                   attributes  regenerate docs/reference/attributes.md — a reference of what
+                               every framework registry attribute MEANS (its schema `definition:`
+                               prose, verbatim) + type/floor/definition_version. Walks
+                               pipeline.lint.REGISTRY_ROOTS only (framework-only, no instance/
+                               client content); deterministic (sorted, no clock); guarded by a
+                               byte-equality drift test. Options: --root DIR (default: the
+                               package's repo root). Exit 0 ok; 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -1463,6 +1472,58 @@ def _cmd_get(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_docs(argv: list[str]) -> int:
+    """Authoring-layer D12/D13: `pipeline docs <subcommand>` — LOCAL operator doc generators.
+
+    LOCAL/operator only (never an HTTP `_VERB_HANDLERS` verb; §21.9 preserved): regenerates a
+    committed framework reference doc from the code. Subcommand:
+      attributes  regenerate `docs/reference/attributes.md` from the framework registry schemas
+                  (`pipeline.lint.REGISTRY_ROOTS` — framework-only, no client/instance content).
+    Deterministic + framework-only; a CI drift test asserts the committed file byte-for-byte.
+    Exit 0 ok; 2 usage."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline docs",
+        description=(
+            "Regenerate a committed framework reference doc from the code (authoring layer D12; "
+            "LOCAL/operator only, never an HTTP door). Subcommands: attributes."
+        ),
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    p_attr = sub.add_parser(
+        "attributes",
+        help="regenerate docs/reference/attributes.md from the framework registry schemas",
+        description=(
+            "Regenerate docs/reference/attributes.md: a reference of what every framework "
+            "registry attribute MEANS (its schema `definition:` prose, verbatim) and its type, "
+            "floor default, and definition_version. Walks pipeline.lint.REGISTRY_ROOTS only "
+            "(framework-only — no instance/client content); deterministic (sorted, no clock). A "
+            "byte-equality CI test guards it against un-regenerated edits."
+        ),
+    )
+    p_attr.add_argument(
+        "--root",
+        default=None,
+        help="framework repo root (default: the installed package's own repo root)",
+    )
+    args = parser.parse_args(argv)
+    if args.subcommand is None:
+        parser.print_help(sys.stderr)
+        return 2
+
+    from pipeline import attrdoc
+
+    out_path = attrdoc.write_attributes_doc(args.root)
+    schemas = attrdoc.iter_documented_schemas(args.root)
+    attr_count = sum(len(schema.attributes) for _, schema in schemas)
+    print(
+        f"pipeline docs attributes: wrote {attrdoc.DOC_RELPATH} "
+        f"({len(schemas)} collections, {attr_count} attributes) — {out_path}"
+    )
+    return 0
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
@@ -1475,6 +1536,7 @@ _COMMANDS = {
     "outline": _cmd_outline,
     "list": _cmd_list,
     "get": _cmd_get,
+    "docs": _cmd_docs,
 }
 
 
