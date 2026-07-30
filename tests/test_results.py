@@ -45,6 +45,8 @@ GENERATION = {
     "asset-ref-uncontained",
     "asset-ref-invalid",
     "body-raw-markup-forbidden",
+    "outline-config-drift",
+    "outline-config-unverified",
 }
 # §21.7 contract tier.
 CONTRACT = {
@@ -76,7 +78,7 @@ class TestCodeTaxonomy:
         # The literal-list pin (§21.7 + §22.6): exact set equality — no extras, no omissions.
         assert results.ALL_CODES == EXPECTED_CODES
         assert set(results.CODES) == EXPECTED_CODES
-        assert len(results.ALL_CODES) == 32
+        assert len(results.ALL_CODES) == 34
 
     def test_forbidden_codes_are_absent(self):
         assert results.ALL_CODES.isdisjoint(FORBIDDEN_CODES)

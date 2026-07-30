@@ -106,6 +106,7 @@ from pipeline.api.results import (
     CODE_EMPTY_POOL,
     CODE_HARD_LIMIT_EXCEEDED,
     CODE_OUT_OF_WINDOW,
+    CODE_OUTLINE_CONFIG_DRIFT,
 )
 from pipeline.canonical import canonical_json_str, canonical_set
 from pipeline.claims import ClaimRecord
@@ -134,7 +135,13 @@ __all__ = [
 #: taxonomy. Deliberately CONSERVATIVE: any code NOT in this set is stored (under-classifying only
 #: over-stores a redundant terminal; over-classifying would drop a real transient reason).
 DETERMINISTIC_BLOCK_CODES = frozenset(
-    {CODE_EMPTY_POOL, CODE_OUT_OF_WINDOW, CODE_DRIFT_BLOCK, CODE_HARD_LIMIT_EXCEEDED}
+    {
+        CODE_EMPTY_POOL,
+        CODE_OUT_OF_WINDOW,
+        CODE_DRIFT_BLOCK,
+        CODE_HARD_LIMIT_EXCEEDED,
+        CODE_OUTLINE_CONFIG_DRIFT,
+    }
 )
 
 #: §22.7 authority seams, injected so every branch is drivable without a live transport:

@@ -75,6 +75,8 @@ __all__ = [
     "CODE_LOW_CONFIDENCE_GROUNDING",
     "CODE_MEMBER_UPDATED",
     "CODE_NONSENSICAL_PAIRING",
+    "CODE_OUTLINE_CONFIG_DRIFT",
+    "CODE_OUTLINE_CONFIG_UNVERIFIED",
     "CODE_OUT_OF_WINDOW",
     "CODE_RE_RECONCILED",
     "CODE_RE_SERIALIZED",
@@ -162,6 +164,8 @@ CODE_CITATION_UNRESOLVED = "citation-unresolved"  # block, §15/§16 (DR-5 C4)
 CODE_ASSET_REF_UNCONTAINED = "asset-ref-uncontained"  # block, §15/§16/§10 (DR-7 A, rule 2)
 CODE_ASSET_REF_INVALID = "asset-ref-invalid"  # block, §15/§16 (DR-7 A, broken-link quality)
 CODE_BODY_RAW_MARKUP_FORBIDDEN = "body-raw-markup-forbidden"  # block, §15/§16/§10 (DR-7 A, rule 2)
+CODE_OUTLINE_CONFIG_DRIFT = "outline-config-drift"  # block, §21.7 (DR-3, deterministic pre-spend)
+CODE_OUTLINE_CONFIG_UNVERIFIED = "outline-config-unverified"  # warn, §21.7 (DR-3, no-handle case)
 
 # --- contract tier (§21.7) --------------------------------------------------
 CODE_UNKNOWN_VERB = "unknown-verb"  # block (envelope-fatal), §21.1
@@ -325,6 +329,19 @@ CODES: dict[str, CodeSpec] = {
             "A composed body carried raw HTML/markup passthrough (which can smuggle an image "
             "reference past the containment guard) — a persisted body may carry no raw passthrough "
             "node; blocked, never persisted across the bounded re-ask (CLAUDE.md rule 2 / DR-7 A).",
+            remediation_action=None,
+        ),
+        _spec(
+            CODE_OUTLINE_CONFIG_DRIFT, TIER_GENERATION, ("block",), "§21.7",
+            "The config a run drives an outline under differs from the config the outline was "
+            "emitted under — a deterministic, pre-spend refusal; re-emit under the new config or "
+            "pass --allow-drift (DR-3).",
+            remediation_action=None,
+        ),
+        _spec(
+            CODE_OUTLINE_CONFIG_UNVERIFIED, TIER_GENERATION, ("warn",), "§21.7",
+            "A driven outline carries no emit-time handle to verify its config against "
+            "(hand-authored, or --from omitted); proceeds unverified (DR-3).",
             remediation_action=None,
         ),
         # contract tier (§21.7)
