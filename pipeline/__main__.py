@@ -86,6 +86,21 @@ commands:
                  JSON envelope on stdout. render is token-free + deterministic (no live call); only
                  render is reachable here (§21.9 operator-verb exclusion unchanged). Exit 0 =
                  envelope ok; 1 = whole-invocation failure (JSON still emitted); 2 = usage.
+  preview        the FRIENDLY plan-only door (design §21, CLI-UX C3a): English-ish flags in, the
+                 whole plan + the exact count of paid pieces out — and it SPENDS NOTHING. Runs
+                 begin-session with {generate=none, explain=true} via the direct-handler pattern
+                 (never registers a session verb; §21.9 stays intact). Usage: preview [--recipe R]
+                 [--topic ID ...] [--persona ID ...] [--format ID ...] [--voice ID ...]
+                 [--goals ID ...] [--platform P] [--language L] [--output-type T] [--presentation
+                 NAME] [--set path=value ...] --workspace W [--root DIR]. Prints the effective
+                 settings, the plan (artifact/deliverable ids + warnings), and `spend-scope: N paid
+                 artifact(s)`. Exit 0 ok; 1 refusal; 2 usage.
+  generate       the FRIENDLY generate door (design §21, CLI-UX C3a). SAME friendly flags as
+                 preview; the DEFAULT is a DRY-RUN identical to preview (prints the plan + spend
+                 estimate and STOPS, spending nothing). Add --go to DRIVE the plan to completion
+                 (begin-session then continue-session generate-next), the ONLY path that spends
+                 subscription quota. Direct-handler pattern throughout (never registers a session
+                 verb; §21.9 stays intact). Exit 0 ok; 1 refusal / --go spend failure; 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -531,6 +546,378 @@ def _cmd_render(argv: list[str]) -> int:
     )
 
 
+# ---------------------------------------------------------------------------
+# CLI-UX C3a: `pipeline preview` / `pipeline generate` — the FRIENDLY operator door.
+#
+# English-ish flags in → `normalize(door_class="interactive")` (C2) → canonical begin-session
+# params (with `explain=True`, the C1 read side-channel) → the plan-only door via the
+# DIRECT-LIBRARY-HANDLER pattern, exactly as `mvp-demo` calls the library directly. We dispatch
+# through `invoke.invoke(..., handlers={verb: handler})`: `handlers=` is a PER-CALL override
+# (`invoke.py:324`) that NEVER writes the module-global `_VERB_HANDLERS` (R1), so `pipeline invoke
+# begin-session` still hits `HandlerNotWired` → exit 3 (§21.9 preserved), AND the call still runs
+# the workspace-name containment root gate + Gate-3 id-isolation. A bare `handler(HandlerContext)`
+# would skip both — rejected. `preview` and `generate` (without `--go`) construct ONLY the
+# begin-session handler: no `continue_session_handler`, so the LIVE runner is never instantiated —
+# zero spend by construction. `generate --go` additionally builds the continue-session handler and
+# drives `generate-next` to completion; its per-item generation seam (`run_artifact`) is INJECTABLE
+# (default `driver._run_artifact`, the live transport) so tests drive the spend path without
+# spending live quota.
+# ---------------------------------------------------------------------------
+
+
+def _add_friendly_generate_args(parser: "object") -> None:
+    """The shared friendly-flag surface for `preview`/`generate` (C3a). All nine by-name axes are
+    REPEATABLE (repeat the flag → the four render axes fan out ONE deliverable each, §5; the five
+    content axes fan out more artifacts); `--goals` STACKS into one goal-set; `--set` is the §13.2
+    override surface (repeatable). Only `--recipe`/`--workspace` are genuinely single-valued."""
+    import argparse
+
+    assert isinstance(parser, argparse.ArgumentParser)
+    parser.add_argument("--recipe", default=None, help="recipe id (default: explainer-post, §10)")
+    parser.add_argument(
+        "--topic", action="append", default=None, metavar="ID", help="a topic id (repeatable)"
+    )
+    parser.add_argument(
+        "--persona", action="append", default=None, metavar="ID", help="a persona id (repeatable)"
+    )
+    parser.add_argument(
+        "--format", action="append", default=None, metavar="ID", help="a format id (repeatable)"
+    )
+    parser.add_argument(
+        "--voice", action="append", default=None, metavar="ID", help="a voice id (repeatable)"
+    )
+    parser.add_argument(
+        "--goals",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="a goal id (repeatable → STACKS into one goal-set, §8)",
+    )
+    parser.add_argument(
+        "--platform",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="a render platform slug (repeatable → one deliverable each, §5)",
+    )
+    parser.add_argument(
+        "--language",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="a render language slug (repeatable → fans out, §5)",
+    )
+    parser.add_argument(
+        "--output-type",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="a render output-type slug (repeatable → fans out, §17)",
+    )
+    parser.add_argument(
+        "--presentation",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="a presentation slug (repeatable → fans out, §5.3)",
+    )
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="PATH=VALUE",
+        help="a run override, e.g. voice.formality=2 or format.tags+=x (repeatable, §13.2)",
+    )
+    parser.add_argument("--workspace", default=None, help="the invoked workspace (§21.1)")
+    parser.add_argument(
+        "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
+    )
+
+
+def _friendly_from_args(args: "object", *, spend: bool) -> dict:
+    """Project the parsed friendly flags into the `normalize()` input mapping (C2). Every axis is
+    OMITTED when unset (zero-churn). `explain=True` always — the plan preview is the whole point;
+    it is a pure read side-channel (C1) and never an identity input. `spend` governs the
+    door-class workspace/idempotency-key policy (a paid `--go` run vs. a free preview/dry-run)."""
+    friendly: dict = {"explain": True, "spend": spend}
+    single = {
+        "recipe": args.recipe,
+        "workspace": args.workspace,
+        "platforms": args.platform,
+        "languages": args.language,
+        "output_types": args.output_type,
+        "presentations": args.presentation,
+    }
+    for key, value in single.items():
+        if value:
+            friendly[key] = value
+    multi = {
+        "topics": args.topic,
+        "personas": args.persona,
+        "formats": args.format,
+        "voices": args.voice,
+        "goals": args.goals,
+        "set": args.set,
+    }
+    for key, value in multi.items():
+        if value:
+            friendly[key] = value
+    return friendly
+
+
+def _normalize_or_usage(friendly: dict, prog: str) -> "tuple[object | None, int]":
+    """Run the C2 normalizer under the interactive door class. A `NormalizeError` (a malformed
+    `--set`, a fatal omission) is a pre-engine USAGE error → exit 2; a resolved-but-None workspace
+    (nothing to preview/generate against) is likewise a usage error. Returns `(Normalized, 0)` on
+    success, else `(None, 2)`."""
+    from pipeline.api.normalize import NormalizeError, normalize
+
+    try:
+        normalized = normalize(friendly, door_class="interactive")
+    except NormalizeError as exc:
+        print(f"pipeline {prog}: {exc}", file=sys.stderr)
+        return None, 2
+    if normalized.workspace is None:
+        print(
+            f"pipeline {prog}: pass --workspace NAME (there is no workspace to infer)",
+            file=sys.stderr,
+        )
+        return None, 2
+    return normalized, 0
+
+
+def _print_dim(indent: str, label: str, view: dict) -> None:
+    """One bound-dimension line: `entry` + the per-attribute winning cascade rung (provenance),
+    so the operator sees WHICH layer set each value (the C1 `_dim_view`: entry/values/prov)."""
+    if not view:
+        return
+    prov = ", ".join(f"{k}={v}" for k, v in sorted((view.get("provenance") or {}).items()))
+    tail = f"  [{prov}]" if prov else ""
+    print(f"{indent}{label:<13}: {view.get('entry')}{tail}")
+
+
+def _print_plan_preview(workspace: str, recipe: str, summary: dict, *, header: str) -> None:
+    """Print the free preview (C3a): the effective compose+render settings (which cascade layer
+    set each), the plan (artifact/deliverable ids + advisory warnings), and `spend-scope: N paid
+    artifact(s)`. Reads ONLY the C1 `explain` projection carried on the begin-session summary."""
+    ids = summary.get("ids") or {}
+    context = summary.get("context") or {}
+    effective = context.get("effective_settings") or {}
+    artifact_ids = list(ids.get("artifact_ids") or [])
+    deliverable_ids = list(ids.get("deliverable_ids") or [])
+    warnings = list(context.get("warnings") or [])
+    spend_scope = context.get("spend_scope", len(artifact_ids))
+
+    print(f"=== {header}: workspace={workspace} recipe={recipe} ===")
+    print("effective settings (which cascade layer set each):")
+    for aid in artifact_ids:
+        print(f"  {aid}")
+        view = effective.get(aid) or {}
+        for dim in ("topic", "persona", "format", "voice"):
+            _print_dim("    ", dim, view.get(dim) or {})
+        goals = view.get("goals") or []
+        if goals:
+            print(f"    {'goals':<13}: " + ", ".join(str(g.get("entry")) for g in goals))
+        lexicon = view.get("lexicon")
+        if lexicon:
+            print(f"    {'lexicon':<13}: {lexicon.get('entry')}")
+        render = view.get("render") or {}
+        for did in sorted(render):
+            print(f"    render {did}:")
+            for rdim in ("platform", "language", "output_type", "presentation"):
+                _print_dim("      ", rdim, (render[did] or {}).get(rdim) or {})
+    print("plan:")
+    print(f"  artifact-ids   : {artifact_ids}")
+    print(f"  deliverable-ids: {deliverable_ids}")
+    print(f"  warnings       : {warnings if warnings else 'none'}")
+    print(f"spend-scope: {spend_scope} paid artifact(s)")
+
+
+def _print_refusal(prog: str, result: dict) -> None:
+    """Print a begin/continue-session refusal (a whole-invocation `ok=False`, or a per-item block
+    that mints no token) to stderr — the friendly door's exit-1 explanation."""
+    envelope = result.get("envelope") or {}
+    if not envelope.get("ok", True):
+        detail = envelope.get("message") or envelope.get("code") or "whole-invocation failure"
+        print(f"pipeline {prog}: refused ({envelope.get('code')}): {detail}", file=sys.stderr)
+    for item in result.get("results") or []:
+        if item.get("status") in ("block", "warn"):
+            code = item.get("code") or "block"
+            hint = (item.get("remediation") or {}).get("hint", "")
+            print(f"pipeline {prog}: {code} — {hint}", file=sys.stderr)
+
+
+def _begin_and_preview(
+    normalized: "object", root: str, prog: str, *, header: str, adapters: "object | None"
+) -> "tuple[dict | None, int]":
+    """Run the plan-only begin-session door via the DIRECT-HANDLER pattern and print the free
+    preview. Returns `(begin_result, 0)` when a session began (a token was minted — the plan is
+    real and printable), else `(None, 1)` on a refusal (whole-invocation `ok=False`, or a per-item
+    block that mints no token: not-found / invalid-override / malformed-source / …)."""
+    from pipeline.api import invoke as invoke_mod
+    from pipeline.api import session
+
+    begin_handler = session.begin_session_handler(adapters=adapters)
+    result = invoke_mod.invoke(
+        "begin-session",
+        normalized.workspace,
+        normalized.params,
+        handlers={"begin-session": begin_handler},
+        root=root,
+    )
+    if not result["envelope"]["ok"] or "token" not in result:
+        _print_refusal(prog, result)
+        return None, 1
+    for notice in normalized.notices:
+        print(notice)
+    _print_plan_preview(
+        normalized.workspace,
+        normalized.params.get("recipe", ""),
+        result["results"][0],
+        header=header,
+    )
+    return result, 0
+
+
+def _drive_generate(
+    normalized: "object",
+    begin_result: dict,
+    root: str,
+    *,
+    adapters: "object | None",
+    run_artifact: "object | None",
+) -> int:
+    """`generate --go`: drive `continue-session` `generate-next` to completion over the plan cover.
+    The per-item generation seam `run_artifact` is INJECTABLE (default `driver._run_artifact`, the
+    LIVE transport) so tests exercise the spend path without spending. Loops with `batch_size=all`
+    until the cursor consumes the whole cover, or a call makes NO progress (e.g. `plan-stale` echoes
+    the token and composes nothing — stop rather than loop forever). A whole-invocation failure
+    mid-drive → exit 1; any per-item generation BLOCK → exit 1 (a `--go` spend failure); else 0."""
+    from pipeline.api import invoke as invoke_mod
+    from pipeline.api import session
+    from pipeline.api import token as token_mod
+
+    continue_handler = session.continue_session_handler(
+        adapters=adapters, run_artifact=run_artifact
+    )
+    workspace = normalized.workspace
+    token = begin_result["token"]
+    planned = set(begin_result["results"][0]["ids"].get("artifact_ids") or [])
+    consumed: set[str] = set()
+    drive_items: list[dict] = []
+    print("\n=== generate --go: driving to completion ===")
+    while consumed < planned:
+        out = invoke_mod.invoke(
+            "continue-session",
+            workspace,
+            {"action": "generate-next", "batch_size": "all"},
+            token=token,
+            handlers={"continue-session": continue_handler},
+            root=root,
+        )
+        if not out["envelope"]["ok"]:
+            _print_refusal("generate", out)
+            return 1
+        drive_items.extend(out.get("results") or [])
+        token = out.get("token", token)
+        advanced = set(
+            token_mod.decode(token, expected_workspace=workspace).cursor.get("consumed", [])
+        )
+        if advanced == consumed:  # no forward progress — never spin
+            break
+        consumed = advanced
+
+    blocks = 0
+    for item in drive_items:
+        label = item.get("code") or item.get("status")
+        if item.get("status") == "block":
+            blocks += 1
+            hint = (item.get("remediation") or {}).get("hint", "")
+            print(f"  {item.get('item')}: block — {hint}")
+        else:
+            dids = (item.get("ids") or {}).get("deliverable_ids") or []
+            tail = f"  deliverables={dids}" if dids else ""
+            print(f"  {item.get('item')}: {label}{tail}")
+    print(f"generated {len(drive_items) - blocks} artifact(s); {blocks} block(s).")
+    return 1 if blocks else 0
+
+
+def _cmd_preview(argv: list[str], *, adapters: "object | None" = None) -> int:
+    """CLI-UX C3a: `pipeline preview` — the FREE plan-only door. Friendly flags →
+    `normalize(interactive)` → begin-session `{generate=none, explain=true}` via the direct-handler
+    pattern → print the effective settings, the plan, and `spend-scope: N`. NEVER spends (only the
+    begin-session handler is constructed; no continue-session, no live runner). `adapters` is a test
+    injection seam. Exit 0 ok; 1 refusal; 2 usage."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline preview",
+        description=(
+            "The friendly plan-only door (CLI-UX C3a): English-ish flags in, the whole plan + the "
+            "exact count of paid pieces out — and it SPENDS NOTHING (begin-session with "
+            "generate=none, explain=true, via the direct-handler pattern; §21.9 preserved)."
+        ),
+    )
+    _add_friendly_generate_args(parser)
+    args = parser.parse_args(argv)
+
+    friendly = _friendly_from_args(args, spend=False)
+    normalized, code = _normalize_or_usage(friendly, "preview")
+    if normalized is None:
+        return code
+    _result, code = _begin_and_preview(
+        normalized, args.root, "preview", header="preview", adapters=adapters
+    )
+    return code
+
+
+def _cmd_generate(
+    argv: list[str], *, adapters: "object | None" = None, run_artifact: "object | None" = None
+) -> int:
+    """CLI-UX C3a: `pipeline generate` — the friendly generate door. Friendly flags →
+    `normalize(interactive)` → begin-session `{generate=none, explain=true}`. The DEFAULT is a
+    DRY-RUN identical to `preview` (prints the plan + spend estimate and STOPS, spending nothing —
+    only the begin-session handler is constructed). `--go` DRIVES the plan to completion via
+    continue-session `generate-next` (the ONLY spend path). `adapters`/`run_artifact` are test
+    injection seams — `run_artifact` is the drive seam (default `driver._run_artifact`, live) so
+    tests never spend live quota. Exit 0 ok; 1 refusal / --go spend failure; 2 usage."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline generate",
+        description=(
+            "The friendly generate door (CLI-UX C3a). Same flags as `preview`; the DEFAULT is a "
+            "DRY-RUN (prints the plan + spend estimate and STOPS, spending nothing). Add --go to "
+            "DRIVE the plan to completion (the ONLY path that spends subscription quota). Direct-"
+            "handler pattern throughout — never registers a session verb (§21.9 preserved)."
+        ),
+    )
+    _add_friendly_generate_args(parser)
+    parser.add_argument(
+        "--go",
+        action="store_true",
+        help="DRIVE the plan to completion (spends quota); omit for a free dry-run preview",
+    )
+    args = parser.parse_args(argv)
+
+    friendly = _friendly_from_args(args, spend=args.go)
+    normalized, code = _normalize_or_usage(friendly, "generate")
+    if normalized is None:
+        return code
+    header = "generate --go" if args.go else "generate (dry-run)"
+    result, code = _begin_and_preview(
+        normalized, args.root, "generate", header=header, adapters=adapters
+    )
+    if result is None:
+        return code  # a refusal — nothing to drive
+    if not args.go:
+        print("\n(dry-run: nothing spent — re-run with --go to drive the plan to completion)")
+        return 0
+    return _drive_generate(
+        normalized, result, args.root, adapters=adapters, run_artifact=run_artifact
+    )
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
@@ -538,6 +925,8 @@ _COMMANDS = {
     "mvp-demo": _cmd_mvp_demo,
     "invoke": _cmd_invoke,
     "render": _cmd_render,
+    "preview": _cmd_preview,
+    "generate": _cmd_generate,
 }
 
 
