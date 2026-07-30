@@ -1116,6 +1116,60 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
 - **Source:** maintainer requirement — a general, multi-language-friendly way to call the pipeline's
   HTTP API from any language, with one neutral contract every wrapper obeys.
 
+### DR-9 — Friendly invocation surface + recipe/entry authoring + attribute documentation — CLI-UX design+plan RATIFIED and BUILDING; per-entry "skill" layer CONSIDERED and DECLINED; authoring tools + attribute reference QUEUED
+- **Status:** In progress. The **friendly invocation surface** (a CLI `generate`/`preview`/`outline` door,
+  a door-class-aware request normalizer, a zero-spend dry-run, and the two-phase outline
+  continuation-handle) is design-RATIFIED (architect initial→adversarial→reconciliation) and plan-SETTLED
+  (planner initial→adversarial→reconciliation), BUILDING as 7 gated commits C1–C7 (increments 1–4;
+  increment 5 = HTTP + language-wrapper parity, deferred). Records: `ops-handoff/cli-ux-design/` +
+  `ops-handoff/cli-ux-plan/`.
+- **The capability (plain English):** `pipeline generate --recipe … --topic … --set …` that reads like
+  English, fills sensible defaults, shows the whole plan + the exact paid-piece count for FREE, and spends
+  nothing until `--go`; a `preview` showing every resolved setting and WHICH cascade layer decided it; and
+  a two-phase outline (draft → hand-edit → drive) that refuses BEFORE spend if the settings drift from the
+  draft. One door-class-aware normalizer maps the same friendly surface to every door
+  (CLI/library/HTTP/webhook/wrappers) so they cannot diverge.
+- **Build status (2026-07-30):** C1 (the `explain`/preview projection + spend-estimate) BUILT + pushed
+  (`e926c5c`); C2–C7 building under the standing coder→reviewer→commit cadence. Ratified forks: preview is
+  a flag not a verb; spend verbs require an explicit `--workspace`; `--set` infers scalar types; language
+  wrappers deferred to increment 5.
+- **Entry-semantics finding (2026-07-30) — the per-entry "SKILL" layer was CONSIDERED and DECLINED; a
+  slider-legend ablation is QUEUED.** (`ops-handoff/entry-semantics/architect-initial.md`.)
+  - **How an entry conveys meaning today:** the writer LLM receives the resolved attribute VALUES (mostly
+    natural-language prose — persona role/knowledge/objections, voice narrator/guidelines, topic why)
+    injected verbatim into the compose context, plus the static ~9KB `writer.md` behavioral contract + the
+    lexicon apply-block + DR-4 section conformance. The schema `definition:` text and every entry BODY are
+    maintainer/lint documentation ONLY — **never sent to the model** (`definition` appears zero times in
+    `compose.py`/`driver.py`).
+  - **Verdict — do NOT build a per-entry/attribute skill layer.** It would mostly duplicate the prose
+    attributes + `writer.md` the model already sees; a pre-built skill makes adding a value a two-file
+    change (breaks the §5.4 one-file rule) and drifts from the entry; a run-time LLM-built skill is
+    non-deterministic and churns artifact identity (§7). Decisive on OVERRIDES: a plain `guidance`
+    attribute cascades so overrides "just work"; a skill forces a SECOND override channel parallel to the
+    cascade (hidden coupling) or a bake-in-then-rebuild churn. Token/time cost is inverted from the signal.
+  - **The three genuine thin spots:** (1) voice sliders `formality/humor/warmth/energy` arrive as bare 1–5
+    ints (the legend lives in the un-sent `definition:`) — the one clear gap; (2) format rhetorical
+    structure (what belongs in each section) is body-only; (3) goal intent (`explain` vs `convince`) is
+    body-only, inferred from the id-word.
+  - **QUEUED — slider-legend ablation:** route the ALREADY-WRITTEN schema slider-legend text (e.g.
+    `voices/_schema.yaml` "1 = casual … 5 = formal") into the prompt and MEASURE the quality delta before
+    committing (the voice `guidelines` prose may already carry most of the character, so the realistic gain
+    is "remove an ambiguity"). Highest quality-per-byte; reuses an existing asset. If a real gap remains, an
+    OPTIONAL verbatim `guidance`/`intent` attribute (cascades + composes with overrides for free) — never a
+    skill file, never a run-time constructor.
+- **QUEUED — recipe + entry AUTHORING tools + attribute documentation (2026-07-30, maintainer ask; to be
+  DESIGNED):** mechanisms/tools to (a) CREATE recipes — composing existing dimension entries into a named,
+  saved recipe (building on the friendly by-name-axis surface above) — and (b) CREATE NEW entries from
+  scratch (persona/voice/format/…) to be composed, conforming to each registry schema + the §5.4
+  one-file-add rule + the three ratified authoring modes (fully-manual / interactive-assisted /
+  researcher-assisted; see `state.md`). PLUS a comprehensive, user-facing **ATTRIBUTE REFERENCE**
+  documenting what every attribute MEANS and DOES (surfacing the schema `definition:` text that today is
+  maintainer-only) so a user knows exactly what to author and set. Ties directly to the entry-semantics
+  finding (the meaning is written but not user-facing). Needs its own design pass (architect→plan),
+  sequenced after the CLI-UX build lands (it extends the just-built normalizer/friendly-flag surface).
+- **Source:** maintainer requirements — user-friendly invocation + recipe/entry authoring + "the user has
+  to be able to set everything, and the documentation must specify what each attribute means and does."
+
 ---
 
 ## Resolved
