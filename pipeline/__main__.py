@@ -101,6 +101,16 @@ commands:
                  (begin-session then continue-session generate-next), the ONLY path that spends
                  subscription quota. Direct-handler pattern throughout (never registers a session
                  verb; §21.9 stays intact). Exit 0 ok; 1 refusal / --go spend failure; 2 usage.
+  outline        the FRIENDLY two-phase outline door (design §21, CLI-UX C3b). Subcommands:
+                   emit  FILE  realize an authored/edited outline as a viewable Format=outline
+                               artifact (Tier-A, SPENDS NOTHING) and print its artifact-id — the
+                               continuation HANDLE (a re-emit of the same bytes is the idempotent
+                               already-materialized no-op). Exit 0 ok; 1 refusal; 2 usage.
+                   drive FILE  ingest the outline and DRIVE the plan to completion. Identical to
+                               `generate --outline FILE`: the DEFAULT is a DRY-RUN (spends nothing);
+                               add --go to spend. Direct-handler pattern (never registers a session
+                               verb; §21.9 stays intact). Exit 0 ok; 1 refusal / --go spend
+                               failure; 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -842,6 +852,89 @@ def _drive_generate(
     return 1 if blocks else 0
 
 
+def _outline_coordinate(params: dict) -> dict:
+    """Build the ONE DR-3 drive coordinate the outline attaches to, from the normalized
+    content-axis picks (the `fanout.coordinate_payload` shape: topic/persona/format/voice/goals).
+    An outline drives ONE artifact (`fanout._normalize_outlines`), so each content axis contributes
+    its FIRST pick; an unset axis stays `None` — the cascade supplies it and the coordinate MATCHES
+    the outline-less fanned coordinate (`SelectionRequest.outline_for`). `format` rides the DRIVE
+    pick (None → the real resolved format): the emit side fixes `format=outline`, but that
+    difference is excluded from C7's σ guard and is NEVER compared here — C3b carries no
+    cross-phase guard (the guard is C7)."""
+
+    def _first(key: str) -> "str | None":
+        values = params.get(key)
+        return values[0] if values else None
+
+    goal_sets = params.get("goal_sets")
+    goals = list(goal_sets[0]) if goal_sets else None
+    return {
+        "topic": _first("topics"),
+        "persona": _first("personas"),
+        "format": _first("formats"),
+        "voice": _first("voices"),
+        "goals": goals,
+    }
+
+
+def _attach_outline_or_usage(normalized: "object", outline_path: str, prog: str) -> int:
+    """Read the authored/edited outline file and INJECT it into the normalized begin-session
+    params as a single `ingest_outlines` entry — a THIN wrapper over the EXISTING DR-3 ingest leg
+    (`session._ingest_outlines` puts the raw text in the pre-compose store, folds it to its bare
+    digest, and drives the matching coordinate). No new engine. An unreadable file is a pre-engine
+    usage error (exit 2). Returns 0 on success, else 2. `normalized.params` is a mutable dict (the
+    frozen `Normalized` field is not reassigned)."""
+    from pathlib import Path
+
+    try:
+        text = Path(outline_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"pipeline {prog}: cannot read --outline file {outline_path!r}: {exc}", file=sys.stderr
+        )
+        return 2
+    normalized.params["ingest_outlines"] = [
+        {"coordinate": _outline_coordinate(normalized.params), "text": text}
+    ]
+    return 0
+
+
+def _run_friendly_generate(
+    args: "object",
+    *,
+    go: bool,
+    outline_path: "str | None",
+    prog: str,
+    adapters: "object | None",
+    run_artifact: "object | None",
+) -> int:
+    """The shared C3a generate core, reused by `generate`, `generate --outline`, and `outline
+    drive` (the SINGLE normalizer path — `outline drive <f>` == `generate --outline <f>`). Friendly
+    flags → `normalize(interactive)` → (optionally) inject the DR-3 outline drive leg → the
+    plan-only begin-session preview via the direct-handler pattern. The DEFAULT is a DRY-RUN (no
+    `--go` → prints the plan + spend estimate and STOPS, spending nothing — only the begin-session
+    handler is constructed). `--go` drives `continue-session generate-next` to completion through
+    the INJECTABLE `run_artifact` seam. Exit 0 ok; 1 refusal / --go spend failure; 2 usage."""
+    friendly = _friendly_from_args(args, spend=go)
+    normalized, code = _normalize_or_usage(friendly, prog)
+    if normalized is None:
+        return code
+    if outline_path is not None:
+        code = _attach_outline_or_usage(normalized, outline_path, prog)
+        if code:
+            return code
+    header = f"{prog} --go" if go else f"{prog} (dry-run)"
+    result, code = _begin_and_preview(normalized, args.root, prog, header=header, adapters=adapters)
+    if result is None:
+        return code  # a refusal — nothing to drive
+    if not go:
+        print("\n(dry-run: nothing spent — re-run with --go to drive the plan to completion)")
+        return 0
+    return _drive_generate(
+        normalized, result, args.root, adapters=adapters, run_artifact=run_artifact
+    )
+
+
 def _cmd_preview(argv: list[str], *, adapters: "object | None" = None) -> int:
     """CLI-UX C3a: `pipeline preview` — the FREE plan-only door. Friendly flags →
     `normalize(interactive)` → begin-session `{generate=none, explain=true}` via the direct-handler
@@ -898,24 +991,261 @@ def _cmd_generate(
         action="store_true",
         help="DRIVE the plan to completion (spends quota); omit for a free dry-run preview",
     )
+    parser.add_argument(
+        "--outline",
+        default=None,
+        metavar="FILE",
+        help=(
+            "drive an authored/edited outline file (DR-3 ingest leg); identical to "
+            "`pipeline outline drive FILE`"
+        ),
+    )
     args = parser.parse_args(argv)
 
-    friendly = _friendly_from_args(args, spend=args.go)
-    normalized, code = _normalize_or_usage(friendly, "generate")
+    return _run_friendly_generate(
+        args,
+        go=args.go,
+        outline_path=args.outline,
+        prog="generate",
+        adapters=adapters,
+        run_artifact=run_artifact,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI-UX C3b: `pipeline outline emit / drive` — the FRIENDLY two-phase outline door.
+#
+# Thin wrappers over the EXISTING DR-3 legs (no new engine), via the SAME C3a direct-handler
+# pattern (`invoke(handlers={verb: handler})`, a PER-CALL override — never `register_*`, so
+# §21.9 money-safety holds by construction):
+#   - `outline emit <file>` calls the Tier-A `emit-outline` library verb (NO spend, no live
+#     runner) to realize an authored/edited outline as a viewable `Format=outline` artifact,
+#     and PRINTS the emitted artifact-id — the continuation HANDLE C7's drift guard will consume.
+#   - `outline drive <file>` == `generate --outline <file>`: ingest the outline and drive the
+#     plan to completion (the paid path, behind `--go`, through the injectable runner).
+#
+# HARD C3b/C7 BOUNDARY (respected here): NO drift guard, NO `--from`/`--allow-drift` flags, NO
+# `outline-config-*` codes, and NO change to the emit-side `source_subset` default — those all
+# land in C6/C7. C3b is JUST the two subcommand wrappers; between C3b and C7 the drive path
+# carries no cross-phase guard (the intended ordering — the guard is C7).
+# ---------------------------------------------------------------------------
+
+_OUTLINE_USAGE = """\
+usage: pipeline outline <emit|drive> FILE [friendly flags...]
+
+The FRIENDLY two-phase outline door (design §21, CLI-UX C3b). Thin wrappers over the existing
+DR-3 emit-outline / begin-session ingest legs, via the direct-handler pattern (never registers a
+session verb; §21.9 stays intact).
+
+subcommands:
+  emit  FILE   realize an authored/edited outline as a viewable Format=outline artifact — Tier-A,
+               SPENDS NOTHING — and print its artifact-id, the continuation HANDLE. A re-emit of
+               the same bytes is the idempotent already-materialized no-op. Options:
+               [--recipe R] [--topic ID ...] [--persona ID ...] [--voice ID ...] [--goals ID ...]
+               [--set path=value ...] --workspace W [--root DIR].
+               Exit 0 ok; 1 refusal (empty/secret outline, unknown selection); 2 usage.
+  drive FILE   ingest the outline and DRIVE the plan to completion. Identical to
+               `pipeline generate --outline FILE` (the single normalizer path): the DEFAULT is a
+               DRY-RUN (prints the plan + spend estimate and STOPS, spending nothing); add --go to
+               spend. SAME friendly flags as `generate`. Exit 0 ok; 1 refusal / --go spend
+               failure; 2 usage.
+"""
+
+
+def _emit_params_from_normalized(normalized: "object", text: str) -> dict:
+    """Project the normalized (multi-select) begin-session params into the SINGULAR emit-outline
+    coordinate params `session._emit_outline` reads: `recipe` + `topic`/`persona`/`voice` singular
+    + `goals` (list) + `overrides` (`format` is FIXED = outline by the handler, so it is never
+    passed). An outline emit names ONE coordinate, so each content axis contributes its FIRST pick.
+    Passes NO source flags — the emit-side `source_subset` default (B-2) is a server-side handler
+    default landing in C7, which this thin wrapper transparently inherits."""
+    params = normalized.params
+    emit: dict = {"outline": text, "recipe": params["recipe"]}
+    for singular, plural in (("topic", "topics"), ("persona", "personas"), ("voice", "voices")):
+        values = params.get(plural)
+        if values:
+            emit[singular] = values[0]
+    goal_sets = params.get("goal_sets")
+    if goal_sets:
+        emit["goals"] = list(goal_sets[0])
+    overrides = params.get("overrides")
+    if overrides:
+        emit["overrides"] = overrides
+    return emit
+
+
+def _emit_and_print(workspace: str, root: str, emit_params: dict) -> int:
+    """Dispatch ONE `emit-outline` call via the direct-handler pattern and print the emitted
+    artifact-id (the continuation HANDLE). ONLY `emit_outline_handler` is constructed — no
+    continue-session handler, no live runner is ever instantiated (emit is deterministic store I/O,
+    Tier-A). A per-item block (empty/secret outline) or a `not-found` selection mints no artifact →
+    a refusal (exit 1); a fresh mint or the idempotent `already-materialized` re-emit prints the id
+    (exit 0)."""
+    from pipeline.api import invoke as invoke_mod
+    from pipeline.api import session
+
+    result = invoke_mod.invoke(
+        "emit-outline",
+        workspace,
+        emit_params,
+        handlers={"emit-outline": session.emit_outline_handler()},
+        root=root,
+    )
+    if not result["envelope"]["ok"]:
+        _print_refusal("outline emit", result)
+        return 1
+    item = result["results"][0]
+    aid = (item.get("ids") or {}).get("artifact_id")
+    if item.get("status") == "block" or aid is None:
+        _print_refusal("outline emit", result)
+        return 1
+    reused = item.get("code") == "already-materialized"
+    print(f"=== outline emit: workspace={workspace} recipe={emit_params['recipe']} ===")
+    print(f"artifact-id: {aid}")
+    if reused:
+        print("status     : already-materialized (idempotent re-emit no-op)")
+    print(f"handle     : {aid}")
+    return 0
+
+
+def _outline_emit(argv: list[str]) -> int:
+    """CLI-UX C3b: `pipeline outline emit <file>` — realize an authored outline as a viewable
+    artifact. Tier-A, NO spend: builds emit-outline params from the friendly content axes and
+    dispatches ONLY the `emit_outline_handler` (direct-handler pattern). Prints the emitted
+    artifact-id (the continuation HANDLE). Exit 0 ok; 1 refusal; 2 usage."""
+    import argparse
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline outline emit",
+        description=(
+            "Realize an authored/edited outline as a viewable Format=outline artifact (CLI-UX C3b, "
+            "DR-3 horn (a)): Tier-A, SPENDS NOTHING. Prints the emitted artifact-id — the "
+            "continuation HANDLE. A re-emit of the same bytes is the idempotent no-op."
+        ),
+    )
+    parser.add_argument(
+        "file", help="the authored outline Markdown file to emit (§15 substance floor)"
+    )
+    parser.add_argument("--recipe", default=None, help="recipe id (default: explainer-post, §10)")
+    parser.add_argument(
+        "--topic", action="append", default=None, metavar="ID", help="a topic id (repeatable)"
+    )
+    parser.add_argument(
+        "--persona", action="append", default=None, metavar="ID", help="a persona id (repeatable)"
+    )
+    parser.add_argument(
+        "--voice", action="append", default=None, metavar="ID", help="a voice id (repeatable)"
+    )
+    parser.add_argument(
+        "--goals",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="a goal id (repeatable → STACKS into one goal-set, §8)",
+    )
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="PATH=VALUE",
+        help="a run override, e.g. voice.formality=2 (repeatable, §13.2)",
+    )
+    parser.add_argument("--workspace", default=None, help="the invoked workspace (§21.1)")
+    parser.add_argument(
+        "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        text = Path(args.file).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"pipeline outline emit: cannot read outline file {args.file!r}: {exc}", file=sys.stderr
+        )
+        return 2
+
+    friendly: dict = {"spend": False}  # emit is Tier-A — never a spend verb (no idempotency key)
+    for key, value in (("recipe", args.recipe), ("workspace", args.workspace)):
+        if value:
+            friendly[key] = value
+    for key, value in (
+        ("topics", args.topic),
+        ("personas", args.persona),
+        ("voices", args.voice),
+        ("goals", args.goals),
+        ("set", args.set),
+    ):
+        if value:
+            friendly[key] = value
+
+    normalized, code = _normalize_or_usage(friendly, "outline emit")
     if normalized is None:
         return code
-    header = "generate --go" if args.go else "generate (dry-run)"
-    result, code = _begin_and_preview(
-        normalized, args.root, "generate", header=header, adapters=adapters
+    emit_params = _emit_params_from_normalized(normalized, text)
+    return _emit_and_print(normalized.workspace, args.root, emit_params)
+
+
+def _outline_drive(
+    argv: list[str], *, adapters: "object | None" = None, run_artifact: "object | None" = None
+) -> int:
+    """CLI-UX C3b: `pipeline outline drive <file>` — ingest an authored/edited outline and drive it
+    to completion. Identical to `generate --outline <file>` (the single normalizer path): default
+    DRY-RUN (no spend), `--go` to drive `generate-next` through the injectable runner. Exit 0 ok;
+    1 refusal / --go spend failure; 2 usage."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline outline drive",
+        description=(
+            "Ingest an authored/edited outline and DRIVE the plan to completion (CLI-UX C3b, DR-3 "
+            "ingest leg). Identical to `pipeline generate --outline FILE`: the DEFAULT is a "
+            "DRY-RUN (prints the plan + spend estimate and STOPS, spending nothing); add --go. "
+            "Direct-handler pattern throughout — never registers a session verb (§21.9 preserved)."
+        ),
     )
-    if result is None:
-        return code  # a refusal — nothing to drive
-    if not args.go:
-        print("\n(dry-run: nothing spent — re-run with --go to drive the plan to completion)")
+    parser.add_argument(
+        "file", help="the authored/edited outline Markdown file to drive (DR-3 ingest leg)"
+    )
+    _add_friendly_generate_args(parser)
+    parser.add_argument(
+        "--go",
+        action="store_true",
+        help="DRIVE the plan to completion (spends quota); omit for a free dry-run preview",
+    )
+    args = parser.parse_args(argv)
+
+    return _run_friendly_generate(
+        args,
+        go=args.go,
+        outline_path=args.file,
+        prog="outline drive",
+        adapters=adapters,
+        run_artifact=run_artifact,
+    )
+
+
+def _cmd_outline(
+    argv: list[str], *, adapters: "object | None" = None, run_artifact: "object | None" = None
+) -> int:
+    """CLI-UX C3b: `pipeline outline <emit|drive>` — the FRIENDLY two-phase outline door.
+
+    `outline emit <file>` realizes a HAND-AUTHORED/edited outline as a viewable Format=outline
+    artifact (Tier-A, NO spend) and prints its artifact-id — the continuation HANDLE. `outline
+    drive <file>` (== `generate --outline <file>`) ingests the outline and drives the plan to
+    completion (the paid path, behind `--go`). Thin wrappers over the EXISTING DR-3 legs via the
+    C3a direct-handler pattern — never registers a session verb (§21.9). Exit 0 ok; 1 refusal /
+    --go spend failure; 2 usage."""
+    if not argv or argv[0] in ("-h", "--help"):
+        print(_OUTLINE_USAGE, end="")
         return 0
-    return _drive_generate(
-        normalized, result, args.root, adapters=adapters, run_artifact=run_artifact
-    )
+    sub, rest = argv[0], argv[1:]
+    if sub == "emit":
+        return _outline_emit(rest)
+    if sub == "drive":
+        return _outline_drive(rest, adapters=adapters, run_artifact=run_artifact)
+    print(f"pipeline outline: unknown subcommand {sub!r} (known: emit, drive)", file=sys.stderr)
+    return 2
 
 
 _COMMANDS = {
@@ -927,6 +1257,7 @@ _COMMANDS = {
     "render": _cmd_render,
     "preview": _cmd_preview,
     "generate": _cmd_generate,
+    "outline": _cmd_outline,
 }
 
 
