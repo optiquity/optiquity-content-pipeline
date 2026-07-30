@@ -137,6 +137,24 @@ commands:
                                client content); deterministic (sorted, no clock); guarded by a
                                byte-equality drift test. Options: --root DIR (default: the
                                package's repo root). Exit 0 ok; 2 usage.
+  recipe         the FRIENDLY recipe authoring/derive door (authoring layer C2b, design §8).
+                 LOCAL Tier-A file write — never an invoke verb / HTTP door (§21.9 preserved:
+                 a recipe write cannot spend quota or mint a token). Subcommand:
+                   new ID   author (or --from-derive) one schema-conforming recipe file from the
+                            unified grammar: by-name axis PICKS (--topic/--persona/--format/
+                            --voice/--goals + --platform/--language/--output-type/--presentation;
+                            mention REPLACES the slot's set, repeat to accumulate), --set
+                            path=value TWEAKS a configured value, --unset PATH CLEARS an axis slot
+                            (1 seg) or a value binding (2 seg). --from BASE seeds from an existing
+                            recipe and MATERIALIZES a standalone derived file (never base+delta;
+                            an unknown base refuses loudly). Provenance is inferred over every
+                            binding: a framework-only recipe homes public (recipes/<id>.md); a
+                            client (x-) binding REFUSES into public and homes under
+                            workspaces/<ws>/recipes/x-<id>.md (--workspace W). Refuse-if-exists
+                            unless --force (TTY-gated prompt; headless fails fast). Options:
+                            --from BASE · axis picks · --set · --unset · --workspace W · --root DIR
+                            · --force. Exit 0 ok; 1 refusal (bad edit / provenance-refused /
+                            unknown base / non-slug id / refuse-if-exists); 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -1524,6 +1542,266 @@ def _cmd_docs(argv: list[str]) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Authoring layer C2b: `pipeline recipe new` — the FRIENDLY recipe authoring/derive door.
+#
+# The FIRST consumer of the C2a authoring core (`pipeline.authoring`): friendly flags in → the
+# PICK/TWEAK/CLEAR edit-set (`build_edit_set`) → the `base ⊕ edits` merge (`merge_bundle`) → the
+# provenance-homed, overwrite-guarded, schema-conforming recipe file out (`write_recipe`). Every
+# hard part — the edit-verb router, the merge, the serializer, `infer_provenance`/
+# `resolve_recipe_target`, and the overwrite helper — lives in C2a and is REUSED here, never
+# re-implemented; this subcommand is only the argparse surface + the `--from` base loader.
+#
+# MONEY-SAFETY (§21.9): `recipe new` is a LOCAL Tier-A file write. It NEVER registers an invoke
+# verb, never touches `_VERB_HANDLERS`, and never dispatches through the invoke door — so it cannot
+# spend subscription quota or mint a token. A recipe NAME never enters `build_artifact_preimage`
+# (D10/W4), so a saved recipe run resolves byte-identically to the same flags inlined.
+# ---------------------------------------------------------------------------
+
+#: The `recipe new` by-name PICK flags (argparse dest → recipe slot) — the unified grammar (§2).
+#: Content axes are SINGULAR here (a recipe binds ONE per content dimension, §8); the four render
+#: axes carry the plural SET slot; `--goals` stacks the goal-set. Every flag is REPEATABLE and
+#: mention → REPLACE the slot's set (`build_edit_set`/`merge_bundle` own that semantics).
+_RECIPE_PICK_SLOTS: dict[str, str] = {
+    "topic": "topic",
+    "persona": "persona",
+    "format": "format",
+    "voice": "voice",
+    "goals": "goals",
+    "platform": "platforms",
+    "language": "languages",
+    "output_type": "output_types",
+    "presentation": "presentations",
+}
+
+
+def _recipe_error_types() -> tuple:
+    """The typed authoring / edit / base-load refusals `recipe new` maps to a loud exit 1 (never
+    a stack trace): a bad edit-set or provenance/overwrite refusal (`AuthoringError`), a malformed
+    `--set` path (`overrides.OverrideError`), a typed-wrong binding the serializer rejects
+    (`ValueValidationError`), an unknown/invalid `--from` base (`m1.M1Error`), or a malformed base
+    FILE — the strict loader's envelope refusal (`entries.EntryError`) OR its closed-schema /
+    version-stamp refusal (`schema.SchemaValidationError`, which covers `UndeclaredAttributeError`
+    for an `extends:`/undeclared frontmatter key, and `schema.VersionStampError`). These
+    schema-layer classes are bare `ValueError` subclasses (NOT `EntryError`s), so they must be
+    named explicitly here or a malformed base would escape uncaught. The tuple stays specific so a
+    genuine bug is never swallowed."""
+    from pipeline import authoring, entries, m1, overrides
+    from pipeline.attrtypes import ValueValidationError
+    from pipeline.schema import SchemaValidationError, VersionStampError
+
+    return (
+        authoring.AuthoringError,
+        overrides.OverrideError,
+        ValueValidationError,
+        m1.M1Error,
+        entries.EntryError,
+        SchemaValidationError,
+        VersionStampError,
+    )
+
+
+def _load_base_bundle(root: str, base_id: str, workspace: "str | None") -> dict:
+    """`--from BASE`: load an existing recipe's explicitly-SET slots (its bundle) — loud on unknown.
+
+    Locates the base exactly as M1 does (`recipes/<id>.md`, workspace-shadowed for an `x-` id,
+    innermost wins — §12.1) and returns `authoring.bundle_from_entry` (the C2a partial the merge
+    seeds from). Reference-faithful: ONLY the base's SET slots seed the merge — unset floors stay
+    unset so they fall through the cascade, and the derived file MATERIALIZES the merged bundle as
+    a standalone recipe (never a base+delta reference). An unknown/invalid base id is a loud
+    `m1.UnknownEntryError` (never a silent seed-from-nothing); a malformed base file raises the
+    strict loader's typed refusal — an ENVELOPE error (`entries.EntryError`) OR a closed-schema /
+    version-stamp error (`schema.SchemaValidationError`/`VersionStampError`, e.g. a base carrying
+    an undeclared `extends:` key). ALL of these are named in `_recipe_error_types()`, so the caller
+    turns every one into a clean `pipeline recipe new: …` exit-1 (never a traceback). READ-ONLY
+    toward the tree."""
+    from pathlib import Path
+
+    from pipeline import authoring, entries, m1
+    from pipeline.attrtypes import AttrTypeSpec, ValueValidationError, validate_value
+
+    try:  # the SSOT §7.4 slug validator (the one `_require_slug` wraps) — blocks a traversal id
+        validate_value(AttrTypeSpec(kind="ref"), base_id)
+    except ValueValidationError as exc:
+        raise m1.UnknownEntryError(
+            f"unknown-entry: --from {base_id!r} is not a §7.4 recipe id slug ([a-z0-9-], 1-40 "
+            "chars, no leading/trailing '-'); an unknown base is an error, never silent (§11.1)"
+        ) from exc
+
+    root_path = Path(root)
+    filename = f"{base_id}{entries.ENTRY_SUFFIX}"
+    shared = root_path / authoring.RECIPE_COLLECTION / filename
+    local = (
+        root_path / m1.WORKSPACES_DIRNAME / workspace / authoring.RECIPE_COLLECTION / filename
+        if workspace is not None
+        else None
+    )
+    candidates = [p for p in (shared, local) if p is not None and p.is_file()]
+    if not candidates:
+        looked = [str(shared)] + ([str(local)] if local is not None else [])
+        raise m1.UnknownEntryError(
+            f"unknown-entry: recipes/{base_id!r} does not resolve — an unknown --from base is an "
+            f"error, never silent (§11.1); looked at: {looked}"
+        )
+    schema = authoring.load_recipe_schema()
+    entry = entries.load_entry(candidates[-1], schema)  # innermost (workspace) shadows shared
+    return authoring.bundle_from_entry(entry)
+
+
+def _cmd_recipe(argv: list[str]) -> int:
+    """Authoring layer C2b: `pipeline recipe new ID [--from BASE] [picks] [--set] [--unset]` —
+    author (or derive) a schema-conforming recipe file from friendly flags (the C2a core).
+
+    A LOCAL Tier-A file write: build the PICK/TWEAK/CLEAR edit-set, merge it over an EMPTY base
+    (or the `--from` base), infer provenance over every binding, home the file (public
+    `recipes/<id>.md`, or `workspaces/<ws>/recipes/x-<id>.md` for a client binding — REFUSED into
+    public), overwrite-guard it, and print the exact id + path. NEVER registers an invoke verb /
+    touches `_VERB_HANDLERS` / hits the invoke door (§21.9). Exit 0 ok; 1 refusal (bad edit /
+    provenance-refused / unknown base / non-slug id / refuse-if-exists); 2 usage."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline recipe",
+        description=(
+            "The friendly recipe authoring/derive door (authoring layer C2b, design §8): the "
+            "first consumer of the C2a authoring core. LOCAL Tier-A file write — never an invoke "
+            "verb / HTTP door (§21.9). Subcommand: new."
+        ),
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    new = sub.add_parser(
+        "new",
+        help="author (or --from-derive) one schema-conforming recipe file from friendly flags",
+        description=(
+            "Author (or derive with --from) one schema-conforming recipe file (design §8) from "
+            "the unified grammar: by-name axis PICKS (mention REPLACES the slot's set, repeat to "
+            "accumulate), --set path=value TWEAKS a configured value (values only), --unset PATH "
+            "CLEARS an axis slot (1 segment) or a value binding (2 segments). Provenance is "
+            "inferred over every binding: framework-only homes public (recipes/<id>.md); a client "
+            "(x-) binding REFUSES into public and homes under workspaces/<ws>/recipes/x-<id>.md. "
+            "Refuse-if-exists unless --force. NEVER spends quota (never an invoke verb; §21.9)."
+        ),
+    )
+    new.add_argument("id", help="the recipe id to write (§7.4 slug; the filename stem)")
+    new.add_argument(
+        "--from",
+        dest="base",
+        default=None,
+        metavar="BASE",
+        help="seed from an existing recipe → a standalone derived file (loud on unknown)",
+    )
+    new.add_argument(
+        "--topic", action="append", default=None, metavar="ID", help="bind a topic (repeatable)"
+    )
+    new.add_argument(
+        "--persona", action="append", default=None, metavar="ID", help="bind a persona (repeatable)"
+    )
+    new.add_argument(
+        "--format", action="append", default=None, metavar="ID", help="bind a format (repeatable)"
+    )
+    new.add_argument(
+        "--voice", action="append", default=None, metavar="ID", help="bind a voice (repeatable)"
+    )
+    new.add_argument(
+        "--goals",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="bind a goal (repeatable → STACKS the goal-set, §8)",
+    )
+    new.add_argument(
+        "--platform",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="pin a render platform (repeatable → REPLACES the set, §5)",
+    )
+    new.add_argument(
+        "--language",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="pin a render language (repeatable → REPLACES the set, §5)",
+    )
+    new.add_argument(
+        "--output-type",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="pin a render output-type (repeatable → REPLACES the set, §17)",
+    )
+    new.add_argument(
+        "--presentation",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="pin a render presentation (repeatable → REPLACES the set, §5.3)",
+    )
+    new.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="PATH=VALUE",
+        help="tweak a configured value, e.g. voice.formality=2 or format.tags+=x (repeatable)",
+    )
+    new.add_argument(
+        "--unset",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="clear an axis slot (1 seg: voice) or a value binding (2 seg: voice.formality)",
+    )
+    new.add_argument(
+        "--workspace",
+        default=None,
+        help="the workspace home for a client (x-) recipe (§10); framework recipes need none",
+    )
+    new.add_argument(
+        "--root", default=".", help="framework repo root → recipes/<id>.md (default: cwd)"
+    )
+    new.add_argument(
+        "--force", action="store_true", help="overwrite an existing recipe file (default: refuse)"
+    )
+    args = parser.parse_args(argv)
+
+    if args.subcommand != "new":
+        parser.print_usage(sys.stderr)
+        print("pipeline recipe: a subcommand is required (known: new)", file=sys.stderr)
+        return 2
+
+    from pipeline import authoring
+
+    picks: dict[str, list[str]] = {}
+    for dest, slot in _RECIPE_PICK_SLOTS.items():
+        values = getattr(args, dest)
+        if values:
+            picks[slot] = values
+
+    try:
+        edits = authoring.build_edit_set(
+            picks=picks, set_entries=args.set or [], unset=args.unset or []
+        )
+        base_bundle: dict = (
+            _load_base_bundle(args.root, args.base, args.workspace)
+            if args.base is not None
+            else {}
+        )
+        bundle = authoring.merge_bundle(base_bundle, edits)
+        target = authoring.write_recipe(
+            args.root, args.id, bundle, workspace=args.workspace, force=args.force
+        )
+    except _recipe_error_types() as exc:
+        print(f"pipeline recipe new: {exc}", file=sys.stderr)
+        return 1
+
+    seeded = f" (derived from {args.base!r})" if args.base is not None else ""
+    print(
+        f"pipeline recipe new: wrote recipe {target.recipe_id!r} [{target.provenance}]{seeded} "
+        f"— {target.path}"
+    )
+    return 0
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
@@ -1537,6 +1815,7 @@ _COMMANDS = {
     "list": _cmd_list,
     "get": _cmd_get,
     "docs": _cmd_docs,
+    "recipe": _cmd_recipe,
 }
 
 
