@@ -6,7 +6,7 @@ What every registry attribute MEANS and DOES. This page is generated from the fr
 
 Regenerate with `pipeline docs attributes`. A byte-equality CI test (`tests/test_attributes_doc_contract.py`) fails loudly if a schema `definition:` is edited without regenerating this file.
 
-Documented: 16 collections, 75 attributes.
+Documented: 17 collections, 77 attributes.
 
 ## `content-kinds` — schema_version 1
 
@@ -491,6 +491,24 @@ The §14.2 dispatch setting. internal = call the pinned Pandoc writer in-system 
 - **definition version:** 1
 
 The Pandoc writer this target invokes, or `json` for raw-AST passthrough (RI12). The floor is `json`: layer 3 is always produced (RI6), so a target that names no writer hands off the AST itself. Writer names are validated against the pinned binary's writer list at dispatch, not here (capability checks are the dispatcher's, §17).
+
+## `selections` — schema_version 1
+
+### `base`
+
+- **type:** `text`
+- **floor (default):** `""`
+- **definition version:** 1
+
+The base this saved selection's variants are deltas AGAINST (authoring D4) — a recipe (or entry) REFERENCE, kept as a reference and never an inlined copy, so a later edit to the base surfaces HONESTLY as a new artifact id rather than a stale snapshot (reference-faithful, D10). Declared as text with an empty floor — not ref — exactly like `recipes.topic`/`lexicon`: the base may be a workspace-scoped recipe/entry id the framework ships none of, so the honest floor is "unset" (the `platforms.default_output_type` empty-floor precedent, which the ref slug alphabet cannot express). A non-empty value resolves at load against the recipe/entry registries in scope, loud on an unknown id (§11.1); the empty floor imposes no base and churns no artifact id (§7.2). The base name/filename never enters any artifact preimage (D10/W4) — naming or saving a selection cannot change a piece's fingerprint.
+
+### `variants`
+
+- **type:** `list`
+- **floor (default):** `[]`
+- **definition version:** 1
+
+The EXPLICIT per-artifact variant array (authoring D4) — one `{coordinate, render?, values?}` delta over `base` per resulting deliverable, in the order the saving fan-out produced them. An ORDERED, ALREADY-producted list: reloading drives it 1:1 (each variant resolves to one content combination × its own single render coordinate) and NEVER re-multiplies it, so a curated diagonal reloads to N deliverables, not N×M (the design's no-cartesian guarantee). Per-artifact value tweaks are persisted under the variant's `values` key (§12.5 terminology — persistent scopes hold CONFIGURATION, never "overrides"). The delta interior is UNTYPED in this manifest (an untyped `list`; §11.1 forbids a typed list interior) and is validated at save/load in `pipeline/authoring.py` / `pipeline/plan.py` (authoring C5b/C5c), not by this schema. Empty floor `[]` = a selection with no variants yet; an envelope-only entry rides it and lints + loads (§5.4 one-file-add).
 
 ## `sources` — schema_version 1
 

@@ -142,6 +142,7 @@ REGISTRY_ROOTS = (
     "folio-types",
     "lexicons",  # DR-2 discharge: schema-lint scans the class-(ii) lexicons registry too
     "diagram-styles",  # mixed-media increment C: the referenced diagram-style registry
+    "selections",  # authoring layer C5a: the referenced saved-selection registry (base + variants)
 )
 
 #: Scanned subtrees beyond the registry roots (PA-1): collections discovered by their

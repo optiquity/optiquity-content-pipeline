@@ -1,0 +1,54 @@
+# selections/_schema.yaml — co-located schema for the saved-selection registry (design §8;
+# authoring layer D4; SV4 §11.1/§13.4). Framework mechanism (provenance/scope: §10). NOT a
+# matrix dimension: a saved selection is a REFERENCED registry like `recipes`/`diagram-styles`
+# — it is absent from the nine DIMENSION_COLLECTIONS axes (m1.py), resolved on demand when a run
+# names it, never fanned out as an axis. A small collection like any other (§6.1): provenance
+# guard (§10), schema-versioning (§11.7 SV10), one-file-add (§5.4 — a new saved selection is ONE
+# conforming file, nothing else). Ships EMPTY (this schema only); saved entries land at run.
+#
+# WHAT A SELECTION IS (authoring D4): a REPLAYABLE fan-out — a `base` reference plus an EXPLICIT
+# array of per-artifact `variants` (deltas over the base). The product is ALREADY applied by the
+# run that saved it, so the stored array is driven 1:1 on reload and is NEVER re-multiplied
+# (the "no cartesian explosion" guarantee). Each variant pins one content combination AND its own
+# single render coordinate; reloading resolves `base ⊕ deltaᵢ` per variant back to byte-identical
+# artifact + deliverable ids (§7 idempotence).
+#
+# WHY THE VARIANT SUB-SHAPE IS NOT TYPED HERE (B3): `variants` is an untyped `list` — the registry
+# manifest CANNOT express the `{coordinate, render?, values?}` delta interior (attrtypes.py forbids
+# a typed list/set element interior and does not deep-check map interiors, §11.1). That sub-shape
+# is validated where it is CONSUMED — in `pipeline/authoring.py` / `pipeline/plan.py` at save/load
+# (authoring C5b/C5c) — NOT by this manifest. Both attributes floor-ride (text `""`, list `[]`), so
+# an envelope-only entry lints + loads (the §5.4 one-file-add probe), exactly like every sibling.
+schema_version: 1
+attributes:
+  base:
+    type: text
+    default: ""
+    definition: >-
+      The base this saved selection's variants are deltas AGAINST (authoring D4) — a recipe (or
+      entry) REFERENCE, kept as a reference and never an inlined copy, so a later edit to the base
+      surfaces HONESTLY as a new artifact id rather than a stale snapshot (reference-faithful,
+      D10). Declared as text with an empty floor — not ref — exactly like `recipes.topic`/`lexicon`:
+      the base may be a workspace-scoped recipe/entry id the framework ships none of, so the honest
+      floor is "unset" (the `platforms.default_output_type` empty-floor precedent, which the ref
+      slug alphabet cannot express). A non-empty value resolves at load against the recipe/entry
+      registries in scope, loud on an unknown id (§11.1); the empty floor imposes no base and
+      churns no artifact id (§7.2). The base name/filename never enters any artifact preimage
+      (D10/W4) — naming or saving a selection cannot change a piece's fingerprint.
+    definition_version: 1
+  variants:
+    type: list
+    default: []
+    definition: >-
+      The EXPLICIT per-artifact variant array (authoring D4) — one `{coordinate, render?, values?}`
+      delta over `base` per resulting deliverable, in the order the saving fan-out produced them.
+      An ORDERED, ALREADY-producted list: reloading drives it 1:1 (each variant resolves to one
+      content combination × its own single render coordinate) and NEVER re-multiplies it, so a
+      curated diagonal reloads to N deliverables, not N×M (the design's no-cartesian guarantee).
+      Per-artifact value tweaks are persisted under the variant's `values` key (§12.5 terminology
+      — persistent scopes hold CONFIGURATION, never "overrides"). The delta interior is UNTYPED in
+      this manifest (an untyped `list`; §11.1 forbids a typed list interior) and is validated at
+      save/load in `pipeline/authoring.py` / `pipeline/plan.py` (authoring C5b/C5c), not by this
+      schema. Empty floor `[]` = a selection with no variants yet; an envelope-only entry rides it
+      and lints + loads (§5.4 one-file-add).
+    definition_version: 1

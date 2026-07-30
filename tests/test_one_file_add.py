@@ -10,10 +10,10 @@ catch regressions forever, not once (plan step 15, PA-13).
 
 Parameterized over EVERY registry — the nine axes (topics, personas, formats, voices,
 goals, platforms, languages, output-types, presentations) plus content-kinds, sources,
-render-targets, recipes, folio-types — via the `REGISTRY_ROOTS` constant itself
-(pipeline/lint.py, the PA-1 scope boundary), so a future registry root joins this test
-automatically and `test_registry_inventory_is_the_matrix` fails loudly if the
-enumeration ever drifts from §5.4's.
+render-targets, recipes, folio-types, lexicons, diagram-styles, selections — via the
+`REGISTRY_ROOTS` constant itself (pipeline/lint.py, the PA-1 scope boundary), so a future
+registry root joins this test automatically and `test_registry_inventory_is_the_matrix`
+fails loudly if the enumeration ever drifts from §5.4's.
 
 Mechanics (REC-3 pattern): each test copies the lint scan scope to a scratch tree and
 drops files THERE — the real repo is never written. Positive: one conforming file →
@@ -64,6 +64,7 @@ OTHER_REGISTRIES = (
     "folio-types",
     "lexicons",  # DR-2 class-(ii) house-style registry (non-axis); deferral discharged 2026-07-29
     "diagram-styles",  # mixed-media increment C: the referenced diagram-style registry
+    "selections",  # authoring layer C5a: the referenced saved-selection registry (non-axis)
 )
 
 
