@@ -1,0 +1,617 @@
+"""Shared authoring core (design §8; authoring layer D5–D10). PURE + REUSABLE.
+
+`pipeline recipe new` (C2b), `entry new` (C3), and `--save-selection` (C5) all shape the
+SAME small edit over a base binding: you PICK an entry (an axis flag replaces that slot's
+set), you TWEAK a value (`--set` binds a `<dim>.<attr>` value), or you CLEAR a slot/binding
+(`--unset`). This module owns that grammar, the `base ⊕ edits` merge it drives, the
+conforming-recipe serializer, the all-slot provenance inference, and the overwrite guard —
+ALL as pure functions the verb layers call. It registers NO invoke verb and touches NO
+identity surface (a recipe name never enters `build_artifact_preimage`; a saved recipe run
+resolves byte-identically to the same flags inlined, D10/W4): it only shapes and serializes
+CONFIG.
+
+The two operations map to the two design walls (§21.4). PICK an ENTRY (M1 selection: which
+persona/format/platform) — mentioning an axis REPLACES the base's set for that axis, exactly
+as the runtime cascade already replaces per axis (`request.X or pinned`, `fanout.py:451-454`;
+combo-beats-recipe, `plan.py:300-308`). TWEAK a VALUE (an L5 configured value, never an
+"override" on a persisted file, §12.5) via the existing `--set` compile
+(`normalize.compile_overrides`), structurally re-validated through `overrides.collect_overrides`.
+`--unset` spans both walls, disambiguated by SEGMENT COUNT (§2 of the ratified design): one
+segment clears an axis SLOT, two segments clear a value BINDING. It reuses only the *idea*
+`path.split(".")`, NEVER `overrides._override_from_bind` — that guard RAISES on a 1-segment
+path ("names a whole dimension … `selection`, an M1 input", `overrides.py:139-144`), so it
+cannot serve the axis-clear case (the S1 fix).
+
+Wiring, never duplication: the §7.4 slug alphabet is `attrtypes.validate_value` (the single
+implementation every sibling `_require_slug` wraps); the value-tweak grammar is
+`normalize.compile_overrides` + `overrides.collect_overrides`; the dimension/reserved
+vocabularies are `m1.DIMENSION_COLLECTIONS` + `schema.RESERVED_ATTRIBUTE_NAMES`; the workspace
+isolation guard is `workspace_name.validate_workspace_name` (rule 2); the pinned dumper is the
+loader `yamlio.make_loader` runs in reverse. A LEAF module — it imports no identity/plan/
+cascade code and nothing in `pipeline/` imports it yet (C2b is the first consumer).
+"""
+
+from __future__ import annotations
+
+import copy
+import io
+import sys
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from pipeline.api.normalize import compile_overrides
+from pipeline.attrtypes import AttrTypeSpec, ValueValidationError, validate_value
+from pipeline.entries import (
+    INSTANCE_ID_PREFIX,
+    PROVENANCE_FRAMEWORK,
+    PROVENANCE_INSTANCE,
+    Entry,
+)
+from pipeline.fanout import CONTENT_AXES, RENDERING_AXES
+from pipeline.m1 import DIMENSION_COLLECTIONS
+from pipeline.overrides import collect_overrides
+from pipeline.schema import (
+    RESERVED_ATTRIBUTE_NAMES,
+    SCHEMA_FILENAME,
+    Schema,
+    load_schema,
+)
+from pipeline.workspace_name import validate_workspace_name
+from pipeline.yamlio import make_loader
+
+__all__ = [
+    "AXIS_TO_SLOT",
+    "ENTRY_REFERENCING_SLOTS",
+    "RECIPE_COLLECTION",
+    "SET_VALUED_SLOTS",
+    "SINGLE_VALUED_SLOTS",
+    "VALUES_SLOT",
+    "AuthoringError",
+    "EditSet",
+    "RecipeTarget",
+    "build_edit_set",
+    "bundle_from_entry",
+    "ensure_writable",
+    "infer_provenance",
+    "load_recipe_schema",
+    "merge_bundle",
+    "resolve_recipe_target",
+    "serialize_recipe",
+    "write_recipe",
+]
+
+# --- The recipe binding vocabulary (design §8; recipes/_schema.yaml) ----------------------
+
+#: The registry root recipes live in (framework mechanism).
+RECIPE_COLLECTION = "recipes"
+
+#: The single-valued entry-referencing recipe slots (a recipe binds ONE per content
+#: dimension, §8): text-ref (`topic`/`lexicon`/`diagram_style`) + ref (`persona`/`format`/
+#: `voice`). A pick states one id; several is a loud error (a recipe is not a fan-out).
+SINGLE_VALUED_SLOTS = ("topic", "lexicon", "diagram_style", "persona", "format", "voice")
+
+#: The set-valued entry-referencing recipe slots (a recipe MAY pin several, §8): the goal-set
+#: + the four rendering pins. A pick states the whole set (mention → REPLACE, §2).
+SET_VALUED_SLOTS = ("goals", "platforms", "languages", "output_types", "presentations")
+
+#: The entry-referencing PICK slots (design D9), in schema-declared order — the recipe slots
+#: that name entry ids directly. The `values` map is NOT a pick slot (it binds attribute VALUES
+#: over already-selected entries, the M1 wall §21.4) — but a values OPERAND can itself be an
+#: entry id: `persona.default_voice` is `ref`-typed, so `--set persona.default_voice=x-...`
+#: puts a client id in the map. So `infer_provenance` scans the values map TOO (it is a
+#: provenance carrier); this list is only the direct-pick surface the merge replaces.
+ENTRY_REFERENCING_SLOTS = SINGLE_VALUED_SLOTS + SET_VALUED_SLOTS
+
+#: The recipe's L5 configured-values map (§8/§12.5) — the TWEAK target. NOT "overrides": a
+#: persisted scope holds configuration, never the ephemeral L6 mechanism (§12.5 terminology).
+VALUES_SLOT = "values"
+
+_SINGLE = frozenset(SINGLE_VALUED_SLOTS)
+_SET = frozenset(SET_VALUED_SLOTS)
+_SLOTS = frozenset(ENTRY_REFERENCING_SLOTS)
+
+#: A fan-out axis key (the `SelectionRequest`/normalizer surface) → its recipe slot. Content
+#: axes are PLURAL at fan-out (`fanout.CONTENT_AXES`) but SINGULAR in a recipe; rendering axes
+#: (`fanout.RENDERING_AXES`) and `goals` map to themselves. `lexicon`/`diagram_style` have no
+#: fan-out axis (a recipe binds them; they are not run-multi-selected) — a caller names those
+#: slots directly. Consumers (C2b/C5) translate their argparse dests through this map; the
+#: router below also accepts a bare slot name.
+AXIS_TO_SLOT: dict[str, str] = {
+    # Content axes are the plural fan-out keys; a recipe binds ONE, so the slot is singular
+    # (`topics` → `topic`, …) — derived from `CONTENT_AXES` so it tracks the SSOT.
+    **{axis: axis[:-1] for axis in CONTENT_AXES},
+    **{axis: axis for axis in RENDERING_AXES},
+    "goals": "goals",
+}
+
+#: The §7.4 slug alphabet's single implementation (attrtypes' `ref`), exactly as every sibling
+#: `_require_slug` (`entries`/`fanout`/`schema`) wraps it — the alphabet is never re-spelled.
+_REF_SPEC = AttrTypeSpec(kind="ref")
+
+
+class AuthoringError(ValueError):
+    """A loud, typed authoring refusal — never a silent repair (§3.1)."""
+
+    code = "invalid-authoring"
+
+
+def _require_slug(value: object, what: str) -> str:
+    """Refuse anything that is not a §7.4 entry-id slug (loud), via the ONE validator."""
+    try:
+        validate_value(_REF_SPEC, value)
+    except ValueValidationError as exc:
+        raise AuthoringError(
+            f"invalid-authoring: {what} {value!r} is not a §7.4 entry-id slug "
+            "([a-z0-9-], 1-40 chars, no leading/trailing '-'; §11.4 `x-` prefix included)"
+        ) from exc
+    assert isinstance(value, str)
+    return value
+
+
+# --- The edit-verb router: PICK / TWEAK / CLEAR (the unified grammar, §2) ------------------
+
+
+@dataclass(frozen=True)
+class EditSet:
+    """One normalized edit over a base: what to PICK, TWEAK, and CLEAR.
+
+    - `picks` — slot → the stated id set (mention → REPLACE that slot, §2).
+    - `tweaks` — the compiled `--set` values map delta (`{"voice.formality": 2,
+      "format.tags+": ["x"]}`), values-only (the M1 wall holds, §21.4).
+    - `clears_axis` — slots to drop (one-segment `--unset`).
+    - `clears_value` — value BINDING paths to drop from the values map (two-segment `--unset`).
+    """
+
+    picks: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    tweaks: dict[str, Any] = field(default_factory=dict)
+    clears_axis: frozenset[str] = frozenset()
+    clears_value: frozenset[str] = frozenset()
+
+
+def _resolve_pick_slot(key: str) -> str:
+    """A pick/clear key → its recipe slot. Accepts a bare slot name or a fan-out axis key."""
+    if key in _SLOTS:
+        return key
+    if key in AXIS_TO_SLOT:
+        return AXIS_TO_SLOT[key]
+    raise AuthoringError(
+        f"invalid-authoring: {key!r} is not a recipe slot — pickable/clearable slots are "
+        f"{sorted(_SLOTS)} (or the fan-out axis keys {sorted(AXIS_TO_SLOT)})"
+    )
+
+
+def _base_value_path(key: str) -> str:
+    """The bare `<dim>.<attr>` of a values-map key (strip the `+` union sugar, §13.2)."""
+    return key[:-1] if key.endswith("+") else key
+
+
+def _route_unset(unset: Sequence[str]) -> tuple[set[str], set[str]]:
+    """`--unset` → (axis-slot clears, value-binding clears), by SEGMENT COUNT [S1 fix].
+
+    One segment = an axis slot (`--unset voice`, `--unset platforms`); two = a value binding
+    (`--unset voice.formality`). Reuses the `path.split(".")` IDEA and the SAME dimension/
+    reserved vocabularies the override guard checks — but never CALLS `_override_from_bind`,
+    which raises on the 1-segment axis-clear case (`overrides.py:139-144`). Accepts a comma
+    list per token (`--unset a,b`, mirroring `compile_overrides` comma handling).
+    """
+    clears_axis: set[str] = set()
+    clears_value: set[str] = set()
+    for raw in unset:
+        if not isinstance(raw, str):
+            raise AuthoringError(f"invalid-authoring: each --unset is a string, got {raw!r}")
+        for token in (t.strip() for t in raw.split(",")):
+            if not token:
+                raise AuthoringError(f"invalid-authoring: empty --unset path in {raw!r}")
+            segments = token.split(".")
+            if len(segments) == 1:
+                clears_axis.add(_resolve_pick_slot(segments[0]))
+            elif len(segments) == 2:
+                dimension, attribute = segments
+                if dimension not in DIMENSION_COLLECTIONS:
+                    raise AuthoringError(
+                        f"invalid-authoring: --unset {token!r}: {dimension!r} is not a "
+                        f"dimension — a value binding is `<dimension>.<attribute>` (§13.2/§21.4); "
+                        f"dimensions: {sorted(DIMENSION_COLLECTIONS)}"
+                    )
+                if not attribute or attribute in RESERVED_ATTRIBUTE_NAMES:
+                    raise AuthoringError(
+                        f"invalid-authoring: --unset {token!r}: {attribute!r} is not a bindable "
+                        "attribute (envelope/mechanism vocabulary: "
+                        f"{sorted(RESERVED_ATTRIBUTE_NAMES)})"
+                    )
+                clears_value.add(token)
+            else:
+                raise AuthoringError(
+                    f"invalid-authoring: --unset {token!r} has {len(segments)} segments — an axis "
+                    "clear is one segment, a value clear is two (§2)"
+                )
+    return clears_axis, clears_value
+
+
+def build_edit_set(
+    *,
+    picks: Mapping[str, Sequence[str]] | None = None,
+    set_entries: Sequence[str] = (),
+    unset: Sequence[str] = (),
+) -> EditSet:
+    """Parse raw CLI-shaped inputs into a normalized `EditSet` (the router).
+
+    `picks` maps a slot/axis key to the stated id list (repeated flags = the accumulated set).
+    `set_entries` is the raw `--set` strings (compiled + structurally re-validated). `unset`
+    is the raw `--unset` args (routed by segment count). Every id is slug-validated loud; a
+    slot both picked and axis-cleared, or a path both tweaked and value-cleared, is refused.
+    """
+    resolved_picks: dict[str, tuple[str, ...]] = {}
+    for key, ids in (picks or {}).items():
+        slot = _resolve_pick_slot(key)
+        seq = tuple(_require_slug(v, f"--{key} value") for v in ids)
+        if not seq:
+            continue
+        if slot in resolved_picks:
+            raise AuthoringError(
+                f"invalid-authoring: slot {slot!r} is picked twice (via {key!r} and another "
+                "axis key) — ambiguous, refused (never last-wins, §3.1)"
+            )
+        resolved_picks[slot] = seq
+
+    # TWEAK: the existing `--set` compile → the values-map delta; then the STRUCTURAL M1 guard
+    # (segment count, dimension, reserved names) via collect_overrides — loud early. The full
+    # schema type-check is deferred to run (it needs the selected entries' schemas).
+    tweaks = compile_overrides(list(set_entries))
+    collect_overrides(tweaks)
+
+    clears_axis, clears_value = _route_unset(unset)
+
+    for slot in clears_axis:
+        if slot in resolved_picks:
+            raise AuthoringError(
+                f"invalid-authoring: slot {slot!r} is both picked and --unset — contradictory "
+                "(§3.1); state one intent"
+            )
+    tweak_paths = {_base_value_path(key) for key in tweaks}
+    for path in clears_value:
+        if path in tweak_paths:
+            raise AuthoringError(
+                f"invalid-authoring: value {path!r} is both --set and --unset — contradictory "
+                "(§3.1); state one intent"
+            )
+
+    return EditSet(
+        picks=resolved_picks,
+        tweaks=tweaks,
+        clears_axis=frozenset(clears_axis),
+        clears_value=frozenset(clears_value),
+    )
+
+
+# --- The base ⊕ edits merge (THE primitive C2b derive AND C5c `base ⊕ deltaᵢ` reuse) -------
+
+
+def _slot_binding(slot: str, ids: tuple[str, ...]) -> Any:
+    """Coerce a picked id set to its slot's cardinality: a scalar (single) or a list (set)."""
+    if slot in _SINGLE:
+        if len(ids) != 1:
+            raise AuthoringError(
+                f"invalid-authoring: {slot!r} is a single-valued slot — a recipe binds ONE "
+                f"{slot} (§8), got {len(ids)}: {list(ids)}; state one id"
+            )
+        return ids[0]
+    if len(set(ids)) != len(ids):
+        raise AuthoringError(
+            f"invalid-authoring: duplicate id in {slot} {list(ids)} — a set is loud, never "
+            "silently deduped (§5.2)"
+        )
+    return list(ids)
+
+
+def _normalized_bundle(base: Mapping[str, Any]) -> dict[str, Any]:
+    """A deep copy of a base bundle with unknown keys refused and set slots as lists."""
+    result: dict[str, Any] = {}
+    for key, value in base.items():
+        if key == VALUES_SLOT:
+            result[key] = copy.deepcopy(value)
+        elif key in _SET:
+            result[key] = list(value)
+        elif key in _SINGLE:
+            result[key] = value
+        else:
+            raise AuthoringError(
+                f"invalid-authoring: {key!r} is not a recipe binding slot — a bundle holds only "
+                f"{sorted(_SLOTS)} + {VALUES_SLOT!r}"
+            )
+    return result
+
+
+def merge_bundle(base: Mapping[str, Any], edits: EditSet) -> dict[str, Any]:
+    """Apply an `EditSet` over a base bundle → the effective bundle (design §2, §12.3).
+
+    PICK replaces the whole slot (mirroring the runtime per-axis `request.X or pinned`,
+    `fanout.py:451-454`, and combo-beats-recipe, `plan.py:300-308`); CLEAR drops the slot or
+    the value binding (falls through to the cascade floor); TWEAK sets the value path in the
+    values map. Reference-faithful: bindings are ids, never materialized floors — a base edit
+    surfaces honestly. THIS is the exact merge C5c's `base ⊕ deltaᵢ` selection-load reuses.
+    """
+    result = _normalized_bundle(base)
+    for slot, ids in edits.picks.items():
+        result[slot] = _slot_binding(slot, ids)
+    for slot in edits.clears_axis:
+        result.pop(slot, None)
+
+    values = dict(result.get(VALUES_SLOT) or {})
+    for key, value in edits.tweaks.items():
+        values[key] = copy.deepcopy(value)
+    for path in edits.clears_value:
+        values.pop(path, None)
+        values.pop(f"{path}+", None)  # clear both the replace and the `+` union spellings
+    if values:
+        result[VALUES_SLOT] = values
+    else:
+        result.pop(VALUES_SLOT, None)
+    return result
+
+
+def bundle_from_entry(entry: Entry) -> dict[str, Any]:
+    """The base bundle of a parsed recipe entry: its explicitly-SET slots (a partial, §8)."""
+    return _normalized_bundle(entry.attributes)
+
+
+# --- Provenance inference over all entry-referencing slots (design D9) --------------------
+
+
+def _values_carry_instance_id(operand: Any) -> bool:
+    """True if any operand inside a values map is an `x-` (reserved instance) string.
+
+    A values binding CAN carry an entry id — `persona.default_voice` is `ref`-typed
+    (`personas/_schema.yaml`), so `--set persona.default_voice=x-client-voice` lands a client
+    id in the map. Conservatively, ANY `x-`-prefixed string operand marks the bundle
+    instance-scoped: `x-` is the RESERVED instance namespace (§11.4) and must never appear in a
+    framework recipe, whatever the attribute's type — this catches every present and future
+    ref-typed (and text-ref) attribute without resolving schemas (the function stays a leaf).
+    Over-flagging an odd `x-` free-text value routes it to the workspace, the safe direction
+    (rule 4). Recurses through list/map operands (the §13.2 union/`{combine,add}` shapes).
+    """
+    if isinstance(operand, str):
+        return operand.startswith(INSTANCE_ID_PREFIX)
+    if isinstance(operand, Mapping):
+        return any(_values_carry_instance_id(v) for v in operand.values())
+    if isinstance(operand, (list, tuple)):
+        return any(_values_carry_instance_id(v) for v in operand)
+    return False
+
+
+def infer_provenance(bundle: Mapping[str, Any]) -> str:
+    """`framework` unless ANY binding is `x-`-scoped → `instance` (§11.4).
+
+    Scans every direct-pick slot in `ENTRY_REFERENCING_SLOTS` (topic, lexicon, diagram_style,
+    persona, format, voice + the goal-set and rendering pins) AND every operand in the `values`
+    map (a values operand can be a ref-typed entry id — `persona.default_voice`). Any client/
+    instance entry carries the reserved `x-` id prefix by construction (§11.4, enforced by
+    `entries.parse_entry`), so the prefix IS the structural signal — no registry resolution
+    needed (this stays a leaf). Closes the rule-4 leak of a client id reaching public via
+    `values`.
+    """
+    for slot in ENTRY_REFERENCING_SLOTS:
+        if slot not in bundle:
+            continue
+        value = bundle[slot]
+        ids = value if isinstance(value, (list, tuple)) else (value,)
+        for entry_id in ids:
+            if isinstance(entry_id, str) and entry_id.startswith(INSTANCE_ID_PREFIX):
+                return PROVENANCE_INSTANCE
+    if _values_carry_instance_id(bundle.get(VALUES_SLOT)):
+        return PROVENANCE_INSTANCE
+    return PROVENANCE_FRAMEWORK
+
+
+@dataclass(frozen=True)
+class RecipeTarget:
+    """Where a recipe writes: its id, inferred provenance, home path, and workspace (if any)."""
+
+    recipe_id: str
+    provenance: str
+    path: Path
+    workspace: str | None
+
+
+def resolve_recipe_target(
+    root: str | Path,
+    recipe_id: str,
+    bundle: Mapping[str, Any],
+    *,
+    workspace: str | None = None,
+) -> RecipeTarget:
+    """Infer provenance from the bindings and compute the home path — REFUSING a client
+    binding into public (rule 4, §10).
+
+    A client/`x-` binding forces `instance`: the id MUST carry `x-` and a workspace MUST be
+    named — otherwise the write is refused (never leaks instance config into the public repo).
+    A framework-only bundle homes public (`recipes/<id>.md`); an `x-` id homes under the
+    workspace (`workspaces/<ws>/recipes/x-<id>.md`) via the isolation guard.
+    """
+    _require_slug(recipe_id, "recipe id")
+    binding_provenance = infer_provenance(bundle)
+    id_is_instance = recipe_id.startswith(INSTANCE_ID_PREFIX)
+
+    if binding_provenance == PROVENANCE_INSTANCE and not id_is_instance:
+        raise AuthoringError(
+            f"invalid-authoring: recipe {recipe_id!r} binds a client/instance "
+            f"('{INSTANCE_ID_PREFIX}') entry but is not an instance id — a client-binding recipe "
+            f"takes an '{INSTANCE_ID_PREFIX}' id under a --workspace, never the public repo "
+            "(rule 4, §10)"
+        )
+
+    provenance = (
+        PROVENANCE_INSTANCE
+        if (id_is_instance or binding_provenance == PROVENANCE_INSTANCE)
+        else PROVENANCE_FRAMEWORK
+    )
+    root = Path(root)
+    if provenance == PROVENANCE_INSTANCE:
+        if not workspace:
+            raise AuthoringError(
+                f"invalid-authoring: instance recipe {recipe_id!r} requires a --workspace home "
+                "(instance config lives under workspaces/<client>/, rule 2/§10)"
+            )
+        home = validate_workspace_name(workspace, root) / RECIPE_COLLECTION / f"{recipe_id}.md"
+        return RecipeTarget(recipe_id, provenance, home, workspace)
+
+    home = root / RECIPE_COLLECTION / f"{recipe_id}.md"
+    return RecipeTarget(recipe_id, provenance, home, None)
+
+
+# --- The conforming-recipe serializer (envelope + SET slots only; §11.1/§13.4) ------------
+
+
+def _framework_root() -> Path:
+    """The framework repo root — derived from this module's location, cwd-independent."""
+    return Path(__file__).resolve().parents[1]
+
+
+def load_recipe_schema() -> Schema:
+    """Load the framework recipe schema (`recipes/_schema.yaml`) — the serializer's SSOT."""
+    return load_schema(_framework_root() / RECIPE_COLLECTION / SCHEMA_FILENAME)
+
+
+def _dump_yaml(data: Mapping[str, Any]) -> str:
+    """Serialize frontmatter with the pinned G4 loader in reverse: block style, insertion
+    order preserved, no line wrapping — the same `YAML(typ='safe', pure=True)` the loader
+    pins (Norway-safe), never a second serializer (`migration.py:802-811` precedent)."""
+    dumper = make_loader()
+    dumper.default_flow_style = False
+    dumper.width = 4096
+    dumper.representer.sort_base_mapping_type_on_output = False
+    buffer = io.StringIO()
+    dumper.dump(dict(data), buffer)
+    return buffer.getvalue()
+
+
+def _default_body(recipe_id: str) -> str:
+    return (
+        f"# {recipe_id} — recipe entry\n\n"
+        "Authored by `pipeline recipe new`. Binds only the slots it SETS; unset slots fall "
+        "through the workspace/global/entry/schema cascade (§8, §12.2).\n"
+    )
+
+
+def _validate_namespace(recipe_id: str, provenance: str) -> None:
+    """The §11.4 `x-` ⇔ provenance coupling, exactly as `entries.parse_entry` enforces it."""
+    is_x = recipe_id.startswith(INSTANCE_ID_PREFIX)
+    if provenance == PROVENANCE_INSTANCE and not is_x:
+        raise AuthoringError(
+            f"invalid-authoring: instance recipe {recipe_id!r} must carry the "
+            f"'{INSTANCE_ID_PREFIX}' id prefix (§11.4)"
+        )
+    if provenance == PROVENANCE_FRAMEWORK and is_x:
+        raise AuthoringError(
+            f"invalid-authoring: framework recipe {recipe_id!r} must not carry the "
+            f"'{INSTANCE_ID_PREFIX}' prefix — the framework owns the unprefixed namespace (§11.4)"
+        )
+
+
+def serialize_recipe(
+    bundle: Mapping[str, Any],
+    *,
+    recipe_id: str,
+    provenance: str,
+    body: str | None = None,
+    schema: Schema | None = None,
+) -> str:
+    """Render a schema-conforming `recipes/<id>.md`: envelope + only the SET slots.
+
+    Unset slots are OMITTED so they fall through the cascade (a recipe binds only what it
+    sets, `recipes/_schema.yaml:9-13`). The bundle is closed-schema validated (SV3) before
+    serialization, so the emitted file lints green and re-parses to the same bindings.
+    """
+    schema = schema or load_recipe_schema()
+    _require_slug(recipe_id, "recipe id")
+    if provenance not in (PROVENANCE_FRAMEWORK, PROVENANCE_INSTANCE):
+        raise AuthoringError(
+            f"invalid-authoring: provenance must be {PROVENANCE_FRAMEWORK!r} or "
+            f"{PROVENANCE_INSTANCE!r} (§10), got {provenance!r}"
+        )
+    _validate_namespace(recipe_id, provenance)
+
+    normalized = _normalized_bundle(bundle)
+    # Closed-schema validation (SV3, §11.3): reject any undeclared/typed-wrong binding here so
+    # the written file is conforming by construction (the emitted set slots are lists, §11.1).
+    schema.validate_attribute_values(normalized, where=f"{RECIPE_COLLECTION}/{recipe_id}")
+
+    frontmatter: dict[str, Any] = {
+        "id": recipe_id,
+        "provenance": provenance,
+        "schema_version": schema.schema_version,
+    }
+    for slot in schema.attributes:  # schema-declared order → deterministic frontmatter
+        if slot in normalized:
+            frontmatter[slot] = normalized[slot]
+
+    body_text = _default_body(recipe_id) if body is None else body
+    text = "---\n" + _dump_yaml(frontmatter) + "---\n"
+    if body_text:
+        text += body_text if body_text.endswith("\n") else body_text + "\n"
+    return text
+
+
+# --- The overwrite guard + writer (D8 — reused by C2b/C3/C5) -------------------------------
+
+
+def _default_confirm(path: Path) -> bool:
+    answer = input(f"{path} already exists — overwrite? [y/N] ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+def ensure_writable(
+    path: str | Path,
+    *,
+    force: bool = False,
+    isatty: Callable[[], bool] | None = None,
+    confirm: Callable[[Path], bool] | None = None,
+) -> None:
+    """Overwrite protection (D8): refuse-if-exists; `--force` overrides; a TTY-gated prompt.
+
+    A missing target or `force` passes silently. An existing target prompts ONLY when
+    interactive (both stdin and stdout are TTYs, via the injectable `isatty` seam); when
+    non-interactive it fails FAST — never hangs on a prompt no one can answer. Refusals name
+    the path. `isatty`/`confirm` are injection seams for deterministic tests.
+    """
+    path = Path(path)
+    if force or not path.exists():
+        return
+    interactive = isatty() if isatty is not None else (sys.stdin.isatty() and sys.stdout.isatty())
+    if not interactive:
+        raise AuthoringError(
+            f"invalid-authoring: {path} already exists — pass --force to overwrite "
+            "(non-interactive: never prompts, never hangs)"
+        )
+    if not (confirm or _default_confirm)(path):
+        raise AuthoringError(f"invalid-authoring: {path} exists and overwrite was declined")
+
+
+def write_recipe(
+    root: str | Path,
+    recipe_id: str,
+    bundle: Mapping[str, Any],
+    *,
+    workspace: str | None = None,
+    body: str | None = None,
+    force: bool = False,
+    isatty: Callable[[], bool] | None = None,
+    confirm: Callable[[Path], bool] | None = None,
+    schema: Schema | None = None,
+) -> RecipeTarget:
+    """Serialize + provenance-home + overwrite-guard + write one recipe file; return the target.
+
+    The one composition the `recipe new` verb (C2b) drives; C5's selection writer reuses the
+    same guard/provenance/serializer pieces. Writes exactly one file (§5.4 one-file-add).
+    """
+    schema = schema or load_recipe_schema()
+    target = resolve_recipe_target(root, recipe_id, bundle, workspace=workspace)
+    text = serialize_recipe(
+        bundle, recipe_id=target.recipe_id, provenance=target.provenance, body=body, schema=schema
+    )
+    ensure_writable(target.path, force=force, isatty=isatty, confirm=confirm)
+    target.path.parent.mkdir(parents=True, exist_ok=True)
+    target.path.write_text(text, encoding="utf-8")
+    return target
