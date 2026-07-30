@@ -280,6 +280,55 @@ class TestBeginSession:
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "isolation-violation"
 
+    def test_begin_session_explain_surfaces_plan_and_spend_scope(self, tmp_path):
+        # C1: `explain=True` surfaces the effective settings + the spend estimate in the summary
+        # context — and the minted token/plan_hash is UNCHANGED (explain is not an identity input).
+        root = build_root(tmp_path)
+        store = store_for(root)
+        plain = begin(root, store, base_params(), hs=handlers())
+        explained = begin(root, store, base_params(explain=True), hs=handlers())
+
+        ctx = explained["results"][0]["context"]
+        artifact_ids = explained["results"][0]["ids"]["artifact_ids"]
+        assert ctx["effective_settings"]  # the per-artifact-id effective-settings view
+        assert set(ctx["effective_settings"]) == set(artifact_ids)
+        assert ctx["spend_scope"] == len(artifact_ids)  # spend_scope == len(plan.artifact_ids())
+
+        # The plain (non-explain) run does NOT carry the projection.
+        plain_ctx = plain["results"][0]["context"]
+        assert "effective_settings" not in plain_ctx
+        assert "spend_scope" not in plain_ctx
+
+        # Identity: the explain run mints the SAME plan_hash, and `explain` never enters inputs.
+        exp_tok = token_mod.decode(explained["token"], expected_workspace=WS)
+        plain_tok = token_mod.decode(plain["token"], expected_workspace=WS)
+        assert exp_tok.plan_hash == plain_tok.plan_hash
+        assert "explain" not in exp_tok.inputs
+        assert "explain" not in exp_tok.inputs.get("request", {})
+
+    def test_explain_builds_no_continue_handler(self, tmp_path, monkeypatch):
+        # C1 / S1: the preview path builds ONLY begin-session — never continue-session (whose
+        # default `run_artifact` is the LIVE transport). Spy the factory to prove it is never
+        # constructed on an `explain` begin-session (no live runner seam instantiated).
+        root = build_root(tmp_path)
+        store = store_for(root)
+        constructed: list[str] = []
+        real = session.continue_session_handler
+
+        def spy(*args, **kwargs):
+            constructed.append("continue")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(session, "continue_session_handler", spy)
+        # Only the begin-session handler is wired for the preview door.
+        hs = {"begin-session": session.begin_session_handler()}
+        out = begin(root, store, base_params(explain=True), hs=hs)
+        assert out["envelope"]["ok"] is True
+        assert out["results"][0]["context"]["spend_scope"] == len(
+            out["results"][0]["ids"]["artifact_ids"]
+        )
+        assert constructed == []  # NO continue-session handler / live runner constructed
+
 
 # --- CF-1: commit-map pinned through the adapter provenance -----------------------------------
 

@@ -77,6 +77,7 @@ from typing import Any
 
 from pipeline.canonical import digest_full
 from pipeline.cascade import (
+    BoundDimension,
     CascadeEnv,
     ComposeResolution,
     RunSelection,
@@ -181,6 +182,13 @@ class Plan:
     items: tuple[PlanItem, ...]
     plan_hash: str
     warnings: tuple[ResolutionWarning, ...]
+    #: CLI-UX C1: the OPTIONAL `explain` projection — per artifact-id, the effective
+    #: compose+render settings (each dimension's `BoundDimension.values`/`.provenance`;
+    #: `cascade.py:559-560`). A pure READ side-channel: NONE unless `resolve_plan(explain=True)`,
+    #: and NEVER read by `_payload`/`_item_payload` — so `plan_hash` and `artifact_ids()` are
+    #: byte-identical with and without `explain` (the C1 identity invariant). A trailing
+    #: defaulted field after the non-defaulted fields keeps `Plan(...)` back-compatible.
+    effective_settings: Mapping[str, Any] | None = None
 
     def artifact_ids(self) -> tuple[str, ...]:
         """The wave-0 cover keys (§22.2; re-resolve + diff detects a missed item)."""
@@ -317,8 +325,17 @@ def _resolve_deliverables(
     artifact_id: str,
     coordinates: Sequence[RenderCoordinate],
     log: _WarningLog,
+    *,
+    render_sink: dict[str, Any] | None = None,
 ) -> tuple[DeliverableItem, ...]:
-    """The rendering fanout for one artifact (§8): one deliverable per coordinate set."""
+    """The rendering fanout for one artifact (§8): one deliverable per coordinate set.
+
+    CLI-UX C1 (S-1): when `render_sink` is supplied, the explain projection captures each
+    deliverable's render `BoundDimension`s from the `RenderResolution` this loop ALREADY
+    computes (`render`, below) — keyed by `deliverable`-id. There is NO second resolve; the
+    capture is a read off the single existing resolution. A compose-only plan (`coordinates`
+    empty) runs the loop zero times → the sink stays empty (no render dims, no crash).
+    """
     deliverables: dict[str, DeliverableItem] = {}
     for coordinate in coordinates:
         render = resolve_render(env, compose, _render_selection(request.recipe, coordinate))
@@ -360,6 +377,16 @@ def _resolve_deliverables(
             presentation=render.presentation.entry_id,
             reconcile_strategy=render.reconcile_strategy,
         )
+        if render_sink is not None:
+            # C1 (S-1): record the render dims off the SAME `render` already in hand — no
+            # second resolve. `render.platform` is guaranteed non-None here (the platform-less
+            # coordinate raised above), so `_dim_view` never sees `None`.
+            render_sink[deliverable] = {
+                "platform": _dim_view(render.platform),
+                "language": _dim_view(render.language),
+                "output_type": _dim_view(render.output_type),
+                "presentation": _dim_view(render.presentation),
+            }
     return tuple(deliverables[key] for key in sorted(deliverables))
 
 
@@ -373,6 +400,46 @@ def _inert_platform_bindings(env: CascadeEnv, recipe_values: Sequence[ValueBindi
     ]
 
 
+# --- The `explain` projection (CLI-UX C1: a pure READ side-channel; identity-neutral) -------
+
+
+def _dim_view(bound: BoundDimension) -> dict[str, Any]:
+    """One bound dimension's explain view: the selected entry + its bound values + the
+    per-attribute winning rung (`BoundDimension.values`/`.provenance`, `cascade.py:559-560`).
+
+    A READ-only projection for `preview`/`explain` — it is NEVER assembled into
+    `_payload`/`_item_payload`, so it cannot move `plan_hash` or any artifact-id.
+    """
+    return {
+        "entry": bound.entry_id,
+        "values": dict(bound.values),
+        "provenance": dict(bound.provenance),
+    }
+
+
+def _compose_dims(compose: ComposeResolution) -> dict[str, Any]:
+    """The explain view of one item's M2-compose dimensions (§13): topic/persona/format/voice
+    (+ each stacked goal) as `_dim_view`s, plus the DR-2 house-style lexicon when one is bound.
+
+    The lexicon is an `EntryBinding` (no per-attribute provenance, `ids.py:523-533`), so it is
+    projected as entry + effective values only — enough for the operator to see which lexicon
+    the run resolved under.
+    """
+    view: dict[str, Any] = {
+        "topic": _dim_view(compose.topic),
+        "persona": _dim_view(compose.persona),
+        "format": _dim_view(compose.format),
+        "voice": _dim_view(compose.voice),
+        "goals": [_dim_view(goal) for goal in compose.goals],
+    }
+    if compose.lexicon is not None:
+        view["lexicon"] = {
+            "entry": compose.lexicon.entry_id,
+            "values": dict(compose.lexicon.effective),
+        }
+    return view
+
+
 def resolve_plan(
     env: CascadeEnv,
     request: SelectionRequest,
@@ -381,6 +448,7 @@ def resolve_plan(
     source_commit: Mapping[str, str],
     recipe_selection: Mapping[str, Any] | None = None,
     run_selection: Mapping[str, Any] | None = None,
+    explain: bool = False,
 ) -> Plan:
     """Resolve one request to the complete plan — the §21.6 pure function.
 
@@ -390,8 +458,15 @@ def resolve_plan(
     supplied run-side — see the module docstring). Deterministic and LLM-free: same
     inputs → the identical plan and `plan_hash` in any process; reads config +
     registries only — never the output store, never the SSOT (§22.7).
+
+    CLI-UX C1: `explain=True` additionally builds `Plan.effective_settings` — a per
+    artifact-id view of the resolved compose+render `BoundDimension` values/provenance,
+    captured from the SAME single resolve (no re-resolution). It is a pure read
+    side-channel: it is never part of the plan payload, so `plan_hash` and `artifact_ids()`
+    are byte-identical with and without `explain` (the C1 identity invariant).
     """
     log = _WarningLog()
+    effective_settings: dict[str, Any] | None = {} if explain else None
     recipe_entry = env.resolver.resolve("recipes", request.recipe)
     recipe_values = parse_value_bindings(
         recipe_entry.effective.get("values"), where=f"recipes/{recipe_entry.id}"
@@ -457,6 +532,12 @@ def resolve_plan(
             run=run_selection,
         )
         log.extend(m3.warnings)
+        # C1: capture this item's render dims from the SINGLE `_resolve_deliverables` resolve
+        # (the sink is None unless `explain`, so the default path is byte-unchanged).
+        render_sink: dict[str, Any] | None = {} if explain else None
+        deliverables = _resolve_deliverables(
+            env, request, compose, artifact_id, coordinates, log, render_sink=render_sink
+        )
         items[artifact_id] = PlanItem(
             artifact_id=artifact_id,
             preimage=preimage,
@@ -468,10 +549,15 @@ def resolve_plan(
             m3=m3,
             outline_digest=outline_digest,
             lexicon=compose.lexicon.entry_id if compose.lexicon is not None else None,
-            deliverables=_resolve_deliverables(
-                env, request, compose, artifact_id, coordinates, log
-            ),
+            deliverables=deliverables,
         )
+        if effective_settings is not None:
+            # This item's explain view: compose dims + the render dims just captured (keyed by
+            # deliverable-id; empty for a compose-only plan). A fanout-collapse duplicate
+            # `continue`s above and never reaches here, so the first-resolved view stands (PC2).
+            item_view = _compose_dims(compose)
+            item_view["render"] = dict(render_sink or {})
+            effective_settings[artifact_id] = item_view
 
     if not coordinates:
         # The step-16 RV-1 decision: a compose-only plan with configured platform.*
@@ -501,4 +587,5 @@ def resolve_plan(
         items=ordered,
         plan_hash=digest_full(payload),
         warnings=log.collected(),
+        effective_settings=effective_settings,
     )

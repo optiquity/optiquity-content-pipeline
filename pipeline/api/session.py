@@ -390,6 +390,10 @@ def _begin_session(
             f"malformed (§6.1/§7.2): {exc}"
         )], None)
 
+    # CLI-UX C1: the read-only `explain` projection. A pure guard/preview input — read from
+    # `ctx.params` but NEVER added to `inputs` below, so the minted token + its `plan_hash`
+    # (and every artifact-id) are untouched (the C1 identity invariant).
+    explain = bool(ctx.params.get("explain"))
     try:
         plan = resolve_plan(
             env,
@@ -397,6 +401,7 @@ def _begin_session(
             source_subset=source_subset,
             source_commit=source_commit,
             run_selection=ctx.params.get("run_selection"),
+            explain=explain,
         )
     except UnknownEntryError as exc:
         not_found = results.make_result(results.CODE_NOT_FOUND, item="selection", hint=str(exc))
@@ -436,6 +441,12 @@ def _begin_session(
         "generate": "none",
         "warnings": [w.message for w in plan.warnings],
     }
+    if explain:
+        # C1: the read side-channel — the effective compose+render settings (each dimension's
+        # bound values + provenance) and the spend estimate `spend_scope = len(artifact_ids)`
+        # (printed `spend-scope: N paid artifact(s)`). Nothing here feeds `inputs`/the token.
+        context["effective_settings"] = plan.effective_settings
+        context["spend_scope"] = len(plan.artifact_ids())
     if ctx.params.get("want_parallel_plan"):
         # §22.2/§22.4: hand back the wave plan + width advice — no new verb (PC6). The token
         # is unchanged (an immutable plan-context under parallel mode; workers coordinate via

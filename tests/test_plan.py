@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.canonical import canonical_json_str, digest_full
-from pipeline.cascade import CascadeEnv
+from pipeline.cascade import CascadeEnv, RunSelection, resolve_compose
 from pipeline.fanout import ContentCombination, FanoutError, SelectionRequest
 from pipeline.ids import PreimageError, parse_id
 from pipeline.lint import REGISTRY_ROOTS
@@ -818,3 +818,78 @@ def test_unknown_recipe_lexicon_is_loud_through_resolve_plan(tmp_path: Path) -> 
     write_entry(root, "recipes", "x-badlex", "extends: explainer-post\nlexicon: x-no-such\n")
     with pytest.raises(UnknownEntryError):
         plan_for(root, SelectionRequest(recipe="x-badlex", topics=["x-t-alpha"]))
+
+
+# ------------------------------------------------------------------------------------
+# CLI-UX C1: the `explain` projection (effective settings + spend estimate) is a pure
+# READ side-channel — identity-neutral, captured from the SINGLE resolve (S-1).
+# ------------------------------------------------------------------------------------
+
+
+def test_explain_is_byte_identical(tmp_path: Path) -> None:
+    """The C1 identity gate: `explain` moves NOTHING. `plan_hash` AND `artifact_ids()`
+    (and the whole canonical payload) are byte-identical with and without it."""
+    root = build_root(tmp_path)
+    request = SelectionRequest(
+        recipe="explainer-post",
+        topics=["x-t-alpha", "x-t-beta"],
+        platforms=["github", "linkedin"],
+    )
+    a = plan_for(root, request, explain=False)
+    b = plan_for(root, request, explain=True)
+    # The load-bearing assertion: BOTH the fingerprint and the paid cover are unchanged.
+    assert a.plan_hash == b.plan_hash
+    assert a.artifact_ids() == b.artifact_ids()
+    assert a.deliverable_ids() == b.deliverable_ids()
+    # The projection is present only when asked, and it never enters the canonical payload.
+    assert a.effective_settings is None
+    assert b.effective_settings is not None
+    assert plan_payload(a) == plan_payload(b)
+
+
+def test_effective_settings_capture_compose_and_render(tmp_path: Path) -> None:
+    """With `explain=True`, a routed item's view carries the compose dims (values+provenance
+    equal to a fresh `resolve_compose`) AND the render dims captured from the single resolve."""
+    root = build_root(tmp_path)
+    request = SelectionRequest(
+        recipe="explainer-post", topics=["x-t-alpha"], platforms=["github"]
+    )
+    plan = plan_for(root, request, explain=True)
+    (item,) = plan.items
+    assert plan.effective_settings is not None
+    settings = plan.effective_settings[item.artifact_id]
+
+    # Compose dims equal a freshly recomputed resolution (the internal `_content_selection`
+    # for a topic-only request is `RunSelection(recipe, topic=…)`).
+    compose = resolve_compose(
+        make_env(root), RunSelection(recipe="explainer-post", topic="x-t-alpha")
+    )
+    assert settings["voice"]["values"] == compose.voice.values
+    assert settings["voice"]["provenance"] == compose.voice.provenance
+    assert settings["persona"]["entry"] == compose.persona.entry_id
+    assert settings["topic"]["entry"] == "x-t-alpha"
+
+    # Render dims captured from the SINGLE resolve (S-1), keyed by deliverable-id.
+    assert settings["render"]  # a platform routed → non-empty
+    (deliverable,) = item.deliverables
+    assert set(settings["render"]) == {deliverable.deliverable_id}
+    render_view = settings["render"][deliverable.deliverable_id]
+    assert render_view["platform"]["entry"] == deliverable.platform
+    assert "values" in render_view["platform"] and "provenance" in render_view["platform"]
+    assert "values" in render_view["output_type"] and "provenance" in render_view["output_type"]
+
+
+def test_effective_settings_compose_only_plan_has_no_render_dims(tmp_path: Path) -> None:
+    """A compose-only plan (no platform coordinates) → the item view holds compose dims and an
+    EMPTY render map — the loop runs zero times, so no render dims are captured and nothing
+    crashes (the S-1 compose-only branch)."""
+    root = build_root(tmp_path)
+    plan = plan_for(
+        root, SelectionRequest(recipe="explainer-post", topics=["x-t-alpha"]), explain=True
+    )
+    (item,) = plan.items
+    assert item.deliverables == ()  # compose-only
+    assert plan.effective_settings is not None
+    settings = plan.effective_settings[item.artifact_id]
+    assert settings["render"] == {}  # no render dims, no crash
+    assert settings["voice"]["values"]  # compose dims still present
