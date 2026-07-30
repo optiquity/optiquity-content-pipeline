@@ -155,6 +155,22 @@ commands:
                             --from BASE · axis picks · --set · --unset · --workspace W · --root DIR
                             · --force. Exit 0 ok; 1 refusal (bad edit / provenance-refused /
                             unknown base / non-slug id / refuse-if-exists); 2 usage.
+  entry          the FRIENDLY dimension-entry scaffolder (authoring layer C3, design D11).
+                 LOCAL Tier-A file write — never an invoke verb / HTTP door (§21.9 preserved).
+                 Subcommand:
+                   new DIMENSION ID   scaffold ONE new entry (persona/format/voice/…) from a
+                            schema-conforming, self-documenting skeleton: the envelope + every
+                            attribute at its schema floor + each attribute's `definition:` prose
+                            as inline `#`-comments (the same guidance `docs attributes` surfaces).
+                            A floor-only entry lints GREEN unedited. --workspace W homes an
+                            instance entry (x--prefixed, provenance instance) under
+                            workspaces/<W>/<dimension>/x-<id>.md; without --workspace it writes a
+                            framework-default candidate (<dimension>/<id>.md, provenance framework)
+                            for a deliberate human commit. `entry new topic` REQUIRES --workspace
+                            (topics are workspace editorial data). Refuse-if-exists unless --force
+                            (TTY-gated prompt; headless fails fast). Options: --workspace W ·
+                            --root DIR · --force. Exit 0 ok; 1 refusal (bad dimension / non-slug id
+                            / topic-without-workspace / refuse-if-exists); 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -1802,6 +1818,124 @@ def _cmd_recipe(argv: list[str]) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Authoring layer C3: `pipeline entry new` — the FRIENDLY dimension-entry scaffolder.
+#
+# The second consumer of the C2a authoring core (`pipeline.authoring`), via the thin
+# `pipeline.entryscaffold` leaf: a dimension token + id in → a schema-conforming, self-
+# documenting floor skeleton out (envelope + every attribute at `Schema.defaults()` + the
+# `definition:` prose as inline `#`-comments). Every hard part — slug validation
+# (`authoring._require_slug`), the overwrite guard (`authoring.ensure_writable`), and the pinned
+# frontmatter dumper (`authoring._dump_yaml`) — is REUSED from C2a, never re-implemented; this
+# subcommand is only the argparse surface. The scaffold LINTS GREEN unedited (floor-only is valid
+# by construction, D11/W5).
+#
+# MONEY-SAFETY (§21.9): `entry new` is a LOCAL Tier-A file write. It NEVER registers an invoke
+# verb, never touches `_VERB_HANDLERS`, and never dispatches through the invoke door — so it
+# cannot spend subscription quota or mint a token. An entry NAME never enters the artifact
+# preimage; a scaffolded entry is inert to identity until a run selects it (D10).
+# ---------------------------------------------------------------------------
+
+
+def _entry_error_types() -> tuple:
+    """The typed refusals `entry new` maps to a loud exit 1 (never a stack trace): a bad
+    dimension / non-slug id / topic-without-workspace / overwrite refusal / missing-schema root
+    (`authoring.AuthoringError`); a workspace-name escape (`workspace_name.WorkspaceNameError`);
+    or a malformed dimension schema at the root (`schema.SchemaError`/`SchemaValidationError` —
+    bare `ValueError` subclasses that must be named explicitly). The tuple stays specific so a
+    genuine bug is never swallowed."""
+    from pipeline import authoring
+    from pipeline.schema import SchemaError, SchemaValidationError
+    from pipeline.workspace_name import WorkspaceNameError
+
+    return (
+        authoring.AuthoringError,
+        WorkspaceNameError,
+        SchemaError,
+        SchemaValidationError,
+    )
+
+
+def _cmd_entry(argv: list[str]) -> int:
+    """Authoring layer C3: `pipeline entry new DIMENSION ID [--workspace W] [--force]` — scaffold
+    ONE new dimension entry from a schema-conforming floor skeleton (the C2a core, via
+    `pipeline.entryscaffold`).
+
+    A LOCAL Tier-A file write: validate the dimension against the real dimension set
+    (`m1.DIMENSION_COLLECTIONS`), slug-validate the id, home the file by `--workspace`
+    (instance x- under the workspace, or a public framework-default candidate), overwrite-guard
+    it, and print the exact id + path. NEVER registers an invoke verb / touches `_VERB_HANDLERS`
+    / hits the invoke door (§21.9). Exit 0 ok; 1 refusal (bad dimension / non-slug id /
+    topic-without-workspace / refuse-if-exists); 2 usage."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline entry",
+        description=(
+            "The friendly dimension-entry scaffolder (authoring layer C3, design D11): a second "
+            "consumer of the C2a authoring core. LOCAL Tier-A file write — never an invoke verb / "
+            "HTTP door (§21.9). Subcommand: new."
+        ),
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    new = sub.add_parser(
+        "new",
+        help="scaffold one schema-conforming dimension entry from its floor skeleton",
+        description=(
+            "Scaffold ONE new dimension entry (design D11) from a schema-conforming, self-"
+            "documenting skeleton: the envelope + EVERY attribute at its schema floor + each "
+            "attribute's `definition:` prose as inline #-comments (the same guidance `docs "
+            "attributes` surfaces). A floor-only entry lints GREEN unedited. --workspace W homes "
+            "an instance entry (x--prefixed, provenance instance) under "
+            "workspaces/<W>/<dimension>/x-<id>.md; without it, a framework-default candidate "
+            "(<dimension>/<id>.md, provenance framework) for a deliberate human commit. `entry "
+            "new topic` REQUIRES --workspace (topics are workspace editorial data). Refuse-if-"
+            "exists unless --force. NEVER spends quota (never an invoke verb; §21.9)."
+        ),
+    )
+    new.add_argument(
+        "dimension",
+        help="the dimension token (persona/format/voice/goal/platform/language/output-type/"
+        "presentation/topic)",
+    )
+    new.add_argument("id", help="the entry id to write (§7.4 slug; the filename stem)")
+    new.add_argument(
+        "--workspace",
+        default=None,
+        help="home an instance (x-) entry under workspaces/<W>/ (required for `topic`); a "
+        "framework-default candidate needs none",
+    )
+    new.add_argument(
+        "--root", default=".", help="framework repo root → <dimension>/<id>.md (default: cwd)"
+    )
+    new.add_argument(
+        "--force", action="store_true", help="overwrite an existing entry file (default: refuse)"
+    )
+    args = parser.parse_args(argv)
+
+    if args.subcommand != "new":
+        parser.print_usage(sys.stderr)
+        print("pipeline entry: a subcommand is required (known: new)", file=sys.stderr)
+        return 2
+
+    from pipeline import entryscaffold
+
+    try:
+        target = entryscaffold.write_entry(
+            args.root, args.dimension, args.id, workspace=args.workspace, force=args.force
+        )
+    except _entry_error_types() as exc:
+        print(f"pipeline entry new: {exc}", file=sys.stderr)
+        return 1
+
+    homed = f" under workspace {target.workspace!r}" if target.workspace is not None else ""
+    print(
+        f"pipeline entry new: wrote {target.dimension} entry {target.entry_id!r} "
+        f"[{target.provenance}]{homed} — {target.path}"
+    )
+    return 0
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
@@ -1816,6 +1950,7 @@ _COMMANDS = {
     "get": _cmd_get,
     "docs": _cmd_docs,
     "recipe": _cmd_recipe,
+    "entry": _cmd_entry,
 }
 
 
