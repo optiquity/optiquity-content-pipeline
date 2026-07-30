@@ -75,3 +75,42 @@ attributes:
       non-outline Format that declares one is treated as EXEMPT by the base gate (no outline
       scaffold, no outline-digest identity coverage), never silently unconformant-by-absence.
     definition_version: 1
+  # --- diagram_disposition (DR-9): the deterministic diagram request/suppress knob ---------------
+  #
+  # `diagram_disposition` is the genre's stance on whether a composed artifact should carry a
+  # diagram. It is an ENUM with the NEUTRAL empty member `""` as its floor — the `lexicons.spelling`
+  # precedent (an empty-member enum is a genuine empty L0 floor). FLOOR `""` = the writer decides
+  # (today's behavior): an unset Format rides `""`, which `delta_vs_floor` OMITS from the §7.2
+  # identity delta (ids.py), so shipping this attribute re-mints every existing artifact-id
+  # BYTE-IDENTICAL — zero churn. A neutral stance is the `""` floor, NEVER a literal `neutral`
+  # token (a real token would enter the delta and churn every id — the trap this design avoids).
+  #
+  # The members split into HARD guarantees and SOFT prompt biases (DR-9): `suppress` = a hard
+  # guarantee of NO diagram; `require` = a hard guarantee of a GROUNDED diagram that passes the
+  # base HARD grounding gate, or the compose refuses (an illustrative/decorative figure does NOT
+  # satisfy `require`); `resist`/`prefer` = SOFT writer-prompt biases against / toward a diagram
+  # (a nudge, not a guarantee). Run-tunable per §13.2 via `--set format.diagram_disposition=…`;
+  # a non-member typo is refused PRE-SPEND at plan resolution (the closed-schema enum validation,
+  # attrtypes.py, reached through `validate_override_against_schema` at begin-session — before any
+  # writer call), so an invalid value never spends a token.
+  #
+  # DECLARE-ONLY in this increment: the attribute is DECLARED here (so a typo is already refused and
+  # the value is carried), but compose does not yet act on it — the per-artifact require/suppress
+  # GATE and the writer directives are wired separately (DR-9 next increment). Until then the knob
+  # is inert but fully validated.
+  diagram_disposition:
+    type:
+      type: enum
+      values: ["", suppress, resist, prefer, require]
+    default: ""
+    definition: >-
+      The genre's stance on whether a composed artifact carries a diagram (DR-9). The floor is the
+      NEUTRAL member `""` — the writer decides, today's behavior; an unset Format rides `""`, which
+      is omitted from the §7.2 identity delta, so every existing artifact-id re-mints byte-identical
+      (neutral is the `""` floor, never a literal token). HARD guarantees: `suppress` = no diagram;
+      `require` = a GROUNDED diagram that passes the base grounding gate or the compose refuses (an
+      illustrative figure never satisfies `require`). SOFT prompt biases: `resist` / `prefer` nudge
+      the writer against / toward a diagram without guaranteeing the outcome. Run-tunable via `--set
+      format.diagram_disposition=…`; a non-member value is refused pre-spend by the closed-schema
+      enum validation at plan resolution, before any writer call.
+    definition_version: 1

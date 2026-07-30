@@ -6,7 +6,7 @@ What every registry attribute MEANS and DOES. This page is generated from the fr
 
 Regenerate with `pipeline docs attributes`. A byte-equality CI test (`tests/test_attributes_doc_contract.py`) fails loudly if a schema `definition:` is edited without regenerating this file.
 
-Documented: 16 collections, 74 attributes.
+Documented: 16 collections, 75 attributes.
 
 ## `content-kinds` — schema_version 1
 
@@ -63,6 +63,14 @@ Which deterministic compiler draws the SAME gated node/edge list to SVG (amendme
 The ORDERED declared role structure (§9.6 — order feeds role-based ordering reconstruction from tracked data). Each item is a map with `role` (the §7.4 role slug written into member records at add-time, B4-3) and optional `skeleton` — the per-role RECIPE SKELETON (§9.6): partial recipe slots in the recipes/_schema.yaml vocabulary (e.g. `format`, `goals`, a prose `topic_slot`) that the generating run instantiates into a concrete recipe. Skeleton slots are blueprint inputs to the run, never folio-held dimension values (the DIRECTIVE); unknown ids inside a skeleton fail loudly when the run resolves them (§11.1). Duplicate role slugs are legal on folio MEMBERSHIP (§9.6 regeneration) but this declared structure lists each role once. Ordered `list`: union is a schema error (§11.1); replace-only on cascade — a folio type is a coherent blueprint.
 
 ## `formats` — schema_version 1
+
+### `diagram_disposition`
+
+- **type:** `enum ("", "suppress", "resist", "prefer", "require")`
+- **floor (default):** `""`
+- **definition version:** 1
+
+The genre's stance on whether a composed artifact carries a diagram (DR-9). The floor is the NEUTRAL member `""` — the writer decides, today's behavior; an unset Format rides `""`, which is omitted from the §7.2 identity delta, so every existing artifact-id re-mints byte-identical (neutral is the `""` floor, never a literal token). HARD guarantees: `suppress` = no diagram; `require` = a GROUNDED diagram that passes the base grounding gate or the compose refuses (an illustrative figure never satisfies `require`). SOFT prompt biases: `resist` / `prefer` nudge the writer against / toward a diagram without guaranteeing the outcome. Run-tunable via `--set format.diagram_disposition=…`; a non-member value is refused pre-spend by the closed-schema enum validation at plan resolution, before any writer call.
 
 ### `parts`
 

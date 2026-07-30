@@ -369,8 +369,11 @@ _ADD_NONEMPTY = """\
     definition_version: 1
 """
 
-#: A NEW enum attribute defaulting to the empty string — a SCALAR, so NOT auto-empty (conservative
-#: §11.2 rule: only container/text kinds get the auto-empty floor; an enum default must bump).
+#: A NEW enum attribute defaulting to the empty member "" — a genuine empty L0 floor (§11.2). An
+#: enum may default to "" ONLY when "" is a declared member, so a pre-existing entry rides "",
+#: `delta_vs_floor` omits it, and every id is byte-identical (§7.2): additive-at-floor, NO bump.
+#: This is exactly the `formats.diagram_disposition` / `lexicons.spelling` shape. A NON-empty enum
+#: default is NOT exempt (see `_ADD_ENUM_NONEMPTY` below).
 _ADD_ENUM_EMPTY = """\
   mode:
     type:
@@ -378,6 +381,19 @@ _ADD_ENUM_EMPTY = """\
       values: ["", fast, slow]
     default: ""
     definition: A new enum attribute whose default is the empty member.
+    definition_version: 1
+"""
+
+#: A NEW enum attribute defaulting to a REAL (non-empty) member — a scalar floor that can change a
+#: pre-existing entry's rendered value, so it is NOT additive-at-floor and STILL needs a bump. This
+#: is the safety boundary the empty-member exemption must not over-reach.
+_ADD_ENUM_NONEMPTY = """\
+  mode:
+    type:
+      type: enum
+      values: ["", fast, slow]
+    default: fast
+    definition: A new enum attribute whose default is a real (non-empty) member.
     definition_version: 1
 """
 
@@ -415,14 +431,43 @@ def test_additive_new_attribute_with_nonempty_default_still_needs_a_bump(tmp_pat
     ]
 
 
-def test_additive_new_enum_at_empty_member_still_needs_a_bump(tmp_path):
-    # The conservative boundary: an enum default of "" is a SCALAR, NOT the container/text
-    # auto-empty floor — so it is not exempt and clause 1 fires (only text/markdown/map/set/list).
+def test_additive_new_enum_at_empty_member_needs_no_bump(tmp_path):
+    # An enum whose default is the empty member "" IS an empty L0 floor (§11.2): "" can be a
+    # default ONLY when it is a declared member, so a pre-existing entry rides "", `delta_vs_floor`
+    # omits it, and every id/digest is byte-identical (§7.2). Purely additive-at-floor -> NO bump.
+    # This is the exact `formats.diagram_disposition` / `lexicons.spelling` shape.
     base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
     cur = build_tree(tmp_path / "cur", {"topics/_schema.yaml": SCHEMA_V1 + _ADD_ENUM_EMPTY})
+    assert lint_tree(cur, now=NOW, baseline=baseline_from_dir(base)).ok
+
+
+def test_additive_new_enum_at_nonempty_member_still_needs_a_bump(tmp_path):
+    # The safety boundary the fix must NOT over-reach: an enum whose default is a REAL (non-empty)
+    # member can change a pre-existing entry's rendered value, so it is NOT additive-at-floor and
+    # clause 1 STILL fires. The "" empty-member exemption is the ONLY enum case riding the floor.
+    base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
+    cur = build_tree(tmp_path / "cur", {"topics/_schema.yaml": SCHEMA_V1 + _ADD_ENUM_NONEMPTY})
     assert codes(lint_tree(cur, now=NOW, baseline=baseline_from_dir(base))) == [
         CODE_CHANGE_WITHOUT_BUMP
     ]
+
+
+def test_enum_member_removal_still_needs_a_bump(tmp_path):
+    # A second safety boundary: removing a MEMBER from an existing enum narrows a SHARED
+    # attribute's spec, caught by the shared-attribute arm of `_is_additive_at_floor` (the
+    # empty-member exemption is consulted ONLY for NEW attributes), so clause 1 STILL fires. The
+    # fix cannot mask a member narrowing on an existing enum.
+    base = build_tree(tmp_path / "base", {"topics/_schema.yaml": SCHEMA_V1})
+    cur = build_tree(
+        tmp_path / "cur",
+        {
+            "topics/_schema.yaml": SCHEMA_V1.replace(
+                "values: [red, green, blue]", "values: [red, green]"
+            )
+        },
+    )
+    report = lint_tree(cur, now=NOW, baseline=baseline_from_dir(base))
+    assert CODE_CHANGE_WITHOUT_BUMP in codes(report)
 
 
 def test_removal_still_needs_a_bump_and_a_migration_step(tmp_path):

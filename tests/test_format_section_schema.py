@@ -69,8 +69,10 @@ def test_formats_schema_declares_section_schema_at_empty_floor() -> None:
     assert spec.type.element is not None and spec.type.element.kind == "map"
     # Floor `[]` = NO contract → every existing Format is byte-safe (delta omits it).
     assert spec.default == []
-    # The whole L0 floor: `parts` (pre-existing) + the new `section_schema`, both empty.
-    assert schema.defaults() == {"parts": [], "section_schema": []}
+    # The whole L0 floor: `parts` (pre-existing), `section_schema` (DR-4), and the DR-9
+    # `diagram_disposition` empty-member enum — each at its empty floor (additive-at-floor: an
+    # unset Format rides every floor, so `delta_vs_floor` omits them and every id is byte-safe).
+    assert schema.defaults() == {"parts": [], "section_schema": [], "diagram_disposition": ""}
 
 
 def test_existing_formats_still_validate_and_ride_the_section_schema_floor() -> None:

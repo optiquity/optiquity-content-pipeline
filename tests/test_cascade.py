@@ -1122,9 +1122,10 @@ def test_outline_format_resolves_via_the_cascade(tmp_path: Path) -> None:
     assert resolved.collection == "formats"
     # Single-part, non-parametric (Q14): no attribute is SET, so `parts` rides the L0
     # floor `[]` - the same flat shape as the shipped `readme` genre. The formats floor
-    # also carries the DR-4 `section_schema` attribute at its empty floor (C3, additive).
+    # also carries the DR-4 `section_schema` and DR-9 `diagram_disposition` attributes, each
+    # at its empty floor (additive-at-floor: nothing set, so every id re-mints byte-identical).
     assert resolved.effective == {}
-    assert resolved.defaults() == {"parts": [], "section_schema": []}
+    assert resolved.defaults() == {"parts": [], "section_schema": [], "diagram_disposition": ""}
 
 
 def test_outline_format_is_framework_and_schema_valid() -> None:

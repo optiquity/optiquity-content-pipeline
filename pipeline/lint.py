@@ -388,19 +388,26 @@ def _covering_step(
 
 def _is_empty_floor_default(spec: AttributeSpec) -> bool:
     """§11.2: True iff `spec`'s declared default is its type's EMPTY L0 floor — a container's
-    empty (`map` `{}`, `set`/`list` `[]`) or an empty `text`/`markdown` `""`. A scalar default
-    (`enum`/`ref`/`bool`/`number`) is NEVER auto-empty: a non-empty scalar floor can change the
-    rendered value for a pre-existing entry, so those are NOT additive-at-floor and DO need a bump.
-    This is the same "at-floor" notion `ids.delta_vs_floor` uses (effective == default ⇒ omitted),
-    read off the declared type kind."""
+    empty (`map` `{}`, `set`/`list` `[]`), an empty `text`/`markdown` `""`, or an `enum` whose
+    default is the empty member `""`. An enum can carry `default: ""` ONLY when `""` is a declared
+    member (schema-load runs `validate_value` on the default against `spec.values`), so the empty
+    member is a genuine empty floor: a pre-existing entry rides `""`, which `ids.delta_vs_floor`
+    omits, so every id/digest is byte-identical (§7.2). A NON-empty scalar default — an `enum` at a
+    real member, or any `ref`/`bool`/`number` — is NEVER auto-empty: it can change the rendered
+    value for a pre-existing entry, so those are NOT additive-at-floor and DO need a bump. This is
+    the same "at-floor" notion `ids.delta_vs_floor` uses (effective == default ⇒ omitted), read off
+    the declared type kind."""
     kind = spec.type.kind
     if kind == "map":
         return spec.default == {}
     if kind in ("set", "list"):
         return spec.default == []
-    if kind in ("text", "markdown"):
+    if kind in ("text", "markdown", "enum"):
+        # `enum` joins here: a `default: ""` is the declared empty member (schema-load already
+        # verified `""` is a value), a true empty floor; a NON-empty enum default falls through
+        # to the bump below, exactly like `ref`/`bool`/`number`.
         return spec.default == ""
-    return False  # enum/ref/bool/number: no empty floor -> not additive-at-floor
+    return False  # ref/bool/number (or a non-empty enum default): no empty floor -> needs a bump
 
 
 def _is_additive_at_floor(baseline: Schema, current: Schema) -> bool:
