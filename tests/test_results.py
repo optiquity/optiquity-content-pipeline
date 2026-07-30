@@ -1,13 +1,14 @@
 """Step-32 tests: the typed result contract + the CONSOLIDATED §21.7/§22.6 code taxonomy.
 
 The load-bearing test here is the LITERAL code-list (§21.7 + §22.6): `ALL_CODES` must equal
-exactly the design's enumeration — every code present, no extras, no omissions. The 32
+exactly the design's enumeration — every code present, no extras, no omissions. The 34
 strings below are transcribed straight from `docs/design.md` §21.7 (generation + contract
 tiers), §22.6 (parallel-path tier), the DR-6 §6.5/§19 `grounding-uncovered` abstain, the
 DR-4 §15/§16 `section-conformance-violation` typed-section gate, the DR-5 C4 §15/§16
-`citation-unresolved` `[@key]`→projected-`references` compose gate, and the DR-7 A §15/§16/§10
+`citation-unresolved` `[@key]`→projected-`references` compose gate, the DR-7 A §15/§16/§10
 rule-2 asset-containment gate (`asset-ref-uncontained`, `asset-ref-invalid`,
-`body-raw-markup-forbidden`); a
+`body-raw-markup-forbidden`), and the DR-9 §21.7 outline continuation-handle codes
+(`outline-config-drift`, `outline-config-unverified`); a
 drift check then proves the consolidation is
 faithful to the codes the producing modules already emit (`reconcile`, `drift`, `grounding`,
 `fit_resolution`, `serialize`, `migration`, `folios`, `overrides`, `dispatch`, `transport`).

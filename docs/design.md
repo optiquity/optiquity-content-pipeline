@@ -2368,7 +2368,11 @@ ResultItem = { item, status: ok|warn|block|needs-input, ids{...}, output{path?|b
   carries the new fitted-id + deliverable-id(s), §21.8) · **`re-serialized`** (ok — an
   unqualified render auto-minted a serialize revision, the exact sibling of `re-reconciled`,
   §17/§21.8) · `member-updated` (warn, §21.2) · `ambiguous-migration-decisions` (needs-input,
-  §11.6) · **`grounding-uncovered`** (block, §6.5/§19). `already-materialized` (§22.6) is REUSED, not new, for a force resolving to an existing
+  §11.6) · **`grounding-uncovered`** (block, §6.5/§19) · **`outline-config-drift`** (block/warn, DR-9 — a driven
+  outline's resolved config differs from the config it was emitted under; a hard PRE-SPEND block by
+  default, or a recorded warn under `--allow-drift`) · **`outline-config-unverified`** (warn, DR-9 — a
+  driven outline carries no continuation handle, or one that cannot be resolved to compare; proceeds).
+  `already-materialized` (§22.6) is REUSED, not new, for a force resolving to an existing
   matching fit (idempotent re-issue or force-after-revert; context names the matched fit) and for
   serialize-resolution hits; there is deliberately NO `superseded-fit`/`non-current-fit` code —
   currency is a computed FIELD on read surfaces (§21.3), never a ResultItem code, so fetch stays

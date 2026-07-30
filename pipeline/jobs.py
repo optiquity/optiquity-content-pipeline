@@ -83,7 +83,8 @@ Evaluated in THIS order (the load-bearing state machine):
 
 Stores `{envelope, results}` ONLY for NONDETERMINISTIC runtime failures (the runner's exception
 synthesis / a transport-carried `timeout`/`rate-limit-backpressure`/`api-error`). DETERMINISTIC
-blocks (`empty-pool`/`out-of-window`/`drift-block`/`hard-limit-exceeded`) store NOTHING — the
+blocks (`empty-pool`/`out-of-window`/`drift-block`/`hard-limit-exceeded`/`outline-config-drift`)
+store NOTHING — the
 §21.7 completeness sweep re-derives them, so persisting them would be redundant lossy state. In the
 resolver a stored terminal is masked by authorities #1/#2 (output / a live claim), so a stale
 terminal (e.g. from a stolen-from runner's late call) is never a correctness fault — it only ever

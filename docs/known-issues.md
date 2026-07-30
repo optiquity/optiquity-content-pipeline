@@ -1116,23 +1116,32 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
 - **Source:** maintainer requirement — a general, multi-language-friendly way to call the pipeline's
   HTTP API from any language, with one neutral contract every wrapper obeys.
 
-### DR-9 — Friendly invocation surface + recipe/entry authoring + attribute documentation — CLI-UX design+plan RATIFIED and BUILDING; per-entry "skill" layer CONSIDERED and DECLINED; authoring tools + attribute reference QUEUED
-- **Status:** In progress. The **friendly invocation surface** (a CLI `generate`/`preview`/`outline` door,
-  a door-class-aware request normalizer, a zero-spend dry-run, and the two-phase outline
+### DR-9 — Friendly invocation surface + recipe/entry authoring + attribute documentation — CLI-UX increments 1–4 BUILT (increment 5 deferred); per-entry "skill" layer CONSIDERED and DECLINED; authoring tools + attribute reference QUEUED
+- **Status:** Increments 1–4 BUILT. The **friendly invocation surface** (a CLI `generate`/`preview`/`outline`
+  door, a door-class-aware request normalizer, a zero-spend dry-run, and the two-phase outline
   continuation-handle) is design-RATIFIED (architect initial→adversarial→reconciliation) and plan-SETTLED
-  (planner initial→adversarial→reconciliation), BUILDING as 7 gated commits C1–C7 (increments 1–4;
-  increment 5 = HTTP + language-wrapper parity, deferred). Records: `ops-handoff/cli-ux-design/` +
-  `ops-handoff/cli-ux-plan/`.
+  (planner initial→adversarial→reconciliation), and is BUILT as 7 gated commits C1–C7 (increments 1–4);
+  increment 5 (HTTP + language-wrapper parity) is deferred to its own later pass. Records:
+  `ops-handoff/cli-ux-design/` + `ops-handoff/cli-ux-plan/`.
 - **The capability (plain English):** `pipeline generate --recipe … --topic … --set …` that reads like
   English, fills sensible defaults, shows the whole plan + the exact paid-piece count for FREE, and spends
   nothing until `--go`; a `preview` showing every resolved setting and WHICH cascade layer decided it; and
   a two-phase outline (draft → hand-edit → drive) that refuses BEFORE spend if the settings drift from the
   draft. One door-class-aware normalizer maps the same friendly surface to every door
   (CLI/library/HTTP/webhook/wrappers) so they cannot diverge.
-- **Build status (2026-07-30):** C1 (the `explain`/preview projection + spend-estimate) BUILT + pushed
-  (`e926c5c`); C2–C7 building under the standing coder→reviewer→commit cadence. Ratified forks: preview is
-  a flag not a verb; spend verbs require an explicit `--workspace`; `--set` infers scalar types; language
-  wrappers deferred to increment 5.
+- **Build status (2026-07-30) — increments 1–4 BUILT + pushed:** `e926c5c` C1 (explain/preview projection
+  + spend-estimate) · `5846c82` C2 (door-class normalizer) · `87a3538` C3a (generate/preview subcommands,
+  §21.9 wiring) · `fd40cb5` C3b (outline emit/drive) · `4139ddd` C3c (discovery types + `list`/`get` CLI
+  door) · `3b1d4bf` C6 (the two outline-config codes) · `6f5927c` C7 (the outline drift guard). Each
+  coder → reviewer → (fix) → CLEAN → committed under the standing cadence; suite 3320→3412; every commit
+  money-safe (`invoke begin-session` → exit 3, live generation off the shared door), zero artifact-id/
+  `plan_hash` churn. Ratified forks: preview is a flag not a verb; spend verbs require an explicit
+  `--workspace`; `--set` infers scalar types; language wrappers deferred to increment 5. **Closeout done:**
+  the two `outline-config-*` codes registered in `design.md` §21.7 + the enumeration docstrings reconciled.
+  **Minor follow-up:** a `--from` passed with no driven outline is silently ignored (benign — nothing
+  mis-spends; a lost "your `--from` is meaningless here" usage-warn nicety). **Deferred (increment 5):** the
+  HTTP-shim server-side normalize + drift guard, the DR-8 language-wrapper friendly flags, and the
+  cross-language conformance suite (`normalize_spec.json` is shipped as its seed).
 - **Entry-semantics finding (2026-07-30) — the per-entry "SKILL" layer was CONSIDERED and DECLINED; a
   slider-legend ablation is QUEUED.** (`ops-handoff/entry-semantics/architect-initial.md`.)
   - **How an entry conveys meaning today:** the writer LLM receives the resolved attribute VALUES (mostly
