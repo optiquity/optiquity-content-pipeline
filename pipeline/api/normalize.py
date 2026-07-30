@@ -312,7 +312,8 @@ def normalize(
     `env_workspace`; the axis lists `topics`/`personas`/`formats`/`voices`/`goals`/
     `platforms`/`languages`/`output_types`/`presentations`; `set` (a list of `--set`
     strings); `idempotency_key`; `target_folio`; `purpose`; `explain` (bool); `spend`
-    (bool — is this a paid verb; governs the workspace/key door-class policy).
+    (bool — is this a paid verb; governs the workspace/key door-class policy);
+    `outline_parent` / `allow_drift` (the CLI-UX C7 outline-drift-guard inputs, DR-3).
 
     `key_factory` is an injection seam for deterministic tests; production uses uuid4.
     Raises `NormalizeError` on a fatal automation omission or a malformed `--set`.
@@ -351,6 +352,16 @@ def normalize(
         # The read-only `explain` projection (C1) — a pure preview side-channel, never an
         # identity input.
         params["explain"] = True
+
+    # CLI-UX C7 (DR-3): pass the outline-drift-guard inputs straight through, values-only. Both are
+    # PURE guard inputs — no door-class defaulting, and (like `explain`) never identity components:
+    # the server-side guard reads them from `ctx.params` but never folds them into the token /
+    # preimage, so the driven artifact-id is byte-identical with and without `--from`.
+    outline_parent = friendly_inputs.get("outline_parent")
+    if outline_parent:
+        params["outline_parent"] = str(outline_parent)
+    if friendly_inputs.get("allow_drift"):
+        params["allow_drift"] = True
 
     key, generated = _resolve_idempotency_key(
         friendly_inputs, door_class, spend=spend, key_factory=key_factory

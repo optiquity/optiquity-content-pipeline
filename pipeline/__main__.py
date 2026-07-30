@@ -99,18 +99,23 @@ commands:
                  preview; the DEFAULT is a DRY-RUN identical to preview (prints the plan + spend
                  estimate and STOPS, spending nothing). Add --go to DRIVE the plan to completion
                  (begin-session then continue-session generate-next), the ONLY path that spends
-                 subscription quota. Direct-handler pattern throughout (never registers a session
-                 verb; §21.9 stays intact). Exit 0 ok; 1 refusal / --go spend failure; 2 usage.
+                 subscription quota. Add --outline FILE to drive an authored/edited outline; carry
+                 its emit HANDLE with --from AID so the C7 drift guard refuses a config drift
+                 pre-spend (--allow-drift proceeds on purpose). Direct-handler pattern throughout
+                 (never registers a session verb; §21.9 stays intact). Exit 0 ok; 1 refusal / drift
+                 refusal / --go spend failure; 2 usage.
   outline        the FRIENDLY two-phase outline door (design §21, CLI-UX C3b). Subcommands:
                    emit  FILE  realize an authored/edited outline as a viewable Format=outline
                                artifact (Tier-A, SPENDS NOTHING) and print its artifact-id — the
-                               continuation HANDLE (a re-emit of the same bytes is the idempotent
-                               already-materialized no-op). Exit 0 ok; 1 refusal; 2 usage.
+                               continuation HANDLE — plus a copy-paste `--from` drive line (a
+                               re-emit of the same bytes is the idempotent already-materialized
+                               no-op). Exit 0 ok; 1 refusal; 2 usage.
                    drive FILE  ingest the outline and DRIVE the plan to completion. Identical to
                                `generate --outline FILE`: the DEFAULT is a DRY-RUN (spends nothing);
-                               add --go to spend. Direct-handler pattern (never registers a session
-                               verb; §21.9 stays intact). Exit 0 ok; 1 refusal / --go spend
-                               failure; 2 usage.
+                               add --go to spend, --from AID to guard the config against the emit
+                               (C7), --allow-drift to proceed on purpose. Direct-handler pattern
+                               (never registers a session verb; §21.9 stays intact). Exit 0 ok; 1
+                               refusal / --go spend failure; 2 usage.
   list           the FRIENDLY read-only DISCOVERY door (design §21.3, CLI-UX C3c): enumerate a
                  discovery type by name. Usage: list <type> --workspace W [--filters JSON]
                  [--root DIR]. Types: recipes, voices, lexicons, outlines, codes, deliverables,
@@ -656,6 +661,29 @@ def _add_friendly_generate_args(parser: "object") -> None:
     )
 
 
+def _add_outline_handle_args(parser: "object") -> None:
+    """CLI-UX C7 (DR-3): the outline continuation-handle drift-guard flags shared by `generate`
+    and `outline drive`. `--from` carries the emit-outline HANDLE (the phase-1 artifact-id printed
+    by `outline emit`); the server-side guard refuses a real config drift PRE-SPEND. `--allow-drift`
+    is the honest "I meant to change it" opt-in that downgrades the block to a recorded warning.
+    Both are pure guard inputs — never identity (the driven artifact-id is unchanged by them)."""
+    import argparse
+
+    assert isinstance(parser, argparse.ArgumentParser)
+    parser.add_argument(
+        "--from",
+        dest="outline_parent",
+        default=None,
+        metavar="AID",
+        help="the emit-outline HANDLE to verify the driven outline's config against (C7 §21.7)",
+    )
+    parser.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="proceed under a config that differs from the emit-time config (downgrades the block)",
+    )
+
+
 def _friendly_from_args(args: "object", *, spend: bool) -> dict:
     """Project the parsed friendly flags into the `normalize()` input mapping (C2). Every axis is
     OMITTED when unset (zero-churn). `explain=True` always — the plan preview is the whole point;
@@ -684,6 +712,15 @@ def _friendly_from_args(args: "object", *, spend: bool) -> dict:
     for key, value in multi.items():
         if value:
             friendly[key] = value
+    # CLI-UX C7 (DR-3): the outline continuation-handle drift-guard inputs. Only `generate` /
+    # `outline drive` declare `--from` / `--allow-drift` (never `preview`), so read them defensively
+    # — they pass straight through the normalizer to `outline_parent` / `allow_drift` (values-only,
+    # never identity).
+    outline_parent = getattr(args, "outline_parent", None)
+    if outline_parent:
+        friendly["outline_parent"] = outline_parent
+    if getattr(args, "allow_drift", False):
+        friendly["allow_drift"] = True
     return friendly
 
 
@@ -1012,6 +1049,7 @@ def _cmd_generate(
             "`pipeline outline drive FILE`"
         ),
     )
+    _add_outline_handle_args(parser)
     args = parser.parse_args(argv)
 
     return _run_friendly_generate(
@@ -1051,16 +1089,18 @@ session verb; §21.9 stays intact).
 
 subcommands:
   emit  FILE   realize an authored/edited outline as a viewable Format=outline artifact — Tier-A,
-               SPENDS NOTHING — and print its artifact-id, the continuation HANDLE. A re-emit of
-               the same bytes is the idempotent already-materialized no-op. Options:
+               SPENDS NOTHING — and print its artifact-id, the continuation HANDLE, plus a
+               copy-paste `--from` drive line. A re-emit of the same bytes is the idempotent
+               already-materialized no-op. Options:
                [--recipe R] [--topic ID ...] [--persona ID ...] [--voice ID ...] [--goals ID ...]
                [--set path=value ...] --workspace W [--root DIR].
                Exit 0 ok; 1 refusal (empty/secret outline, unknown selection); 2 usage.
   drive FILE   ingest the outline and DRIVE the plan to completion. Identical to
                `pipeline generate --outline FILE` (the single normalizer path): the DEFAULT is a
                DRY-RUN (prints the plan + spend estimate and STOPS, spending nothing); add --go to
-               spend. SAME friendly flags as `generate`. Exit 0 ok; 1 refusal / --go spend
-               failure; 2 usage.
+               spend. SAME friendly flags as `generate`, plus [--from AID] (the emit HANDLE — the
+               C7 drift guard refuses a config drift pre-spend) and [--allow-drift] (proceed on
+               purpose). Exit 0 ok; 1 refusal / drift refusal / --go spend failure; 2 usage.
 """
 
 
@@ -1086,13 +1126,13 @@ def _emit_params_from_normalized(normalized: "object", text: str) -> dict:
     return emit
 
 
-def _emit_and_print(workspace: str, root: str, emit_params: dict) -> int:
+def _emit_and_print(workspace: str, root: str, emit_params: dict, *, outline_file: str) -> int:
     """Dispatch ONE `emit-outline` call via the direct-handler pattern and print the emitted
-    artifact-id (the continuation HANDLE). ONLY `emit_outline_handler` is constructed — no
-    continue-session handler, no live runner is ever instantiated (emit is deterministic store I/O,
-    Tier-A). A per-item block (empty/secret outline) or a `not-found` selection mints no artifact →
-    a refusal (exit 1); a fresh mint or the idempotent `already-materialized` re-emit prints the id
-    (exit 0)."""
+    artifact-id (the continuation HANDLE) + the copy-paste drive line C7's `--from` guard consumes.
+    ONLY `emit_outline_handler` is constructed — no continue-session handler, no live runner is ever
+    instantiated (emit is deterministic store I/O, Tier-A). A per-item block (empty/secret outline)
+    or a `not-found` selection mints no artifact → a refusal (exit 1); a fresh mint or the
+    idempotent `already-materialized` re-emit prints the id (exit 0)."""
     from pipeline.api import invoke as invoke_mod
     from pipeline.api import session
 
@@ -1117,6 +1157,9 @@ def _emit_and_print(workspace: str, root: str, emit_params: dict) -> int:
     if reused:
         print("status     : already-materialized (idempotent re-emit no-op)")
     print(f"handle     : {aid}")
+    # C7 (DR-3): the copy-paste drive line — hand-edit the outline, then drive it under the SAME
+    # config carrying this handle; the server-side guard refuses pre-spend on a real config drift.
+    print(f"— drive with: pipeline generate --outline {outline_file} --from {aid} --go")
     return 0
 
 
@@ -1195,7 +1238,7 @@ def _outline_emit(argv: list[str]) -> int:
     if normalized is None:
         return code
     emit_params = _emit_params_from_normalized(normalized, text)
-    return _emit_and_print(normalized.workspace, args.root, emit_params)
+    return _emit_and_print(normalized.workspace, args.root, emit_params, outline_file=args.file)
 
 
 def _outline_drive(
@@ -1225,6 +1268,7 @@ def _outline_drive(
         action="store_true",
         help="DRIVE the plan to completion (spends quota); omit for a free dry-run preview",
     )
+    _add_outline_handle_args(parser)
     args = parser.parse_args(argv)
 
     return _run_friendly_generate(

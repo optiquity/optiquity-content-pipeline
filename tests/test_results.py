@@ -122,6 +122,12 @@ class TestCodeTaxonomy:
         # The two dual-status codes (§17, §22.5): warn|block.
         assert results.CODES["capability-infeasible"].statuses == ("warn", "block")
         assert results.CODES["rate-limit-backpressure"].statuses == ("warn", "block")
+        # DR-3 / C7: outline-config-drift is one condition with two dispositions — a deterministic
+        # pre-spend BLOCK by default, an accepted WARN under --allow-drift. `block` is status[0]
+        # (the unchanged default refusal path); it stays a deterministic block so the async
+        # terminal-code contract (B-1) is untouched. unverified stays warn-only (no-handle case).
+        assert results.CODES["outline-config-drift"].statuses == ("block", "warn")
+        assert results.CODES["outline-config-unverified"].statuses == ("warn",)
 
     def test_design_fixed_remediation_actions(self):
         # Where the design fixes the machine action, the spec carries it (§21.8/§21.7/§22.5).

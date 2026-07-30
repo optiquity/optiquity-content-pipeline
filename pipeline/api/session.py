@@ -67,12 +67,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from pipeline import driver, parallel, telemetry
+from pipeline import compose, driver, parallel, telemetry
 from pipeline.adapters import default_adapters
 from pipeline.adapters.base import AdapterError, SourceAdapter
 from pipeline.api import discovery, fetch, folio_verbs, manifest, render, results
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import token as token_mod
+from pipeline.canonical import canonical_json_str
 from pipeline.cascade import CascadeEnv, RunSelection, SelectionError, resolve_compose
 from pipeline.compose import build_outline_ir
 from pipeline.fanout import (
@@ -350,6 +351,140 @@ def _ingest_outlines(store: Any, params: Mapping[str, Any]) -> list[dict[str, An
     return entries
 
 
+# ---------------------------------------------------------------------------
+# CLI-UX C7 (DR-3): the outline continuation-handle drift guard. It lives in `_begin_session`
+# so EVERY door (CLI, in-process, HTTP shim) inherits it, and runs BEFORE any folio mint / token
+# mint so a mismatch refuses pre-spend (nothing spends, no empty folio leaks — R7).
+# ---------------------------------------------------------------------------
+
+#: The EDIT-INVARIANT, FORMAT-INDEPENDENT content dimensions the drift guard compares (DR-3).
+#: `format` is EXCLUDED — emit fixes `format=outline` while drive resolves the real format, a
+#: difference that legitimately holds across the two phases.
+_OUTLINE_SIGMA_DIMENSIONS = ("topic", "persona", "voice")
+
+
+def _outline_config_sigma(preimage: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a §7.2 preimage to the EDIT-INVARIANT, FORMAT-INDEPENDENT subset σ the C7 drift
+    guard compares (DR-3): the topic/persona/voice dimension bindings, the goal-set, the
+    source-subset, and the lexicon binding (when present). EXCLUDES `dimensions[format]`
+    (emit=outline vs drive=real), `source-commit` (live-pinned afresh at drive, `session.py`
+    `_pin_source_commit_map`), and `outline-digest` (D1 at emit vs the hand-edited D2 at drive) —
+    the three keys that legitimately differ emit→drive, so their difference never false-alarms.
+    Overrides need no separate field: they are folded into each dimension's `delta`
+    (`ids.build_artifact_preimage`), so comparing the per-dimension bindings compares the override
+    effect too (§7.2)."""
+    dimensions = preimage.get("dimensions") or {}
+    projection: dict[str, Any] = {
+        "dimensions": {name: dimensions.get(name) for name in _OUTLINE_SIGMA_DIMENSIONS},
+        "goals": preimage.get("goals"),
+        "source-subset": preimage.get("source-subset"),
+    }
+    if "lexicon" in preimage:
+        projection["lexicon"] = preimage["lexicon"]
+    return projection
+
+
+def _outline_drift_guard(
+    ctx: invoke_mod.HandlerContext, plan: Plan
+) -> tuple[results.ResultItem | None, list[results.ResultItem]]:
+    """The C7 outline continuation-handle drift guard (DR-3). Returns `(block, warns)`:
+
+    - a non-None `block` means the caller must REFUSE pre-spend — mint no token, spend nothing;
+    - `warns` are advisory items to ride the ok summary (proceed).
+
+    The handle `outline_parent` (friendly `--from`) is the phase-1 emit-outline artifact-id; its
+    stored `binding.preimage` records the phase-1 config, recovered by id from THIS workspace's
+    output store (`compose._recorded_preimage_lookup` — zero new storage; a cross-workspace id
+    physically cannot resolve → None, isolation-safe, R2). `outline_parent`/`allow_drift` are pure
+    guard inputs, never part of identity (see `_begin_session`).
+    """
+    outline_parent = ctx.params.get("outline_parent")
+    allow_drift = bool(ctx.params.get("allow_drift"))
+    driven = [item for item in plan.items if item.outline_digest is not None]
+    if not driven:
+        return (None, [])  # nothing outline-driven — the guard is inert
+
+    if outline_parent:
+        p1 = compose._recorded_preimage_lookup(ctx.store)(str(outline_parent))
+        if p1 is None:
+            # S-3: a PRESENT-but-unresolved --from is a LOUD pre-spend not-found refusal (the user
+            # asked to guard against a handle that does not exist) — distinct from a genuinely
+            # ABSENT --from (the unverified warn below). Reuses CODE_NOT_FOUND (no new taxonomy).
+            return (
+                results.make_result(
+                    results.CODE_NOT_FOUND,
+                    item=str(outline_parent),
+                    hint=(
+                        "the --from handle did not resolve in this workspace — re-emit the "
+                        "outline (a new handle) or drop --from (DR-3 §21.7)"
+                    ),
+                ),
+                [],
+            )
+        if len(driven) != 1:
+            # R3: a single --from guards EXACTLY one driven outline; multi is JSON / phase-5.
+            return (
+                _block(
+                    "a single --from handle guards exactly one driven outline; this run drives "
+                    f"{len(driven)} — drive one outline at a time or drop --from (DR-3)"
+                ),
+                [],
+            )
+        item = driven[0]
+        if canonical_json_str(_outline_config_sigma(p1)) == canonical_json_str(
+            _outline_config_sigma(item.preimage)
+        ):
+            return (None, [])  # σ match — proceed silently (consistency confirmed)
+        if allow_drift:
+            # --allow-drift: downgrade the BLOCK to a recorded WARN under the SAME §21.7 code and
+            # STILL proceed (the honest "I meant to change it"). `outline-config-drift` carries two
+            # dispositions — block by default, warn here (C6 `("block", "warn")`); `status="warn"`
+            # is explicit (`statuses[0] == "block"` is the unchanged default refusal path).
+            return (
+                None,
+                [
+                    results.make_result(
+                        results.CODE_OUTLINE_CONFIG_DRIFT,
+                        item=item.artifact_id,
+                        status="warn",
+                        hint=(
+                            "outline-config-drift accepted via --allow-drift — driving the outline "
+                            "under a config that differs from its emit-time config (DR-3)"
+                        ),
+                    )
+                ],
+            )
+        # Mismatch, no --allow-drift → the loud pre-spend block (mint no token; nothing spends).
+        return (
+            results.make_result(
+                results.CODE_OUTLINE_CONFIG_DRIFT,
+                item=item.artifact_id,
+                hint=(
+                    "the config this run drives the outline under differs from the config it was "
+                    "emitted under (--from) — re-emit under the new config, or pass --allow-drift "
+                    "(DR-3)"
+                ),
+            ),
+            [],
+        )
+
+    # A driven outline with NO --from handle: no phase-1 record to check against — the ONLY warned
+    # case for a driven outline (honest: proceed unverified).
+    return (
+        None,
+        [
+            results.make_result(
+                results.CODE_OUTLINE_CONFIG_UNVERIFIED,
+                item=driven[0].artifact_id,
+                hint=(
+                    "no emit-time --from handle to verify the driven outline's config against "
+                    "(hand-authored, or --from omitted) — proceeding unverified (DR-3)"
+                ),
+            )
+        ],
+    )
+
+
 def _begin_session(
     ctx: invoke_mod.HandlerContext, *, adapters: Mapping[str, SourceAdapter]
 ) -> tuple[Sequence[results.ResultItem], token_mod.Token | None]:
@@ -407,6 +542,16 @@ def _begin_session(
         not_found = results.make_result(results.CODE_NOT_FOUND, item="selection", hint=str(exc))
         return ([not_found], None)
 
+    # CLI-UX C7 (DR-3): the outline continuation-handle drift guard. It runs BEFORE the auto-folio
+    # mint (`_resolve_target_folio`) and the token mint below, so a mismatch RETURNS with NO token
+    # and NO minted folio — nothing spends, no empty folio leaks (R7). Its inputs
+    # `outline_parent`/`allow_drift` are pure guard inputs: read from `ctx.params` but NEVER added
+    # to `inputs` below (nor to the request/preimage), so the driven artifact-id + its preimage are
+    # byte-identical with and without the handle (DR-3 horn-(a); the C7 identity invariant).
+    guard_block, guard_warns = _outline_drift_guard(ctx, plan)
+    if guard_block is not None:
+        return ([guard_block], None)
+
     try:
         folio_id = _resolve_target_folio(ctx.store, ctx.params, request)
     except FolioError as exc:
@@ -436,10 +581,19 @@ def _begin_session(
     }
     if folio_id is not None:
         ids["folio_id"] = folio_id
+    # The advisory warnings the plan resolver raised, plus any C7 drift-guard warns (the
+    # `outline-config-unverified` no-handle case, or an `--allow-drift` downgrade) so `preview`
+    # surfaces them; the same warns also ride `results[]` below as typed items.
+    warnings = [w.message for w in plan.warnings]
+    warnings.extend(
+        gw.remediation["hint"]
+        for gw in guard_warns
+        if gw.remediation and "hint" in gw.remediation
+    )
     context: dict[str, Any] = {
         "plan_hash": plan.plan_hash,
         "generate": "none",
-        "warnings": [w.message for w in plan.warnings],
+        "warnings": warnings,
     }
     if explain:
         # C1: the read side-channel — the effective compose+render settings (each dimension's
@@ -453,7 +607,7 @@ def _begin_session(
         # the store/claims, never by mutating it).
         context.update(_parallel_plan_context(root, plan))
     summary = results.ResultItem(item="begin-session", status="ok", ids=ids, context=context)
-    return ([summary], token)
+    return ([summary, *guard_warns], token)
 
 
 # ---------------------------------------------------------------------------
@@ -783,7 +937,7 @@ def _goal_ids(raw: Any) -> tuple[str, ...] | None:
 
 
 def _emit_outline(
-    ctx: invoke_mod.HandlerContext,
+    ctx: invoke_mod.HandlerContext, *, adapters: Mapping[str, SourceAdapter]
 ) -> tuple[Sequence[results.ResultItem], token_mod.Token | None]:
     """One `emit-outline` call (DR-3 horn (a) / B1): realize a HAND-AUTHORED outline as an
     ordinary `Format=outline` artifact, minted by its target coordinate + the outline's OWN
@@ -860,13 +1014,40 @@ def _emit_outline(
             f"emit-outline could not resolve the coordinate (§12.3): {exc}", item="emit-outline"
         )], None)
 
-    # 3. The §7.2 preimage carries the R4 own-body `outline-digest` as its SOLE new component;
-    #    the id round-trips via `mint_artifact_id(preimage)` (`build_ir` re-mints + refuses a
-    #    forgery inside `build_outline_ir`). A malformed source-subset/commit map is a loud block.
+    # 3a. B-2 (the safe-outline crux): default the emit-side `source_subset` (and its commit-map)
+    #     to the SAME workspace pool the drive path computes (`_begin_session:378-381`), so a
+    #     legitimate emit→edit→drive MATCHES on the C7 σ guard — both phases mint their preimage
+    #     under the same source pool. Previously the friendly emit path passed the EMPTY subset
+    #     while drive passed the full pool, so σ.source-subset always differed → the guard blocked
+    #     EVERY real run. A §7.2 preimage requires the commit-map keys to EQUAL the subset, so the
+    #     pool default MUST pin its commits too (a read-only, LLM-free provenance read, CF-1);
+    #     source-commit is EXCLUDED from σ, so an emit-time vs drive-time commit difference never
+    #     false-alarms. An EXPLICIT power-form `source_subset`/`source_commit` is honored unchanged.
+    #     Zero identity churn on a workspace with no `sources/` (the pool is [] = the prior ()).
+    try:
+        if params.get("source_subset"):
+            source_subset: tuple[str, ...] = tuple(params["source_subset"])
+            source_commit: dict[str, str] = dict(params.get("source_commit") or {})
+        else:
+            source_subset = tuple(driver._list_source_ids(root, ctx.workspace))
+            pool = build_pool(env.resolver, source_subset)
+            source_commit = _pin_source_commit_map(pool, adapters, ctx.pins)
+    except AdapterError as exc:
+        # A malformed source `connection:` first surfaces at the §7.2 commit pin — surface it the
+        # same typed, code-less way begin-session's sibling handler does (never an untyped raise).
+        return ([_block(
+            f"emit-outline could not pin a source commit — a source `connection:` is malformed "
+            f"(§6.1/§7.2): {exc}",
+            item="emit-outline",
+        )], None)
+
+    # 3b. The §7.2 preimage carries the R4 own-body `outline-digest` as its SOLE new component;
+    #     the id round-trips via `mint_artifact_id(preimage)` (`build_ir` re-mints + refuses a
+    #     forgery inside `build_outline_ir`). A malformed source-subset/commit map is a loud block.
     try:
         preimage = compose.artifact_preimage(
-            source_subset=tuple(params.get("source_subset") or ()),
-            source_commit=dict(params.get("source_commit") or {}),
+            source_subset=source_subset,
+            source_commit=source_commit,
             outline_digest=digest,
         )
     except PreimageError as exc:
@@ -957,13 +1138,20 @@ def continue_session_handler(
     return handler
 
 
-def emit_outline_handler() -> invoke_mod.Handler:
-    """The `emit-outline` handler (DR-3 horn (a) / B1). No seams: the emit is deterministic
-    store I/O + the pure, LLM-free cascade resolution — there is NO reconcile/serialize leg, so
-    no engine to inject and no live subscription call is ever reachable here (unlike `render`)."""
+def emit_outline_handler(
+    *, adapters: Mapping[str, SourceAdapter] | None = None
+) -> invoke_mod.Handler:
+    """The `emit-outline` handler (DR-3 horn (a) / B1). The emit is deterministic store I/O + the
+    pure, LLM-free cascade resolution — there is NO reconcile/serialize leg, so no engine to inject
+    and no live subscription call is ever reachable here (unlike `render`). `adapters` is the ONLY
+    seam: the SAME §7.2 commit-pin adapter set begin-session uses (default: the real graphify
+    adapter), so the B-2 emit-side `source_subset`/commit-map default is computed identically to the
+    drive path (the C7 σ guard matches on a legitimate emit→edit→drive). `pin_commit` is read-only
+    (rule 1) — never a grounding/live call."""
+    resolved = dict(adapters) if adapters is not None else _default_adapters()
 
     def handler(ctx: invoke_mod.HandlerContext) -> Any:
-        return _emit_outline(ctx)
+        return _emit_outline(ctx, adapters=resolved)
 
     return handler
 
