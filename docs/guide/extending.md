@@ -10,6 +10,16 @@ Every extension point is a one-file change; a new axis/stage is a config additio
 - **A scope default.** Set instance- or workspace-level defaults that load_scope_defaults reads into a ScopeDefaults.
 - **A whole pipeline stage.** Adding an editor-style stage is three steps: Add the agent file... Register it in the pipeline stage list (config), positioned after writer... items flow through the new stage and record its result column. New stages attach here without disturbing existing ones.
 
+## Schema evolution and versioning
+
+The registry schemas all share **one global `schema_version`**, and bumping it is a **release act, not a per-change one**. During development you make schema changes freely — add a new attribute at its floor, widen a type, clarify a `definition:` — with **no version bump**: a new attribute that rides its L0 floor leaves every existing entry valid and every id byte-identical, so nothing needs to move (design §11.2).
+
+The schema-lint enforces this **release-relative**, not per-commit. It baselines the *last release* — a committed `pipeline/released_baseline` marker, which is **absent before the first release** — so pre-release the version-bump clauses are inert and schemas evolve without ceremony. The first schema change *after* a release is the first that must bump the version and ship a migration step. (The fix that made the lint release-relative rather than demanding a bump for every pre-release change is commit `330fc6d`.)
+
+What still **always fails**, release or not: a malformed schema, a `schema_version` **skew** across the co-located schemas, and any slug, provenance, or closed-schema violation. Those are structural correctness checks, independent of the release baseline.
+
+**The attribute reference.** Every registry attribute's type, floor, and prose meaning lives in [`docs/reference/attributes.md`](../reference/attributes.md), regenerated with `pipeline docs attributes`. Adding or clarifying an attribute's `definition:` is a free doc improvement — regenerate the reference in the same change, and a byte-equality drift test (`tests/test_attributes_doc_contract.py`) fails loudly if a schema `definition:` is edited without regenerating the page.
+
 ## Known issues and open items
 
 Some things are deliberately deferred; treat the tracker as the authority, not this manual.

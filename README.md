@@ -16,6 +16,8 @@ At the product level the pipeline works in two stages. **Ideation** reads a sour
 
 Generation is where the engine does its work. You give it a selection — one or more topics, personas, platforms, and formats — and it fans that out across the matrix into many concrete, individually-tracked items, one per combination. Each item is *grounded* first (facts pulled from the source graph; it blocks rather than invent if nothing usable grounds), *composed* once into a platform-neutral artifact, and then *rendered* into as many outputs as you asked for. Because that one artifact is composed once and rendered many times, re-targeting a piece to a new platform is a re-fit, not a re-write; and because every claim traces back to a graph fact carrying a confidence tier, only directly-supported facts are ever stated as fact.
 
+You drive all of this from a friendly local CLI — `preview`, `generate`, `recipe`, `entry`, `list`, and more — that is **dry-run by default** (it prints the whole plan and the exact count of paid pieces, and spends nothing until you add `--go`) and only ever draws on your Claude subscription, never a metered API key.
+
 ## Who it's for
 
 This manual is written for the person standing the project up and keeping it running — the design's *Primary author*, a solo operator or small team.
@@ -60,10 +62,11 @@ Read these in order:
 
 1. [Concepts](docs/guide/concepts.md) — the vocabulary and mental model.
 2. [Getting started](docs/guide/getting-started.md) — requirements, setup, and running it.
-3. [Architecture](docs/guide/architecture.md) — repository layout, file reference, internal design.
-4. [Interfaces](docs/guide/interfaces.md) — the user-facing surface and HTTP access.
-5. [Clients](docs/guide/clients.md) — the wire contract and the language-neutral client surface (Python + C++ wrappers).
-6. [Extending it](docs/guide/extending.md) — extension points and known issues.
+3. [Authoring](docs/guide/authoring.md) — authoring recipes/entries/selections + running generation from the CLI.
+4. [Architecture](docs/guide/architecture.md) — repository layout, file reference, internal design.
+5. [Interfaces](docs/guide/interfaces.md) — the user-facing surface and HTTP access.
+6. [Clients](docs/guide/clients.md) — the wire contract and the language-neutral client surface (Python + C++ wrappers).
+7. [Extending it](docs/guide/extending.md) — extension points and known issues.
 
 ## Further reading
 

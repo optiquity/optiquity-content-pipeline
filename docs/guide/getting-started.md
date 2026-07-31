@@ -23,14 +23,38 @@ These steps take you from an empty checkout to one grounded artifact.
 
 ## Usage
 
-The command-line surface is the launcher in scripts/... pipeline, dispatched by main. Its subcommands map to the tasks below.
+The command-line surface is the launcher `scripts/pipeline` (run it directly, or as `uv run
+pipeline`). It is a set of **friendly doors** onto the engine's verbs — readable flags in, a plan and
+a spend count out — built so nothing paid happens by accident.
 
-- **Resolve a plan.** Ask for the parallel plan when you open a session: it is obtained via begin-session(want_parallel_plan = true) — no new verb. The plan lays out the two waves so you can see every work item before running any.
-- **Generate an artifact.** Composition is wave 0, keyed by artifact-id, driven by continue-session{generate-next, only}: open the session, then call continue-session generate-next per item. Under the hood a thread runs run_thread, starting from a SelectionRequest; a ready-made one is available from demo_selection for a first run. The demo thread and MVP demo are wired as the subcommands _cmd_demo_thread and _cmd_mvp_demo.
-- **Drive a genre with an authored outline.** To shape one artifact, attach an outline through the selection's outlines map; the request resolves it with outline_for, and the map is normalized by _normalize_outlines. The outline drives structure and emphasis without adding any new publishable fact.
-- **Render and read the deliverable.** Rendering is the token-free wave 1, run by the _cmd_render subcommand (with _cmd_invoke for external hand-off). Output files are named by output_filename.
+**The money-safety model.** `preview` spends nothing; `generate` is a **dry-run by default** (it
+prints the plan and stops); only adding **`--go`** spends, and spend is your Claude **subscription**
+quota, never an API key. Every dry-run ends with `spend-scope: N paid artifact(s)`, so you approve a
+number before anything runs.
+
+**The minimal first run.** With a workspace and one authored topic in place, preview the plan (free),
+then drive it:
+
+```bash
+# 1. See the plan and the exact paid count — spends nothing:
+uv run pipeline preview --topic <your-topic> --workspace myrepo
+
+# 2. Same plan as a free dry-run, then add --go to actually compose:
+uv run pipeline generate --topic <your-topic> --workspace myrepo          # dry-run, spends nothing
+uv run pipeline generate --topic <your-topic> --workspace myrepo --go     # the only path that spends
+```
+
+`preview`/`generate` default to the `explainer-post` recipe; name content axes explicitly with
+`--persona/--format/--voice/--goals` and route the output with `--platform/--language/--output-type/
+--presentation`. The rendered deliverable lands in your workspace; read it there.
+
+**The rest of the authoring surface.** Saving a reusable recipe, saving and replaying an exact
+selection, scaffolding a new entry, driving an editable outline, and discovery (`list`/`get`) all
+live on this same friendly CLI — see the [Authoring and running guide](authoring.md) for the full
+walkthrough, and the [attribute reference](../reference/attributes.md) for every tunable field.
+
 - **Serve over HTTP.** `pipeline serve` starts the HTTP shim, which makes the same verbs reachable by a remote cloud orchestrator behind a login (see *HTTP access* in the [Interfaces guide](interfaces.md#http-access-cloud-orchestrators)). It refuses to start without an auth secret configured.
-- **Operator subcommands.** Two round out the surface: an SSOT command _cmd_ssot and a drift-report command _cmd_drift_report.
+- **Operator subcommands.** A few round out the surface: an SSOT mirror (`pipeline ssot derive-state`), a read-only drift report (`pipeline drift-report`), and the attribute-reference generator (`pipeline docs attributes`).
 
 ---
 [← Manual home](../../README.md) · Previous: [Concepts](concepts.md) · Next: [Architecture](architecture.md)

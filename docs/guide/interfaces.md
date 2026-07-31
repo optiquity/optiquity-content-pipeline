@@ -9,6 +9,20 @@ The surface has four parts: the selection inputs, the verbs, the store, and the 
 - **Store.** Persistent state is a WorkspaceStore, threaded through the engine — for example, _persist(doc, request, *, store: WorkspaceStore,...) writes into it.
 - **Run-layer overrides.** Overrides bound at session start enter through CascadeEnv.__init__, which accepts an OverrideSet; individual values are ValueBindings parsed by parse_value_bindings.
 
+### Local operator CLI
+
+Locally, the friendly way in is `scripts/pipeline` (also `uv run pipeline`) — English-ish flags onto the same verbs, built so nothing paid happens by accident (`generate` is a dry-run until you add `--go`, and spend is subscription-only, never an API key). The doors, one line each:
+
+- **`pipeline preview`** — plan-only: the effective settings, the plan, and the exact paid count. Spends nothing.
+- **`pipeline generate`** — dry-run by default; `--go` drives the plan and is the only thing that spends.
+- **`pipeline recipe new`** — author a reusable, *partial* recipe (a saved set of axis picks + tweaks).
+- **`pipeline entry new`** — scaffold a new persona/format/voice/… entry from a self-documenting skeleton.
+- **`pipeline outline emit` / `drive`** — realize an editable outline, then drive it (same as `generate --outline`).
+- **`pipeline list` / `get`** — read-only discovery over a workspace.
+- **`pipeline docs attributes`** — regenerate the [attribute reference](../reference/attributes.md).
+
+Full walkthrough with runnable examples: the [Authoring and running guide](authoring.md).
+
 ### HTTP access (cloud orchestrators)
 
 The verbs above are reached two ways. Locally you shell out to `scripts/pipeline` (the CLI door) or call `invoke()` in-process. The **HTTP shim** is the remote door: a small web server, started with `pipeline serve`, that lets a cloud automation tool — n8n Cloud, Make, Zapier, Google Workflows, and the like — drive the very same operations over the internet, behind a login. Those tools cannot run a command on your machine; they can only call a URL, so the shim gives them one. It is not a second implementation — every request is translated straight onto the same `invoke()` the CLI uses.

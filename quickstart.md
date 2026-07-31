@@ -95,12 +95,25 @@ conforms to the axis's `_schema.yaml`.
    writes the files, a reviewer pass validates them. You pick which to keep; nothing lands
    unreviewed. (Process only — no new machinery; it is the same one-file entries either way.)
 
-**7. Open Claude Code in the repo** and say:
+**7. Try it — preview, then generate** (the friendly CLI; nothing paid happens without `--go`)
 
-> Read state.md and docs/design.md, then propose a plan to prove one thread: one topic × one
-> persona × one format for `workspaces/self`, grounded via the graph.
+```bash
+# See the plan + the exact paid count — spends nothing:
+uv run pipeline preview --topic <your-topic> --workspace self
 
-Approve the plan; review the draft in `workspaces/self/output/`.
+# Same plan as a free dry-run, then --go to actually compose (Claude SUBSCRIPTION quota, never an API key):
+uv run pipeline generate --topic <your-topic> --workspace self          # dry-run
+uv run pipeline generate --topic <your-topic> --workspace self --go     # spends
+```
+
+`preview`/`generate` default to the `explainer-post` recipe; add `--persona/--format/--voice/--goals`
+to pick content axes and `--platform/--language/--output-type/--presentation` to route the output.
+Review the deliverable in `workspaces/self/output/`. The full authoring surface — recipes, saved
+selections, entries, outlines, discovery — lives in `docs/guide/authoring.md`.
+
+(Prefer to drive it from a Claude Code session instead? Open the repo and ask it to preview then
+generate one thread for `workspaces/self` — it runs the very same commands, and still spends nothing
+until you approve `--go`.)
 
 ---
 
