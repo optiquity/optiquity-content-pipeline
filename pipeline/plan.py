@@ -521,16 +521,31 @@ def resolve_plan(
     recipe_values = parse_value_bindings(
         recipe_entry.effective.get("values"), where=f"recipes/{recipe_entry.id}"
     )
-    coordinates = render_coordinates(
-        request,
-        pinned_platforms=tuple(recipe_entry.effective.get("platforms") or ()),
-        pinned_languages=tuple(recipe_entry.effective.get("languages") or ()),
-        pinned_output_types=tuple(recipe_entry.effective.get("output_types") or ()),
-        pinned_presentations=tuple(recipe_entry.effective.get("presentations") or ()),
-    )
+    # CLI-UX C5c: DRIVE a saved selection (the explicit grouped variant list) vs. the normal
+    # cartesian fan-out. When `request.render_map` is set the plan replays the EXPLICIT saved combos
+    # 1:1 — each content combo (grouped by canonical coordinate, so multi-render variants collapse
+    # into ONE artifact, PC2) carries ITS OWN render coordinate list, so a curated set NEVER
+    # re-multiplies (B4). The saved-array iterator uses NO `product`/`content_combinations`/
+    # `render_coordinates` — that cartesian machinery stays EXCLUSIVELY on the non-selection path
+    # below, which is byte-unchanged (`content_combinations` × the single `render_coordinates`
+    # product, one shared coordinate list per combo).
+    driven = bool(request.render_map)
+    if driven:
+        groups: tuple[tuple[ContentCombination, tuple[RenderCoordinate, ...]], ...] = (
+            request.render_map
+        )
+    else:
+        coordinates = render_coordinates(
+            request,
+            pinned_platforms=tuple(recipe_entry.effective.get("platforms") or ()),
+            pinned_languages=tuple(recipe_entry.effective.get("languages") or ()),
+            pinned_output_types=tuple(recipe_entry.effective.get("output_types") or ()),
+            pinned_presentations=tuple(recipe_entry.effective.get("presentations") or ()),
+        )
+        groups = tuple((combo, coordinates) for combo in content_combinations(request))
 
     items: dict[str, PlanItem] = {}
-    for combo in content_combinations(request):
+    for combo, combo_coordinates in groups:
         # DR-3 (horn (a)): the per-coordinate DRIVE outline (bare digest), or None. When set it
         # enters the §7.2 preimage as the SOLE new component (`artifact_preimage(outline_digest=)`)
         # — an outline-less coordinate mints the byte-identical 4-key id (horn (a) adds no key).
@@ -586,7 +601,7 @@ def resolve_plan(
         # (the sink is None unless `explain`, so the default path is byte-unchanged).
         render_sink: dict[str, Any] | None = {} if explain else None
         deliverables = _resolve_deliverables(
-            env, request, compose, artifact_id, coordinates, log, render_sink=render_sink
+            env, request, compose, artifact_id, combo_coordinates, log, render_sink=render_sink
         )
         items[artifact_id] = PlanItem(
             artifact_id=artifact_id,
@@ -615,10 +630,10 @@ def resolve_plan(
             # reload, never re-multiplied). A fanout-collapse duplicate `continue`s above, so a
             # collapsed combo contributes no variant (PC2 exactly-once cover).
             selection_capture[artifact_id] = [
-                _selection_variant(combo, coordinate) for coordinate in coordinates
+                _selection_variant(combo, coordinate) for coordinate in combo_coordinates
             ]
 
-    if not coordinates:
+    if not driven and not coordinates:
         # The step-16 RV-1 decision: a compose-only plan with configured platform.*
         # bindings surfaces them as inert — one-time, warn-only (§3.1/Q3; never a
         # block, Q4). See the module docstring.

@@ -1031,6 +1031,58 @@ def _save_selection(
     return 0
 
 
+def _attach_selection_or_usage(
+    args: "object", normalized: "object", selection_id: str, prog: str
+) -> int:
+    """CLI-UX C5c: LOAD a saved selection and DRIVE it 1:1 — inject the saved base recipe REFERENCE,
+    the EXPLICIT per-artifact render map, and the run's shared value tweaks into the normalized
+    begin-session params, REPLACING a fresh fan-out. A saved selection fully specifies the run, so
+    combining --selection with any content/render axis flag, `--set`, or an explicit `--recipe` is a
+    pre-engine usage error (exit 2): they would re-expand the curated set the selection exists to
+    replay. A missing / malformed / boundary-refused selection is exit 1 (a loud refusal). Money-
+    safety is untouched — the injected params flow through the SAME begin-session preview door, so a
+    selection previews (spends nothing) by default and drives only under --go. `normalized.params`
+    is a mutable dict (the frozen `Normalized` field is not reassigned). Returns 0 on success."""
+    from pipeline import authoring
+
+    conflicting = [
+        flag
+        for flag, value in (
+            ("--recipe", getattr(args, "recipe", None)),
+            ("--topic", getattr(args, "topic", None)),
+            ("--persona", getattr(args, "persona", None)),
+            ("--format", getattr(args, "format", None)),
+            ("--voice", getattr(args, "voice", None)),
+            ("--goals", getattr(args, "goals", None)),
+            ("--platform", getattr(args, "platform", None)),
+            ("--language", getattr(args, "language", None)),
+            ("--output-type", getattr(args, "output_type", None)),
+            ("--presentation", getattr(args, "presentation", None)),
+            ("--set", getattr(args, "set", None)),
+        )
+        if value
+    ]
+    if conflicting:
+        print(
+            f"pipeline {prog}: --selection drives a SAVED fan-out 1:1 — do not also pass "
+            f"{conflicting} (they would re-expand the curated set); drive the selection alone",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        base, variants, values = authoring.load_selection(
+            args.root, selection_id, workspace=normalized.workspace
+        )
+    except authoring.AuthoringError as exc:
+        print(f"pipeline {prog}: --selection: {exc}", file=sys.stderr)
+        return 1
+    normalized.params["recipe"] = base
+    normalized.params["render_map"] = variants
+    if values:
+        normalized.params["overrides"] = dict(values)
+    return 0
+
+
 def _run_friendly_generate(
     args: "object",
     *,
@@ -1051,6 +1103,19 @@ def _run_friendly_generate(
     normalized, code = _normalize_or_usage(friendly, prog)
     if normalized is None:
         return code
+    selection_id = getattr(args, "selection", None)
+    if selection_id is not None and outline_path is not None:
+        print(
+            f"pipeline {prog}: --selection and --outline are mutually exclusive (a saved selection "
+            "already fixes the fan-out)",
+            file=sys.stderr,
+        )
+        return 2
+    if selection_id is not None:
+        # C5c: DRIVE a saved selection 1:1 — inject the saved base + render map into params.
+        code = _attach_selection_or_usage(args, normalized, selection_id, prog)
+        if code:
+            return code
     if outline_path is not None:
         code = _attach_outline_or_usage(normalized, outline_path, prog)
         if code:
@@ -1159,6 +1224,17 @@ def _cmd_generate(
             "SAVE this run's fan-out as a replayable selection file selections/ID.md (§8, "
             "authoring D4) — works with or without --go. A client (x-) content/render binding "
             "homes under workspaces/<workspace>/selections/ (never the public root)"
+        ),
+    )
+    parser.add_argument(
+        "--selection",
+        default=None,
+        metavar="ID",
+        help=(
+            "DRIVE a saved selection selections/ID.md (or workspaces/<workspace>/selections/ for "
+            "an x- id, §8/authoring D4) 1:1 — replays the EXACT saved fan-out, no re-expansion. "
+            "Preview by default (spends nothing); add --go to drive. Mutually exclusive with the "
+            "axis flags / --set / --recipe / --outline (a saved selection already fixes the run)"
         ),
     )
     parser.add_argument(

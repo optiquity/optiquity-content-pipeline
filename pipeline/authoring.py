@@ -48,6 +48,7 @@ from pipeline.entries import (
     PROVENANCE_FRAMEWORK,
     PROVENANCE_INSTANCE,
     Entry,
+    load_entry,
 )
 from pipeline.fanout import CONTENT_AXES, RENDERING_AXES
 from pipeline.m1 import DIMENSION_COLLECTIONS
@@ -81,6 +82,7 @@ __all__ = [
     "infer_provenance",
     "infer_selection_provenance",
     "load_recipe_schema",
+    "load_selection",
     "load_selection_schema",
     "merge_bundle",
     "resolve_recipe_target",
@@ -941,3 +943,118 @@ def write_selection(
     target.path.parent.mkdir(parents=True, exist_ok=True)
     target.path.write_text(text, encoding="utf-8")
     return target
+
+
+# --- The saved-selection LOADER (CLI-UX C5c; §8 / authoring D4/D10) ------------------------
+#
+# `generate --selection ID` reads a saved selection and DRIVES it 1:1. This is the LOAD side that
+# reverses `write_selection`: it reads the file from its provenance home, re-validates every variant
+# (a hand-edited file is refused loudly), and shapes each variant's content picks as the
+# reference-faithful `base ⊕ deltaᵢ` — reusing the SAME `merge_bundle` the recipe path uses. `base`
+# stays a REFERENCE (it drives `request.recipe`, resolved FRESH at plan time), so a later base
+# recipe EDIT surfaces as a NEW id on reload — never a stale frozen copy (D10). The grouping of the
+# flat variant list into the per-artifact render map happens downstream in `SelectionRequest`.
+
+
+def _selection_home(root: str | Path, selection_id: str, workspace: str | None) -> Path:
+    """The provenance home a saved selection is READ from (rule 4), keyed by the id's `x-` prefix —
+    the write path's homing in reverse. An `x-` instance id lives under
+    `workspaces/<ws>/selections/`; a framework id lives in the public `selections/` root."""
+    _require_slug(selection_id, "selection id")
+    root = Path(root)
+    if selection_id.startswith(INSTANCE_ID_PREFIX):
+        if not workspace:
+            raise AuthoringError(
+                f"invalid-authoring: instance selection {selection_id!r} requires a --workspace "
+                "home (instance config lives under workspaces/<client>/, rule 2/§10)"
+            )
+        ws_dir = validate_workspace_name(workspace, root)
+        return ws_dir / SELECTION_COLLECTION / f"{selection_id}.md"
+    return root / SELECTION_COLLECTION / f"{selection_id}.md"
+
+
+def _edit_set_from_coordinate(coordinate: Mapping[str, Any]) -> EditSet:
+    """A validated content coordinate → the `EditSet` its picks drive over an EMPTY base."""
+    picks: dict[str, list[str]] = {}
+    for slot in ("topic", "persona", "format", "voice"):
+        if slot in coordinate:
+            picks[slot] = [coordinate[slot]]
+    if "goals" in coordinate:
+        picks["goals"] = list(coordinate["goals"])
+    return build_edit_set(picks=picks)
+
+
+def _coordinate_from_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """Read a merged content bundle back into a content-coordinate dict (scalars + a goals list)."""
+    coordinate: dict[str, Any] = {}
+    for slot in ("topic", "persona", "format", "voice"):
+        if slot in bundle:
+            coordinate[slot] = bundle[slot]
+    if "goals" in bundle:
+        coordinate["goals"] = list(bundle["goals"])
+    return coordinate
+
+
+def load_selection(
+    root: str | Path,
+    selection_id: str,
+    *,
+    workspace: str | None = None,
+    schema: Schema | None = None,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
+    """Load + validate a saved selection and shape it for the C5c DRIVE — returns
+    `(base, variants, values)`.
+
+    Reads `selections/<id>.md` (framework) or `workspaces/<ws>/selections/<id>.md` (instance) from
+    the provenance home. `base` is the recipe REFERENCE the run used — it drives `request.recipe`
+    and is resolved FRESH at plan time, so a base-recipe EDIT surfaces as a NEW id on reload
+    (reference-faithful D10; never inlined). `variants` is the FLAT `[{coordinate, render}, …]`
+    drive list: each variant is structurally re-validated (a hand-edited file is refused loudly),
+    and its content `coordinate` is recomputed as the reference-faithful `base ⊕ deltaᵢ` via the
+    C2a `merge_bundle` over an EMPTY base (the recipe's own pins ride the reference, never inlined).
+    `values` is the run's shared value-tweak map (folded onto every variant at save), lifted back to
+    the run OVERRIDE layer (§12.5), or `None`; variants that disagree on it are a loud refusal. The
+    grouping of the flat list into the per-artifact render map happens in `SelectionRequest`."""
+    schema = schema or load_selection_schema()
+    path = _selection_home(root, selection_id, workspace)
+    if not path.exists():
+        raise AuthoringError(
+            f"invalid-authoring: no saved selection {selection_id!r} at {path} — save one with "
+            "`generate --save-selection` first (§8, authoring D4)"
+        )
+    entry = load_entry(path, schema)
+    base = entry.attributes.get("base") or ""
+    if not isinstance(base, str) or not base:
+        raise AuthoringError(
+            f"invalid-authoring: selection {selection_id!r} has no `base` recipe reference to "
+            "drive (§8, authoring D4)"
+        )
+    raw_variants = entry.attributes.get("variants") or []
+    if not raw_variants:
+        raise AuthoringError(
+            f"invalid-authoring: selection {selection_id!r} has no `variants` to drive — a saved "
+            "selection replays a fan-out (§8, authoring D4)"
+        )
+    variants: list[dict[str, Any]] = []
+    shared_values: dict[str, Any] | None = None
+    for index, raw in enumerate(raw_variants):
+        normalized = _validate_variant(raw, index)
+        # Reference-faithful base ⊕ deltaᵢ (D10): merge the content picks over an EMPTY base — the
+        # base recipe is a REFERENCE (request.recipe=base, resolved fresh), so its own pins are
+        # NEVER inlined here; only the variant's explicit picks shape the combo. Reuses the SAME C2a
+        # `merge_bundle` the recipe path uses (cardinality + slug re-validation; defense in depth).
+        content_bundle = merge_bundle({}, _edit_set_from_coordinate(normalized["coordinate"]))
+        variants.append(
+            {"coordinate": _coordinate_from_bundle(content_bundle), "render": normalized["render"]}
+        )
+        values = normalized.get(VALUES_SLOT)
+        if values:
+            if shared_values is None:
+                shared_values = dict(values)
+            elif shared_values != dict(values):
+                raise AuthoringError(
+                    f"invalid-authoring: selection {selection_id!r} variants disagree on the "
+                    "shared `values` tweak map — a saved run carries ONE run-shared value map "
+                    "(§12.5); loud, never a silent merge"
+                )
+    return base, variants, shared_values

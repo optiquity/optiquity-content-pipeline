@@ -81,6 +81,8 @@ __all__ = [
     "coordinate_payload",
     "goal_set_overloaded",
     "pairing_advisory",
+    "render_coordinate_from_payload",
+    "render_coordinate_payload",
     "render_coordinates",
 ]
 
@@ -215,6 +217,19 @@ class SelectionRequest:
     #: deterministic tuple of `(coordinate, digest)` pairs, consumed per-combo by
     #: `resolve_plan` (`outline_for`). Absent/empty -> today's behavior, byte-identical.
     outlines: Mapping[ContentCombination, str] | tuple[tuple[ContentCombination, str], ...] = ()
+    #: CLI-UX C5c (saved-selection DRIVE): the per-artifact render map — a saved fan-out replayed
+    #: 1:1 (§8, authoring D4). It is the FLAT `(ContentCombination, RenderCoordinate)` variant list
+    #: (one saved variant = one content coord × one render coord — the product ALREADY applied at
+    #: save, C5b); `__post_init__` GROUPS it by the §7.2-canonical content coordinate into a
+    #: deterministic `((combo, (render-coord, …)), …)` tuple, so `resolve_plan` drives each artifact
+    #: with ITS OWN render coordinates — NEVER the global cartesian product (B4). Two variants that
+    #: name the same (content, render) coordinate are a loud refusal (PC2 exactly-once). Empty -> a
+    #: normal cartesian request, byte-identical to pre-C5c. Set ONLY on a selection load; it is
+    #: mutually exclusive with every content/render axis multi-select and the `outlines` drive map.
+    render_map: (
+        Mapping[ContentCombination, Sequence[RenderCoordinate]]
+        | Sequence[tuple[ContentCombination, RenderCoordinate]]
+    ) = ()
 
     def __post_init__(self) -> None:
         _require_slug(self.recipe, "recipe")
@@ -222,6 +237,26 @@ class SelectionRequest:
             object.__setattr__(self, axis, _normalize_axis(getattr(self, axis), axis))
         object.__setattr__(self, "goal_sets", _normalize_goal_sets(self.goal_sets))
         object.__setattr__(self, "outlines", _normalize_outlines(self.outlines))
+        object.__setattr__(self, "render_map", _normalize_render_map(self.render_map))
+        if self.render_map:
+            self._refuse_driven_conflicts()
+
+    def _refuse_driven_conflicts(self) -> None:
+        """A DRIVEN request (a loaded saved selection) replays its EXPLICIT grouped variant list;
+        an axis multi-select, a goal-set variant, or an outline drive map alongside it would re-open
+        the cartesian fan-out the drive exists to avoid — refuse loudly (§3.1), never silently drop
+        one. `recipe` (the base reference) is the ONLY other field a driven request carries."""
+        conflicts = [axis for axis in (*CONTENT_AXES, *RENDERING_AXES) if getattr(self, axis)]
+        if self.goal_sets:
+            conflicts.append("goal_sets")
+        if self.outlines:
+            conflicts.append("outlines")
+        if conflicts:
+            raise FanoutError(
+                "invalid-selection: a saved-selection DRIVE (`render_map`) replays an explicit "
+                f"fan-out 1:1 — it cannot combine with {sorted(conflicts)} (that would re-expand "
+                "the curated set); drive the selection alone (§8, authoring D4)"
+            )
 
     def outline_for(self, combo: ContentCombination) -> str | None:
         """The DRIVE `outline-digest` for one content coordinate, or None (§8 / DR-3).
@@ -481,6 +516,151 @@ def render_coordinates(
             _axis_or_unset(output_types),
             _axis_or_unset(presentations),
         )
+    )
+
+
+# --- The saved-selection DRIVE map (CLI-UX C5c: the explicit fan-out replayed 1:1; §8) ------
+
+
+def render_coordinate_payload(coordinate: RenderCoordinate) -> dict[str, Any]:
+    """The JSON-native projection of one render coordinate (the token/wire form; §20).
+
+    Round-trips with `render_coordinate_from_payload`; `platform` is always present (§7.4: a
+    deliverable requires routing), the other three slots OMIT when `None` (floor-faithful — they
+    ride the cascade on reload). The single source of the render-coordinate shape the session layer
+    serializes into the token inputs so `continue-session` re-resolves the driven plan 1:1."""
+    payload: dict[str, Any] = {"platform": coordinate.platform}
+    if coordinate.language is not None:
+        payload["language"] = coordinate.language
+    if coordinate.output_type is not None:
+        payload["output_type"] = coordinate.output_type
+    if coordinate.presentation is not None:
+        payload["presentation"] = coordinate.presentation
+    return payload
+
+
+def render_coordinate_from_payload(payload: Mapping[str, Any]) -> RenderCoordinate:
+    """Reconstruct a `RenderCoordinate` from its JSON projection (§20 round-trip). A concrete
+    `platform` is MANDATORY (§7.4: no platform-less deliverable); the other slots default to
+    `None` (unselected — the cascade supplies them)."""
+    if not isinstance(payload, Mapping) or "platform" not in payload:
+        raise FanoutError(
+            "invalid-selection: a render coordinate must be a mapping with a concrete `platform` "
+            f"(§7.4: a deliverable requires routing), got {payload!r}"
+        )
+    return RenderCoordinate(
+        platform=payload["platform"],
+        language=payload.get("language"),
+        output_type=payload.get("output_type"),
+        presentation=payload.get("presentation"),
+    )
+
+
+def _render_sort_key(coordinate: RenderCoordinate) -> tuple[str, str, str, str]:
+    return (
+        coordinate.platform,
+        coordinate.language or "",
+        coordinate.output_type or "",
+        coordinate.presentation or "",
+    )
+
+
+def _validate_render_coordinate(coordinate: RenderCoordinate, where: str) -> None:
+    _require_slug(coordinate.platform, f"{where} platform")
+    for name, value in (
+        ("language", coordinate.language),
+        ("output_type", coordinate.output_type),
+        ("presentation", coordinate.presentation),
+    ):
+        if value is not None:
+            _require_slug(value, f"{where} {name}")
+
+
+def _validate_content_coordinate(combo: ContentCombination, where: str) -> None:
+    for name, value in (
+        ("topic", combo.topic),
+        ("persona", combo.persona),
+        ("format", combo.format),
+        ("voice", combo.voice),
+    ):
+        if value is not None:
+            _require_slug(value, f"{where} {name}")
+    if combo.goals is not None:
+        for goal in combo.goals:
+            _require_slug(goal, f"{where} goal")
+
+
+def _normalize_render_map(
+    raw: object,
+) -> tuple[tuple[ContentCombination, tuple[RenderCoordinate, ...]], ...]:
+    """Group the FLAT saved-selection variant list into the deterministic canonical-coordinate-keyed
+    DRIVE map C5c replays 1:1 (§8, authoring D4).
+
+    Each saved variant is ONE content coordinate × ONE render coordinate (the run's product ALREADY
+    applied at save, C5b). Grouping by the §7.2-canonical content coordinate collapses the variants
+    that SHARE one artifact (e.g. two platforms of one topic) back into ONE item carrying BOTH the
+    coordinates — so `resolve_plan` feeds `_resolve_deliverables` one group at a time and
+    `artifact_ids()` gains NO duplicate (PC2 exactly-once cover; the C5c-flagged grouping point).
+    Two variants naming the SAME (content, render) coordinate are a LOUD typed refusal (never a
+    silent last-wins) — mirroring the DR-3 outline dedupe. Accepts either the flat
+    `(ContentCombination, RenderCoordinate)` pair sequence or a `{coordinate: [render, …]}` mapping.
+    Empty -> `()` (not driven; byte-identical to a normal cartesian request). NO `product` is used —
+    the fan-out is the EXPLICIT saved array, never re-expanded."""
+    if not raw:
+        return ()
+    pairs: list[tuple[Any, Any]] = []
+    if isinstance(raw, Mapping):
+        for combo, coords in raw.items():
+            if isinstance(coords, RenderCoordinate):
+                pairs.append((combo, coords))
+            elif isinstance(coords, Sequence) and not isinstance(coords, str | bytes):
+                for coord in coords:
+                    pairs.append((combo, coord))
+            else:
+                raise FanoutError(
+                    "invalid-selection: a render_map mapping value must be a RenderCoordinate or "
+                    f"a sequence of them, got {type(coords).__name__}: {coords!r}"
+                )
+    elif isinstance(raw, Sequence) and not isinstance(raw, str | bytes):
+        pairs = list(raw)
+    else:
+        raise FanoutError(
+            "invalid-selection: render_map must be a sequence of (content-coordinate, "
+            f"render-coordinate) pairs (the saved-selection DRIVE), got {type(raw).__name__}"
+        )
+    grouped: dict[ContentCombination, dict[RenderCoordinate, None]] = {}
+    for pair in pairs:
+        try:
+            combo, coordinate = pair
+        except (TypeError, ValueError) as exc:
+            raise FanoutError(
+                "invalid-selection: a render_map entry must be a (content-coordinate, "
+                f"render-coordinate) pair, got {pair!r}"
+            ) from exc
+        if not isinstance(combo, ContentCombination):
+            raise FanoutError(
+                "invalid-selection: a render_map content key must be a ContentCombination "
+                f"coordinate, got {type(combo).__name__}: {combo!r}"
+            )
+        if not isinstance(coordinate, RenderCoordinate):
+            raise FanoutError(
+                "invalid-selection: a render_map render value must be a RenderCoordinate, "
+                f"got {type(coordinate).__name__}: {coordinate!r}"
+            )
+        _validate_content_coordinate(combo, "render_map coordinate")
+        _validate_render_coordinate(coordinate, "render_map render")
+        canonical = _canonical_coordinate(combo)
+        bucket = grouped.setdefault(canonical, {})
+        if coordinate in bucket:
+            raise FanoutError(
+                "invalid-selection: two saved variants name the same (content, render) coordinate "
+                f"({_coordinate_sort_key(canonical)!r}, {_render_sort_key(coordinate)!r}) — the "
+                "plan is an exactly-once cover (PC2, §22.2); loud, never a silent last-wins"
+            )
+        bucket[coordinate] = None
+    return tuple(
+        (combo, tuple(sorted(bucket, key=_render_sort_key)))
+        for combo, bucket in sorted(grouped.items(), key=lambda kv: _coordinate_sort_key(kv[0]))
     )
 
 

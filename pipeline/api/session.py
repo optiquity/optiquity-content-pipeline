@@ -81,6 +81,8 @@ from pipeline.fanout import (
     SelectionRequest,
     coordinate_from_payload,
     coordinate_payload,
+    render_coordinate_from_payload,
+    render_coordinate_payload,
 )
 from pipeline.folios import FolioError, create_folio
 from pipeline.grounding import build_pool
@@ -217,9 +219,39 @@ def _outlines_from_fields(raw: Any) -> list[tuple[Any, str]]:
     return pairs
 
 
+def _render_map_from_fields(raw: Any) -> list[tuple[Any, Any]]:
+    """The CLI-UX C5c saved-selection DRIVE map from the request payload (§20): a FLAT list of
+    `{"coordinate": {...}, "render": {...}}` variants -> a list of `(ContentCombination,
+    RenderCoordinate)` pairs `SelectionRequest` GROUPS by content coord (a same-(content, render)
+    duplicate stays loud there). Round-trips with `_request_payload`. Absent/empty -> `[]` (a normal
+    cartesian request; byte-identical to a non-driven session)."""
+    if not raw:
+        return []
+    if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
+        raise FanoutError(
+            "invalid-selection: `render_map` must be a list of {coordinate, render} variants "
+            f"(the C5c saved-selection DRIVE), got {type(raw).__name__}"
+        )
+    pairs: list[tuple[Any, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, Mapping) or "coordinate" not in entry or "render" not in entry:
+            raise FanoutError(
+                "invalid-selection: each `render_map` item is {coordinate: {...}, render: {...}} "
+                f"(C5c), got {entry!r}"
+            )
+        pairs.append(
+            (
+                coordinate_from_payload(entry["coordinate"]),
+                render_coordinate_from_payload(entry["render"]),
+            )
+        )
+    return pairs
+
+
 def _request_from_fields(fields: Mapping[str, Any]) -> SelectionRequest:
     """Build a `SelectionRequest` from a recipe + per-axis multi-selects (§8) + the DR-3
-    per-coordinate outline drive map (`outlines`)."""
+    per-coordinate outline drive map (`outlines`) + the CLI-UX C5c saved-selection DRIVE map
+    (`render_map` — the explicit fan-out replayed 1:1, grouped by content coordinate)."""
     return SelectionRequest(
         recipe=fields.get("recipe", ""),
         topics=tuple(fields.get("topics") or ()),
@@ -232,6 +264,7 @@ def _request_from_fields(fields: Mapping[str, Any]) -> SelectionRequest:
         output_types=tuple(fields.get("output_types") or ()),
         presentations=tuple(fields.get("presentations") or ()),
         outlines=_outlines_from_fields(fields.get("outlines")),
+        render_map=_render_map_from_fields(fields.get("render_map")),
     )
 
 
@@ -258,6 +291,17 @@ def _request_payload(request: SelectionRequest) -> dict[str, Any]:
     ]
     if outlines:
         payload["outlines"] = outlines
+    # CLI-UX C5c: FLATTEN the grouped saved-selection DRIVE map back to its wire form (one
+    # `{coordinate, render}` per render coord) so `continue-session` re-groups + re-resolves the
+    # identical plan (§21.6). OMITTED when empty — a non-driven session's token inputs are
+    # byte-identical to pre-C5c.
+    render_map = [
+        {"coordinate": coordinate_payload(combo), "render": render_coordinate_payload(coordinate)}
+        for combo, coordinates in request.render_map
+        for coordinate in coordinates
+    ]
+    if render_map:
+        payload["render_map"] = render_map
     return payload
 
 
