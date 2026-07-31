@@ -68,8 +68,9 @@ attributes:
     default: 3
     definition: >-
       §6.2 score `trusted` (scalar 1-5; ASSERTED; attach: instance). The user's
-      standing trust in this source relationship/track record. Serves selection and
-      conflict priority. Floor 3 = uncharacterized middle.
+      standing trust in this source relationship/track record: 1 = little trust
+      (unproven or unreliable); 3 = uncharacterized middle (the floor); 5 = fully
+      trusted (a long, reliable track record). Serves selection and conflict priority.
     definition_version: 1
   independence:
     type:
@@ -100,19 +101,23 @@ attributes:
     default: 3
     definition: >-
       §6.2 score `authoritative` (scalar 1-5; asserted default per kind; attach:
-      CONTENT-KIND -> per-fact). Vocabulary of record for the kind-tier score whose
-      default bundle lives on content-kinds/ entries (§6.1 SM5). A value set on a
-      source entry is a per-instance user assertion over the kind default (§6.2 —
-      stamped, divergence advisory-linted once, step 17 PA-9a).
+      CONTENT-KIND -> per-fact). How definitive this source is about its subject: 1 =
+      casual/unvetted; 3 = credible but non-authoritative (the middle); 5 = the
+      definitive record. Vocabulary of record for the kind-tier score whose default
+      bundle lives on content-kinds/ entries (§6.1 SM5). A value set on a source entry
+      is a per-instance user assertion over the kind default (§6.2 — stamped,
+      divergence advisory-linted once, step 17 PA-9a).
     definition_version: 1
   opinionated:
     type: slider
     default: 3
     definition: >-
       §6.2 score `opinionated` (scalar 1-5; asserted default per kind; attach:
-      CONTENT-KIND -> per-fact). Vocabulary of record — kind default bundles live on
-      content-kinds/ entries; a value here is a per-instance assertion (§6.2). Not
-      the inverse of `authoritative` (§6.2).
+      CONTENT-KIND -> per-fact). How much this source is stance/judgment rather than
+      record: 1 = pure record/fact; 3 = mixed (the middle); 5 = heavily editorial.
+      Vocabulary of record — kind default bundles live on content-kinds/ entries; a
+      value here is a per-instance assertion (§6.2). Not the inverse of `authoritative`
+      (§6.2).
     definition_version: 1
   freshness:
     type: text

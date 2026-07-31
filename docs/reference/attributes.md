@@ -16,7 +16,7 @@ Documented: 17 collections, 77 attributes.
 - **floor (default):** `3`
 - **definition version:** 1
 
-§6.2 score `authoritative` (scalar 1-5; asserted default per kind; attach: content-kind -> per-fact refine). How definitive this kind of content is about its subject. Serves grounding weight and conflict priority (§6.3: factual outranks opinion). NOT the inverse of `opinionated` (§6.2).
+§6.2 score `authoritative` (scalar 1-5; asserted default per kind; attach: content-kind -> per-fact refine). How definitive this kind of content is about its subject: 1 = casual/unvetted mention; 3 = a credible but non-authoritative account (the uncharacterized middle); 5 = the definitive record for the subject (a spec, standard, or system of record). Serves grounding weight and conflict priority (§6.3: factual outranks opinion). NOT the inverse of `opinionated` (§6.2).
 
 ### `freshness`
 
@@ -32,7 +32,7 @@ The kind-level FRESHNESS POLICY (§6.1 table: "freshness-policy"; §6.2 score `f
 - **floor (default):** `3`
 - **definition version:** 1
 
-§6.2 score `opinionated` (scalar 1-5; asserted default per kind; attach: content-kind -> per-fact refine). How much of this kind of content is stance/ judgment rather than record. Serves selection/weight; independently useful from `authoritative` — not its inverse (§6.2).
+§6.2 score `opinionated` (scalar 1-5; asserted default per kind; attach: content-kind -> per-fact refine). How much of this kind of content is stance/ judgment rather than record: 1 = pure record/fact; 3 = mixed record and view (the middle); 5 = heavily editorial (argument or opinion throughout). Serves selection/weight; independently useful from `authoritative` — not its inverse (§6.2).
 
 ### `review_status`
 
@@ -526,7 +526,7 @@ The adapter TYPE this instance binds (§6.1: `graphify`, `folder`, `url`, `pdf`,
 - **floor (default):** `3`
 - **definition version:** 1
 
-§6.2 score `authoritative` (scalar 1-5; asserted default per kind; attach: CONTENT-KIND -> per-fact). Vocabulary of record for the kind-tier score whose default bundle lives on content-kinds/ entries (§6.1 SM5). A value set on a source entry is a per-instance user assertion over the kind default (§6.2 — stamped, divergence advisory-linted once, step 17 PA-9a).
+§6.2 score `authoritative` (scalar 1-5; asserted default per kind; attach: CONTENT-KIND -> per-fact). How definitive this source is about its subject: 1 = casual/unvetted; 3 = credible but non-authoritative (the middle); 5 = the definitive record. Vocabulary of record for the kind-tier score whose default bundle lives on content-kinds/ entries (§6.1 SM5). A value set on a source entry is a per-instance user assertion over the kind default (§6.2 — stamped, divergence advisory-linted once, step 17 PA-9a).
 
 ### `connection`
 
@@ -574,7 +574,7 @@ The content-kind tag (§6.1 SM5): the content-kinds/ entry whose default score b
 - **floor (default):** `3`
 - **definition version:** 1
 
-§6.2 score `opinionated` (scalar 1-5; asserted default per kind; attach: CONTENT-KIND -> per-fact). Vocabulary of record — kind default bundles live on content-kinds/ entries; a value here is a per-instance assertion (§6.2). Not the inverse of `authoritative` (§6.2).
+§6.2 score `opinionated` (scalar 1-5; asserted default per kind; attach: CONTENT-KIND -> per-fact). How much this source is stance/judgment rather than record: 1 = pure record/fact; 3 = mixed (the middle); 5 = heavily editorial. Vocabulary of record — kind default bundles live on content-kinds/ entries; a value here is a per-instance assertion (§6.2). Not the inverse of `authoritative` (§6.2).
 
 ### `primariness`
 
@@ -598,7 +598,7 @@ The content-kind tag (§6.1 SM5): the content-kinds/ entry whose default score b
 - **floor (default):** `3`
 - **definition version:** 1
 
-§6.2 score `trusted` (scalar 1-5; ASSERTED; attach: instance). The user's standing trust in this source relationship/track record. Serves selection and conflict priority. Floor 3 = uncharacterized middle.
+§6.2 score `trusted` (scalar 1-5; ASSERTED; attach: instance). The user's standing trust in this source relationship/track record: 1 = little trust (unproven or unreliable); 3 = uncharacterized middle (the floor); 5 = fully trusted (a long, reliable track record). Serves selection and conflict priority.
 
 ## `topics` — schema_version 1
 
@@ -618,7 +618,7 @@ The editorial significance — why this subject matters now, and to whom it is w
 - **floor (default):** `3`
 - **definition version:** 1
 
-Manner slider (§5.2, 1-5): 1 = measured/calm, 5 = urgent/high-tempo.
+Manner slider (§5.2, 1-5) — the tempo and drive of the prose. 1 = measured/calm (long, even sentences, no urgency); 2 = steady; 3 = balanced pace (the default); 4 = brisk and driving; 5 = urgent/high-tempo (short, punchy sentences with momentum and a sense of now).
 
 ### `formality`
 
@@ -626,7 +626,7 @@ Manner slider (§5.2, 1-5): 1 = measured/calm, 5 = urgent/high-tempo.
 - **floor (default):** `3`
 - **definition version:** 1
 
-Register slider (§5.2, 1-5): 1 = casual/colloquial, 5 = formal/institutional. Slider values map-merge across cascade rungs (§12.3); tunable at recipe/run.
+Register slider (§5.2, 1-5) — how formal the wording is. 1 = casual/colloquial (contractions, slang, a note to a peer); 2 = relaxed but professional; 3 = balanced, neutral-professional (the default); 4 = precise and buttoned-up, few contractions; 5 = formal/institutional (a policy or compliance document — no contractions or colloquialism). Slider values map-merge across cascade rungs (§12.3); tunable at recipe/run.
 
 ### `guidelines`
 
@@ -642,7 +642,7 @@ Free-text voice guidelines (§5.2): diction, sentence rhythm, what to avoid. Pro
 - **floor (default):** `3`
 - **definition version:** 1
 
-Affect slider (§5.2, 1-5): 1 = entirely straight, 5 = playful/witty. Never a didactic lever — reading level is Persona (+ Format), §5.2 guardrail.
+Affect slider (§5.2, 1-5) — how playful vs. straight the tone is. 1 = entirely straight (no jokes or wordplay); 2 = an occasional light touch; 3 = lightly leavened (the default); 4 = wry, willing to be funny; 5 = playful/witty (actively reaches for the joke). Never a didactic lever — reading level is Persona (+ Format), §5.2 guardrail.
 
 ### `narrator_persona`
 
@@ -658,4 +658,4 @@ The narrator stance the writing speaks FROM (§5.2 "narrator-persona") — e.g. 
 - **floor (default):** `3`
 - **definition version:** 1
 
-Affect slider (§5.2, 1-5): 1 = detached/clinical, 5 = personal/empathetic.
+Affect slider (§5.2, 1-5) — how personal vs. clinical the tone is. 1 = detached/clinical (impersonal, no reassurance); 2 = reserved; 3 = professional-friendly (the default); 4 = warm and encouraging, speaks to the reader; 5 = personal/empathetic (openly supportive, second-person, acknowledges the reader's situation).

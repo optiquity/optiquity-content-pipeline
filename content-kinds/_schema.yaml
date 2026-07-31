@@ -24,8 +24,10 @@ attributes:
     definition: >-
       §6.2 score `authoritative` (scalar 1-5; asserted default per kind; attach:
       content-kind -> per-fact refine). How definitive this kind of content is about
-      its subject. Serves grounding weight and conflict priority (§6.3: factual
-      outranks opinion). NOT the inverse of `opinionated` (§6.2).
+      its subject: 1 = casual/unvetted mention; 3 = a credible but non-authoritative
+      account (the uncharacterized middle); 5 = the definitive record for the subject
+      (a spec, standard, or system of record). Serves grounding weight and conflict
+      priority (§6.3: factual outranks opinion). NOT the inverse of `opinionated` (§6.2).
     definition_version: 1
   opinionated:
     type: slider
@@ -33,8 +35,10 @@ attributes:
     definition: >-
       §6.2 score `opinionated` (scalar 1-5; asserted default per kind; attach:
       content-kind -> per-fact refine). How much of this kind of content is stance/
-      judgment rather than record. Serves selection/weight; independently useful from
-      `authoritative` — not its inverse (§6.2).
+      judgment rather than record: 1 = pure record/fact; 3 = mixed record and view
+      (the middle); 5 = heavily editorial (argument or opinion throughout). Serves
+      selection/weight; independently useful from `authoritative` — not its inverse
+      (§6.2).
     definition_version: 1
   freshness:
     type: text
