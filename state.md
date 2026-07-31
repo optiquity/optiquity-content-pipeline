@@ -9,11 +9,39 @@
 
 ## Current phase
 
-**✅ FRAMEWORK BUILD COMPLETE — 41/41 steps + R1.** All phases done; final verification + delivery
-(step 41) PASSED; independent cross-reference audit verdict **DELIVERABLE**. Gate G2 CLOSED; the step-33
-§21.7-code HARD GATE CLOSED at step 39; the step-34 §21.9 gate correctly OPEN/honored. HEAD `5f58d63`
-(plus this final state.md delivery commit). **Maintainer action outstanding: apply the prepared CLAUDE.md
-diff** (`ops-handoff/build/step-40/claude-md-proposed.diff`).
+**✅ CORE BUILD COMPLETE (41/41 + R1) — and POST-BUILD EXTENSIONS shipped on top.** The core 41-step
+build delivered at `5f58d63` (final verification PASSED; cross-reference audit **DELIVERABLE**; Gate G2
+CLOSED, the §21.7-code HARD GATE CLOSED at step 39, the §21.9 gate correctly OPEN/honored). The prepared
+CLAUDE.md diff was applied post-delivery (`5b1c584`). Since then a series of ratified design-record
+increments + the friendly CLI surface + the authoring layer landed. **Current HEAD `e8a7963`.** Detailed
+per-increment records live in the commit history + `ops-handoff/`; the summary below is orientation only.
+
+**Post-build increments (each planned + coder→reviewer→commit):**
+- **DR-1 … DR-9** — the HTTP shim (poll/webhook); mixed-media assets + `{type=diagram}` (grounded
+  node/edge diagrams with a HARD grounding gate + a diagram-styles registry); content templates (§ section
+  conformance / academic-paper); style compose-vs-render (per-venue csl); general grounding (advisory
+  Review-1 audit); citations (`[@key]` → references); optional editable outlines (emit/drive); the
+  `lexicons/` house-style registry; and DR-9 — the `format.diagram_disposition` diagram-nudge knob.
+- **CLI-UX (friendly invocation surface)** — `pipeline generate` / `preview` / `outline emit|drive` /
+  `list` / `get`, dry-run by default; `--go` is the ONLY spending path (subscription-only, §21.9
+  money-safety preserved — `invoke begin-session` stays exit 3); the C1 explain projection + spend estimate.
+- **Authoring layer (C1–C5c)** — `pipeline docs attributes` reference generator (+ drift test); the shared
+  authoring core; `recipe new` / `--from` derive; `entry new` scaffolder; the diagram-disposition gate
+  (require = grounded-diagram-or-refuse, suppress, resist/prefer, both D3 pre-writer contradiction
+  directions); and the saved-selection layer — new `selections/` registry root → `generate
+  --save-selection` (save a fan-out as base + variant deltas) → `generate --selection ID` (load + drive
+  1:1), round-trip proven byte-identical at both `artifact_ids` and `deliverable_ids` with no cartesian
+  re-expansion.
+- **C6 — slider-legend ablation (measure-gated):** a real subscription A/B showed NO output gain from
+  routing the voice-slider legend into the writer prompt (a capable model already reads the bare numbers)
+  → **NOT shipped**. The legend content instead enriched the human-facing slider docs (`e8a7963`): all 9
+  slider definitions now describe the 1–5 gradient.
+- **Version-lint fix (`330fc6d`):** the SV11 schema-version lint was baselining the last COMMIT (per-commit
+  bump demands); now RELEASE-relative — baselines the last release via a committed marker
+  (`pipeline/released_baseline`, absent pre-release), so pre-release schema evolution is free and only the
+  first change AFTER a release bumps. Aligns the code with the documented §11.2 / `5b1c584` release-only
+  policy. Verified not-weakened (fires with an explicit baseline) and not-toothless (all within-tree
+  invariants still fire pre-release).
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
@@ -71,7 +99,8 @@ diff** (`ops-handoff/build/step-40/claude-md-proposed.diff`).
   (`ops-handoff/build/step-40/claude-md-proposed.diff`); (2) optional — run a full live nine-axis
   `mvp-demo` against a purpose-built demo instance; (3) optional — `graphifyy[mcp]` install (closes G3's
   serve-MCP leg, non-blocking). **Backlog (no v1 MUST):** the §21.8 render-verb `{"ir":…}`-vs-raw-IR read
-  fix; item-13's CI halves (guard tightening + SV11 PR-base wiring); the 3 optional-hardening items.
+  fix; item-13's CI halves — guard tightening (`6b196a6`) and the schema-lint version-discipline, now
+  RELEASE-relative (`330fc6d`) — both DONE; the 3 optional-hardening items.
 
 ### POST-DELIVERY design + build (2026-07-16 → 07-18)
 
@@ -661,10 +690,11 @@ authorization given in the ordering message; outside the 33-sequence):
 Sequenced AFTER step 18 closes so the new registry files don't contaminate step 18's review scope checks.
 Also in flight: a researcher report proposing ≥10 candidate default entries per dimension (ideas only,
 maintainer picks; report-only, no repo changes).
-- **→ Step 40 (from step-13 review):** (a) unknown-registry-root residual — a NEW top-level dir (e.g.
-  `voices2/`) is outside the PA-1 whitelist scope and passes the guard silently; sweep must reconcile the
-  root list with the repo map. (b) SV11 diff clauses run against a PR-base baseline in CI only where the
-  event provides one — verify the wiring covers the real workflow when the repo gains PRs.
+- **→ Step 40 (from step-13 review) — RESOLVED (GAP-4):** (a) unknown-registry-root residual — a NEW
+  top-level dir outside the whitelist passed the guard silently → hardened to a HARD-FAIL by F-b
+  (`6b196a6`). (b) the SV11 diff clauses ran against a PR-base baseline in CI (per-commit) → superseded by
+  the RELEASE-relative version-lint (`330fc6d`): baselines the last release via a committed marker, inert
+  pre-release, so there is no PR-event-dependent wiring left to verify. See known-issues GAP-4 (Resolved).
 - **Housekeeping (from step-9 review RV-5):** `pipeline/attrtypes.py` fails `ruff format --check`
   (cosmetic; enforced battery is `ruff check`, which is green) — normalize opportunistically in a later
   step that touches the file; never as a standalone out-of-sequence commit.

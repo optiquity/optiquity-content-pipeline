@@ -31,24 +31,6 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
   fail-safe the `except` branches.
 - **Source:** step-34 review HARD GATE.
 
-### GAP-4 — CI guards: two functional halves not yet wired
-- **Status:** Partially resolved (a hardened — F-b; b still open)
-- **Severity:** Low
-- **Symptom:** (a) a brand-new top-level registry directory is outside the content-guard's known-root
-  whitelist and passes silently; (b) the SV11 schema-lint PR-base diff clauses only activate on a PR
-  event, and the repo has no PRs yet, so that wiring is unverified end-to-end.
-  **→ (a) RESOLVED (F-b, `6b196a6`):** `scripts/check-no-content.sh` no longer passes silently — an
-  ADDITIVE registry-root coverage check now HARD-FAILS (`LEAK[unknown-registry-root]`, exit 1) on any
-  top-level directory carrying the SV4 registry marker (a co-located `<dir>/_schema.yaml`) that is not
-  in `REGISTRY_ROOTS`, so a new registry root can no longer ship UNSCANNED. **FULL closure of (a) for
-  DR-2 arrives when DR-2 ships `lexicons/` and adds `lexicons` to `REGISTRY_ROOTS`** (whitelisting =
-  scanning) — the guard now FORCES that as a conscious decision (CI fails until it does). **(b) is
-  unchanged — still OPEN.**
-- **Proposed fix:** (a) tighten `scripts/check-no-content.sh` to fail on an unknown registry root —
-  **DONE (F-b, `6b196a6`)**; (b) verify the SV11 PR-base wiring in `.github/workflows` once the repo
-  gains PRs — **still open** (verifiable only end-to-end once the repo has PRs).
-- **Source:** step-13 review, deferred through step 40; (a) hardened by F-b (`6b196a6`).
-
 ### GAP-7 — The ideation phase (mission stage 1) is not built — topics must be hand-authored
 - **Status:** Open (deliberate v1 scope boundary, tracked here as a missing capability)
 - **Severity:** Medium–High (a whole missing pipeline stage — half of the mission's two-stage design)
@@ -1196,6 +1178,22 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
 The build's HARD GATES were closed inline during the build (gate G2 at steps 37–38, the §21.7
 generation-code gate at step 39); those are recorded in `state.md` and the commit history. The
 entries below are post-build defects, starting with the **`render-output-fix`** series (2026-07-16).
+
+### GAP-4 — CI guards: two functional halves not yet wired — RESOLVED (a: `6b196a6`; b: `330fc6d`)
+- **Severity:** Low
+- **(a) unknown-registry-root** — a brand-new top-level registry dir could pass the content-guard
+  silently. RESOLVED by F-b (`6b196a6`): `check-no-content.sh` HARD-FAILS (`LEAK[unknown-registry-root]`,
+  exit 1) on any top-level dir carrying an `_schema.yaml` that is not in `REGISTRY_ROOTS`, so a new
+  registry root can no longer ship unscanned (fully closed once `lexicons/` shipped and joined
+  `REGISTRY_ROOTS` at DR-2 C1).
+- **(b) SV11 PR-base wiring** — the schema-lint version-diff clauses were wired to a PR-base baseline
+  (per-commit), flagged as unverified end-to-end. RESOLVED by superseding that wiring entirely
+  (`330fc6d`): the version-lint is now RELEASE-relative — it baselines the last release via a committed
+  marker (`pipeline/released_baseline`, absent pre-release), so the version-bump clauses are inert during
+  development and enforce only from the first change after a release (aligning the code with the §11.2 /
+  `5b1c584` release-only bump policy). There is no PR-event-dependent path left to verify; CI now runs
+  `schema-lint.sh` unconditionally on push and PR.
+- **Source:** step-13 review; (a) F-b `6b196a6`; (b) release-relative lint `330fc6d`.
 
 ### GAP-10 — The `render` verb minted under a bare check-then-mint with NO claim (double-spend race) — RESOLVED (2026-07-23)
 - **Severity:** Medium (a COST leak, never corruption — the no-replace `commit_new` still admits exactly
