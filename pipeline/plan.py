@@ -189,6 +189,19 @@ class Plan:
     #: byte-identical with and without `explain` (the C1 identity invariant). A trailing
     #: defaulted field after the non-defaulted fields keeps `Plan(...)` back-compatible.
     effective_settings: Mapping[str, Any] | None = None
+    #: CLI-UX C5b (`generate --save-selection`): the OPTIONAL floor-faithful variant capture —
+    #: one `{coordinate, render}` delta PER DELIVERABLE, ordered by sorted artifact-id then the
+    #: run's request-authored render order (NOT `deliverable_ids()` order, which sorts each item's
+    #: deliverables by deliverable-id); the array order is not load-bearing — it never enters any
+    #: id, and C5c groups by content coordinate and re-sorts on reload. Read off this SAME single
+    #: resolve (never a second `resolve_plan`). `coordinate` carries only the
+    #: run's explicit content picks (unselected axes OMITTED — they ride the base/cascade on
+    #: reload, reference-faithful D10; goals §7.2-sorted); `render` carries the deliverable's one
+    #: render coordinate (platform always concrete, unselected slots omitted). Like
+    #: `effective_settings` it is a pure READ side-channel gated on `explain`: NEVER assembled
+    #: into `_payload`/`_item_payload`, so `plan_hash`/`artifact_ids()`/`deliverable_ids()` are
+    #: byte-identical with and without it. NONE unless `resolve_plan(explain=True)`.
+    selection_variants: tuple[Mapping[str, Any], ...] | None = None
 
     def artifact_ids(self) -> tuple[str, ...]:
         """The wave-0 cover keys (§22.2; re-resolve + diff detects a missed item)."""
@@ -417,6 +430,39 @@ def _dim_view(bound: BoundDimension) -> dict[str, Any]:
     }
 
 
+def _selection_variant(combo: ContentCombination, coordinate: RenderCoordinate) -> dict[str, Any]:
+    """One saved-selection variant (CLI-UX C5b): a floor-faithful `{coordinate, render}` delta
+    for ONE deliverable, read off the single resolve (`combo` + `coordinate` are the REQUEST-level
+    fanout picks, not the resolved ids).
+
+    The content `coordinate` carries ONLY the run's explicit content picks — an unselected axis is
+    `None` in the `ContentCombination` and is OMITTED, so on reload it rides the base recipe / the
+    cascade rather than being frozen (reference-faithful, D10); `goals` sort to §7.2 canonical
+    order. `render` carries the deliverable's single render coordinate: `platform` is always
+    concrete (§7.4 has no platform-less deliverable) and the unselected render slots are omitted
+    (they ride the cascade). A pure READ side-channel — never an identity input.
+    """
+    content: dict[str, Any] = {}
+    if combo.topic is not None:
+        content["topic"] = combo.topic
+    if combo.persona is not None:
+        content["persona"] = combo.persona
+    if combo.format is not None:
+        content["format"] = combo.format
+    if combo.voice is not None:
+        content["voice"] = combo.voice
+    if combo.goals is not None:
+        content["goals"] = sorted(combo.goals)
+    render: dict[str, Any] = {"platform": coordinate.platform}
+    if coordinate.language is not None:
+        render["language"] = coordinate.language
+    if coordinate.output_type is not None:
+        render["output_type"] = coordinate.output_type
+    if coordinate.presentation is not None:
+        render["presentation"] = coordinate.presentation
+    return {"coordinate": content, "render": render}
+
+
 def _compose_dims(compose: ComposeResolution) -> dict[str, Any]:
     """The explain view of one item's M2-compose dimensions (§13): topic/persona/format/voice
     (+ each stacked goal) as `_dim_view`s, plus the DR-2 house-style lexicon when one is bound.
@@ -467,6 +513,10 @@ def resolve_plan(
     """
     log = _WarningLog()
     effective_settings: dict[str, Any] | None = {} if explain else None
+    # C5b: the floor-faithful per-deliverable variant capture (keyed by artifact-id so it
+    # flattens in `deliverable_ids()` order below). Gated on `explain` exactly like
+    # `effective_settings` — a pure read side-channel, never an identity input.
+    selection_capture: dict[str, list[dict[str, Any]]] | None = {} if explain else None
     recipe_entry = env.resolver.resolve("recipes", request.recipe)
     recipe_values = parse_value_bindings(
         recipe_entry.effective.get("values"), where=f"recipes/{recipe_entry.id}"
@@ -558,6 +608,15 @@ def resolve_plan(
             item_view = _compose_dims(compose)
             item_view["render"] = dict(render_sink or {})
             effective_settings[artifact_id] = item_view
+        if selection_capture is not None:
+            # C5b: one variant per resulting deliverable — this item's content combo (floor-
+            # faithful) × each RENDER coordinate the run fanned out (`coordinates` is the run's
+            # OWN render fanout, so the saved array is the product ALREADY applied, driven 1:1 on
+            # reload, never re-multiplied). A fanout-collapse duplicate `continue`s above, so a
+            # collapsed combo contributes no variant (PC2 exactly-once cover).
+            selection_capture[artifact_id] = [
+                _selection_variant(combo, coordinate) for coordinate in coordinates
+            ]
 
     if not coordinates:
         # The step-16 RV-1 decision: a compose-only plan with configured platform.*
@@ -579,6 +638,15 @@ def resolve_plan(
 
     ordered = tuple(items[key] for key in sorted(items))
     payload = _payload(env.workspace, request.recipe, source_subset, source_commit, ordered)
+    # C5b: flatten the per-item capture by sorted artifact-id, then each item's variants in the
+    # run's request-authored render (`coordinates`) order. This is NOT `deliverable_ids()` order
+    # (that sorts each item's deliverables by deliverable-id); the array order is not load-bearing
+    # — a pure read side-channel, never in `payload`/`plan_hash`, and C5c re-sorts on reload.
+    selection_variants: tuple[Mapping[str, Any], ...] | None = None
+    if selection_capture is not None:
+        selection_variants = tuple(
+            variant for key in sorted(items) for variant in selection_capture[key]
+        )
     return Plan(
         workspace=env.workspace,
         recipe=request.recipe,
@@ -588,4 +656,5 @@ def resolve_plan(
         plan_hash=digest_full(payload),
         warnings=log.collected(),
         effective_settings=effective_settings,
+        selection_variants=selection_variants,
     )

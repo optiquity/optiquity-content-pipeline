@@ -65,21 +65,30 @@ __all__ = [
     "AXIS_TO_SLOT",
     "ENTRY_REFERENCING_SLOTS",
     "RECIPE_COLLECTION",
+    "RENDER_COORDINATE_SLOTS",
+    "SELECTION_COLLECTION",
+    "SELECTION_CONTENT_SLOTS",
     "SET_VALUED_SLOTS",
     "SINGLE_VALUED_SLOTS",
     "VALUES_SLOT",
     "AuthoringError",
     "EditSet",
     "RecipeTarget",
+    "SelectionTarget",
     "build_edit_set",
     "bundle_from_entry",
     "ensure_writable",
     "infer_provenance",
+    "infer_selection_provenance",
     "load_recipe_schema",
+    "load_selection_schema",
     "merge_bundle",
     "resolve_recipe_target",
+    "resolve_selection_target",
     "serialize_recipe",
+    "serialize_selection",
     "write_recipe",
+    "write_selection",
 ]
 
 # --- The recipe binding vocabulary (design §8; recipes/_schema.yaml) ----------------------
@@ -610,6 +619,323 @@ def write_recipe(
     target = resolve_recipe_target(root, recipe_id, bundle, workspace=workspace)
     text = serialize_recipe(
         bundle, recipe_id=target.recipe_id, provenance=target.provenance, body=body, schema=schema
+    )
+    ensure_writable(target.path, force=force, isatty=isatty, confirm=confirm)
+    target.path.parent.mkdir(parents=True, exist_ok=True)
+    target.path.write_text(text, encoding="utf-8")
+    return target
+
+
+# --- The saved-selection serializer (CLI-UX C5b; §8 / authoring D4) ------------------------
+#
+# `generate --save-selection ID` persists a run's OWN fan-out as a replayable selection:
+# `{base, variants}` where `base` is the recipe REFERENCE the run used (kept as a reference so a
+# later base edit surfaces honestly as a new id, D10) and `variants` is the EXPLICIT per-deliverable
+# array (`plan.selection_variants` — the product ALREADY applied, driven 1:1 on reload, NEVER
+# re-multiplied). This is the SAVE side; C5c loads + drives it. Reuses the SAME writer/provenance/
+# overwrite-guard/dumper the recipe path uses — a saved selection is a small registry file like any
+# other (§6.1), boundary-guarded exactly like a recipe (a client `x-` binding NEVER lands public).
+
+#: The registry root saved selections live in (framework mechanism, C5a).
+SELECTION_COLLECTION = "selections"
+
+#: A variant's content-coordinate slots (§8 M2 content picks): a floor-faithful subset of the
+#: run's single-valued content combination — each present slot is an explicit pick; an unselected
+#: axis is OMITTED (it rides the base/cascade on reload). `goals` is the set-valued stacked pick.
+SELECTION_CONTENT_SLOTS = ("topic", "persona", "format", "voice", "goals")
+
+#: A variant's render-coordinate slots (§8 M3 rendering; §12.3). `platform` is MANDATORY (§7.4:
+#: no platform-less deliverable); the other three are omitted when unselected (cascade defaults).
+RENDER_COORDINATE_SLOTS = ("platform", "language", "output_type", "presentation")
+
+_SELECTION_CONTENT = frozenset(SELECTION_CONTENT_SLOTS)
+_RENDER = frozenset(RENDER_COORDINATE_SLOTS)
+_VARIANT_KEYS = frozenset(("coordinate", "render", VALUES_SLOT))
+
+
+def load_selection_schema() -> Schema:
+    """Load the framework selections schema (`selections/_schema.yaml`) — the serializer's SSOT."""
+    return load_schema(_framework_root() / SELECTION_COLLECTION / SCHEMA_FILENAME)
+
+
+def _validate_variant(variant: Any, index: int) -> dict[str, Any]:
+    """Structurally validate ONE `{coordinate, render, values?}` variant (B3: the delta interior
+    is UNTYPED in the registry manifest, so it is validated HERE at save, not by the schema).
+
+    `coordinate` is a non-empty map of content-coordinate slots (each present slot a §7.4 slug, or
+    a slug list for `goals`); `render` is a map carrying at least a concrete `platform` (§7.4) plus
+    optional render slots; `values` (when present) is the run's shared value-tweak map. Every id is
+    slug-validated loud; an unknown key or a missing `platform` is a typed refusal (never silent).
+    """
+    where = f"variant #{index}"
+    if not isinstance(variant, Mapping):
+        raise AuthoringError(
+            f"invalid-authoring: {where} must be a {{coordinate, render, values?}} mapping, "
+            f"got {type(variant).__name__}"
+        )
+    extra = set(variant) - _VARIANT_KEYS
+    if extra:
+        raise AuthoringError(
+            f"invalid-authoring: {where} has unknown key(s) {sorted(extra)} — a variant holds only "
+            f"{sorted(_VARIANT_KEYS)}"
+        )
+    coordinate = variant.get("coordinate")
+    if not isinstance(coordinate, Mapping) or not coordinate:
+        raise AuthoringError(
+            f"invalid-authoring: {where} needs a non-empty `coordinate` (the content picks); "
+            f"got {coordinate!r}"
+        )
+    result_coordinate: dict[str, Any] = {}
+    for slot, value in coordinate.items():
+        if slot not in _SELECTION_CONTENT:
+            raise AuthoringError(
+                f"invalid-authoring: {where} coordinate slot {slot!r} is not a content slot "
+                f"{sorted(_SELECTION_CONTENT)}"
+            )
+        if slot == "goals":
+            if not isinstance(value, (list, tuple)) or not value:
+                raise AuthoringError(
+                    f"invalid-authoring: {where} coordinate `goals` must be a non-empty id list, "
+                    f"got {value!r}"
+                )
+            result_coordinate[slot] = [_require_slug(g, f"{where} goal") for g in value]
+        else:
+            result_coordinate[slot] = _require_slug(value, f"{where} {slot}")
+
+    render = variant.get("render")
+    if not isinstance(render, Mapping) or "platform" not in render:
+        raise AuthoringError(
+            f"invalid-authoring: {where} needs a `render` map with a concrete `platform` "
+            f"(§7.4: a deliverable requires routing); got {render!r}"
+        )
+    result_render: dict[str, Any] = {}
+    for slot in RENDER_COORDINATE_SLOTS:  # schema-slot order → deterministic frontmatter
+        if slot in render:
+            result_render[slot] = _require_slug(render[slot], f"{where} render {slot}")
+    unknown_render = set(render) - _RENDER
+    if unknown_render:
+        raise AuthoringError(
+            f"invalid-authoring: {where} render slot(s) {sorted(unknown_render)} — a render "
+            f"coordinate holds only {sorted(_RENDER)}"
+        )
+
+    normalized: dict[str, Any] = {"coordinate": result_coordinate, "render": result_render}
+    values = variant.get(VALUES_SLOT)
+    if values is not None:
+        if not isinstance(values, Mapping):
+            raise AuthoringError(
+                f"invalid-authoring: {where} `values` must be a value-tweak map (§12.5), "
+                f"got {type(values).__name__}"
+            )
+        if values:  # omit an empty map (floor-faithful)
+            normalized[VALUES_SLOT] = dict(values)
+    return normalized
+
+
+def _prepare_variants(
+    variants: Sequence[Mapping[str, Any]], values: Mapping[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Validate each variant and fold the run's SHARED value-tweak map onto every variant under
+    the `values` key (§12.5 terminology — a persisted scope holds CONFIGURATION, never an
+    "override"). The shared map is the same for the whole run; a variant that already carries its
+    own `values` is refused (the caller supplies one or the other, never both)."""
+    prepared: list[dict[str, Any]] = []
+    shared = dict(values) if values else {}
+    for index, variant in enumerate(variants):
+        normalized = _validate_variant(variant, index)
+        if shared:
+            if VALUES_SLOT in normalized:
+                raise AuthoringError(
+                    f"invalid-authoring: variant #{index} already carries `values` while a shared "
+                    "run value-tweak map was also supplied — pass one, never both"
+                )
+            normalized[VALUES_SLOT] = dict(shared)
+        prepared.append(normalized)
+    return prepared
+
+
+def infer_selection_provenance(
+    base: str, variants: Sequence[Mapping[str, Any]]
+) -> str:
+    """`framework` unless the base OR any variant binding is `x-`-scoped → `instance` (§11.4).
+
+    Scans the `base` recipe reference, every variant's content-coordinate ids + render-coordinate
+    ids, and every operand in a variant's `values` map (a values operand can be a ref-typed entry
+    id). Any client/instance entry carries the reserved `x-` prefix by construction (§11.4), so the
+    prefix IS the structural signal — no registry resolution needed (this stays a leaf), and it
+    closes the rule-4 leak of a client id reaching the public `selections/` root via a saved run.
+    """
+    if isinstance(base, str) and base.startswith(INSTANCE_ID_PREFIX):
+        return PROVENANCE_INSTANCE
+    for variant in variants:
+        coordinate = variant.get("coordinate") or {}
+        for value in coordinate.values():
+            ids = value if isinstance(value, (list, tuple)) else (value,)
+            if any(isinstance(i, str) and i.startswith(INSTANCE_ID_PREFIX) for i in ids):
+                return PROVENANCE_INSTANCE
+        render = variant.get("render") or {}
+        for value in render.values():
+            if isinstance(value, str) and value.startswith(INSTANCE_ID_PREFIX):
+                return PROVENANCE_INSTANCE
+        if _values_carry_instance_id(variant.get(VALUES_SLOT)):
+            return PROVENANCE_INSTANCE
+    return PROVENANCE_FRAMEWORK
+
+
+@dataclass(frozen=True)
+class SelectionTarget:
+    """Where a selection writes: its id, inferred provenance, home path, and workspace (if any)."""
+
+    selection_id: str
+    provenance: str
+    path: Path
+    workspace: str | None
+
+
+def resolve_selection_target(
+    root: str | Path,
+    selection_id: str,
+    base: str,
+    variants: Sequence[Mapping[str, Any]],
+    *,
+    workspace: str | None = None,
+) -> SelectionTarget:
+    """Infer provenance from the base + variant bindings and compute the home path — REFUSING a
+    client binding into the public `selections/` root (rule 4, §10), exactly like a recipe.
+
+    A client/`x-` binding forces `instance`: the id MUST carry `x-` and a workspace MUST be named —
+    otherwise the write is refused (a client-topic selection never leaks into the public repo). A
+    framework-only selection homes public (`selections/<id>.md`); an instance selection homes under
+    the workspace (`workspaces/<ws>/selections/x-<id>.md`) via the isolation guard.
+    """
+    _require_slug(selection_id, "selection id")
+    binding_provenance = infer_selection_provenance(base, variants)
+    id_is_instance = selection_id.startswith(INSTANCE_ID_PREFIX)
+
+    if binding_provenance == PROVENANCE_INSTANCE and not id_is_instance:
+        raise AuthoringError(
+            f"invalid-authoring: selection {selection_id!r} binds a client/instance "
+            f"('{INSTANCE_ID_PREFIX}') entry but is not an instance id — a client-binding "
+            f"selection takes an '{INSTANCE_ID_PREFIX}' id under a --workspace, never the public "
+            "repo (rule 4, §10)"
+        )
+
+    provenance = (
+        PROVENANCE_INSTANCE
+        if (id_is_instance or binding_provenance == PROVENANCE_INSTANCE)
+        else PROVENANCE_FRAMEWORK
+    )
+    root = Path(root)
+    if provenance == PROVENANCE_INSTANCE:
+        if not workspace:
+            raise AuthoringError(
+                f"invalid-authoring: instance selection {selection_id!r} requires a --workspace "
+                "home (instance config lives under workspaces/<client>/, rule 2/§10)"
+            )
+        ws_dir = validate_workspace_name(workspace, root)
+        home = ws_dir / SELECTION_COLLECTION / f"{selection_id}.md"
+        return SelectionTarget(selection_id, provenance, home, workspace)
+
+    home = root / SELECTION_COLLECTION / f"{selection_id}.md"
+    return SelectionTarget(selection_id, provenance, home, None)
+
+
+def _selection_body(selection_id: str) -> str:
+    return (
+        f"# {selection_id} — saved selection\n\n"
+        "Saved by `pipeline generate --save-selection`. `base` is the recipe REFERENCE the run "
+        "used; `variants` is the run's OWN fan-out (the product already applied) — reloaded 1:1, "
+        "never re-multiplied (§8, authoring D4).\n"
+    )
+
+
+def serialize_selection(
+    base: str,
+    variants: Sequence[Mapping[str, Any]],
+    *,
+    selection_id: str,
+    provenance: str,
+    body: str | None = None,
+    schema: Schema | None = None,
+) -> str:
+    """Render a schema-conforming `selections/<id>.md`: envelope + the `{base, variants}` fields.
+
+    Floor-faithful: an empty `base` (`""`) and an empty `variants` (`[]`) are OMITTED so the file
+    rides the C5a schema floors and round-trips (§5.4 one-file-add). The envelope is closed-schema
+    validated (base is text, variants is a list) and each variant is structurally validated (B3:
+    the untyped-list interior is checked here, not by the manifest), so the written file lints green
+    and re-parses to the same bindings.
+    """
+    schema = schema or load_selection_schema()
+    _require_slug(selection_id, "selection id")
+    if provenance not in (PROVENANCE_FRAMEWORK, PROVENANCE_INSTANCE):
+        raise AuthoringError(
+            f"invalid-authoring: provenance must be {PROVENANCE_FRAMEWORK!r} or "
+            f"{PROVENANCE_INSTANCE!r} (§10), got {provenance!r}"
+        )
+    _validate_namespace(selection_id, provenance)
+
+    prepared = [_validate_variant(variant, index) for index, variant in enumerate(variants)]
+
+    envelope: dict[str, Any] = {}
+    if base:
+        envelope["base"] = base
+    if prepared:
+        envelope["variants"] = prepared
+    # Closed-schema validation (SV3): base is text, variants is an (untyped) list — reject a
+    # mistyped envelope here so the written file is conforming by construction.
+    schema.validate_attribute_values(
+        envelope, where=f"{SELECTION_COLLECTION}/{selection_id}"
+    )
+
+    frontmatter: dict[str, Any] = {
+        "id": selection_id,
+        "provenance": provenance,
+        "schema_version": schema.schema_version,
+    }
+    for slot in schema.attributes:  # schema-declared order (base, variants) → deterministic
+        if slot in envelope:
+            frontmatter[slot] = envelope[slot]
+
+    body_text = _selection_body(selection_id) if body is None else body
+    text = "---\n" + _dump_yaml(frontmatter) + "---\n"
+    if body_text:
+        text += body_text if body_text.endswith("\n") else body_text + "\n"
+    return text
+
+
+def write_selection(
+    root: str | Path,
+    selection_id: str,
+    base: str,
+    variants: Sequence[Mapping[str, Any]],
+    *,
+    values: Mapping[str, Any] | None = None,
+    workspace: str | None = None,
+    body: str | None = None,
+    force: bool = False,
+    isatty: Callable[[], bool] | None = None,
+    confirm: Callable[[Path], bool] | None = None,
+    schema: Schema | None = None,
+) -> SelectionTarget:
+    """Fold the shared `values` map, provenance-home, overwrite-guard, and write ONE selection file.
+
+    The `generate --save-selection` verb (C5b) drives this: `variants` is `plan.selection_variants`
+    (per-deliverable `{coordinate, render}` deltas), `values` the run's shared `--set` tweak map
+    folded onto each variant under the `values` key. Reuses the recipe path's provenance/overwrite/
+    dumper pieces; writes exactly one file (§5.4 one-file-add), homed public or under the workspace
+    per the boundary (rule 4).
+    """
+    schema = schema or load_selection_schema()
+    prepared = _prepare_variants(variants, values)
+    target = resolve_selection_target(root, selection_id, base, prepared, workspace=workspace)
+    text = serialize_selection(
+        base,
+        prepared,
+        selection_id=target.selection_id,
+        provenance=target.provenance,
+        body=body,
+        schema=schema,
     )
     ensure_writable(target.path, force=force, isatty=isatty, confirm=confirm)
     target.path.parent.mkdir(parents=True, exist_ok=True)

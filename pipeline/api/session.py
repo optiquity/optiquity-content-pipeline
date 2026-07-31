@@ -601,6 +601,11 @@ def _begin_session(
         # (printed `spend-scope: N paid artifact(s)`). Nothing here feeds `inputs`/the token.
         context["effective_settings"] = plan.effective_settings
         context["spend_scope"] = len(plan.artifact_ids())
+        # C5b: the floor-faithful per-deliverable variant capture the friendly `generate
+        # --save-selection` door serializes (`__main__._save_selection`). A JSON-native read
+        # side-channel captured off this SAME resolve — never folded into `inputs`/the token,
+        # so the minted plan_hash/ids are byte-identical with and without the capture.
+        context["selection_variants"] = list(plan.selection_variants or ())
     if ctx.params.get("want_parallel_plan"):
         # §22.2/§22.4: hand back the wave plan + width advice — no new verb (PC6). The token
         # is unchanged (an immutable plan-context under parallel mode; workers coordinate via

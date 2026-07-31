@@ -991,6 +991,46 @@ def _attach_outline_or_usage(normalized: "object", outline_path: str, prog: str)
     return 0
 
 
+def _save_selection(
+    result: dict, normalized: "object", root: str, selection_id: str, *, force: bool, prog: str
+) -> int:
+    """CLI-UX C5b: serialize + write this run's OWN fan-out as a replayable selection file.
+
+    Reads the floor-faithful per-deliverable variant capture off the SAME begin-session resolve
+    (`context["selection_variants"]` — never a second `resolve_plan`); `base` is the recipe
+    REFERENCE the run used and the run's shared `--set` tweaks persist as each variant's `values`
+    (§12.5). A provenance/overwrite refusal is exit 1 — a client (`x-`) binding homes under
+    `workspaces/<ws>/selections/`, never the public root (rule 4). Returns 0 on success."""
+    from pipeline import authoring
+
+    context = result["results"][0].get("context") or {}
+    variants = context.get("selection_variants") or []
+    if not variants:
+        print(
+            f"pipeline {prog}: --save-selection: this plan resolves no deliverable to save — a "
+            "saved selection replays a fan-out (select a --platform, §7.4)",
+            file=sys.stderr,
+        )
+        return 1
+    base = normalized.params.get("recipe", "")
+    values = normalized.params.get("overrides") or None
+    try:
+        target = authoring.write_selection(
+            root,
+            selection_id,
+            base,
+            variants,
+            values=values,
+            workspace=normalized.workspace,
+            force=force,
+        )
+    except authoring.AuthoringError as exc:
+        print(f"pipeline {prog}: {exc}", file=sys.stderr)
+        return 1
+    print(f"\nsaved selection {target.selection_id!r} ({target.provenance}) -> {target.path}")
+    return 0
+
+
 def _run_friendly_generate(
     args: "object",
     *,
@@ -1019,12 +1059,30 @@ def _run_friendly_generate(
     result, code = _begin_and_preview(normalized, args.root, prog, header=header, adapters=adapters)
     if result is None:
         return code  # a refusal — nothing to drive
+    # C5b: `--save-selection ID` persists the run's OWN fan-out (works WITH and WITHOUT --go — the
+    # plan resolved on the preview path too). Defensive getattr: the shared core also serves
+    # `outline drive`, which declares no `--save-selection` (mirrors the outline-handle reads).
+    save_selection = getattr(args, "save_selection", None)
+    force = bool(getattr(args, "force", False))
     if not go:
+        if save_selection is not None:
+            # Save the previewed plan without spending (§21.9: only the begin-session handler was
+            # built; the writer is a pure file write, never a session/spend verb).
+            save_code = _save_selection(
+                result, normalized, args.root, save_selection, force=force, prog=prog
+            )
+            if save_code:
+                return save_code
         print("\n(dry-run: nothing spent — re-run with --go to drive the plan to completion)")
         return 0
-    return _drive_generate(
+    drive_code = _drive_generate(
         normalized, result, args.root, adapters=adapters, run_artifact=run_artifact
     )
+    if drive_code == 0 and save_selection is not None:
+        return _save_selection(
+            result, normalized, args.root, save_selection, force=force, prog=prog
+        )
+    return drive_code
 
 
 def _cmd_preview(argv: list[str], *, adapters: "object | None" = None) -> int:
@@ -1093,6 +1151,21 @@ def _cmd_generate(
         ),
     )
     _add_outline_handle_args(parser)
+    parser.add_argument(
+        "--save-selection",
+        default=None,
+        metavar="ID",
+        help=(
+            "SAVE this run's fan-out as a replayable selection file selections/ID.md (§8, "
+            "authoring D4) — works with or without --go. A client (x-) content/render binding "
+            "homes under workspaces/<workspace>/selections/ (never the public root)"
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing saved-selection file (default: refuse; --save-selection only)",
+    )
     args = parser.parse_args(argv)
 
     return _run_friendly_generate(
