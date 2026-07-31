@@ -10,9 +10,13 @@ stamp shape), `drift.meaning_changed_attributes` (the lockstep math) and
 The SV11 clauses (design §11.7), with this module's finding codes:
 
   1. **Schema change without a `schema_version` bump** — detected against a BASELINE (the
-     previous release: `--baseline DIR`, or the git HEAD tree by default when `--root` is
-     a git checkout's toplevel) → `schema-change-without-version-bump`; a version moving
-     BACKWARDS is `schema-version-regression`.
+     previous RELEASE: `--baseline DIR`, or by default the commit named by the committed
+     release marker `pipeline/released_baseline` when `--root` is a git checkout's toplevel
+     — and NONE pre-release, when the marker is absent, so the diff clauses are inert) →
+     `schema-change-without-version-bump`; a version moving BACKWARDS is
+     `schema-version-regression`. The baseline is RELEASE-relative, not per-commit: a
+     version in development makes many schema changes before its release, and only the
+     FIRST change AFTER a release must bump the global version (see `_released_ref`).
   2. **Meaning change without a shipped map-or-prompt** (MIG-4) — a baseline→current
      `definition_version` bump or attribute removal with no covering migration step at
      the trigger version → `meaning-change-without-migration-step`; an incompatible type
@@ -110,10 +114,12 @@ __all__ = [
     "CODE_STEP_MUTATED",
     "CODE_UNDECLARED_MEANING_CHANGE",
     "CODE_VERSION_REGRESSION",
+    "RELEASE_MARKER",
     "REGISTRY_ROOTS",
     "BaselineReader",
     "LintFinding",
     "LintReport",
+    "ReleaseMarkerError",
     "baseline_from_dir",
     "baseline_from_git",
     "iter_lint_collections",
@@ -223,10 +229,11 @@ def baseline_from_dir(base: str | Path) -> BaselineReader:
 
 
 def baseline_from_git(root: str | Path, ref: str = "HEAD") -> BaselineReader:
-    """The committed tree at `ref` as the baseline (read-only `git show`; the default
-    when `--root` is a git checkout's toplevel). A path absent at `ref` — or a repo with
-    no commits at all — reads as None (no baseline for that file: a NEW file has no
-    previous release to diff against)."""
+    """The committed tree at `ref` as the baseline (read-only `git show`). Used for
+    `--git-ref REF` and for the release-relative default baseline (the commit named by the
+    release marker, `_released_ref`). A path absent at `ref` — or a repo with no commits at
+    all — reads as None (no baseline for that file: a NEW file has no previous release to
+    diff against)."""
 
     def read(relpath: str) -> str | None:
         try:
@@ -257,6 +264,80 @@ def _git_toplevel(root: Path) -> Path | None:
     if proc.returncode != 0:
         return None
     return Path(proc.stdout.strip())
+
+
+# ---------------------------------------------------------------------------------------
+# The release marker (the RELEASE-relative default baseline; §11.2/§11.7)
+# ---------------------------------------------------------------------------------------
+
+#: The committed release marker: a plain-text file holding the git ref/SHA of the LAST
+#: release, set by the release process. Its ABSENCE is the pre-release signal — the
+#: framework is in development, the default baseline is None, and the clause-1/2/4 diff
+#: passes are inert (a version in development makes many schema changes before its release;
+#: only the FIRST change AFTER a release must bump the ONE global schema_version). A
+#: COMMITTED file, not a git tag, is deliberate: a present-but-unreadable marker fails LOUD
+#: (see `_released_ref`) instead of silently degrading to "no baseline". Lives under
+#: `pipeline/` (framework mechanism) — never `instance/`/`workspaces/`, and outside every
+#: lint/guard scan scope. Not created until release; do NOT create it to signal pre-release.
+RELEASE_MARKER = "pipeline/released_baseline"
+
+#: An explicit "still pre-release" sentinel the marker file MAY carry (equivalent to an
+#: absent/empty marker → None). Lets the release tooling stage the file with a clear
+#: value before the first release without arming the diff.
+UNRELEASED_SENTINEL = "unreleased"
+
+
+class ReleaseMarkerError(ValueError):
+    """The release marker names a ref that does not resolve to a commit — "released, but
+    the baseline commit is unreachable" (a stale/typo'd marker, or a shallow clone that
+    never fetched the release commit). This fails LOUD by design: the whole point of a
+    COMMITTED marker (vs. a git tag) is that a present-but-unusable baseline is an error,
+    never a silent fall-through to "no baseline". Subclasses `ValueError` so the module's
+    typed-refusal handling and `pytest.raises(ValueError)` both catch it."""
+
+
+def _ref_resolves(root: str | Path, ref: str) -> bool:
+    """True iff `ref` resolves to a commit object in the repo at `root` (read-only probe:
+    `git rev-parse --verify --quiet <ref>^{commit}`)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
+def _released_ref(root: str | Path) -> str | None:
+    """The git ref for the RELEASE-relative default baseline, read off the committed
+    release marker (`RELEASE_MARKER`).
+
+    Returns None PRE-RELEASE — when the marker is ABSENT, empty, or the `unreleased`
+    sentinel — so the caller wires NO baseline and the diff clauses are inert. Returns the
+    named ref when the marker is present and that ref resolves to a commit.
+
+    Raises `ReleaseMarkerError` (a LOUD, nonzero-exit condition) when the marker is present
+    and names a ref that does NOT resolve: "released, but the baseline commit is missing".
+    NEVER silently falls back to None in that case — a present-but-unreadable marker is the
+    exact failure a committed file (over a git tag) is chosen to surface loudly."""
+    marker = Path(root) / RELEASE_MARKER
+    if not marker.is_file():
+        return None  # pre-release: no marker → no baseline → diff clauses inert
+    ref = marker.read_text(encoding="utf-8").strip()
+    if not ref or ref == UNRELEASED_SENTINEL:
+        return None  # explicitly still pre-release
+    if not _ref_resolves(root, ref):
+        raise ReleaseMarkerError(
+            f"release marker {RELEASE_MARKER!r} names ref {ref!r}, which does not resolve "
+            "to a commit — 'released, but the baseline commit is missing' (a stale/typo'd "
+            "marker, or a shallow clone that never fetched the release commit). Fetch the "
+            "release commit (CI uses fetch-depth: 0) or correct the marker; schema-lint "
+            "fails LOUD here rather than silently skipping the release-relative diff."
+        )
+    return ref
 
 
 # ---------------------------------------------------------------------------------------
@@ -840,14 +921,17 @@ def main(argv: list[str] | None = None) -> int:
         "--baseline",
         default=None,
         metavar="DIR",
-        help="previous-release tree to diff clauses 1/2/4 against (default: the git HEAD "
-        "tree when --root is a git checkout's toplevel; otherwise no baseline)",
+        help="previous-RELEASE tree to diff clauses 1/2/4 against (default: the commit "
+        "named by the release marker pipeline/released_baseline when --root is a git "
+        "checkout's toplevel; NONE pre-release — the marker is absent — and none for a "
+        "non-git tree)",
     )
     parser.add_argument(
         "--git-ref",
-        default="HEAD",
+        default=None,
         metavar="REF",
-        help="git ref for the default baseline (default: HEAD)",
+        help="git ref for the default baseline, overriding the release marker (default: "
+        "the last release via the marker, or NONE pre-release)",
     )
     parser.add_argument(
         "--no-baseline",
@@ -884,8 +968,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         toplevel = _git_toplevel(root)
         if toplevel is not None and toplevel.resolve() == root.resolve():
-            baseline = baseline_from_git(root, args.git_ref)
-            baseline_label = f"git:{args.git_ref}"
+            # RELEASE-relative default baseline: an explicit --git-ref overrides; otherwise
+            # the commit named by the release marker (None pre-release → no baseline → the
+            # diff clauses are inert). A present-but-unresolvable marker fails LOUD here.
+            try:
+                ref = args.git_ref if args.git_ref is not None else _released_ref(root)
+            except ReleaseMarkerError as exc:
+                print(f"schema-lint: {exc}", file=sys.stderr)
+                return 2
+            if ref is not None:
+                baseline = baseline_from_git(root, ref)
+                baseline_label = f"git:{ref}"
 
     report = lint_tree(root, now=now, baseline=baseline, baseline_label=baseline_label)
     sys.stdout.write(render_report(report))

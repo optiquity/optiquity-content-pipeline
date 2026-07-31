@@ -16,6 +16,14 @@
 #
 # Pairs with scripts/check-no-content.sh (the public-boundary leak guard, §10 rule 5) in
 # .github/workflows/guard.yml. Exit: 0 clean · 1 findings · 2 usage.
+#
+# Baseline is RELEASE-relative, not per-commit: with no --baseline/--git-ref/--no-baseline
+# override, clauses 1/2/4 diff the checkout against the commit named by the committed
+# release marker (pipeline/released_baseline). PRE-RELEASE that marker is ABSENT, so there
+# is no baseline and the diff clauses are inert — only the FIRST schema change AFTER a
+# release must bump the global schema_version. The within-tree invariants (structural
+# validity, cross-collection version equality, lockstep, entry/provenance validation) run
+# ALWAYS. A present-but-unresolvable marker fails LOUD (nonzero) — see pipeline/lint.py.
 # Flags pass through (see --help): --root --baseline --no-baseline --git-ref --now.
 set -euo pipefail
 

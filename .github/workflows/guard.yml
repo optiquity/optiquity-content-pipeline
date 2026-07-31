@@ -6,13 +6,17 @@
 # track its own content freely. Schema-lint (SV11) also runs here: framework-provenance
 # default entries must always validate against their co-located schemas.
 #
-# Baseline wiring (step-13 review RV-3): on pull_request events the SV11 diff clauses
+# Baseline wiring (RELEASE-relative, not per-commit): the SV11 diff clauses
 # (schema-change-without-bump, meaning-change-without-step, premature-prune, MIG-1
-# mutation) run against the PR BASE commit — the checked-out tree differs from that
-# baseline exactly by the PR's changes, so the clauses have real CI teeth. On push there
-# is no base ref; the git-HEAD default applies and the diff clauses are vacuous there
-# (tree == HEAD) — the snapshot clauses, entry validation, and the boundary guard remain
-# the push gate. Residual recorded for the step-40 sweep.
+# mutation) diff the checked-out tree against the LAST RELEASE — the commit named by the
+# committed release marker (pipeline/released_baseline). PRE-RELEASE that marker is ABSENT,
+# so there is no baseline and the diff clauses are inert: a version in development makes
+# many schema changes before its release, and only the FIRST change AFTER a release must
+# bump the global schema_version. The within-tree invariants (structural validity,
+# cross-collection version equality, lockstep, entry/provenance validation) and the
+# boundary guard ALWAYS run — so one identical `schema-lint.sh` gates both push and
+# pull_request (no per-commit / PR-base diff). fetch-depth: 0 keeps a marker-named release
+# commit reachable for `git show`; a committed marker needs no tag-fetch.
 #
 # The pytest suites covering both gates (tests/test_guard.py, tests/test_lint.py) run in
 # the ci.yml test job.
@@ -26,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history so the PR base commit exists locally for `git show` (RV-3).
+          # Full history so a marker-named release commit is reachable for `git show`.
           fetch-depth: 0
       - name: Public-boundary guard (no client/instance content; PA-1 scope)
         run: bash scripts/check-no-content.sh
@@ -37,12 +41,6 @@ jobs:
       - name: Sync project venv from the lockfile
         run: uv sync --locked
       - name: Schema lint (SV11 + Q15 default-deny provenance + schema validation)
-        env:
-          # Empty on push events; the PR base commit SHA on pull_request events (RV-3).
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if [ -n "$PR_BASE_SHA" ]; then
-            bash scripts/schema-lint.sh --git-ref "$PR_BASE_SHA"
-          else
-            bash scripts/schema-lint.sh
-          fi
+        # One identical invocation on push and pull_request: the default baseline is the
+        # release marker (RELEASE-relative), so no per-commit / PR-base diff is needed.
+        run: bash scripts/schema-lint.sh

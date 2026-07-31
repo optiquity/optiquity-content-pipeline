@@ -24,6 +24,8 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from pipeline.lint import (
     CODE_CHANGE_WITHOUT_BUMP,
     CODE_DEFINITION_VERSION_REGRESSION,
@@ -42,6 +44,9 @@ from pipeline.lint import (
     CODE_UNDECLARED_MEANING_CHANGE,
     CODE_VERSION_REGRESSION,
     REGISTRY_ROOTS,
+    RELEASE_MARKER,
+    ReleaseMarkerError,
+    _released_ref,
     baseline_from_dir,
     baseline_from_git,
     iter_lint_collections,
@@ -967,3 +972,166 @@ def test_schema_lint_script_delegates(tmp_path):
     )
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "FAIL [entry-identity-mismatch]" in proc.stdout
+
+
+# -----------------------------------------------------------------------------------
+# The RELEASE marker: the default baseline is RELEASE-relative, not per-commit (§11.7)
+# -----------------------------------------------------------------------------------
+
+
+def _git(cwd: Path, *args: str) -> str:
+    """Run one git subcommand in a throwaway tmp repo (test infra; not the project repo)."""
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True
+    )
+    return proc.stdout.strip()
+
+
+def init_git_repo(path: Path) -> Path:
+    """A throwaway git repo under tmp_path (self-contained: local identity + no signing)."""
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init", "-q")
+    _git(path, "config", "user.email", "lint-test@example.com")
+    _git(path, "config", "user.name", "lint test")
+    _git(path, "config", "commit.gpgsign", "false")
+    return path
+
+
+def commit_all(repo: Path, message: str) -> str:
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_released_ref_absent_marker_is_none(tmp_path):
+    """Pre-release: no release marker → None (no baseline → the diff clauses are inert)."""
+    repo = init_git_repo(tmp_path)
+    build_tree(repo, {"topics/_schema.yaml": SCHEMA_V1})
+    commit_all(repo, "seed")
+    assert _released_ref(repo) is None
+
+
+def test_released_ref_unreleased_sentinel_is_none(tmp_path):
+    """An explicit `unreleased` sentinel in the marker reads the same as absent → None."""
+    repo = init_git_repo(tmp_path)
+    build_tree(repo, {"topics/_schema.yaml": SCHEMA_V1, RELEASE_MARKER: "unreleased\n"})
+    commit_all(repo, "seed")
+    assert _released_ref(repo) is None
+
+
+def test_released_ref_present_valid_ref_returns_it(tmp_path):
+    """A marker naming a resolvable commit → that ref (the release-relative baseline)."""
+    repo = init_git_repo(tmp_path)
+    build_tree(repo, {"topics/_schema.yaml": SCHEMA_V1})
+    sha = commit_all(repo, "release")
+    build_tree(repo, {RELEASE_MARKER: sha + "\n"})
+    assert _released_ref(repo) == sha
+
+
+def test_released_ref_unresolvable_ref_fails_loud(tmp_path):
+    """LOUD contract: a PRESENT marker naming a ref that does NOT resolve raises
+    ReleaseMarkerError ('released, but the baseline commit is missing') — it must NEVER
+    silently fall back to None (the whole reason a committed file beats a git tag)."""
+    repo = init_git_repo(tmp_path)
+    build_tree(
+        repo,
+        {
+            "topics/_schema.yaml": SCHEMA_V1,
+            RELEASE_MARKER: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n",
+        },
+    )
+    commit_all(repo, "seed")
+    with pytest.raises(ReleaseMarkerError):
+        _released_ref(repo)
+
+
+def test_one_bump_per_release_via_marker(tmp_path, capsys):
+    """The release-relative gate end-to-end (via main()): with a marker at release commit
+    R, the FIRST schema change after R must bump; once bumped PAST R, further
+    in-development changes at the bumped version need NO further bump — one bump per
+    RELEASE, not per commit."""
+    repo = init_git_repo(tmp_path)
+    build_tree(repo, {"topics/_schema.yaml": SCHEMA_V1})
+    sha = commit_all(repo, "release v1")
+    build_tree(repo, {RELEASE_MARKER: sha + "\n"})
+
+    def run() -> tuple[int, str]:
+        rc = main(["--root", str(repo), "--now", "2026-07-12"])
+        return rc, capsys.readouterr().out
+
+    # 1) A schema change with NO bump (still schema_version 1 == baseline R) → clause 1 fires.
+    build_tree(
+        repo, {"topics/_schema.yaml": SCHEMA_V1.replace("default: red", "default: green")}
+    )
+    rc, out = run()
+    assert rc == 1, out
+    assert f"FAIL [{CODE_CHANGE_WITHOUT_BUMP}]" in out
+    assert f"baseline: git:{sha}" in out  # proves the RELEASE-relative wiring is live
+
+    # 2) The SAME change WITH the global version bumped PAST R → clean.
+    build_tree(
+        repo,
+        {
+            "topics/_schema.yaml": SCHEMA_V1.replace("default: red", "default: green").replace(
+                "schema_version: 1", "schema_version: 2"
+            )
+        },
+    )
+    rc, out = run()
+    assert rc == 0, out
+
+    # 3) A SECOND change STILL AT the bumped version 2 → clean: current.schema_version (2)
+    #    != baseline R's version (1) short-circuits clause 1 (one bump per release).
+    build_tree(
+        repo,
+        {
+            "topics/_schema.yaml": SCHEMA_V1.replace("default: red", "default: blue").replace(
+                "schema_version: 1", "schema_version: 2"
+            )
+        },
+    )
+    rc, out = run()
+    assert rc == 0, out
+
+
+def test_prerelease_definition_prose_edit_is_clean(tmp_path, capsys):
+    """The immediate UNBLOCK: PRE-RELEASE (no marker) a `definition:`-prose-only edit to a
+    real schema is schema-lint CLEAN with NO bump. Under the OLD HEAD-default baseline this
+    fired schema-change-without-version-bump (AttributeSpec.__eq__ includes `definition`);
+    the release-relative default makes the diff clauses inert pre-release."""
+    repo = init_git_repo(tmp_path)
+    build_tree(repo, {"topics/_schema.yaml": SCHEMA_V1})
+    commit_all(repo, "seed schema at HEAD")
+    # No release marker → pre-release. Edit ONLY the definition prose (same version/type/default).
+    build_tree(
+        repo,
+        {
+            "topics/_schema.yaml": SCHEMA_V1.replace(
+                "The example color token.", "The example color token (clearer prose)."
+            )
+        },
+    )
+    assert _released_ref(repo) is None  # pre-release: no baseline
+    rc = main(["--root", str(repo), "--now", "2026-07-12"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "baseline: none" in out
+    assert CODE_CHANGE_WITHOUT_BUMP not in out
+
+
+def test_main_unresolvable_marker_exits_nonzero(tmp_path, capsys):
+    """The LOUD contract at the CLI edge: a present-but-unresolvable marker makes
+    schema-lint exit nonzero with a clear stderr message (never a silent clean run)."""
+    repo = init_git_repo(tmp_path)
+    build_tree(
+        repo,
+        {
+            "topics/_schema.yaml": SCHEMA_V1,
+            RELEASE_MARKER: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n",
+        },
+    )
+    commit_all(repo, "seed")
+    rc = main(["--root", str(repo), "--now", "2026-07-12"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "release marker" in err and "does not resolve" in err
