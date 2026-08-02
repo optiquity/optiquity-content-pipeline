@@ -13,6 +13,7 @@ is ever created under the repo's `workspaces/` (rule 4 / standing constraint).
 """
 
 import ast
+import dataclasses
 import inspect
 import json
 import multiprocessing
@@ -31,15 +32,18 @@ from pipeline.store import (
     StorePathError,
     StoreWriteError,
     WorkspaceStore,
+    WorkspaceStoreIdentityError,
     append_jsonl_line,
     commit_new,
     create_exclusive,
+    framework_root_of,
     is_done,
     is_temp_name,
     stage_temp,
     write_new,
     write_replace,
 )
+from pipeline.workspace_name import USERS_DIRNAME, WORKSPACES_DIRNAME
 
 # The §7.4 literal examples, verbatim.
 ART = "a-9f3c07d21b44e8aa"
@@ -635,6 +639,103 @@ class TestIsDone:
 # ---------------------------------------------------------------------------
 # Typed-error surfaces.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Store identity (increment B3): WorkspaceStore.at(...) records identity; the
+# raise-loud accessors never return a silent None; the bare ctor is unchanged.
+# ---------------------------------------------------------------------------
+
+
+class TestStoreIdentity:
+    """Increment B3 (additive): `WorkspaceStore.at(framework_root, user, workspace)` is the ONLY
+    constructor that knows the `users/<user>/workspaces/<workspace>/` layout depth. It composes
+    `root` from the two layout literals AND records identity, so `framework_root`/`user`/
+    `workspace`/`user_root` return RECORDED facts (never positional path guesses). The API choice:
+    private fields `_framework_root`/`_user`/`_workspace` (default None) + raise-loud PUBLIC
+    PROPERTIES — there is NO public nullable identity attribute, so a caller can never read a
+    silent None. A bare `WorkspaceStore(root)` (production's positional construction + the
+    test-injection seam) carries no identity and is byte-for-byte unaffected."""
+
+    FR = Path("/instance/fw")
+
+    def test_at_builds_root_from_the_two_layout_literals(self, tmp_path):
+        s = WorkspaceStore.at(tmp_path, "optiquity", "mvp-demo")
+        assert s.root == tmp_path / USERS_DIRNAME / "optiquity" / WORKSPACES_DIRNAME / "mvp-demo"
+        # spelled out with the literal values, pinning the exact re-home shape:
+        assert s.root == tmp_path / "users" / "optiquity" / "workspaces" / "mvp-demo"
+
+    def test_at_records_all_three_identity_fields(self):
+        s = WorkspaceStore.at(self.FR, "optiquity", "mvp-demo")
+        assert s.framework_root == self.FR
+        assert s.user == "optiquity"
+        assert s.workspace == "mvp-demo"
+
+    def test_user_root_is_the_per_user_anchor(self):
+        s = WorkspaceStore.at(self.FR, "optiquity", "mvp-demo")
+        assert s.user_root == self.FR / USERS_DIRNAME / "optiquity"
+        assert s.user_root == self.FR / "users" / "optiquity"
+
+    def test_at_coerces_a_string_framework_root_to_path(self):
+        # Parity with `root`'s str→Path coercion in __post_init__.
+        s = WorkspaceStore.at("/instance/fw", "u", "w")
+        assert isinstance(s.framework_root, Path)
+        assert s.framework_root == Path("/instance/fw")
+
+    def test_at_store_is_still_frozen(self):
+        s = WorkspaceStore.at(self.FR, "u", "w")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            s.root = Path("/somewhere/else")  # type: ignore[misc]
+
+    @pytest.mark.parametrize("accessor", ["framework_root", "user", "workspace", "user_root"])
+    def test_bare_store_raises_loud_not_none_on_every_identity_accessor(self, tmp_path, accessor):
+        # The load-bearing invariant: an identity-less bare store NEVER returns a silent None —
+        # every identity read raises the typed WorkspaceStoreIdentityError.
+        bare = WorkspaceStore(tmp_path / "ws")
+        with pytest.raises(WorkspaceStoreIdentityError, match="without identity"):
+            getattr(bare, accessor)
+
+    def test_identity_error_is_a_value_error_with_a_typed_code(self):
+        # A ValueError subclass so an `except ValueError` door still catches it; `code` follows
+        # the module's typed-error convention (cf. StorePathError).
+        assert issubclass(WorkspaceStoreIdentityError, ValueError)
+        assert WorkspaceStoreIdentityError.code == "workspace-store-identity-unavailable"
+
+    def test_framework_root_of_helper_matches_the_property(self):
+        s = WorkspaceStore.at(self.FR, "u", "w")
+        assert framework_root_of(s) == s.framework_root == self.FR
+
+    def test_framework_root_of_helper_is_loud_on_a_bare_store(self, tmp_path):
+        bare = WorkspaceStore(tmp_path / "ws")
+        with pytest.raises(WorkspaceStoreIdentityError, match="without identity"):
+            framework_root_of(bare)
+
+    def test_bare_ctor_and_id_addressed_methods_are_unchanged(self, tmp_path):
+        # B3 is ADDITIVE: the appended optional identity fields default to None, so the existing
+        # single-arg construction and every id-derived path are byte-for-byte unaffected.
+        bare = WorkspaceStore(tmp_path / "ws")
+        assert bare.root == tmp_path / "ws"
+        assert bare.output_path(ART) == bare.root / "artifacts" / ART
+        assert bare.output_path(DEL) == bare.root / "deliverables" / DEL
+        assert bare.claim_path(FIT) == bare.root / "claims" / FIT
+        assert bare.review_path(ART) == bare.root / "reviews" / ART
+
+    def test_at_store_id_addressed_methods_route_off_root_normally(self, tmp_path):
+        # Identity does not disturb path derivation: an .at() store's id-addressed paths still
+        # derive purely from `root` (the identity fields are metadata, not a routing input). Uses
+        # tmp_path as the framework root because these methods materialize their store dirs.
+        s = WorkspaceStore.at(tmp_path, "optiquity", "mvp-demo")
+        assert s.output_path(ART) == s.root / "artifacts" / ART
+        assert s.claim_path(FIT) == s.root / "claims" / FIT
+
+    def test_identity_fields_are_appended_after_root_optional_defaulting_none(self):
+        # The additive shape: `root` stays the first (and only required) field; the three identity
+        # fields follow it, each optional (default None) — this is what keeps every existing bare
+        # positional construction across production + tests byte-for-byte valid.
+        flds = dataclasses.fields(WorkspaceStore)
+        assert flds[0].name == "root"
+        assert [f.name for f in flds[1:]] == ["_framework_root", "_user", "_workspace"]
+        assert all(f.default is None for f in flds[1:])
 
 
 class TestErrorTypes:

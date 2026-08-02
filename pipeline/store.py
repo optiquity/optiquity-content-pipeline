@@ -101,6 +101,7 @@ from typing import Any
 
 from pipeline.canonical import canonical_json_str, sha256_hex
 from pipeline.ids import output_filename, parse_id
+from pipeline.workspace_name import USERS_DIRNAME, WORKSPACES_DIRNAME
 
 __all__ = [
     "STORE_SUBDIRS",
@@ -109,9 +110,11 @@ __all__ = [
     "StorePathError",
     "StoreWriteError",
     "WorkspaceStore",
+    "WorkspaceStoreIdentityError",
     "append_jsonl_line",
     "commit_new",
     "create_exclusive",
+    "framework_root_of",
     "is_done",
     "is_temp_name",
     "stage_temp",
@@ -175,6 +178,22 @@ class StoreWriteError(RuntimeError):
     code = "store-write-failed"
 
 
+class WorkspaceStoreIdentityError(ValueError):
+    """An identity accessor was read on a store built without identity — refused loudly.
+
+    A `WorkspaceStore` carries identity ONLY when constructed via `WorkspaceStore.at(...)`
+    (the sole constructor that knows the `users/<user>/workspaces/<workspace>/` layout depth).
+    A bare `WorkspaceStore(root)` — production's positional construction and the test-injection
+    seam — has NO identity: reading `framework_root`/`user`/`workspace`/`user_root` on it raises
+    THIS error rather than returning `None` or guessing framework-root/name by fragile positional
+    path math (`root.parent.parent` / `root.name`), which silently mis-resolves at any layout
+    depth. A ValueError subclass so an `except ValueError` door still catches it; `code` follows
+    the module's typed-error convention (cf. `StorePathError`).
+    """
+
+    code = "workspace-store-identity-unavailable"
+
+
 # ---------------------------------------------------------------------------
 # The §23 workspace store layout: paths derive from ids (§7.4, §18).
 # ---------------------------------------------------------------------------
@@ -189,12 +208,101 @@ class WorkspaceStore:
     nothing anywhere else. Every path-returning method validates its id via
     `pipeline.ids.parse_id`, so a filename is always a §7.4-safe exact id — no separators,
     no traversal, ≤ 255 bytes by construction.
+
+    **Identity (increment B3, additive).** `root` alone cannot say WHICH workspace this is
+    nor WHERE its framework root lives — callers used to recover both by positional path math
+    (`root.parent.parent` for the framework root, `root.name` for the workspace name). That
+    math silently mis-resolves once the tree deepens to `users/<user>/workspaces/<workspace>/`
+    (the re-home). The cure: a store MAY carry explicit identity, recorded (never guessed) by
+    the ONE constructor that knows the layout depth — `WorkspaceStore.at(framework_root, user,
+    workspace)`. The identity fields (`_framework_root`/`_user`/`_workspace`) are private and
+    default to `None`; the public accessors `framework_root`/`user`/`workspace`/`user_root` are
+    raise-loud PROPERTIES — there is deliberately NO public nullable identity attribute, so a
+    caller can never read a silent `None` (they raise `WorkspaceStoreIdentityError` on an
+    identity-less bare store). Bare `WorkspaceStore(root)` (production's positional construction
+    and the test-injection seam) is byte-for-byte unaffected: the identity fields are optional,
+    appended AFTER `root`, so every existing single-arg construction and id-addressed method is
+    unchanged. No reader/producer consumes the identity API yet — that switch is a later
+    increment; B3 only lays the cure.
     """
 
     root: Path
+    #: Identity (increment B3) — set ONLY by `WorkspaceStore.at(...)`, else `None`. Private so
+    #: the sole read path is the raise-loud public property (never a silent-`None` attribute).
+    _framework_root: Path | None = None
+    _user: str | None = None
+    _workspace: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", Path(self.root))
+        if self._framework_root is not None:  # parity with root's str→Path coercion
+            object.__setattr__(self, "_framework_root", Path(self._framework_root))
+
+    @classmethod
+    def at(
+        cls, framework_root: str | Path, user: str, workspace: str
+    ) -> WorkspaceStore:
+        """Build the store for `users/<user>/workspaces/<workspace>/` AND record its identity.
+
+        THE ONLY constructor that knows the layout depth (increment B3): it composes
+        `root = framework_root / USERS_DIRNAME / user / WORKSPACES_DIRNAME / workspace` from the
+        two layout literals (imported from `pipeline.workspace_name`, their single home) and
+        stores `framework_root`/`user`/`workspace` so the accessors return recorded facts, never
+        positional guesses. `framework_root` is coerced to `Path` (parity with `root`). Callers
+        that already hold a full root keep using bare `WorkspaceStore(root)`; this factory is for
+        callers that hold the framework root + identity and want depth-robust accessors.
+        """
+        fr = Path(framework_root)
+        root = fr / USERS_DIRNAME / user / WORKSPACES_DIRNAME / workspace
+        return cls(root, fr, user, workspace)
+
+    # -- identity accessors (§23 re-home; raise-loud, never silent-None) ----
+
+    @property
+    def framework_root(self) -> Path:
+        """The instance framework root this workspace lives under — raise-loud if absent.
+
+        Returns the value recorded by `WorkspaceStore.at(...)`. On an identity-less bare store
+        raises `WorkspaceStoreIdentityError` rather than returning `None` or reconstructing it
+        by positional path math (`root.parent.parent`), which breaks at the re-home depth.
+        """
+        if self._framework_root is None:
+            raise WorkspaceStoreIdentityError(
+                "framework_root unavailable — this store was constructed without identity; "
+                "use WorkspaceStore.at(framework_root, user, workspace)"
+            )
+        return self._framework_root
+
+    @property
+    def user(self) -> str:
+        """The owning user for this workspace — raise-loud if absent (never silent-`None`)."""
+        if self._user is None:
+            raise WorkspaceStoreIdentityError(
+                "user unavailable — this store was constructed without identity; "
+                "use WorkspaceStore.at(framework_root, user, workspace)"
+            )
+        return self._user
+
+    @property
+    def workspace(self) -> str:
+        """This workspace's name — raise-loud if absent (never silent-`None`).
+
+        The identity-recorded name; distinct from `root.name` (which stays the depth-robust
+        fallback some readers keep by design). On a bare store this raises rather than guessing.
+        """
+        if self._workspace is None:
+            raise WorkspaceStoreIdentityError(
+                "workspace unavailable — this store was constructed without identity; "
+                "use WorkspaceStore.at(framework_root, user, workspace)"
+            )
+        return self._workspace
+
+    @property
+    def user_root(self) -> Path:
+        """The per-user home `framework_root / users / <user>` — the REST-forward anchor for
+        future per-user collections (raise-loud if identity is absent, via the accessors above).
+        """
+        return self.framework_root / USERS_DIRNAME / self.user
 
     def _dir(self, *parts: str) -> Path:
         path = self.root.joinpath(*parts)
@@ -391,6 +499,17 @@ class WorkspaceStore:
         except AlreadyMaterializedError:
             pass  # idempotent: content-addressed ⇒ identical bytes already present (§22.7)
         return path
+
+
+def framework_root_of(store: WorkspaceStore) -> Path:
+    """The framework root a store lives under — a functional mirror of `store.framework_root`.
+
+    A convenience in the `is_done(store, ...)` free-function idiom: it gives future readers a
+    drop-in for the positional `store.root.parent.parent` expression (increment B5) that is
+    loud-on-absent (it delegates to the raise-loud property, so an identity-less bare store
+    raises `WorkspaceStoreIdentityError` — never a silent `None` or a depth-fragile guess).
+    """
+    return store.framework_root
 
 
 # ---------------------------------------------------------------------------
