@@ -1,15 +1,16 @@
-"""GAP-9: the workspace-name containment guard — isolation enforced at the store ROOT.
+"""GAP-9 / §23: the workspace-path containment guard AT THE INVOKE DOOR — isolation at the ROOT.
 
 Design authority: `docs/design.md` §21.1 (isolation is enforced BY THE API, not by trust) +
 §10 (client isolation is structural) + CLAUDE.md rule 2. The invoke door builds a store root
-as `<root>/workspaces/<workspace>` from a caller-supplied name; without validation a
-`../other-client`, an absolute path, or a symlink escape would MOVE the store root the §21.1
+as `<root>/users/<user>/workspaces/<workspace>` from caller-supplied segments; without validation
+a `../other-client`, an absolute path, or a symlink escape would MOVE the store root the §21.1
 per-id isolation gate validates against, so a referenced id would resolve in the WRONG
-workspace and pass. These tests pin both halves of the resolve-and-contain guard
-(`pipeline.workspace_name.validate_workspace_name`) and prove the invoke door refuses a
-name-escape whole-invocation-fatally BEFORE any id resolves — the gate now holds at the root.
+workspace and pass. These tests prove the invoke door validates the `(user, workspace)` pair with
+the 3-level `pipeline.workspace_name.validate_workspace_path` and refuses a name-escape
+whole-invocation-fatally BEFORE any id resolves — the gate now holds at the root. (The validator's
+own unit coverage lives in `tests/test_workspace_path.py`.)
 
-All fixtures are generic (`wsA`/`wsB`, §7.4 literal ids); no instance content.
+All fixtures are generic (`acme`/`wsA`, §7.4 literal ids); no instance content.
 """
 
 from __future__ import annotations
@@ -21,30 +22,14 @@ import pytest
 import pipeline.api.invoke as invoke_mod
 from pipeline.api.invoke import HandlerNotWired, invoke
 from pipeline.store import WorkspaceStore
-from pipeline.workspace_name import WorkspaceNameError, validate_workspace_name
 
 ART_A = "a-9f3c07d21b44e8aa"
 
-#: Every EXISTING workspace name plus the generic test labels — the guard must accept ALL of
-#: them unchanged (behavior-neutral), so nothing in the corpus or the test suite breaks.
-EXISTING_VALID_NAMES = (
-    "mvp-demo",
-    "optiquitytrader",
-    "workspace.template",  # note the interior DOT — allowed; only the bare `..` is traversal
-    "wsA",
-    "wsB",
-    "testws",
-    "self",
-    "acme",
-    "ws",
-)
-
-#: §23 (B5 door cutover): the invoke door now threads a MANDATORY `user` (the isolation prefix)
-#: and validates the `(user, workspace)` pair with the 3-level `validate_workspace_path` — which is
-#: lowercase-only (W5). The door-integration classes below therefore use a fixed owning user and a
-#: LOWERCASE-only valid-name subset (the legacy uppercase `wsA`/`wsB` labels stay above for the
-#: OLD-validator unit tests, whose rewrite is B9). The old `validate_workspace_name` unit tests
-#: (TestValidator*) are DELIBERATELY untouched here (B9).
+#: §23 (B5 door cutover): the invoke door threads a MANDATORY `user` (the isolation prefix) and
+#: validates the `(user, workspace)` pair with the 3-level `validate_workspace_path` — which is
+#: lowercase-only (W5). The door-integration classes below use a fixed owning user and a
+#: LOWERCASE-only valid-name subset. (B9 removed the OLD single-level validator and its unit
+#: tests; the new validator's unit coverage now lives in `tests/test_workspace_path.py`.)
 USER = "acme"
 DOOR_VALID_NAMES = (
     "mvp-demo",
@@ -83,62 +68,6 @@ def _clean_registry():
 def _materialize(store: WorkspaceStore, artifact_id: str) -> None:
     """Stand in an artifact record so the id resolves in that store (§22.7 existence)."""
     store.output_path(artifact_id).write_bytes(b"{}\n")
-
-
-# ---------------------------------------------------------------------------
-# Unit — the resolve-and-contain guard itself.
-# ---------------------------------------------------------------------------
-
-
-class TestValidatorAcceptsEveryValidName:
-    @pytest.mark.parametrize("name", EXISTING_VALID_NAMES)
-    def test_existing_valid_name_returns_the_contained_root(self, tmp_path, name):
-        # The returned path is the UNRESOLVED root/workspaces/<name> — byte-identical to what
-        # the door built before the guard existed (behavior-neutral).
-        got = validate_workspace_name(name, tmp_path)
-        assert got == tmp_path / "workspaces" / name
-
-    @pytest.mark.parametrize("name", EXISTING_VALID_NAMES)
-    def test_valid_name_validates_even_when_workspaces_dir_is_absent(self, tmp_path, name):
-        # A brand-new workspace whose dir does not exist yet still validates (resolve is
-        # existence-independent) — the store is created on demand later.
-        assert not (tmp_path / "workspaces").exists()
-        assert validate_workspace_name(name, tmp_path) == tmp_path / "workspaces" / name
-
-
-class TestValidatorRejects:
-    @pytest.mark.parametrize("name", REJECTED_NAMES)
-    def test_bad_name_raises(self, tmp_path, name):
-        with pytest.raises(WorkspaceNameError):
-            validate_workspace_name(name, tmp_path)
-
-    def test_non_string_name_raises(self, tmp_path):
-        with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_name(123, tmp_path)  # type: ignore[arg-type]
-        assert exc.value.reason == "not-a-safe-segment"
-
-    def test_traversal_reason_is_hygiene(self, tmp_path):
-        # `../x` is caught by the SECONDARY charset check (starts with '.', contains '/').
-        with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_name("../x", tmp_path)
-        assert exc.value.reason == "not-a-safe-segment"
-
-    def test_symlink_escape_is_caught_by_resolve_and_contain(self, tmp_path):
-        # `evil` is a CLEAN segment (passes the hygiene charset) whose dir is a symlink pointing
-        # OUTSIDE workspaces/. Only the PRIMARY resolve-and-contain check catches it — proving
-        # the resolve step (not a lexical/normpath check) is the real protection.
-        base = tmp_path / "workspaces"
-        base.mkdir()
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        os.symlink(outside, base / "evil")
-        with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_name("evil", tmp_path)
-        assert exc.value.reason == "escapes-workspaces-root"
-
-    def test_absolute_path_escapes(self, tmp_path):
-        with pytest.raises(WorkspaceNameError):
-            validate_workspace_name("/etc", tmp_path)
 
 
 # ---------------------------------------------------------------------------

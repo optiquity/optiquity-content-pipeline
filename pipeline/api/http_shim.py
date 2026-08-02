@@ -70,7 +70,7 @@ that guard):
 - **A policy REFINEMENT, never a re-implementation.** The allow-list checks the `workspace` NAME
   for set membership only — it does NOT re-validate the path. An ESCAPING name (`../x`, an
   absolute path, a symlink escape) is ALREADY refused inside `invoke()` (`pipeline.workspace_name`
-  `validate_workspace_name`, the landed GAP-9 fix) and surfaces as `isolation-violation` → **403**;
+  `validate_workspace_path`, the landed GAP-9 fix) and surfaces as `isolation-violation` → **403**;
   the shim SURFACES that, it does not re-check the path here. The two 403s stay DISTINCT: the
   allow-list body is `{"error": "workspace-not-served"}`, the GAP-9 body is the fatal
   `isolation-violation` envelope. Even a MISCONFIGURED allow-list that lists an escaping name
@@ -463,8 +463,8 @@ def _tier_b_body(verb: str, params: Mapping[str, Any]) -> dict[str, Any]:
 
 # --- Tier-B jobs door (Commit 6): predictable ids · contained store · spawn · poll ----------
 #
-# CONTAINMENT DISCIPLINE (Commit 5c guard). The shim NEVER re-implements the GAP-9 workspace-name
-# resolve-and-contain (no `pipeline.workspace_name` import, no `validate_workspace_name`, no
+# CONTAINMENT DISCIPLINE (Commit 5c guard). The shim NEVER re-implements the GAP-9 workspace-path
+# resolve-and-contain (no `pipeline.workspace_name` import, no `validate_workspace_path`, no
 # `Path.resolve()` here — the static guard `test_shim_does_not_reimplement_gap9_path_validation`
 # asserts it). Instead it DELEGATES the containment to the framework's own job-subsystem primitive
 # `pipeline.api.jobrunner._store_for`, which applies the SAME landed GAP-9 gate `invoke()` applies

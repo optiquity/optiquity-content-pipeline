@@ -693,7 +693,10 @@ class TestWorkspaceAllowList:
         code_names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
             n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
         }
-        assert "validate_workspace_name" not in code_names
+        # The shim must not reference the CURRENT §23 containment guard's public symbols as code
+        # (Name/Attribute) nodes — containment stays DELEGATED to `invoke()`, never re-done here.
+        for guard_symbol in ("validate_workspace_path", "validate_user_segment", "workspace_path"):
+            assert guard_symbol not in code_names, f"shim must not re-do {guard_symbol}"
         assert "WorkspaceNameError" not in code_names
         # no Path.resolve() → no resolve-and-contain re-implementation in the shim:
         assert "resolve" not in code_names

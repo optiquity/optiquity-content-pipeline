@@ -43,7 +43,6 @@ __all__ = [
     "WORKSPACES_DIRNAME",
     "WorkspaceNameError",
     "validate_user_segment",
-    "validate_workspace_name",
     "validate_workspace_path",
     "workspace_path",
 ]
@@ -84,20 +83,18 @@ class WorkspaceNameError(ValueError):
 
     `reason` is one of:
 
-    - `not-a-safe-segment` — hygiene: not a single safe path segment (both validators).
+    - `not-a-safe-segment` — hygiene: not a single safe path segment (`_check_segment_ci`).
     - `not-lowercase` — hygiene: a segment carrying an uppercase letter, refused by the
-      case-insensitive-id rule (the 3-level `validate_workspace_path`/`validate_user_segment`
-      path only; the legacy `validate_workspace_name` never raises this).
-    - `escapes-workspaces-root` — resolve-and-contain: the store root escapes `workspaces/`
-      (raised by BOTH `validate_workspace_name`, level-1 of the legacy layout, and the leaf
-      level of `validate_workspace_path`).
+      case-insensitive-id rule (W5; `_check_segment_ci`, on both the `user` and `workspace` legs).
+    - `escapes-workspaces-root` — resolve-and-contain: the leaf `workspace` escapes its owner's
+      `workspaces/` (`validate_workspace_path` L3).
     - `escapes-users-root` — the owner dir escapes `users/` (`validate_workspace_path` L1).
     - `escapes-owner-root` — the fixed `workspaces/` dir escapes the owner
       (`validate_workspace_path` L2).
 
     `segment` names which segment was rejected (`"user"`, `"workspace"`, or `"workspaces"` for
-    the fixed literal). It is ADDITIVE and defaults to `None` so every existing raise — and the
-    legacy `validate_workspace_name` — is unaffected; only the new 3-level validator sets it.
+    the fixed literal). The 3-level validators always set it; it defaults to `None` only for a
+    caller that constructs the error directly.
     """
 
     def __init__(
@@ -110,70 +107,25 @@ class WorkspaceNameError(ValueError):
         self.segment = segment
 
 
-def validate_workspace_name(workspace: object, root: str | Path) -> Path:
-    """Return the CONTAINED `<root>/workspaces/<workspace>` store-root path, or raise.
-
-    The returned path is the UNRESOLVED `Path(root) / "workspaces" / workspace` — byte-
-    identical to what a door built before this guard existed, so a valid name yields the
-    exact same store root (behavior-neutral). Raises `WorkspaceNameError` on any violation,
-    BEFORE any store is constructed or touched.
-    """
-    base = Path(root) / WORKSPACES_DIRNAME
-
-    # SECONDARY (hygiene): a single safe path segment. Runs first so a malformed name gives a
-    # precise reason and a non-`str` never reaches `Path` / `resolve`. A clean segment that is
-    # actually a symlink escape still PASSES here — the primary check below is what catches it.
-    if not isinstance(workspace, str):
-        raise WorkspaceNameError(
-            workspace,
-            "not-a-safe-segment",
-            f"workspace must be a string naming one path segment, got {type(workspace).__name__}",
-        )
-    if not _SAFE_SEGMENT.match(workspace) or len(workspace.encode("utf-8")) > _MAX_SEGMENT_BYTES:
-        raise WorkspaceNameError(
-            workspace,
-            "not-a-safe-segment",
-            f"workspace {workspace!r} is not a single safe path segment — a workspace name is "
-            "one directory under workspaces/ (letters/digits/'_' then '.'/'-'/'_'; no separator, "
-            "no leading '-', never a bare '.'/'..'; §10, CLAUDE.md rule 2)",
-        )
-
-    # PRIMARY (the real protection): the resolved store root must be a DIRECT CHILD of the
-    # resolved workspaces/ dir. Resolving BOTH sides is what defeats `..`, absolute paths, and
-    # symlink escapes, and shares any symlinked prefix (e.g. macOS /var→/private/var) so a valid
-    # name in a tmpdir still validates. Existence-independent (`resolve(strict=False)`).
-    candidate = base / workspace
-    if candidate.resolve().parent != base.resolve():
-        raise WorkspaceNameError(
-            workspace,
-            "escapes-workspaces-root",
-            f"workspace {workspace!r} does not resolve to a direct child of {str(base)!r} — a "
-            "workspace store root can never escape workspaces/ (via '..', an absolute path, or a "
-            "symlink); isolation is enforced at the root, not by trust (§10/§21.1)",
-        )
-    return candidate
-
-
 # ===========================================================================
-# The 3-level `users/<user>/workspaces/<workspace>/` validator (§23 re-home).
+# The 3-level `users/<user>/workspaces/<workspace>/` validator (§23 re-home) — the SOLE
+# workspace-path containment guard every door calls before constructing a store.
 #
-# ADDED BESIDE `validate_workspace_name` (which stays in use until a later increment converts
-# the call sites). Where the legacy validator contains ONE segment under a fixed `workspaces/`,
-# the re-home nests TWO caller-supplied segments — `<user>` and `<workspace>` — under two fixed
+# The re-home nests TWO caller-supplied segments — `<user>` and `<workspace>` — under two fixed
 # joins (`users/` then, per owner, `workspaces/`). Each of the three levels gets its OWN
 # resolve-and-contain check so a symlink or `..` planted at ANY level (a symlinked `<user>`, a
 # symlinked per-owner `workspaces/`, or a leaf symlink into a sibling user's tree) is caught —
-# the same adversarially-vetted "resolve BOTH sides, compare `.parent`" discipline the legacy
-# guard uses, applied at every join. `user` and `workspace` always arrive as SEPARATE arguments;
-# this module never parses a slashed string into segments.
+# the adversarially-vetted "resolve BOTH sides, compare `.parent`" discipline applied at every
+# join. `user` and `workspace` always arrive as SEPARATE arguments; this module never parses a
+# slashed string into segments.
 # ===========================================================================
 
 
 def _check_segment_ci(seg: object, kind: str) -> None:
     """Hygiene for one CASE-INSENSITIVE id segment (`kind` = `"user"`/`"workspace"`); raise or pass.
 
-    The shared `_SAFE_SEGMENT` grammar + `_MAX_SEGMENT_BYTES` cap (SAME constants the legacy
-    `validate_workspace_name` uses, so the accepted charset is single-sourced), PLUS the ratified
+    The shared `_SAFE_SEGMENT` grammar + `_MAX_SEGMENT_BYTES` cap (the single hygiene grammar/cap
+    for every workspace-layout segment, so the charset is single-sourced), PLUS the ratified
     case-insensitive-id rule (W5): a segment must equal its own ASCII-lowercase form. Because the
     grammar already restricts `seg` to the ASCII set `[A-Za-z0-9._-]`, `seg.lower()` is a pure
     ASCII fold, so `seg != seg.lower()` is true exactly when an ASCII `A-Z` is present — ids are
@@ -181,9 +133,8 @@ def _check_segment_ci(seg: object, kind: str) -> None:
     would let `Optiquity` and `optiquity` name the same home two ways). The grammar/cap check runs
     FIRST so the lowercase test only sees a known-ASCII string and a non-`str` never reaches it.
 
-    Raised errors carry `segment=kind`. This helper is NEW-PATH ONLY: the legacy validator's
-    inline hygiene is deliberately left byte-unchanged (it must keep accepting its uppercase test
-    labels like `wsA`/`wsB` until it is rewritten in a later increment).
+    Raised errors carry `segment=kind` so a door can report which leg (`"user"`/`"workspace"`) was
+    rejected.
     """
     if not isinstance(seg, str):
         raise WorkspaceNameError(

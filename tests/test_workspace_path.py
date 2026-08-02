@@ -2,17 +2,17 @@
 
 Design authority: `docs/design.md` §21.1 (isolation is enforced BY THE API, not by trust) +
 §10 (client isolation is structural) + CLAUDE.md rule 2, extended to the per-user re-home:
-where the legacy `validate_workspace_name` contains ONE segment under a fixed `workspaces/`,
+where a single-level workspace-name validator would contain ONE segment under a fixed `workspaces/`,
 `validate_workspace_path` contains TWO caller-supplied segments — `<user>` then `<workspace>` —
 each at its OWN resolve-and-contain level, so a symlink or `..` planted at any of the three
 joins cannot relocate the store root the §21.1 per-id gate validates against. `user` and
 `workspace` always arrive as SEPARATE arguments (never a slashed string), and every id is
 case-insensitive (a non-lowercase spelling is refused, not silently folded — W5).
 
-These tests pin the three containment levels with REAL tmp symlinks (mirroring the existing
-`test_workspace_name.py` symlink cases) plus the lowercase rule. ADDITIVE: the legacy validator
-and its tests stay green; no call site is converted here. All fixtures are generic (`optiquity`,
-`acme`, `mvp-demo`, §7.4 literal ids); no instance content.
+These tests are the UNIT home for the sole workspace-path validator: they pin the three
+containment levels with REAL tmp symlinks (the door-level companion lives in
+`test_workspace_name.py`) plus the lowercase and hygiene reject sets. All fixtures are generic
+(`optiquity`, `acme`, `mvp-demo`, §7.4 literal ids); no instance content.
 """
 
 from __future__ import annotations
@@ -36,9 +36,12 @@ VALID_PAIRS = (
     ("optiquity", "workspace.template"),  # interior DOT allowed; only bare `..` is traversal.
 )
 
-#: Not-a-safe-segment values — traversal, absolute, embedded separator, bare dots, flag-like,
-#: and the string-form cross-user traversal (refused by hygiene, NEVER parsed as a path).
+#: Not-a-safe-segment values — the empty string, traversal, absolute, embedded separator, bare
+#: dots, flag-like, and the string-form cross-user traversal (refused by hygiene, NEVER parsed as a
+#: path). The empty string is the ONE unit case ported from the removed legacy validator's reject
+#: set (B9): `_SAFE_SEGMENT` requires >=1 char, so a blank segment can never name a directory.
 UNSAFE_SEGMENTS = (
+    "",  # ported from the removed legacy validator's reject set (B9) — a blank is not a segment.
     "..",
     ".",
     "/etc",
