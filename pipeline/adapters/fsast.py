@@ -118,6 +118,14 @@ from pipeline.adapters.base import (
     SourceAdapter,
 )
 
+# `WORKSPACES_DIRNAME` (canonical def: pipeline.workspace_name, the single home for the layout
+# directory-name literals) is the directory name NEVER walked into (planner-03 R6): client
+# CONTENT lives under `workspaces/`, grounding SOURCES lie outside it — pruned wherever it is
+# met mid-walk. Value STAYS "workspaces" (the leaf-parent dir name is unchanged by the re-home);
+# this is a bare-name prune, NOT the self-grounding refusal (`REPO_WORKSPACES`, below). Also
+# re-exported in `__all__` for the adapter's tests.
+from pipeline.workspace_name import WORKSPACES_DIRNAME
+
 __all__ = [
     "CLI_FACET_KEYS",
     "CONNECTION_KEYS",
@@ -168,10 +176,6 @@ CLI_FACET_KEYS = ("help", "type", "required", "default", "action")
 #: absent `mode` is `both` and an absent `skip_dirs` prunes only the always-pruned set, so a
 #: connection carrying neither is byte-identical to the pre-C2b behavior.
 CONNECTION_KEYS = frozenset({"path", "budget", "mode", "skip_dirs"})
-
-#: The directory name that is NEVER walked into (planner-03 R6): client CONTENT lives under
-#: `workspaces/`, grounding SOURCES live outside it. Pruned wherever it is met mid-walk.
-WORKSPACES_DIRNAME = "workspaces"
 
 #: Python's compiled-bytecode cache dir: gitignored, accumulating BUILD artifacts whose
 #: `.pyc` names embed the interpreter version and appear/disappear run-to-run. Pruned

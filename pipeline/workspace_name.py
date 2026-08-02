@@ -39,13 +39,23 @@ import re
 from pathlib import Path
 
 __all__ = [
+    "USERS_DIRNAME",
     "WORKSPACES_DIRNAME",
     "WorkspaceNameError",
     "validate_workspace_name",
 ]
 
-#: The single directory every client workspace lives under (CLAUDE.md rule 2; §23).
+#: The single directory every client workspace lives under (CLAUDE.md rule 2; §23). This module
+#: is the ONE home for the layout directory-name literals: `pipeline.m1` and
+#: `pipeline.adapters.fsast` import these rather than redefining them (it imports only
+#: `re`/`pathlib`, so no import cycle).
 WORKSPACES_DIRNAME = "workspaces"
+
+#: The per-user home directory workspaces are being re-homed under
+#: (`users/<user>/workspaces/<workspace>/`). Defined here alongside `WORKSPACES_DIRNAME` as the
+#: single source for the layout literals; consumed by the later re-home increments (it is NOT
+#: yet referenced by any path-building code — B1/B2 are behavior-neutral prep).
+USERS_DIRNAME = "users"
 
 #: A valid workspace name is one safe path segment. The charset is DERIVED from the existing
 #: corpus so nothing legitimate breaks: every real workspace dir (`mvp-demo`,

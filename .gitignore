@@ -28,14 +28,14 @@ __pycache__/
 # Claim/lease lock data: self-expiring runtime coordination records, never content
 # (design §13.3/§22.3/§23; plan step 21). Not tracked in any instance — a lease is
 # only meaningful on the machine and in the moment that wrote it.
-workspaces/*/claims/
+users/*/workspaces/*/claims/
 
 # Async job/idempotency records (DR-1): §22.7-class LOSSY bookkeeping — a lagging projection
 # never consulted for correctness (DONE = output existence; RUNNING = the claim/lease table).
 # Framework MECHANISM (pipeline/store.py jobs_dir + the DR-1 JobStore), instance DATA (records
 # carry client artifact-ids/coordinates/hints), never tracked in the public framework
 # (CLAUDE.md rules 2/4; check-no-content.sh flags any tracked workspaces/*/jobs/ file).
-workspaces/*/jobs/
+users/*/workspaces/*/jobs/
 
 # Instance-scoped ops state (design §22.5/§23; plan step 36): the presence-lease registry
 # and the append-only telemetry JSONL. Framework MECHANISM (pipeline/telemetry.py), instance

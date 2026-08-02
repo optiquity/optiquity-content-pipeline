@@ -101,6 +101,7 @@ from pipeline.schema import (
     UndeclaredAttributeError,
     load_schema,
 )
+from pipeline.workspace_name import WORKSPACES_DIRNAME
 
 __all__ = [
     "CONTENT_DIMENSION_TOKENS",
@@ -151,8 +152,9 @@ RENDERING_DIMENSION_TOKENS = ("platform", "language", "output-type", "presentati
 #: `pipeline/schema.RESERVED_ATTRIBUTE_NAMES`).
 EXTENDS_KEY = "extends"
 
-#: §10: scope is encoded by location; workspace scope lives under this directory.
-WORKSPACES_DIRNAME = "workspaces"
+# §10: scope is encoded by location; workspace scope lives under WORKSPACES_DIRNAME —
+# imported from `pipeline.workspace_name` (the single home for the layout directory-name
+# literals) and re-exported in `__all__` for callers that read `m1.WORKSPACES_DIRNAME`.
 
 #: The three M1 scopes, in resolution order (§12.1). Framework vs instance-global is the
 #: provenance TAG inside the shared directory (§10: mixed-provenance dirs); workspace is
