@@ -198,7 +198,7 @@ def test_shipped_template_surfaces_parse_clean() -> None:
         encoding="utf-8"
     )
     workspace_template = (
-        REPO_ROOT / "workspaces" / "workspace.template" / "defaults.yaml"
+        REPO_ROOT / "templates" / "workspace" / "defaults.yaml"
     ).read_text(encoding="utf-8")
     parsed_global = parse_scope_defaults(global_template, scope=GLOBAL_SCOPE, where="t")
     parsed_workspace = parse_scope_defaults(workspace_template, scope=WORKSPACE_SCOPE, where="t")

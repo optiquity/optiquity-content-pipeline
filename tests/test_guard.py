@@ -5,7 +5,7 @@ git repo needed, CI green with the fixtures tracked); one negative fixture per l
 (six classes, each firing its NAMED finding in isolation); the template exemptions BY NAME
 (PA-1a) — SCOPED per class after the step-13 review: the `*.template.*` exemption applies
 only in a registry root and to direct children of instance/, never under instance/ops/,
-nested instance/ paths, or workspaces/ (RV-1), an explicit `provenance: instance` line
+nested instance/ paths, or users/ (RV-1), an explicit `provenance: instance` line
 leaks even under a template name (RV-2), and `--mode all` scans symlinks (RV-4); the
 tracked-mode default on the real repo (which is simultaneously the PA-1b proof: the
 violating fixtures ARE tracked under tests/fixtures/guard/ and do not self-flag, because
@@ -29,8 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARD = REPO_ROOT / "scripts" / "check-no-content.sh"
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "guard"
 
-#: The six PA-1 leak classes, the four RV-1/RV-2 template-basename probes, and the DR-1
-#: async-`jobs/` record (a second workspace-content instance): (fixture tree, expected LEAK
+#: The six PA-1 leak classes, the four RV-1/RV-2 template-basename probes, the DR-1
+#: async-`jobs/` record (a second workspace-content instance), and the [W8] templates/ scan
+#: arm (a client `x-*` blueprint smuggled under templates/): (fixture tree, expected LEAK
 #: label, offending path).
 LEAK_CASES = [
     ("missing-provenance", "LEAK[missing-provenance]", "topics/fixture-missing-provenance.md"),
@@ -38,19 +39,37 @@ LEAK_CASES = [
     ("x-file", "LEAK[x-file]", "formats/x-fixture-format.md"),
     ("instance-defaults", "LEAK[instance-defaults]", "instance/defaults.yaml"),
     ("instance-ops", "LEAK[instance-ops]", "instance/ops/telemetry.jsonl"),
-    ("workspace-content", "LEAK[workspace-content]", "workspaces/acme/defaults.yaml"),
+    (
+        "workspace-content",
+        "LEAK[workspace-content]",
+        "users/acme/workspaces/proj/defaults.yaml",
+    ),
     # DR-1 Commit 2: a tracked async job record under a client workspace is client data —
-    # caught by the SAME workspace-content class (the path names the client; no exemption).
+    # caught by the SAME workspace-content class (the path names the user/client; no exemption).
     (
         "workspace-jobs",
         "LEAK[workspace-content]",
-        "workspaces/acme/jobs/r-0123456789abcdef",
+        "users/acme/workspaces/proj/jobs/r-0123456789abcdef",
+    ),
+    # [W8] a client `x-*` blueprint smuggled under templates/ (outside templates/workspace/) is
+    # caught by the templates/ scan arm — templates/ is framework mechanism, not a hiding place.
+    (
+        "templates-x-file",
+        "LEAK[x-file]",
+        "templates/x-fixture-blueprint.md",
+    ),
+    # BLOCKER close: the blueprint subtree is NOT exempt wholesale — an x-* file nested DEEP
+    # inside templates/workspace/ still LEAKS (the whole subtree flows through the [W8] arm).
+    (
+        "templates-workspace-x-file",
+        "LEAK[x-file]",
+        "templates/workspace/sub/x-client.md",
     ),
     # RV-1: a *.template.* basename must NOT defeat the structural leak classes.
     (
         "template-name-workspace",
         "LEAK[workspace-content]",
-        "workspaces/acme/secret.template.md",
+        "users/acme/workspaces/proj/secret.template.md",
     ),
     (
         "template-name-instance-ops",
@@ -187,11 +206,16 @@ def test_instance_template_exemption_is_direct_children_only(tmp_path):
     assert "LEAK[instance-file] instance/notes/draft.template.md" in proc.stdout
 
 
-def test_workspace_template_dir_and_schema_manifest_exempt(tmp_path):
+def test_workspace_blueprint_is_scanned_not_exempt_wholesale(tmp_path):
+    """BLOCKER close (§23 re-home): the framework blueprint at templates/workspace/ is NOT
+    exempt wholesale — its whole subtree flows through the [W8] templates/* arm. GENERIC
+    framework files (no instance signal) PASS, and a co-located registry `_schema.yaml` is
+    framework mechanism; but an x-* file or a `provenance: instance` file nested DEEP inside
+    the blueprint still LEAKS (the subtree is no longer a blind spot)."""
     root = tmp_path / "exempt"
-    (root / "workspaces" / "workspace.template" / "topics").mkdir(parents=True)
-    (root / "workspaces" / "workspace.template" / "topics" / "note.md").write_text(
-        "# synthetic workspace-template content\n", encoding="utf-8"
+    (root / "templates" / "workspace" / "topics").mkdir(parents=True)
+    (root / "templates" / "workspace" / "topics" / "note.md").write_text(
+        "# synthetic workspace-blueprint content\n", encoding="utf-8"
     )
     (root / "recipes").mkdir(parents=True)
     (root / "recipes" / "_schema.yaml").write_text(
@@ -199,6 +223,56 @@ def test_workspace_template_dir_and_schema_manifest_exempt(tmp_path):
     )
     proc = run_guard("--root", str(root), "--mode", "all")
     assert proc.returncode == 0, proc.stdout
+
+    # An x-* file nested DEEP inside the blueprint LEAKS (no wholesale exemption).
+    (root / "templates" / "workspace" / "sub").mkdir(parents=True)
+    (root / "templates" / "workspace" / "sub" / "x-client.md").write_text(
+        "# synthetic client blueprint - never real\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout
+    assert "LEAK[x-file] templates/workspace/sub/x-client.md" in proc.stdout
+    (root / "templates" / "workspace" / "sub" / "x-client.md").unlink()
+
+    # A `provenance: instance` file directly under the blueprint LEAKS too.
+    (root / "templates" / "workspace" / "evil.md").write_text(
+        "---\nprovenance: instance\n---\n# synthetic instance-tagged blueprint\n",
+        encoding="utf-8",
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout
+    assert "LEAK[provenance-instance] templates/workspace/evil.md" in proc.stdout
+
+
+def test_templates_framework_files_pass_and_instance_content_leaks(tmp_path):
+    """[W8]: templates/ is a SCANNED framework surface (owner-agnostic blueprints). The
+    templates/workspace/ blueprint files PASS, and a generic framework template directly
+    under templates/ PASSES — but an explicit `provenance: instance` line under templates/
+    LEAKS (an x-* path under templates/ is the fixture-driven LEAK[x-file] case). Without
+    the scan arm, templates/ would be an UNSCANNED client-content hiding place."""
+    root = tmp_path / "templates-arm"
+    # The re-homed blueprint (scanned by the [W8] arm; its generic files pass) + a generic
+    # framework template alongside it.
+    (root / "templates" / "workspace" / "topics").mkdir(parents=True)
+    (root / "templates" / "workspace" / "defaults.yaml").write_text(
+        "# synthetic blueprint defaults - all comments\n", encoding="utf-8"
+    )
+    (root / "templates" / "shape.template.md").write_text(
+        "# synthetic framework template - no provenance by design\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 0, proc.stdout
+    assert "OK:" in proc.stdout
+
+    # An explicit instance tag under templates/ (outside the blueprint) LEAKS.
+    tagged = root / "templates" / "evil.template.md"
+    tagged.write_text(
+        "---\nprovenance: instance\n---\n# synthetic instance-tagged template\n",
+        encoding="utf-8",
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout
+    assert "LEAK[provenance-instance] templates/evil.template.md" in proc.stdout
 
 
 def test_instance_profile_md_is_a_leak(tmp_path):
@@ -246,8 +320,8 @@ def test_all_mode_scans_untracked_files(tmp_path):
     """--mode all sees plain files (the seam property REC-3 relies on): the fixture-tree
     copies are untracked, yet every leak test above fired — assert it directly too."""
     root = tmp_path / "untracked"
-    (root / "workspaces" / "acme").mkdir(parents=True)
-    (root / "workspaces" / "acme" / "note.md").write_text(
+    (root / "users" / "acme" / "workspaces" / "proj").mkdir(parents=True)
+    (root / "users" / "acme" / "workspaces" / "proj" / "note.md").write_text(
         "# synthetic client note - never real\n", encoding="utf-8"
     )
     proc = run_guard("--root", str(root), "--mode", "all")
@@ -262,16 +336,19 @@ def test_workspace_jobs_data_is_gitignored_and_a_tracked_leak_is_flagged(tmp_pat
         flags it — client isolation holds regardless (CLAUDE.md rules 2/4)."""
     # (1) the DATA-untracked half: the framework .gitignore carries the jobs rule.
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert "workspaces/*/jobs/" in gitignore
+    assert "users/*/workspaces/*/jobs/" in gitignore
     # (2) the guard half: a planted job record under a client workspace is caught by PATH.
     root = tmp_path / "jobs-leak"
-    (root / "workspaces" / "acme" / "jobs").mkdir(parents=True)
-    (root / "workspaces" / "acme" / "jobs" / "r-0123456789abcdef").write_text(
+    (root / "users" / "acme" / "workspaces" / "proj" / "jobs").mkdir(parents=True)
+    (root / "users" / "acme" / "workspaces" / "proj" / "jobs" / "r-0123456789abcdef").write_text(
         "synthetic job record - never real client data\n", encoding="utf-8"
     )
     proc = run_guard("--root", str(root), "--mode", "all")
     assert proc.returncode == 1, proc.stdout
-    assert "LEAK[workspace-content] workspaces/acme/jobs/r-0123456789abcdef" in proc.stdout
+    assert (
+        "LEAK[workspace-content] users/acme/workspaces/proj/jobs/r-0123456789abcdef"
+        in proc.stdout
+    )
 
 
 def test_all_mode_scans_symlinks(tmp_path):

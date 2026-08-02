@@ -159,10 +159,10 @@ def test_workspace_gives_x_prefixed_instance_file(tmp_path, capsys):
 
     report = lint_tree(root, now=NOW, baseline=None)
     assert report.ok, render_report(report)
-    # NOTE (B5/B7 split): the entry is now written under `users/<user>/workspaces/…`, but lint's
-    # scan scope (`EXTRA_SCOPE_DIRS`) still names `workspaces/` — its conversion to `users/` is B7.
-    # So the just-written instance entry is not yet in lint's scan scope here; lint stays GREEN
-    # (no spurious findings), and the scan-count coverage of `users/` entries lands with B7.
+    # B7: lint's EXTRA_SCOPE_DIRS now names `users/`, so the instance entry written under
+    # users/<user>/workspaces/demo/personas/ IS in scope and gets scanned/validated (not
+    # vacuously clean) — a well-formed `provenance: instance` x- entry is lint-clean (§10 rule 5).
+    assert report.entries_scanned >= 1
 
     entry = load_entry(written, _framework_schema("personas"))
     assert entry.provenance == PROVENANCE_INSTANCE

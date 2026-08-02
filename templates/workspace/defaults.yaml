@@ -1,11 +1,12 @@
-# workspaces/workspace.template/defaults.yaml — TEMPLATE for the per-client
-# scope-default surface (T10; design §12.2 rung L3). Ships inside the
-# workspace.template/ directory (the framework deliverable, guard-exempt PA-1a);
-# the instantiated copy at `workspaces/<client>/defaults.yaml` is CLIENT DATA — a
-# named leak class in scripts/check-no-content.sh (PA-1c), never public.
+# templates/workspace/defaults.yaml — TEMPLATE for the per-client
+# scope-default surface (T10; design §12.2 rung L3). Ships as the framework-owned,
+# owner-agnostic blueprint under templates/workspace/ (the framework deliverable,
+# guard-exempt PA-1a); the instantiated copy at
+# `users/<user>/workspaces/<workspace>/defaults.yaml` is CLIENT DATA — a named leak
+# class in scripts/check-no-content.sh (PA-1c), never public.
 #
 # USAGE: instantiating a workspace copies this file to
-# `workspaces/<client>/defaults.yaml`. Everything here is OPTIONAL (§12.3: L3 is an
+# `users/<user>/workspaces/<workspace>/defaults.yaml`. Everything here is OPTIONAL (§12.3: L3 is an
 # optional rung for every dimension): a workspace only declares where this client's
 # baseline DIFFERS from the instance globals (instance/defaults.yaml, L2). The CA8
 # mandatory-global set (voice, language, output_type) is satisfied at L2 — a

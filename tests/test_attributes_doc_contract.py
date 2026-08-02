@@ -72,7 +72,7 @@ def test_attributes_doc_walks_registry_roots_only() -> None:
     `instance/`+`workspaces/` superset that `iter_lint_collections` would visit."""
     documented = {name for name, _ in attrdoc.iter_documented_schemas()}
     assert documented == set(lint.REGISTRY_ROOTS)
-    for scope in lint.EXTRA_SCOPE_DIRS:  # instance, workspaces
+    for scope in lint.EXTRA_SCOPE_DIRS:  # instance, users
         assert scope not in documented
 
 
@@ -84,16 +84,21 @@ def test_doc_carries_no_instance_or_client_leak() -> None:
 
 
 def test_generator_ignores_instance_and_workspace_schemas(tmp_path, monkeypatch) -> None:
-    """A schema-shaped dir under `instance/` and `workspaces/` is IGNORED by the generator even
-    though `iter_lint_collections` surfaces it — proving the framework-only walk is structural."""
+    """A schema-shaped dir under `instance/` and `users/` (the §23 client re-home) is IGNORED by
+    the generator even though `iter_lint_collections` surfaces it — proving the framework-only
+    walk is structural."""
     # One real registry root (a non-empty generatable set under the narrowed REGISTRY_ROOTS).
     (tmp_path / "formats").mkdir()
     (tmp_path / "formats" / SCHEMA_FILENAME).write_text(
         (attrdoc.framework_root() / "formats" / SCHEMA_FILENAME).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    # The exact leak surface: registry-shaped dirs under instance/ and workspaces/<client>/.
-    for scope, dim in (("instance", "leaky-a"), ("workspaces/client-one", "leaky-b")):
+    # The exact leak surface: registry-shaped dirs under instance/ and the §23 client re-home
+    # users/<user>/workspaces/<client>/.
+    for scope, dim in (
+        ("instance", "leaky-a"),
+        ("users/some-user/workspaces/client-one", "leaky-b"),
+    ):
         leaf = tmp_path / scope / dim
         leaf.mkdir(parents=True)
         (leaf / SCHEMA_FILENAME).write_text("schema_version: 1\nattributes: {}\n", encoding="utf-8")

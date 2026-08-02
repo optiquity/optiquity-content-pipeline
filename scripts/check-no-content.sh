@@ -12,7 +12,9 @@
 #
 # SCAN SCOPE (PA-1): tracked files only in the default mode (`git ls-files`, so local
 # uncommitted instance/demo data never false-positives), restricted to the named registry
-# roots plus instance/ and workspaces/. NEVER scans tests/ docs/ pipeline/ scripts/
+# roots plus instance/, users/ (the §23 re-home — all client content lives under
+# users/<user>/workspaces/<workspace>/), and templates/ (framework blueprints). NEVER scans
+# tests/ docs/ pipeline/ scripts/
 # .claude/ .github/ — tracked negative fixtures under tests/fixtures/guard/ cannot
 # self-flag (PA-1b). `--mode all` walks the same scope dirs on disk, including symlinks
 # (step-13 review RV-4 — a symlinked file is scanned like any other; tracked mode already
@@ -24,12 +26,13 @@
 # `provenance: instance` line still leaks even under a template name, RV-2) and as DIRECT
 # children of instance/ (the shipped allowlist: instance/profile.template.md,
 # instance/defaults.template.yaml). The exemption NEVER applies under instance/ops/,
-# nested instance/ paths, or workspaces/ — a template-named file there is still
-# client/instance content, and its path alone can leak a client name. The
-# workspaces/workspace.template/ directory is exempt wholesale (it is the framework
-# deliverable; templates carry no provenance frontmatter, and the stale
-# platforms/platform.template.md stays green until the step-40 sweep). A co-located
-# `<root>/_schema.yaml` is framework mechanism (SV4) and is likewise exempt.
+# nested instance/ paths, or users/ — a template-named file there is still
+# client/instance content, and its path alone can leak a user/client name. The framework
+# workspace blueprint at templates/workspace/ is NOT exempt: its whole subtree is scanned
+# by the [W8] templates/* arm (its 8 generic framework files carry no x-/provenance-instance
+# instance signal, so they PASS; the stale platforms/platform.template.md stays green until
+# the step-40 sweep). A co-located `<root>/_schema.yaml` is framework mechanism (SV4) and is
+# likewise exempt.
 #
 # LEAK CLASSES (each named in the output; negative fixtures per class under
 # tests/fixtures/guard/):
@@ -47,9 +50,16 @@
 #   instance-file         any other tracked file under instance/ (allowlist: DIRECT-child
 #                         *.template.* only, e.g. instance/profile.template.md; nested
 #                         paths leak regardless of name, RV-1)
-#   workspace-content     tracked path under workspaces/ outside workspace.template/
-#                         (client isolation, CLAUDE.md rule 2/4; no template exemption —
-#                         the path alone names a client, RV-1)
+#   workspace-content     tracked client content under users/ (any depth beneath
+#                         users/<user>/workspaces/<workspace>/) — client isolation,
+#                         CLAUDE.md rule 2/4; no template exemption, the path alone names
+#                         a user/client (RV-1; §23 re-home)
+#   x-file / provenance-instance (under templates/)  the [W8] templates/ scan arm: an x-*
+#                         path or an explicit `provenance: instance` line ANYWHERE under
+#                         templates/ (including templates/workspace/**) leaks; templates/ is
+#                         framework mechanism — owner-agnostic blueprints, so generic
+#                         framework files (no instance signal) PASS. A marker-less generic
+#                         file is an accepted residual (cf. the GAP-4a marker-less-dir limit)
 #   framework-asset       tracked file under the top-level framework asset home assets/
 #                         other than README.md (S3; the emptiness arm below — assets/ is
 #                         outside $SCOPES, so a stray binary would ship UNFLAGGED)
@@ -69,7 +79,12 @@ set -euo pipefail
 # registry SHAPE (the SV4 `<dir>/_schema.yaml` marker) but is missing from this list — so a
 # new registry root (e.g. a future `lexicons/`) can never ship UNSCANNED. Add a new root here.
 REGISTRY_ROOTS="topics personas formats voices goals platforms languages output-types presentations content-kinds sources render-targets recipes folio-types lexicons diagram-styles selections"
-SCOPES="$REGISTRY_ROOTS instance workspaces"
+# SCOPES feeds `git ls-files -- $SCOPES` (and the --mode all find loop). It is REGISTRY_ROOTS plus
+# the non-registry scan surfaces: instance/ (per-deployment config), users/ (the §23 re-home — ALL
+# client content lives under users/<user>/workspaces/<workspace>/) and templates/ (framework-owned,
+# owner-agnostic blueprints — the [W8] framework mechanism scan surface; a client file must not hide
+# under templates/ unscanned).
+SCOPES="$REGISTRY_ROOTS instance users templates"
 
 MODE="tracked"
 ROOT=""
@@ -79,7 +94,7 @@ usage() {
 usage: check-no-content.sh [--root DIR] [--mode tracked|all]
 
 Public-boundary guard (design §10; PA-1 scope). Scans the registry roots + instance/ +
-workspaces/ for client/instance content. Default: tracked files of the repo checkout.
+users/ + templates/ for client/instance content. Default: tracked files of the repo checkout.
   --root DIR   tree to scan (default: the repo root containing this script)
   --mode M     tracked = git ls-files (default; requires a git checkout)
                all     = every file on disk (the REC-3 test seam for fixture trees)
@@ -161,7 +176,7 @@ leak() { # $1=class  $2=path  $3=message
 }
 
 # GAP-4a — REGISTRY-ROOT COVERAGE CHECK (docs/known-issues.md GAP-4): the file scan below
-# only covers $SCOPES (the hardcoded REGISTRY_ROOTS whitelist + instance/ + workspaces/). A
+# only covers $SCOPES (the hardcoded REGISTRY_ROOTS whitelist + instance/ + users/ + templates/). A
 # brand-new top-level registry root OUTSIDE that whitelist would therefore pass UNSCANNED —
 # a silent client-content leak surface (e.g. a future `lexicons/` holding a corporate
 # lexicon). Fail LOUDLY on any top-level directory that has REGISTRY SHAPE (the SV4 marker: a
@@ -177,7 +192,7 @@ while IFS= read -r schema; do
   esac
   root_dir="${schema%/_schema.yaml}"
   case " $SCOPES " in
-    *" $root_dir "*) continue ;;  # already scanned (a whitelisted root, or instance/workspaces)
+    *" $root_dir "*) continue ;;  # already scanned (a whitelisted root, or instance/users/templates)
   esac
   leak unknown-registry-root "$root_dir" \
     "registry-shaped directory (SV4 marker: a co-located ${root_dir}/_schema.yaml) is NOT in REGISTRY_ROOTS, so its contents are NEVER scanned by this guard — add '${root_dir}' to REGISTRY_ROOTS in scripts/check-no-content.sh so the public-boundary scan covers it (GAP-4a)"
@@ -215,14 +230,14 @@ done < <(list_asset_home)
 while IFS= read -r f; do
   [ -n "$f" ] || continue
 
-  # PA-1a directory exemption: the shipped workspace template.
-  case "$f" in
-    workspaces/workspace.template/*) continue ;;
-  esac
-
+  # NOTE: the framework workspace blueprint at templates/workspace/ is NOT exempt wholesale —
+  # its whole subtree flows through the [W8] templates/* arm below (so templates/workspace/**/x-*
+  # and a provenance: instance file under it still LEAK). The 8 real blueprint files pass that arm
+  # because none is x--named or provenance: instance (they are generic framework files).
+  #
   # NOTE (RV-1): the *.template.* basename exemption is scoped PER CLASS below — the
   # registry-root arm and DIRECT children of instance/ only, never under instance/ops/,
-  # nested instance/ paths, or workspaces/.
+  # nested instance/ paths, or users/.
   base="${f##*/}"
 
   case "$f" in
@@ -244,10 +259,32 @@ while IFS= read -r f; do
       esac
       leak instance-file "$f" \
         "tracked non-template file under instance/ (allowlist: direct-child *.template.* only, e.g. instance/profile.template.md, instance/defaults.template.yaml)" ;;
-    workspaces/*)
-      # No template exemption under workspaces/ (RV-1): the path alone names a client.
+    users/*)
+      # §23 re-home: ALL client content lives under users/<user>/workspaces/<workspace>/, and the
+      # shell `case *` glob spans '/', so this catches any tracked file at any depth beneath users/.
+      # No template exemption (RV-1): the path alone names a user/client. The framework blueprint no
+      # longer lives here — it moved to templates/workspace/ (handled above).
       leak workspace-content "$f" \
-        "tracked client-workspace content — only workspaces/workspace.template/ ships in the public framework (CLAUDE.md rules 2/4)" ;;
+        "tracked client content under users/ — every user/workspace tree (users/<user>/workspaces/<workspace>/) is instance-owned and never ships in the public framework (CLAUDE.md rules 2/4; design §23)" ;;
+    templates/*)
+      # [W8] templates/ is FRAMEWORK MECHANISM: owner-agnostic blueprints, the counterpart to the
+      # assets/ arm above. The WHOLE subtree flows through here (including templates/workspace/), so no
+      # part is a blind spot. The arm catches the two INSTANCE SIGNALS: an x-* path segment (the
+      # reserved instance namespace, SV5) or an explicit `provenance: instance` line LEAKS. A
+      # generic-named file with NO provenance line PASSES — templates legitimately carry no provenance
+      # frontmatter, so this arm CANNOT default-deny on its absence. That marker-less generic file is an
+      # ACCEPTED RESIDUAL (same class as the GAP-4a marker-less-dir limit); templates/ is extensible, so
+      # no allowlist/emptiness backstop is imposed.
+      case "/$f" in
+        */x-*)
+          leak x-file "$f" \
+            "instance-namespaced 'x-*' path under the framework template home templates/ — templates carry no reserved x- namespace; a client blueprint must never hide here (design §11.4 SV5; CLAUDE.md rules 2/4)"
+          continue ;;
+      esac
+      if grep -q -E '^provenance:[[:space:]]*instance[[:space:]]*$' "$f" 2>/dev/null; then
+        leak provenance-instance "$f" \
+          "template file under templates/ carrying an explicit 'provenance: instance' line — templates are framework mechanism (owner-agnostic, provenance framework), never instance content (design §10 Q15 rule 5)"
+      fi ;;
     *)
       # A registry-root file. The co-located schema manifest is framework mechanism.
       top="${f%%/*}"

@@ -1,13 +1,14 @@
-# workspace.template — one workspace per client repo
+# workspace blueprint (templates/workspace/) — one workspace per client repo
 
-Copy this directory to `workspaces/<client>/` to onboard a client repo (your own repos are clients
-too, e.g. `workspaces/self/`). Everything for that client lives here and never leaks into another
-workspace (CLAUDE.md rule 2; design §10 — scope is encoded by location). This is the only workspace
-that ships in the public framework; instantiated `workspaces/<client>/` trees are instance-owned
-(gitignored in public). Full layout: design §23.
+Copy this directory to `users/<user>/workspaces/<workspace>/` to onboard a client repo (your own
+repos are clients too, e.g. `users/<user>/workspaces/self/`). Everything for that workspace lives
+here and never leaks into another workspace (CLAUDE.md rule 2; design §10 — scope is encoded by
+location). This blueprint is the framework-owned, owner-agnostic template that ships in the public
+framework; instantiated `users/<user>/workspaces/<workspace>/` trees are instance-owned (gitignored
+in public). Full layout: design §23.
 
 ```bash
-cp -R workspaces/workspace.template workspaces/<client>
+cp -R templates/workspace users/<user>/workspaces/<workspace>
 ```
 
 ## What ships in the template (hand-authored inputs)
@@ -24,8 +25,8 @@ cp -R workspaces/workspace.template workspaces/<client>
 
 Customize per client by **adding** files here, never by editing shipped framework entries:
 
-- client-scoped registry entries under `workspaces/<client>/<dimension>/` (e.g. a client-only
-  `personas/x-…md`), using the reserved `x-` prefix (§11.4);
+- client-scoped registry entries under `users/<user>/workspaces/<workspace>/<dimension>/` (e.g. a
+  client-only `personas/x-…md`), using the reserved `x-` prefix (§11.4);
 - `extends:` partials that field-merge over a shipped `provenance: framework` entry (§10 rule 2);
 - baseline values in `defaults.yaml` (§12.2).
 
@@ -34,13 +35,14 @@ There is no `overrides/` directory — run-layer overrides are the ephemeral L6 
 
 ## Pipeline-created stores (design §23; appear at generation time)
 
-The pipeline writes these under `workspaces/<client>/` as it runs; they are not hand-authored and
-are not pre-created in the template:
+The pipeline writes these under `users/<user>/workspaces/<workspace>/` as it runs; they are not
+hand-authored and are not pre-created in the template:
 
 - `artifacts/` · `deliverables/` — IR-canonical/fitted/AST/bytes + render-bindings (§18).
 - `folios/<folio-id>/members/<artifact-id>` — marker-per-member folio records (§13.3).
 - `claims/` — the claim/lease coordination table (§22.3). **Gitignored** — a lease is only
-  meaningful on the machine and in the moment that wrote it (`.gitignore`: `workspaces/*/claims/`).
+  meaningful on the machine and in the moment that wrote it (`.gitignore`:
+  `users/*/workspaces/*/claims/`).
 
 ## Rule
 

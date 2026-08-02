@@ -12,8 +12,9 @@ B4, slug §7.4, Q15 default-deny provenance §10, closed schema SV3, `x-` namesp
 
 Scope proofs: the REAL repo root lints clean with ZERO collections scanned — the tracked
 tests/fixtures/registries/gadgets tree (which contains entries and a trailing stamp) is
-structurally outside the scan scope (PA-1b analogue for the lint), and
-workspaces/workspace.template/ is exempt (PA-1a).
+structurally outside the scan scope (PA-1b analogue for the lint), and the framework
+workspace blueprint at templates/workspace/ sits outside the scanned scopes entirely
+(EXTRA_SCOPE_DIRS = instance, users — the §23 re-home), so it is exempt automatically.
 
 All fixture content is obviously generic and lives under pytest tmp_path.
 """
@@ -851,7 +852,7 @@ def test_repo_root_lints_clean_and_fixtures_are_out_of_scope():
     a trailing stamp) is NOT scanned. Since step 14, real registry collections ARE in
     scope (the five rendering-dimension registries landed first, §5.3/§17 RI12; step 15
     adds the rest), so the proof is scope-shaped rather than count-pinned: everything
-    scanned sits in a named registry root (or instance/ or workspaces/), never under
+    scanned sits in a named registry root (or instance/ or users/), never under
     tests/."""
     report = lint_tree(REPO_ROOT, now=NOW)
     assert report.ok, render_report(report)
@@ -861,19 +862,20 @@ def test_repo_root_lints_clean_and_fixtures_are_out_of_scope():
     gadgets = REPO_ROOT / "tests" / "fixtures" / "registries" / "gadgets"
     assert (gadgets / "_schema.yaml").is_file()  # exists, yet out of scope
     assert gadgets not in scanned
-    in_scope_tops = set(REGISTRY_ROOTS) | {"instance", "workspaces"}
+    in_scope_tops = set(REGISTRY_ROOTS) | {"instance", "users"}
     for coll in scanned:
         parts = coll.relative_to(REPO_ROOT).parts
         assert "tests" not in parts  # PA-1b: fixtures can never self-flag
         assert parts[0] in in_scope_tops
 
 
-def test_scope_is_registry_roots_plus_instance_and_workspaces(tmp_path):
+def test_scope_is_registry_roots_plus_instance_and_users(tmp_path):
     root = build_tree(
         tmp_path,
         {
             "topics/_schema.yaml": SCHEMA_V1,
-            "workspaces/acme/topics/_schema.yaml": SCHEMA_V1,
+            # §23 re-home: client collections live under users/<user>/workspaces/<ws>/.
+            "users/acme/workspaces/proj/topics/_schema.yaml": SCHEMA_V1,
             "instance/things/_schema.yaml": SCHEMA_V1,
             # all out of scope:
             "tests/fixtures/bait/_schema.yaml": "not yaml at all: [",
@@ -882,12 +884,13 @@ def test_scope_is_registry_roots_plus_instance_and_workspaces(tmp_path):
             "scripts/bait/_schema.yaml": "not yaml at all: [",
             ".claude/bait/_schema.yaml": "not yaml at all: [",
             ".github/bait/_schema.yaml": "not yaml at all: [",
-            # exempt template workspace (PA-1a):
-            "workspaces/workspace.template/topics/_schema.yaml": "broken: [",
+            # the framework workspace blueprint at templates/ is OUTSIDE the scanned scopes
+            # (templates/ is not an EXTRA_SCOPE_DIR), so it is exempt automatically:
+            "templates/workspace/topics/_schema.yaml": "broken: [",
         },
     )
     colls = {str(c.relative_to(root)) for c in iter_lint_collections(root)}
-    assert colls == {"topics", "workspaces/acme/topics", "instance/things"}
+    assert colls == {"topics", "users/acme/workspaces/proj/topics", "instance/things"}
     assert lint_tree(root, now=NOW).ok
 
 

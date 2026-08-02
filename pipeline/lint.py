@@ -55,10 +55,13 @@ schema-lint itself runs identically on instance-side repos, where `provenance: i
 entries are legitimate and lint-clean).
 
 Scan scope mirrors the PA-1 guard scope: the named registry roots plus `instance/` and
-`workspaces/` — NEVER `tests/`, `docs/`, `pipeline/`, `scripts/`, `.claude/`, `.github/`
-(so tracked test fixtures cannot self-flag, PA-1b). `*.template.*` files and the
-`workspaces/workspace.template/` directory are exempt by name (PA-1a — the stale
-`platforms/platform.template.md` stays green until the step-40 sweep). The migration
+`users/` (the §23 re-home — client collections live at
+`users/<user>/workspaces/<workspace>/<dimension>/`) — NEVER `tests/`, `docs/`, `pipeline/`,
+`scripts/`, `.claude/`, `.github/` (so tracked test fixtures cannot self-flag, PA-1b).
+`*.template.*` files are exempt by name (PA-1a — the stale
+`platforms/platform.template.md` stays green until the step-40 sweep); the framework
+workspace blueprint at `templates/workspace/` sits OUTSIDE the scanned scopes, so it is
+exempt automatically. The migration
 registry is read from its NAMED path `pipeline/migrations.yaml` (an input file, not a
 scanned surface). Known limits (§11.7): a disguised rename (remove+add, same meaning) is
 review-only; a whole-collection removal is not diffed (no v1 collection is removable).
@@ -152,10 +155,11 @@ REGISTRY_ROOTS = (
 )
 
 #: Scanned subtrees beyond the registry roots (PA-1): collections discovered by their
-#: co-located `_schema.yaml` (SV4), e.g. `workspaces/<client>/<dimension>/` on an
-#: instance-side run. The `workspaces/workspace.template/` directory is exempt (PA-1a).
-EXTRA_SCOPE_DIRS = ("instance", "workspaces")
-WORKSPACE_TEMPLATE_DIRNAME = "workspace.template"
+#: co-located `_schema.yaml` (SV4), e.g. `users/<user>/workspaces/<workspace>/<dimension>/`
+#: on an instance-side run (the §23 re-home). The framework workspace blueprint lives at
+#: `templates/workspace/`, OUTSIDE these scanned scopes, so it is exempt automatically —
+#: no by-name skip is needed.
+EXTRA_SCOPE_DIRS = ("instance", "users")
 
 # SV11 finding codes (clause numbers per design §11.7).
 CODE_CHANGE_WITHOUT_BUMP = "schema-change-without-version-bump"  # clause 1
@@ -277,7 +281,7 @@ def _git_toplevel(root: Path) -> Path | None:
 #: only the FIRST change AFTER a release must bump the ONE global schema_version). A
 #: COMMITTED file, not a git tag, is deliberate: a present-but-unreadable marker fails LOUD
 #: (see `_released_ref`) instead of silently degrading to "no baseline". Lives under
-#: `pipeline/` (framework mechanism) — never `instance/`/`workspaces/`, and outside every
+#: `pipeline/` (framework mechanism) — never `instance/`/`users/`, and outside every
 #: lint/guard scan scope. Not created until release; do NOT create it to signal pre-release.
 RELEASE_MARKER = "pipeline/released_baseline"
 
@@ -348,8 +352,10 @@ def _released_ref(root: str | Path) -> str | None:
 def iter_lint_collections(root: str | Path) -> Iterator[Path]:
     """Every in-scope collection directory: the named registry roots carrying a
     co-located `_schema.yaml`, plus `_schema.yaml`-bearing directories under `instance/`
-    and `workspaces/` (excluding `workspaces/workspace.template/`, PA-1a). Nothing else
-    is ever visited — `tests/` fixtures cannot self-flag (PA-1b)."""
+    and `users/` (the §23 re-home — e.g. `users/<user>/workspaces/<workspace>/<dimension>/`).
+    Nothing else is ever visited — `tests/` fixtures cannot self-flag (PA-1b), and the
+    framework blueprint at `templates/workspace/` sits outside these scopes entirely (so it
+    is exempt automatically, no by-name skip)."""
     root = Path(root)
     for name in REGISTRY_ROOTS:
         coll = root / name
@@ -359,10 +365,7 @@ def iter_lint_collections(root: str | Path) -> Iterator[Path]:
         base = root / scope
         if not base.is_dir():
             continue
-        for coll in iter_collections(base):
-            if WORKSPACE_TEMPLATE_DIRNAME in coll.relative_to(root).parts:
-                continue
-            yield coll
+        yield from iter_collections(base)
 
 
 def _rel(root: Path, path: Path) -> str:
