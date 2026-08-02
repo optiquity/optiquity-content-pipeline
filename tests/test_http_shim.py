@@ -922,6 +922,10 @@ class TestTierBSubmit:
         assert body["job"]["target_ids"] == [ART_ID]
         expected_key = job_key([ART_ID], "exec-1")
         assert body["job"]["key"] == expected_key
+        # B10: the advertised `poll.needs` MUST list `user` — the poll HANDLER (`_handle_poll`)
+        # requires it exactly like `workspace`, so an advertisement omitting it would mislead a
+        # client into a 400 (the wire/handler inconsistency this increment closes).
+        assert body["poll"]["needs"] == ["workspace", "user", "key", "target_ids"]
         assert len(calls) == 1  # the runner was detached exactly once
         spec, spawn_dir = calls[0]
         assert spec.key == expected_key and spec.verb == "continue-session"

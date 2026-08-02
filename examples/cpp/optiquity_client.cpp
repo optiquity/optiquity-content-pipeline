@@ -250,49 +250,55 @@ double Client::retry_after_seconds(const std::map<std::string, std::string>& hea
 }
 
 // --- The raw layer, 1:1 with the wire (clients.md §2.2) --------------------------------------
-Response Client::invoke(const std::string& verb, const std::string& workspace, const Json& params,
-                        const Json& token, const Json& pins) {
+// `user` is MANDATORY on every request carrying `workspace` (the §23 isolation prefix) — it rides
+// the body next to `workspace`, 1:1 with the wire the shim enforces (a missing/empty one 400s).
+Response Client::invoke(const std::string& verb, const std::string& workspace,
+                        const std::string& user, const Json& params, const Json& token,
+                        const Json& pins) {
     Json body = {
-        {"verb", verb}, {"workspace", workspace}, {"params", params},
+        {"verb", verb}, {"workspace", workspace}, {"user", user}, {"params", params},
         {"token", token}, {"pins", pins},
     };
     return request(kInvokePath, body);
 }
 
-Response Client::poll(const std::string& workspace, const std::string& key,
+Response Client::poll(const std::string& workspace, const std::string& user, const std::string& key,
                       const std::vector<std::string>& target_ids) {
-    Json body = {{"workspace", workspace}, {"key", key}, {"target_ids", target_ids}};
+    Json body = {
+        {"workspace", workspace}, {"user", user}, {"key", key}, {"target_ids", target_ids}};
     return request(kPollPath, body);
 }
 
-Response Client::list(const std::string& type, const std::string& workspace, const Json& filters) {
+Response Client::list(const std::string& type, const std::string& workspace,
+                      const std::string& user, const Json& filters) {
     Json params = {{"type", type}};
     if (!filters.is_null()) params["filters"] = filters;
-    return invoke("list", workspace, params);
+    return invoke("list", workspace, user, params);
 }
 
-Response Client::get(const std::string& type, const std::string& id, const std::string& workspace) {
-    return invoke("get", workspace, Json{{"type", type}, {"id", id}});
+Response Client::get(const std::string& type, const std::string& id, const std::string& workspace,
+                     const std::string& user) {
+    return invoke("get", workspace, user, Json{{"type", type}, {"id", id}});
 }
 
 // --- The ergonomic async layer (clients.md §2.3) ---------------------------------------------
-SessionHandle Client::begin_session(const std::string& workspace, const Json& selection,
-                                    const Json& overrides, const Json& pins,
+SessionHandle Client::begin_session(const std::string& workspace, const std::string& user,
+                                    const Json& selection, const Json& overrides, const Json& pins,
                                     const std::string& /*generate*/,
                                     const std::string& idempotency_key) {
     Json params = {{"selection", selection}, {"generate", "none"}};  // generate FORCED to "none"
     if (!overrides.is_null()) params["overrides"] = overrides;
     if (!idempotency_key.empty()) params["idempotency_key"] = idempotency_key;
-    Response response = invoke("begin-session", workspace, params, /*token=*/nullptr, pins);
+    Response response = invoke("begin-session", workspace, user, params, /*token=*/nullptr, pins);
     const Json token =
         response.json.is_object() ? response.json.value("token", Json(nullptr)) : Json(nullptr);
     return SessionHandle{workspace, token, std::move(response)};
 }
 
-Result Client::generate_and_wait(const std::string& workspace, const Json& token,
-                                 const std::string& idempotency_key, const Json& batch_size,
-                                 const Json& only, const std::string& callback_url,
-                                 const Json& extra) {
+Result Client::generate_and_wait(const std::string& workspace, const std::string& user,
+                                 const Json& token, const std::string& idempotency_key,
+                                 const Json& batch_size, const Json& only,
+                                 const std::string& callback_url, const Json& extra) {
     if (idempotency_key.empty()) {
         throw std::invalid_argument(
             "generate_and_wait requires a non-empty idempotency_key (clients.md §2.3)");
@@ -303,15 +309,16 @@ Result Client::generate_and_wait(const std::string& workspace, const Json& token
     if (!callback_url.empty()) submit_params["callback_url"] = callback_url;
     if (extra.is_object()) submit_params.update(extra);
     auto submit = [&]() {
-        return invoke("continue-session", workspace, submit_params, token);
+        return invoke("continue-session", workspace, user, submit_params, token);
     };
-    return await_terminal(workspace, submit);
+    return await_terminal(workspace, user, submit);
 }
 
-Result Client::render_and_wait(const std::string& workspace, const std::string& item,
-                               const std::string& platform, const std::string& language,
-                               const std::string& output_type, const Json& presentation,
-                               bool force_reconcile, const std::string& idempotency_key,
+Result Client::render_and_wait(const std::string& workspace, const std::string& user,
+                               const std::string& item, const std::string& platform,
+                               const std::string& language, const std::string& output_type,
+                               const Json& presentation, bool force_reconcile,
+                               const std::string& idempotency_key,
                                const std::string& callback_url) {
     Json params = {{"item", item},
                    {"platform", platform},
@@ -321,17 +328,17 @@ Result Client::render_and_wait(const std::string& workspace, const std::string& 
     if (force_reconcile) params["force_reconcile"] = true;
     if (!idempotency_key.empty()) params["idempotency_key"] = idempotency_key;
     if (!callback_url.empty()) params["callback_url"] = callback_url;
-    auto submit = [&]() { return invoke("render", workspace, params); };
-    return await_terminal(workspace, submit);
+    auto submit = [&]() { return invoke("render", workspace, user, params); };
+    return await_terminal(workspace, user, submit);
 }
 
-Result Client::fetch_after_callback(const CallbackEvent& event) {
-    auto submit = [&]() { return poll(event.workspace, event.key, event.target_ids); };
-    return await_terminal(event.workspace, submit);
+Result Client::fetch_after_callback(const CallbackEvent& event, const std::string& user) {
+    auto submit = [&]() { return poll(event.workspace, user, event.key, event.target_ids); };
+    return await_terminal(event.workspace, user, submit);
 }
 
 // --- The poll state machine (clients.md §2.3) — identical in every language ------------------
-Result Client::await_terminal(const std::string& workspace,
+Result Client::await_terminal(const std::string& workspace, const std::string& user,
                               const std::function<Response()>& submit) {
     using clock = std::chrono::steady_clock;
     const auto deadline =
@@ -426,7 +433,7 @@ Result Client::await_terminal(const std::string& workspace,
         if (clock::now() >= deadline) throw JobTimeout(true);
         // With a captured job handle, POLL; a submit-time 429 (no handle yet) RE-SUBMITS.
         if (have_key && have_targets) {
-            response = poll(workspace, key, target_ids);
+            response = poll(workspace, user, key, target_ids);
         } else {
             response = submit();
         }

@@ -548,7 +548,15 @@ def _accepted_body(
     body: dict[str, Any] = {
         "status": "accepted",
         "job": {"key": key, "target_ids": list(target_ids)},
-        "poll": {"path": POLL_PATH, "method": "POST", "needs": ["workspace", "key", "target_ids"]},
+        "poll": {
+            "path": POLL_PATH,
+            "method": "POST",
+            # §23: `user` is MANDATORY on the poll body (the isolation prefix) — the poll HANDLER
+            # (`_handle_poll`) requires it exactly like `workspace`, so the advertised `needs` MUST
+            # list it too, or a client polling straight from this ack would 400 `bad-request`
+            # (missing `user`). The advertisement is 1:1 with what the handler enforces.
+            "needs": ["workspace", "user", "key", "target_ids"],
+        },
     }
     if callback_registered:
         body["callback"] = {"registered": True}

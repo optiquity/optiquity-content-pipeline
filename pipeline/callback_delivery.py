@@ -106,8 +106,11 @@ _REDRIVABLE_TERMINAL_CODES = frozenset(
 #: The poll POINTER embedded in every wakeup — how the woken client fetches the result. Mirrors
 #: `http_shim._accepted_body`'s `poll` block (design §2.1); a drift-guard test pins the equality so
 #: a change to the poll contract there is caught here without a production import of the shim.
+#: `user` (the §23 isolation prefix) is advertised alongside `workspace` because the poll HANDLER
+#: requires it; the woken client sources `user` from its OWN identity (like the auth secret), not
+#: from the wakeup's `job` block — so the two advertisements stay identical.
 _POLL_PATH = "/poll"
-_POLL_NEEDS = ("workspace", "key", "target_ids")
+_POLL_NEEDS = ("workspace", "user", "key", "target_ids")
 
 
 def _code_is_redrivable(code: object) -> bool:

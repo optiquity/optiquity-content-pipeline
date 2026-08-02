@@ -136,41 +136,50 @@ public:
                            double max_poll_seconds = 1320);
 
     // --- The raw layer, 1:1 with the wire (clients.md §2.2) ----------------------------------
-    Response invoke(const std::string& verb, const std::string& workspace, const Json& params,
-                    const Json& token = nullptr, const Json& pins = nullptr);
-    Response poll(const std::string& workspace, const std::string& key,
+    // `user` is MANDATORY on every request that carries `workspace` (the §23 isolation prefix): the
+    // shim REQUIRES it and 400s a missing/empty one, so it is a required argument right after
+    // `workspace` — never defaulted, never silently omitted — and it rides the JSON body next to
+    // `workspace` (1:1 with the wire the shim enforces).
+    Response invoke(const std::string& verb, const std::string& workspace, const std::string& user,
+                    const Json& params, const Json& token = nullptr, const Json& pins = nullptr);
+    Response poll(const std::string& workspace, const std::string& user, const std::string& key,
                   const std::vector<std::string>& target_ids);
-    Response list(const std::string& type, const std::string& workspace,
+    Response list(const std::string& type, const std::string& workspace, const std::string& user,
                   const Json& filters = nullptr);
-    Response get(const std::string& type, const std::string& id, const std::string& workspace);
+    Response get(const std::string& type, const std::string& id, const std::string& workspace,
+                 const std::string& user);
 
     // --- The ergonomic async layer + poll state machine (clients.md §2.3) --------------------
     // `generate` is accepted for surface parity but FORCED to "none" (the one-call
     // begin-session{generate!=none} is a deferred 501; the supported path is two calls).
-    SessionHandle begin_session(const std::string& workspace, const Json& selection,
-                                const Json& overrides = nullptr, const Json& pins = nullptr,
-                                const std::string& generate = "none",
+    SessionHandle begin_session(const std::string& workspace, const std::string& user,
+                                const Json& selection, const Json& overrides = nullptr,
+                                const Json& pins = nullptr, const std::string& generate = "none",
                                 const std::string& idempotency_key = "");
     // idempotency_key REQUIRED (empty throws std::invalid_argument fast, before any network).
-    Result generate_and_wait(const std::string& workspace, const Json& token,
-                             const std::string& idempotency_key, const Json& batch_size = nullptr,
-                             const Json& only = nullptr, const std::string& callback_url = "",
-                             const Json& extra = nullptr);
+    Result generate_and_wait(const std::string& workspace, const std::string& user,
+                             const Json& token, const std::string& idempotency_key,
+                             const Json& batch_size = nullptr, const Json& only = nullptr,
+                             const std::string& callback_url = "", const Json& extra = nullptr);
     // render is content-addressed + token-free, so idempotency_key is OPTIONAL. A cache-hit 200 at
     // submit collapses into the SAME Result as the 202-then-poll path (§2.8 no-invent).
-    Result render_and_wait(const std::string& workspace, const std::string& item,
-                           const std::string& platform, const std::string& language,
-                           const std::string& output_type, const Json& presentation = nullptr,
-                           bool force_reconcile = false, const std::string& idempotency_key = "",
+    Result render_and_wait(const std::string& workspace, const std::string& user,
+                           const std::string& item, const std::string& platform,
+                           const std::string& language, const std::string& output_type,
+                           const Json& presentation = nullptr, bool force_reconcile = false,
+                           const std::string& idempotency_key = "",
                            const std::string& callback_url = "");
 
     // --- The webhook fetch (clients.md §2.7) — no receiver server -----------------------------
-    Result fetch_after_callback(const CallbackEvent& event);
+    // `user` is supplied by the caller (the §23 isolation prefix the poll REQUIRES): the wakeup
+    // payload carries `workspace` but not `user`, so the woken client passes its owning user.
+    Result fetch_after_callback(const CallbackEvent& event, const std::string& user);
 
 private:
     Response request(const std::string& path, const Json& payload);
     double retry_after_seconds(const std::map<std::string, std::string>& headers, double fallback);
-    Result await_terminal(const std::string& workspace, const std::function<Response()>& submit);
+    Result await_terminal(const std::string& workspace, const std::string& user,
+                          const std::function<Response()>& submit);
 
     std::string base_url_;
     long timeout_;

@@ -108,6 +108,7 @@ def _cmd_render(client: Client, args: argparse.Namespace) -> int:
         "render",
         lambda: client.render_and_wait(
             args.workspace,
+            args.user,
             args.item,
             args.platform,
             args.language,
@@ -126,7 +127,7 @@ def _cmd_generate(client: Client, args: argparse.Namespace) -> int:
     one (the one-call ``begin-session{generate!=none}`` is a deferred 501)."""
     try:
         handle = client.begin_session(
-            args.workspace, args.selection, overrides=args.overrides, pins=args.pins
+            args.workspace, args.user, args.selection, overrides=args.overrides, pins=args.pins
         )
     except (urllib.error.URLError, OSError) as exc:
         print(f"pipeline.client generate: transport error: {exc}", file=sys.stderr)
@@ -143,6 +144,7 @@ def _cmd_generate(client: Client, args: argparse.Namespace) -> int:
         "generate",
         lambda: client.generate_and_wait(
             args.workspace,
+            args.user,
             handle.token,
             args.idempotency_key,
             batch_size=args.batch_size,
@@ -155,12 +157,14 @@ def _cmd_generate(client: Client, args: argparse.Namespace) -> int:
 def _cmd_list(client: Client, args: argparse.Namespace) -> int:
     """`list` → :meth:`Client.list` (a Tier-A discovery verb): enumerate registry values of a
     type."""
-    return _run_sync("list", lambda: client.list(args.type, args.workspace, args.filters))
+    return _run_sync(
+        "list", lambda: client.list(args.type, args.workspace, args.user, args.filters)
+    )
 
 
 def _cmd_get(client: Client, args: argparse.Namespace) -> int:
     """`get` → :meth:`Client.get` (a Tier-A discovery verb): fetch one registry value by id."""
-    return _run_sync("get", lambda: client.get(args.type, args.id, args.workspace))
+    return _run_sync("get", lambda: client.get(args.type, args.id, args.workspace, args.user))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -205,6 +209,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gen.add_argument("--workspace", required=True, help="the invoked workspace")
     gen.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix)"
+    )
+    gen.add_argument(
         "--selection",
         required=True,
         type=_json_arg,
@@ -237,6 +244,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ren.add_argument("item", help="the artifact-id to render")
     ren.add_argument("--workspace", required=True, help="the invoked workspace")
+    ren.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix)"
+    )
     ren.add_argument("--platform", required=True, help="the target platform slug")
     ren.add_argument("--language", required=True, help="the target language slug")
     ren.add_argument("--output-type", required=True, help="the render output-type slug")
@@ -257,6 +267,9 @@ def build_parser() -> argparse.ArgumentParser:
     lst.add_argument("type", help="the registry type to enumerate (e.g. persona, platform)")
     lst.add_argument("--workspace", required=True, help="the invoked workspace")
     lst.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix)"
+    )
+    lst.add_argument(
         "--filters", type=_json_arg, default=None, metavar="JSON", help="optional filters (JSON)"
     )
     lst.set_defaults(handler=_cmd_list)
@@ -270,6 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("type", help="the registry type")
     get.add_argument("id", help="the registry value id")
     get.add_argument("--workspace", required=True, help="the invoked workspace")
+    get.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix)"
+    )
     get.set_defaults(handler=_cmd_get)
 
     return parser

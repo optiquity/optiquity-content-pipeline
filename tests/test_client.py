@@ -114,7 +114,7 @@ def test_httperror_is_caught_and_returned_as_response(status: int) -> None:
     """(a) An HTTPError (any 4xx/5xx) is CAUGHT and returned as a Response, never raised (§2.5)."""
     err = _make_http_error(status, body=b'{"error": "x"}')
     client = Client("http://shim.test", "sek", opener=_RecordingOpener([err]))
-    resp = client.invoke("render", "wsA", {})
+    resp = client.invoke("render", "wsA", "userA", {})
     assert isinstance(resp, Response)
     assert resp.status == status
     assert resp.json == {"error": "x"}
@@ -131,7 +131,7 @@ def test_integer_retry_after_is_parsed_as_int() -> None:
 def test_auth_header_is_bearer_by_default() -> None:
     """(d) Default auth is ``Authorization: Bearer <secret>``; no ``X-API-Key``."""
     opener = _RecordingOpener(_FakeHTTPResponse())
-    Client("http://shim.test", "sek", opener=opener).invoke("list", "wsA", {})
+    Client("http://shim.test", "sek", opener=opener).invoke("list", "wsA", "userA", {})
     req = opener.requests[0]
     assert req.headers.get("Authorization") == "Bearer sek"
     assert req.headers.get("X-api-key") is None  # urllib capitalizes header keys
@@ -140,7 +140,9 @@ def test_auth_header_is_bearer_by_default() -> None:
 def test_auth_header_uses_x_api_key_when_selected() -> None:
     """(d) ``api_key_header=True`` sends ``X-API-Key: <secret>`` and no Authorization."""
     opener = _RecordingOpener(_FakeHTTPResponse())
-    Client("http://shim.test", "sek", api_key_header=True, opener=opener).invoke("list", "wsA", {})
+    Client("http://shim.test", "sek", api_key_header=True, opener=opener).invoke(
+        "list", "wsA", "userA", {}
+    )
     req = opener.requests[0]
     assert req.headers.get("X-api-key") == "sek"
     assert req.headers.get("Authorization") is None
@@ -173,21 +175,21 @@ def test_urlerror_without_status_propagates() -> None:
     opener = _RecordingOpener([urllib.error.URLError("refused")])
     client = Client("http://shim.test", "sek", opener=opener)
     with pytest.raises(urllib.error.URLError):
-        client.invoke("render", "wsA", {})
+        client.invoke("render", "wsA", "userA", {})
 
 
 def test_timeout_error_without_status_propagates() -> None:
     """(f) A bare TimeoutError (no ``.status``, not an HTTPError) also propagates."""
     client = Client("http://shim.test", "sek", opener=_RecordingOpener([TimeoutError("timed out")]))
     with pytest.raises(TimeoutError):
-        client.invoke("render", "wsA", {})
+        client.invoke("render", "wsA", "userA", {})
 
 
 def test_non_json_error_body_yields_json_none() -> None:
     """(g) A non-JSON error body → ``Response.json = None`` (guarded parse), status preserved."""
     err = _make_http_error(500, body=b"<html>internal error</html>")
     client = Client("http://shim.test", "sek", opener=_RecordingOpener([err]))
-    resp = client.invoke("render", "wsA", {})
+    resp = client.invoke("render", "wsA", "userA", {})
     assert resp.status == 500
     assert resp.json is None
 
@@ -195,7 +197,7 @@ def test_non_json_error_body_yields_json_none() -> None:
 def test_empty_body_yields_json_none() -> None:
     """(g) An empty body → ``json = None``, never a ``json.loads`` crash."""
     opener = _RecordingOpener([_FakeHTTPResponse(200, body=b"")])
-    resp = Client("http://shim.test", "sek", opener=opener).invoke("list", "wsA", {})
+    resp = Client("http://shim.test", "sek", opener=opener).invoke("list", "wsA", "userA", {})
     assert resp.status == 200
     assert resp.json is None
 
@@ -217,6 +219,66 @@ def test_construction_rejects_empty_url_or_secret() -> None:
         Client("", "sek")
     with pytest.raises(ValueError):
         Client("http://shim.test", "")
+
+
+# =============================================================================================
+# B10 — the client SENDS a mandatory `user` on every wire body (§23 isolation prefix). The shim
+# REQUIRES `user` on `/invoke` and `/poll` (parallel to `workspace`) and 400s a missing/empty one;
+# these pin that the client library actually puts `user` ON THE WIRE, so a future refactor cannot
+# silently drop it and re-open the B5 400 gap (a real client→shim call would break).
+# =============================================================================================
+
+
+def _sent_body(opener: _RecordingOpener, index: int = 0) -> dict:
+    """Decode the JSON body of the ``index``-th outgoing request the recording opener captured."""
+    return json.loads(opener.requests[index].data)
+
+
+def test_invoke_body_carries_mandatory_user() -> None:
+    """The built ``/invoke`` body includes ``user`` alongside ``workspace`` — 1:1 with the wire the
+    shim enforces. This is the direct-construction probe the B5 cutover was missing."""
+    opener = _RecordingOpener(_FakeHTTPResponse())
+    Client("http://shim.test", "sek", opener=opener).invoke("render", "wsA", "userA", {"item": "x"})
+    body = _sent_body(opener)
+    assert body["user"] == "userA"
+    assert body["workspace"] == "wsA"
+
+
+def test_poll_body_carries_mandatory_user() -> None:
+    """The built ``/poll`` body includes ``user`` alongside ``workspace`` (matching the poll
+    handler's requirement AND the advertised ``poll.needs``)."""
+    opener = _RecordingOpener(_FakeHTTPResponse())
+    Client("http://shim.test", "sek", opener=opener).poll("wsA", "userA", "r-1", ["t-1"])
+    body = _sent_body(opener)
+    assert body["user"] == "userA"
+    assert body["workspace"] == "wsA"
+    assert body["key"] == "r-1"
+    assert body["target_ids"] == ["t-1"]
+
+
+def test_ergonomic_render_submit_body_carries_mandatory_user() -> None:
+    """The ergonomic ``render_and_wait`` submit body also carries ``user`` (threaded through the raw
+    layer), so the whole surface — not just the raw door — is 400-safe."""
+    done = json.dumps({"status": "done", "results": []}).encode()
+    opener = _RecordingOpener(_FakeHTTPResponse(200, body=done))
+    Client("http://shim.test", "sek", opener=opener).render_and_wait(
+        "wsA", "userA", "i", "p", "en", "post"
+    )
+    body = _sent_body(opener)
+    assert body["verb"] == "render"
+    assert body["user"] == "userA"
+    assert body["workspace"] == "wsA"
+
+
+def test_user_is_required_never_defaulted() -> None:
+    """``user`` is a REQUIRED positional (parallel to ``workspace``): omitting it is a loud
+    ``TypeError`` client-side, never a silently-omitted field. Fail-loud is the whole point — an
+    omitted ``user`` must NEVER be silently accepted onto the wire."""
+    client = _fake_client()
+    with pytest.raises(TypeError):
+        client.invoke("render", "wsA")  # no user, no params → loud failure, not a silent send
+    with pytest.raises(TypeError):
+        client.poll("wsA", "r-1")  # no user → loud failure
 
 
 # =============================================================================================
@@ -355,7 +417,7 @@ def test_poll_202_then_done_returns_result(recorded_sleeps: list[float]) -> None
     shim.poll_script = [_running("r-1", ["t-1"]), _done("r-1", ["t-1"], [{"item": "x"}])]
     with _scripted_server(shim) as url:
         result = Client(url, "sek", poll_interval=0.1, timeout=5).render_and_wait(
-            "wsA", "deck-intro", "linkedin", "en", "post"
+            "wsA", "userA", "deck-intro", "linkedin", "en", "post"
         )
     assert isinstance(result, Result)
     assert result.json["results"] == [{"item": "x"}]
@@ -373,7 +435,7 @@ def test_poll_429_retry_after_overrides_backoff(recorded_sleeps: list[float]) ->
     ]
     with _scripted_server(shim) as url:
         result = Client(url, "sek", poll_interval=0.1, timeout=5).render_and_wait(
-            "wsA", "i", "p", "en", "post"
+            "wsA", "userA", "i", "p", "en", "post"
         )
     assert isinstance(result, Result)
     assert recorded_sleeps == [0.1, 5]
@@ -389,7 +451,7 @@ def test_submit_429_concurrency_cap_retries_by_resubmitting(recorded_sleeps: lis
     ]
     with _scripted_server(shim) as url:
         result = Client(url, "sek", poll_interval=0.1, timeout=5).render_and_wait(
-            "wsA", "i", "p", "en", "post"
+            "wsA", "userA", "i", "p", "en", "post"
         )
     assert isinstance(result, Result)
     assert recorded_sleeps == [7]
@@ -405,7 +467,7 @@ def test_poll_504_yields_jobtimeout(recorded_sleeps: list[float]) -> None:
     with _scripted_server(shim) as url:
         client = Client(url, "sek", poll_interval=0.1, timeout=5)
         with pytest.raises(JobTimeout) as exc:
-            client.render_and_wait("wsA", "i", "p", "en", "post")
+            client.render_and_wait("wsA", "userA", "i", "p", "en", "post")
     assert exc.value.redrivable is True
     assert recorded_sleeps == [0.1]
 
@@ -427,7 +489,7 @@ def test_poll_409_redrives_with_same_idempotency_key(recorded_sleeps: list[float
     ]
     with _scripted_server(shim) as url:
         result = Client(url, "sek", poll_interval=0.1, timeout=5).generate_and_wait(
-            "wsA", token="tok", idempotency_key="idem-xyz"
+            "wsA", "userA", token="tok", idempotency_key="idem-xyz"
         )
     assert isinstance(result, Result)
     invoke_bodies = [body for (path, body, _h) in shim.received if path == "/invoke"]
@@ -440,7 +502,9 @@ def test_render_cache_hit_200_collapses_without_poll(recorded_sleeps: list[float
     shim = _ScriptedShim()
     shim.invoke_script = [_done("r-1", ["t-1"], [{"item": "cached"}])]
     with _scripted_server(shim) as url:
-        result = Client(url, "sek", timeout=5).render_and_wait("wsA", "i", "p", "en", "post")
+        result = Client(url, "sek", timeout=5).render_and_wait(
+            "wsA", "userA", "i", "p", "en", "post"
+        )
     assert isinstance(result, Result)
     assert result.json["results"] == [{"item": "cached"}]
     assert recorded_sleeps == []
@@ -457,7 +521,9 @@ def test_result_synthesizes_no_cache_or_cost_field(recorded_sleeps: list[float])
     shim = _ScriptedShim()
     shim.invoke_script = [{"status": 200, "json": body}]
     with _scripted_server(shim) as url:
-        result = Client(url, "sek", timeout=5).render_and_wait("wsA", "i", "p", "en", "post")
+        result = Client(url, "sek", timeout=5).render_and_wait(
+            "wsA", "userA", "i", "p", "en", "post"
+        )
     assert result.json == body
     assert "from_cache" not in result.json
     assert "cost" not in result.json
@@ -473,7 +539,7 @@ def test_submit_render_blocked_raises_render_blocked(recorded_sleeps: list[float
     shim.invoke_script = [{"status": 400, "json": {"error": "render-blocked", "block": block}}]
     with _scripted_server(shim) as url:
         with pytest.raises(RenderBlocked) as exc:
-            Client(url, "sek", timeout=5).render_and_wait("wsA", "i", "p", "en", "post")
+            Client(url, "sek", timeout=5).render_and_wait("wsA", "userA", "i", "p", "en", "post")
     assert exc.value.block == block
     assert recorded_sleeps == []
 
@@ -486,7 +552,7 @@ def test_poll_failed_runner_failed_raises_jobfailed(recorded_sleeps: list[float]
     with _scripted_server(shim) as url:
         with pytest.raises(JobFailed) as exc:
             Client(url, "sek", poll_interval=0.1, timeout=5).generate_and_wait(
-                "wsA", token="tok", idempotency_key="k"
+                "wsA", "userA", token="tok", idempotency_key="k"
             )
     assert exc.value.code == "runner-failed"
     assert exc.value.redrivable is False
@@ -502,7 +568,7 @@ def test_poll_failed_open_string_code_surfaced_raw(recorded_sleeps: list[float])
     with _scripted_server(shim) as url:
         with pytest.raises(JobFailed) as exc:
             Client(url, "sek", poll_interval=0.1, timeout=5).generate_and_wait(
-                "wsA", token="tok", idempotency_key="k"
+                "wsA", "userA", token="tok", idempotency_key="k"
             )
     assert exc.value.code == "api-error"
 
@@ -517,7 +583,7 @@ def test_poll_failed_bare_error_token_surfaced_as_code(recorded_sleeps: list[flo
     with _scripted_server(shim) as url:
         with pytest.raises(JobFailed) as exc:
             Client(url, "sek", poll_interval=0.1, timeout=5).render_and_wait(
-                "wsA", "i", "p", "en", "post"
+                "wsA", "userA", "i", "p", "en", "post"
             )
     assert exc.value.code == "handler-not-wired"  # the raw token is surfaced, not None
 
@@ -543,7 +609,7 @@ def test_await_deadline_yields_jobtimeout(monkeypatch: pytest.MonkeyPatch) -> No
         "http://shim.test", "sek", opener=opener, poll_interval=1.0, max_poll_seconds=2.5
     )
     with pytest.raises(JobTimeout) as exc:
-        client.render_and_wait("wsA", "i", "p", "en", "post")
+        client.render_and_wait("wsA", "userA", "i", "p", "en", "post")
     assert exc.value.redrivable is True
     assert sleeps == [1.0, 2.0]  # doubling backoff until the 2.5s deadline
 
@@ -567,7 +633,7 @@ def test_blank_retry_after_in_poll_falls_back_to_backoff(recorded_sleeps: list[f
     ]
     with _scripted_server(shim) as url:
         client = Client(url, "sek", poll_interval=0.1, timeout=5)
-        result = client.render_and_wait("wsA", "i", "p", "en", "post")
+        result = client.render_and_wait("wsA", "userA", "i", "p", "en", "post")
     assert isinstance(result, Result)
     assert recorded_sleeps == [0.1, 0.2]  # backoff fallback, not a crash
 
@@ -580,7 +646,7 @@ def test_truncated_done_body_raises_malformed(recorded_sleeps: list[float]) -> N
     with _scripted_server(shim) as url:
         client = Client(url, "sek", poll_interval=0.1, timeout=5)
         with pytest.raises(MalformedResponse):
-            client.render_and_wait("wsA", "i", "p", "en", "post")
+            client.render_and_wait("wsA", "userA", "i", "p", "en", "post")
 
 
 def test_done_missing_results_raises_malformed(recorded_sleeps: list[float]) -> None:
@@ -591,14 +657,14 @@ def test_done_missing_results_raises_malformed(recorded_sleeps: list[float]) -> 
     ]
     with _scripted_server(shim) as url:
         with pytest.raises(MalformedResponse):
-            Client(url, "sek", timeout=5).render_and_wait("wsA", "i", "p", "en", "post")
+            Client(url, "sek", timeout=5).render_and_wait("wsA", "userA", "i", "p", "en", "post")
 
 
 def test_generate_and_wait_requires_idempotency_key() -> None:
     """(§2.3) generate_and_wait raises fast (no network) on a missing/empty idempotency_key."""
     client = _fake_client()
     with pytest.raises(ValueError):
-        client.generate_and_wait("wsA", token="tok", idempotency_key="")
+        client.generate_and_wait("wsA", "userA", token="tok", idempotency_key="")
 
 
 def test_generate_and_wait_sends_generate_next_action(recorded_sleeps: list[float]) -> None:
@@ -607,7 +673,7 @@ def test_generate_and_wait_sends_generate_next_action(recorded_sleeps: list[floa
     shim.invoke_script = [_done("r-1", ["t-1"], [])]
     with _scripted_server(shim) as url:
         Client(url, "sek", timeout=5).generate_and_wait(
-            "wsA", token="tok", idempotency_key="k", batch_size=3
+            "wsA", "userA", token="tok", idempotency_key="k", batch_size=3
         )
     path, body, _headers = shim.received[0]
     assert path == "/invoke"
@@ -625,7 +691,7 @@ def test_begin_session_forces_generate_none_and_returns_token(recorded_sleeps: l
     ]
     with _scripted_server(shim) as url:
         handle = Client(url, "sek", timeout=5).begin_session(
-            "wsA", selection={"topic": "t"}, generate="all"
+            "wsA", "userA", selection={"topic": "t"}, generate="all"
         )
     assert handle.token == "tok-abc"
     _path, body, _headers = shim.received[0]
@@ -689,7 +755,7 @@ def test_fetch_after_callback_polls_to_result(recorded_sleeps: list[float]) -> N
         event = parse_callback(
             {"event": "job.done", "job": {"key": "r-1", "workspace": "wsA", "target_ids": ["t-1"]}}
         )
-        result = client.fetch_after_callback(event)
+        result = client.fetch_after_callback(event, "userA")
     assert isinstance(result, Result)
     assert result.json["results"] == [{"item": "woken"}]
     assert [path for (path, _b, _h) in shim.received] == ["/poll"]
@@ -703,7 +769,7 @@ def test_3xx_surfaces_as_response_and_is_not_followed() -> None:
         {"status": 302, "headers": {"Location": "http://example.internal/evil"}, "json": {}}
     ]
     with _scripted_server(shim) as url:
-        resp = Client(url, "sek", timeout=5).invoke("render", "wsA", {})
+        resp = Client(url, "sek", timeout=5).invoke("render", "wsA", "userA", {})
     assert resp.status == 302
     assert client_mod._header_get(resp.headers, "Location") == "http://example.internal/evil"
     assert len(shim.received) == 1  # the redirect was not followed
@@ -734,7 +800,9 @@ def test_real_shim_wrong_secret_is_401_response() -> None:
     """A wrong secret against the REAL server is a 401 *Response* (not a raised error) — the auth
     header reaches the server and the HTTPError-as-Response funnel holds end-to-end (§2.5)."""
     with _real_shim() as url:
-        resp = Client(url, "wrong-secret", timeout=5).invoke("render", "wsA", {"item": "x"})
+        resp = Client(url, "wrong-secret", timeout=5).invoke(
+            "render", "wsA", "userA", {"item": "x"}
+        )
     assert isinstance(resp, Response)
     assert resp.status == 401
     assert resp.json.get("error") == "unauthorized"
@@ -744,6 +812,17 @@ def test_real_shim_valid_secret_gets_past_auth() -> None:
     """A VALID secret gets past the auth gate on the real server (an unknown verb then 4xx's on its
     own merits — the point is auth accepted the ``Authorization: Bearer`` header)."""
     with _real_shim() as url:
-        resp = Client(url, "right-secret", timeout=5).invoke("no-such-verb", "wsA", {})
+        resp = Client(url, "right-secret", timeout=5).invoke("no-such-verb", "wsA", "userA", {})
     assert resp.status != 401
     assert resp.json is not None
+
+
+def test_real_shim_empty_user_is_400_bad_request() -> None:
+    """An EMPTY ``user`` (past auth) is refused 400 by the REAL shim — the client SENT the field, so
+    the shim can enforce it (never a silently-omitted user). This is the wire-level proof that the
+    B5 400 gap is closed: a real client→shim call with a bad user fails loud with a clear reason."""
+    with _real_shim() as url:
+        resp = Client(url, "right-secret", timeout=5).invoke("render", "wsA", "", {"item": "x"})
+    assert resp.status == 400
+    assert resp.json.get("error") == "bad-request"
+    assert "user" in resp.json.get("detail", "")

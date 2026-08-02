@@ -246,46 +246,62 @@ class Client:
         self,
         verb: str,
         workspace: str,
+        user: str,
         params: Mapping[str, Any],
         token: Any = None,
         pins: Any = None,
     ) -> Response:
         """``POST /invoke`` a verb (clients.md §1.2). The generic form forwards ANY verb, so the raw
-        layer covers the whole startup-wired surface with no per-verb code."""
+        layer covers the whole startup-wired surface with no per-verb code.
+
+        ``user`` is MANDATORY (the §23 isolation prefix, parallel to ``workspace``): the shim
+        REQUIRES it on every ``/invoke`` body and 400s a missing/empty one, so it is a required
+        positional here — never defaulted, never silently omitted. It rides the JSON body alongside
+        ``workspace``, 1:1 with the wire contract the shim enforces."""
         return self._request(
             _INVOKE_PATH,
             {
                 "verb": verb,
                 "workspace": workspace,
+                "user": user,
                 "params": dict(params),
                 "token": token,
                 "pins": pins,
             },
         )
 
-    def poll(self, workspace: str, key: str, target_ids: Sequence[str]) -> Response:
-        """``POST /poll`` a submitted Tier-B job (clients.md §1.5). All three fields come from the
-        202 ``job`` + ``poll.needs``."""
+    def poll(self, workspace: str, user: str, key: str, target_ids: Sequence[str]) -> Response:
+        """``POST /poll`` a submitted Tier-B job (clients.md §1.5). All four fields come from the
+        202 ``job`` + ``poll.needs``.
+
+        ``user`` is MANDATORY (the §23 isolation prefix, parallel to ``workspace``): the shim's poll
+        handler REQUIRES it and 400s a missing/empty one, so it is a required positional here —
+        never defaulted, never silently omitted."""
         return self._request(
             _POLL_PATH,
-            {"workspace": workspace, "key": key, "target_ids": list(target_ids)},
+            {"workspace": workspace, "user": user, "key": key, "target_ids": list(target_ids)},
         )
 
-    def list(self, type: str, workspace: str, filters: Any = None) -> Response:  # noqa: A002
-        """Discovery ``list`` (a Tier-A verb): enumerate registry values of ``type``."""
+    def list(  # noqa: A002
+        self, type: str, workspace: str, user: str, filters: Any = None
+    ) -> Response:
+        """Discovery ``list`` (a Tier-A verb): enumerate registry values of ``type``. ``user`` is
+        the MANDATORY §23 isolation prefix (parallel to ``workspace``)."""
         params: dict[str, Any] = {"type": type}
         if filters is not None:
             params["filters"] = filters
-        return self.invoke("list", workspace, params)
+        return self.invoke("list", workspace, user, params)
 
-    def get(self, type: str, id: str, workspace: str) -> Response:  # noqa: A002
-        """Discovery ``get`` (a Tier-A verb): fetch one registry value of ``type`` by ``id``."""
-        return self.invoke("get", workspace, {"type": type, "id": id})
+    def get(self, type: str, id: str, workspace: str, user: str) -> Response:  # noqa: A002
+        """Discovery ``get`` (a Tier-A verb): fetch one registry value of ``type`` by ``id``.
+        ``user`` is the MANDATORY §23 isolation prefix (parallel to ``workspace``)."""
+        return self.invoke("get", workspace, user, {"type": type, "id": id})
 
     # --- The ergonomic async layer (clients.md §2.3) -----------------------------------------
     def begin_session(
         self,
         workspace: str,
+        user: str,
         selection: Any,
         overrides: Any = None,
         pins: Any = None,
@@ -296,19 +312,20 @@ class Client:
         to ``"none"`` client-side: the one-call ``begin-session{generate!=none}`` is a deferred
         ``501``, so the supported path is two calls (begin, then :meth:`generate_and_wait`). This is
         a Tier-A synchronous call; the returned :class:`SessionHandle` carries the session
-        ``token``."""
+        ``token``. ``user`` is the MANDATORY §23 isolation prefix (parallel to ``workspace``)."""
         params: dict[str, Any] = {"selection": selection, "generate": "none"}
         if overrides is not None:
             params["overrides"] = overrides
         if idempotency_key is not None:
             params["idempotency_key"] = idempotency_key
-        response = self.invoke("begin-session", workspace, params, pins=pins)
+        response = self.invoke("begin-session", workspace, user, params, pins=pins)
         token = response.json.get("token") if isinstance(response.json, Mapping) else None
         return SessionHandle(workspace=workspace, token=token, response=response)
 
     def generate_and_wait(
         self,
         workspace: str,
+        user: str,
         token: Any,
         idempotency_key: str,
         *,
@@ -320,7 +337,8 @@ class Client:
         """Drive the served ``continue-session{generate-next}`` door to a terminal outcome (clients
         .md §2.3). ``idempotency_key`` is REQUIRED (the shim 400s otherwise, and a 409 re-drive
         reuses the SAME key so a retry is exactly-once) — a missing/empty key raises ``ValueError``
-        fast, before any network."""
+        fast, before any network. ``user`` is the MANDATORY §23 isolation prefix (parallel to
+        ``workspace``)."""
         if not idempotency_key:
             raise ValueError(
                 "generate_and_wait requires a non-empty idempotency_key (clients.md §2.3)"
@@ -338,13 +356,16 @@ class Client:
         submit_params.update(extra)
 
         def submit() -> Response:
-            return self.invoke("continue-session", workspace, dict(submit_params), token=token)
+            return self.invoke(
+                "continue-session", workspace, user, dict(submit_params), token=token
+            )
 
-        return self._await_terminal(workspace, submit)
+        return self._await_terminal(workspace, user, submit)
 
     def render_and_wait(
         self,
         workspace: str,
+        user: str,
         item: str,
         platform: str,
         language: str,
@@ -358,7 +379,8 @@ class Client:
         """Render an item and resolve at the terminal outcome (clients.md §2.3). ``render`` is
         content-addressed + token-free, so ``idempotency_key`` is OPTIONAL. A cache hit returns a
         ``200`` at submit and collapses into the SAME :class:`Result` as the 202-then-poll path,
-        with NO synthesized cache/cost field (§2.8)."""
+        with NO synthesized cache/cost field (§2.8). ``user`` is the MANDATORY §23 isolation prefix
+        (parallel to ``workspace``)."""
         params: dict[str, Any] = {
             "item": item,
             "platform": platform,
@@ -375,25 +397,32 @@ class Client:
             params["callback_url"] = callback_url
 
         def submit() -> Response:
-            return self.invoke("render", workspace, dict(params))
+            return self.invoke("render", workspace, user, dict(params))
 
-        return self._await_terminal(workspace, submit)
+        return self._await_terminal(workspace, user, submit)
 
     # --- The webhook fetch (clients.md §2.7) — no receiver server -----------------------------
-    def fetch_after_callback(self, event: CallbackEvent) -> Result:
+    def fetch_after_callback(self, event: CallbackEvent, user: str) -> Result:
         """Authenticated "you've been woken, now FETCH" (clients.md §2.7). Given a parsed
         :class:`CallbackEvent`, poll the job through the same authenticated door and resolve at the
-        terminal outcome. The payload is wakeup-only, so this explicit fetch is honest."""
+        terminal outcome. The payload is wakeup-only, so this explicit fetch is honest.
+
+        ``user`` is the MANDATORY §23 isolation prefix (parallel to the ``workspace`` the event
+        already carries): the poll REQUIRES it, so the woken client supplies its owning user
+        explicitly — never defaulted, never silently omitted. (The wakeup payload does not yet
+        carry ``user``, so it cannot be read off the event.)"""
         if not isinstance(event, CallbackEvent):
             raise TypeError("fetch_after_callback expects a CallbackEvent (from parse_callback)")
 
         def submit() -> Response:
-            return self.poll(event.workspace, event.key, event.target_ids)
+            return self.poll(event.workspace, user, event.key, event.target_ids)
 
-        return self._await_terminal(event.workspace, submit)
+        return self._await_terminal(event.workspace, user, submit)
 
     # --- The poll state machine (clients.md §2.3) — identical in every language ---------------
-    def _await_terminal(self, workspace: str, submit: Callable[[], Response]) -> Result:
+    def _await_terminal(
+        self, workspace: str, user: str, submit: Callable[[], Response]
+    ) -> Result:
         """Run the canonical poll state machine to a terminal OUTCOME or the deadline.
 
         ``submit`` (re-)submits with the SAME idempotency_key and returns a :class:`Response`; the
@@ -490,6 +519,6 @@ class Client:
                 raise JobTimeout(redrivable=True)
             # With a captured job handle, POLL; a submit-time 429 (no handle yet) RE-SUBMITS.
             if key is not None and target_ids is not None:
-                response = self.poll(workspace, key, target_ids)
+                response = self.poll(workspace, user, key, target_ids)
             else:
                 response = submit()

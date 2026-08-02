@@ -55,6 +55,17 @@ def test_invoke_passthrough_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert exc.value.code == 2
 
 
+def test_user_flag_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B10: `--user` is REQUIRED on every subcommand (parallel to `--workspace`, the §23 isolation
+    prefix the shim enforces). Omitting it is an argparse usage error (exit 2) — a loud client-side
+    failure, never a request sent with a silently-omitted user."""
+    monkeypatch.setenv("OPTIQUITY_SHIM_SECRET", _SENTINEL_SECRET)
+    monkeypatch.setenv("OPTIQUITY_SHIM_URL", "http://127.0.0.1:9")
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["list", "persona", "--workspace", "wsA"])  # no --user
+    assert exc.value.code == 2
+
+
 def test_no_secret_flag_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     """There is no `--secret` flag — passing one is an unrecognized-argument usage error
     (exit 2)."""
@@ -63,8 +74,8 @@ def test_no_secret_flag_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit) as exc:
         cli.main(
             [
-                "render", "i", "--workspace", "wsA", "--platform", "p", "--language", "en",
-                "--output-type", "post", "--secret", "LEAK",
+                "render", "i", "--workspace", "wsA", "--user", "acme-user",
+                "--platform", "p", "--language", "en", "--output-type", "post", "--secret", "LEAK",
             ]
         )
     assert exc.value.code == 2
@@ -125,8 +136,8 @@ def test_render_maps_to_client_and_prints_json(
         monkeypatch.setenv("OPTIQUITY_SHIM_URL", url)
         code = cli.main(
             [
-                "render", "deck-intro", "--workspace", "wsA", "--platform", "linkedin",
-                "--language", "en", "--output-type", "post",
+                "render", "deck-intro", "--workspace", "wsA", "--user", "acme-user",
+                "--platform", "linkedin", "--language", "en", "--output-type", "post",
             ]
         )
     captured = capsys.readouterr()
@@ -137,6 +148,8 @@ def test_render_maps_to_client_and_prints_json(
     path, body, _headers = shim.received[0]
     assert path == "/invoke"
     assert body["verb"] == "render"
+    assert body["workspace"] == "wsA"
+    assert body["user"] == "acme-user"  # B10: the CLI threads the mandatory §23 user onto the wire
     assert body["params"]["item"] == "deck-intro"
     assert body["params"]["platform"] == "linkedin"
     assert body["params"]["output_type"] == "post"
@@ -157,8 +170,8 @@ def test_generate_maps_to_begin_then_generate(
     with _scripted_server(shim) as url:
         code = cli.main(
             [
-                "generate", "--workspace", "wsA", "--selection", '{"topic": "t"}',
-                "--idempotency-key", "idem-1", "--url", url,
+                "generate", "--workspace", "wsA", "--user", "acme-user",
+                "--selection", '{"topic": "t"}', "--idempotency-key", "idem-1", "--url", url,
             ]
         )
     captured = capsys.readouterr()
@@ -182,7 +195,9 @@ def test_list_maps_to_client(
     shim = _ScriptedShim()
     shim.invoke_script = [{"status": 200, "json": envelope}]
     with _scripted_server(shim) as url:
-        code = cli.main(["list", "persona", "--workspace", "wsA", "--url", url])
+        code = cli.main(
+            ["list", "persona", "--workspace", "wsA", "--user", "acme-user", "--url", url]
+        )
     captured = capsys.readouterr()
     assert code == 0
     assert json.loads(captured.out) == envelope
@@ -200,7 +215,9 @@ def test_get_maps_to_client(
     shim = _ScriptedShim()
     shim.invoke_script = [{"status": 200, "json": envelope}]
     with _scripted_server(shim) as url:
-        code = cli.main(["get", "persona", "p1", "--workspace", "wsA", "--url", url])
+        code = cli.main(
+            ["get", "persona", "p1", "--workspace", "wsA", "--user", "acme-user", "--url", url]
+        )
     captured = capsys.readouterr()
     assert code == 0
     assert json.loads(captured.out) == envelope
@@ -231,8 +248,8 @@ def test_render_blocked_outcome_is_nonzero_and_secret_free(
     with _scripted_server(shim) as url:
         code = cli.main(
             [
-                "render", "i", "--workspace", "wsA", "--platform", "p", "--language", "en",
-                "--output-type", "post", "--url", url,
+                "render", "i", "--workspace", "wsA", "--user", "acme-user",
+                "--platform", "p", "--language", "en", "--output-type", "post", "--url", url,
             ]
         )
     captured = capsys.readouterr()
@@ -250,7 +267,9 @@ def test_list_error_envelope_is_nonzero_exit(
     shim = _ScriptedShim()
     shim.invoke_script = [{"status": 400, "json": {"ok": False, "code": "unknown-verb"}}]
     with _scripted_server(shim) as url:
-        code = cli.main(["list", "persona", "--workspace", "wsA", "--url", url])
+        code = cli.main(
+            ["list", "persona", "--workspace", "wsA", "--user", "acme-user", "--url", url]
+        )
     captured = capsys.readouterr()
     assert code == 1
     assert json.loads(captured.out) == {"ok": False, "code": "unknown-verb"}
@@ -271,8 +290,8 @@ def test_missing_secret_is_usage_error(
     monkeypatch.setenv("OPTIQUITY_SHIM_URL", "http://127.0.0.1:9")
     code = cli.main(
         [
-            "render", "i", "--workspace", "wsA", "--platform", "p", "--language", "en",
-            "--output-type", "post",
+            "render", "i", "--workspace", "wsA", "--user", "acme-user",
+            "--platform", "p", "--language", "en", "--output-type", "post",
         ]
     )
     assert code == 2
@@ -285,6 +304,6 @@ def test_missing_url_is_usage_error(
     """With neither --url nor OPTIQUITY_SHIM_URL, the CLI exits 2 and points at the URL source."""
     monkeypatch.setenv("OPTIQUITY_SHIM_SECRET", _SENTINEL_SECRET)
     monkeypatch.delenv("OPTIQUITY_SHIM_URL", raising=False)
-    code = cli.main(["list", "persona", "--workspace", "wsA"])
+    code = cli.main(["list", "persona", "--workspace", "wsA", "--user", "acme-user"])
     assert code == 2
     assert "OPTIQUITY_SHIM_URL" in capsys.readouterr().err

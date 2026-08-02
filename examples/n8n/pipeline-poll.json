@@ -4,8 +4,8 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## POLL flow — the always-works baseline\n\nDrives the optiquity-content-pipeline HTTP shim with **no inbound reachability** required, so it works from **localhost / LAN / self-hosted** n8n.\n\n**Before you run:**\n1. Create an **HTTP Header Auth** credential — Name `Authorization`, Value `Bearer <SHIM_SECRET>` (or Name `X-API-Key`, Value `<SHIM_SECRET>`) — and select it on every HTTP Request node here.\n2. Replace `<WORKSPACE>` and `<ARTIFACT_ID>` in **Submit render**. The base URL `http://127.0.0.1:8787` is the shim's loopback default; change it if you bind elsewhere behind a proxy.\n\nThe Tier-B verb is `render` (token-free / content-addressed): a retry collides on the same job key with no session handshake.",
-        "height": 360,
+        "content": "## POLL flow — the always-works baseline\n\nDrives the optiquity-content-pipeline HTTP shim with **no inbound reachability** required, so it works from **localhost / LAN / self-hosted** n8n.\n\n**Before you run:**\n1. Create an **HTTP Header Auth** credential — Name `Authorization`, Value `Bearer <SHIM_SECRET>` (or Name `X-API-Key`, Value `<SHIM_SECRET>`) — and select it on every HTTP Request node here.\n2. Replace `<WORKSPACE>`, `<USER>` (the §23 isolation prefix the shim requires, parallel to workspace), and `<ARTIFACT_ID>` in **Submit render** — the same `<USER>` is reused on **Poll job**. The base URL `http://127.0.0.1:8787` is the shim's loopback default; change it if you bind elsewhere behind a proxy.\n\nThe Tier-B verb is `render` (token-free / content-addressed): a retry collides on the same job key with no session handshake.",
+        "height": 420,
         "width": 460,
         "color": 4
       },
@@ -69,7 +69,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{\n  \"verb\": \"render\",\n  \"workspace\": \"<WORKSPACE>\",\n  \"params\": {\n    \"item\": \"<ARTIFACT_ID>\",\n    \"platform\": \"linkedin\",\n    \"language\": \"en\",\n    \"output_type\": \"docx\",\n    \"presentation\": \"plain\"\n  }\n}",
+        "jsonBody": "{\n  \"verb\": \"render\",\n  \"workspace\": \"<WORKSPACE>\",\n  \"user\": \"<USER>\",\n  \"params\": {\n    \"item\": \"<ARTIFACT_ID>\",\n    \"platform\": \"linkedin\",\n    \"language\": \"en\",\n    \"output_type\": \"docx\",\n    \"presentation\": \"plain\"\n  }\n}",
         "options": {
           "response": {
             "response": {
@@ -150,7 +150,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"workspace\": \"<WORKSPACE>\",\n  \"key\": \"{{ $('Submit render').item.json.body.job.key }}\",\n  \"target_ids\": {{ JSON.stringify($('Submit render').item.json.body.job.target_ids) }}\n}",
+        "jsonBody": "={\n  \"workspace\": \"<WORKSPACE>\",\n  \"user\": \"<USER>\",\n  \"key\": \"{{ $('Submit render').item.json.body.job.key }}\",\n  \"target_ids\": {{ JSON.stringify($('Submit render').item.json.body.job.target_ids) }}\n}",
         "options": {
           "response": {
             "response": {

@@ -20,8 +20,8 @@
     },
     {
       "parameters": {
-        "content": "### The Wait (On Webhook Call) node\nSet **HTTP Method = POST** and **Authentication = None** — the pipeline's wake-up POST carries no auth secret (the security boundary is the shim's outbound allow-list + SSRF guard, not this inbound node).\n\nThe wake-up body arrives here as `$json.body`:\n`{ event, job:{key,workspace,target_ids}, poll, [code, redrivable] }`.",
-        "height": 240,
+        "content": "### The Wait (On Webhook Call) node\nSet **HTTP Method = POST** and **Authentication = None** — the pipeline's wake-up POST carries no auth secret (the security boundary is the shim's outbound allow-list + SSRF guard, not this inbound node).\n\nThe wake-up body arrives here as `$json.body`:\n`{ event, job:{key,workspace,target_ids}, poll, [code, redrivable] }`.\n\n**`user` is NOT in the wakeup** — the shim requires `user` on `/poll` (the §23 isolation prefix), so **Fetch result** supplies it from your OWN config (the same `<USER>` you set on **Submit render**), never read off the wakeup.",
+        "height": 340,
         "width": 380,
         "color": 5
       },
@@ -53,7 +53,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"verb\": \"render\",\n  \"workspace\": \"<WORKSPACE>\",\n  \"params\": {\n    \"item\": \"<ARTIFACT_ID>\",\n    \"platform\": \"linkedin\",\n    \"language\": \"en\",\n    \"output_type\": \"docx\",\n    \"presentation\": \"plain\",\n    \"callback_url\": \"{{ $execution.resumeUrl }}\"\n  }\n}",
+        "jsonBody": "={\n  \"verb\": \"render\",\n  \"workspace\": \"<WORKSPACE>\",\n  \"user\": \"<USER>\",\n  \"params\": {\n    \"item\": \"<ARTIFACT_ID>\",\n    \"platform\": \"linkedin\",\n    \"language\": \"en\",\n    \"output_type\": \"docx\",\n    \"presentation\": \"plain\",\n    \"callback_url\": \"{{ $execution.resumeUrl }}\"\n  }\n}",
         "options": {
           "response": {
             "response": {
@@ -168,7 +168,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"workspace\": \"{{ $('Wait for callback').item.json.body.job.workspace }}\",\n  \"key\": \"{{ $('Wait for callback').item.json.body.job.key }}\",\n  \"target_ids\": {{ JSON.stringify($('Wait for callback').item.json.body.job.target_ids) }}\n}",
+        "jsonBody": "={\n  \"workspace\": \"{{ $('Wait for callback').item.json.body.job.workspace }}\",\n  \"user\": \"<USER>\",\n  \"key\": \"{{ $('Wait for callback').item.json.body.job.key }}\",\n  \"target_ids\": {{ JSON.stringify($('Wait for callback').item.json.body.job.target_ids) }}\n}",
         "options": {
           "response": {
             "response": {

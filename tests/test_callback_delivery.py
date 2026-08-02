@@ -177,7 +177,7 @@ class TestDoneDelivery:
         assert payload["poll"] == {
             "path": "/poll",
             "method": "POST",
-            "needs": ["workspace", "key", "target_ids"],
+            "needs": ["workspace", "user", "key", "target_ids"],
         }
 
     def test_a_deterministic_skip_is_also_a_job_done(self) -> None:

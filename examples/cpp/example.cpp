@@ -39,7 +39,10 @@ namespace {
 
 // Generic placeholders — swap in the coordinates your `pipeline serve` allow-lists. No client
 // content: these are the same framework defaults the n8n example and the doc's curl slice use.
+// `kUser` is the §23 isolation prefix (parallel to the workspace) the shim REQUIRES on every
+// request — a missing/empty one 400s, so it is threaded into every call below next to kWorkspace.
 constexpr const char* kWorkspace = "acme";
+constexpr const char* kUser = "acme-user";
 constexpr const char* kItem = "deck-intro";
 constexpr const char* kPlatform = "linkedin";
 constexpr const char* kLanguage = "en";
@@ -87,7 +90,7 @@ int main() {
     // 2. The raw layer (§2.2): a discovery `list` (a Tier-A verb). 1:1 with the wire.
     std::cout << "[1] raw list(platform):\n";
     try {
-        const auto response = client.list("platform", kWorkspace);
+        const auto response = client.list("platform", kWorkspace, kUser);
         std::cout << "  -> HTTP " << response.status << "\n";
     } catch (const TransportError& e) {
         std::cerr << "  -> transport error: " << e.what() << "\n";
@@ -98,7 +101,7 @@ int main() {
     std::cout << "[2] render_and_wait (forced poll traversal):\n";
     try {
         const Result result = client.render_and_wait(
-            kWorkspace, kItem, kPlatform, kLanguage, kOutputType, /*presentation=*/nullptr,
+            kWorkspace, kUser, kItem, kPlatform, kLanguage, kOutputType, /*presentation=*/nullptr,
             /*force_reconcile=*/true, /*idempotency_key=*/fresh_idempotency_key());
         print_result(result);
     } catch (const RenderBlocked& e) {
@@ -120,7 +123,7 @@ int main() {
     std::cout << "[3] render_and_wait on a missing item (expect a caught typed outcome):\n";
     try {
         const Result result = client.render_and_wait(
-            kWorkspace, "does-not-exist-" + fresh_idempotency_key(), kPlatform, kLanguage,
+            kWorkspace, kUser, "does-not-exist-" + fresh_idempotency_key(), kPlatform, kLanguage,
             kOutputType);
         // Reaching here would be surprising; still honor the no-invent Result contract.
         std::cout << "  -> unexpectedly succeeded; ";
@@ -151,14 +154,14 @@ int main() {
         const CallbackEvent event = optiquity::parse_callback(wakeup);
         std::cout << "  -> event=" << event.event << " workspace=" << event.workspace
                   << " key=" << event.key << " target_ids[" << event.target_ids.size() << "]\n";
-        // const Result woken = client.fetch_after_callback(event);  // authenticated fetch-after-wake
+        // const Result woken = client.fetch_after_callback(event, kUser);  // authenticated fetch-after-wake (user supplied by the caller)
     } catch (const std::invalid_argument& e) {
         std::cout << "  -> rejected: " << e.what() << "\n";
     }
 
     // The generate slice needs a served continue-session door + a mandatory idempotency key:
-    //   auto s = client.begin_session(kWorkspace, /*selection=*/Json::object());   // Tier-A token
-    //   Result r = client.generate_and_wait(kWorkspace, s.token, fresh_idempotency_key());
+    //   auto s = client.begin_session(kWorkspace, kUser, /*selection=*/Json::object());  // Tier-A token
+    //   Result r = client.generate_and_wait(kWorkspace, kUser, s.token, fresh_idempotency_key());
     // It runs the SAME poll state machine as render_and_wait; omitted from the default run to keep
     // the demo to the render slice (the load-bearing shared algorithm).
 
