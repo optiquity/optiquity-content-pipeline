@@ -150,11 +150,23 @@ class CurrencyResolver(Protocol):
     unchanged means "no config drift detected" (the safe, self-healing default)."""
 
     def current_fit_digest(
-        self, *, root: Path, workspace: str, fitted_id: str, stored_preimage: Mapping[str, Any]
+        self,
+        *,
+        root: Path,
+        user: str,
+        workspace: str,
+        fitted_id: str,
+        stored_preimage: Mapping[str, Any],
     ) -> str: ...
 
     def current_serialize_digest(
-        self, *, root: Path, workspace: str, deliverable_id: str, stored_preimage: Mapping[str, Any]
+        self,
+        *,
+        root: Path,
+        user: str,
+        workspace: str,
+        deliverable_id: str,
+        stored_preimage: Mapping[str, Any],
     ) -> str: ...
 
 
@@ -176,7 +188,13 @@ class DefaultCurrencyResolver:
     precise resolver."""
 
     def current_fit_digest(
-        self, *, root: Path, workspace: str, fitted_id: str, stored_preimage: Mapping[str, Any]
+        self,
+        *,
+        root: Path,
+        user: str,
+        workspace: str,
+        fitted_id: str,
+        stored_preimage: Mapping[str, Any],
     ) -> str:
         stored_digest = reconcile.fit_digest(stored_preimage)
         try:
@@ -184,7 +202,7 @@ class DefaultCurrencyResolver:
             platform = parsed.platform
             if platform is None:
                 return stored_digest
-            current_limits_delta = self._platform_hard_limits_delta(root, workspace, platform)
+            current_limits_delta = self._platform_hard_limits_delta(root, user, workspace, platform)
             rebuilt = {**dict(stored_preimage), "hard-limits": current_limits_delta}
             canonical = json.loads(canonical_json_str(rebuilt))
             return reconcile.fit_digest(canonical)
@@ -192,7 +210,13 @@ class DefaultCurrencyResolver:
             return stored_digest
 
     def current_serialize_digest(
-        self, *, root: Path, workspace: str, deliverable_id: str, stored_preimage: Mapping[str, Any]
+        self,
+        *,
+        root: Path,
+        user: str,
+        workspace: str,
+        deliverable_id: str,
+        stored_preimage: Mapping[str, Any],
     ) -> str:
         stored_digest = serialize.serialize_digest(stored_preimage)
         try:
@@ -244,12 +268,14 @@ class DefaultCurrencyResolver:
             return stored_digest
 
     @staticmethod
-    def _platform_hard_limits_delta(root: Path, workspace: str, platform: str) -> dict[str, Any]:
+    def _platform_hard_limits_delta(
+        root: Path, user: str, workspace: str, platform: str
+    ) -> dict[str, Any]:
         """The platform's CURRENT hard-limits, delta-vs-floor — the live config re-read (§16)."""
         from pipeline.cascade import CascadeEnv
         from pipeline.ids import delta_vs_floor
 
-        env = CascadeEnv(root, workspace=workspace)
+        env = CascadeEnv(root, user=user, workspace=workspace)
         entry = env.resolver.resolve("platforms", platform)
         schema = env.resolver.schema("platforms")
         limits = dict(entry.effective.get("hard_limits") or {})
@@ -409,6 +435,7 @@ def deliverable_detail(
     deliverable_id: str,
     *,
     root: Path,
+    user: str,
     workspace: str,
     resolver: CurrencyResolver,
 ) -> dict[str, Any] | None:
@@ -428,7 +455,7 @@ def deliverable_detail(
     serialize_current = None
     if isinstance(serialize_recorded, str):
         current_s = resolver.current_serialize_digest(
-            root=root, workspace=workspace, deliverable_id=deliverable_id,
+            root=root, user=user, workspace=workspace, deliverable_id=deliverable_id,
             stored_preimage=_submap(binding, "preimage"),
         )
         serialize_current = serialize_recorded == current_s
@@ -440,7 +467,7 @@ def deliverable_detail(
         fit_recorded = fit_binding.get("digest")
         if isinstance(fit_recorded, str):
             current_d = resolver.current_fit_digest(
-                root=root, workspace=workspace, fitted_id=fitted_id,
+                root=root, user=user, workspace=workspace, fitted_id=fitted_id,
                 stored_preimage=_submap(fit_binding, "preimage"),
             )
             fit_current = fit_recorded == current_d
@@ -513,11 +540,13 @@ def _deliverables_of(store: WorkspaceStore, artifact_id: str) -> list[str]:
 
 
 def _list_deliverables(
-    store: WorkspaceStore, *, root: Path, workspace: str, resolver: CurrencyResolver
+    store: WorkspaceStore, *, root: Path, user: str, workspace: str, resolver: CurrencyResolver
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for did in _iter_records(store.deliverables_dir, "deliverable"):
-        detail = deliverable_detail(store, did, root=root, workspace=workspace, resolver=resolver)
+        detail = deliverable_detail(
+            store, did, root=root, user=user, workspace=workspace, resolver=resolver
+        )
         if detail is not None:
             out.append(detail)
     return out
@@ -723,8 +752,9 @@ def _list_actions(action_vocab: frozenset[str]) -> list[dict[str, Any]]:
 
 
 def _root_of(store: WorkspaceStore) -> Path:
-    """The framework root for a workspace store (`root/workspaces/<ws>` → grandparent, §21.1)."""
-    return store.root.parent.parent
+    """The framework root for a workspace store — the store's RECORDED identity (§23), never
+    depth-fragile positional path math (`.at()` set it at the door)."""
+    return store.framework_root
 
 
 def _list(
@@ -786,7 +816,9 @@ def _enumerate(
     store = ctx.store
     root = _root_of(store)
     if type_name == "deliverables":
-        return _list_deliverables(store, root=root, workspace=ctx.workspace, resolver=resolver)
+        return _list_deliverables(
+            store, root=root, user=ctx.user, workspace=ctx.workspace, resolver=resolver
+        )
     if type_name == "artifacts":
         return _list_artifacts(store)
     if type_name == "folios":
@@ -847,7 +879,7 @@ def _get_detail(
     try:
         if type_name == "deliverables":
             return deliverable_detail(
-                store, id_str, root=root, workspace=ctx.workspace, resolver=resolver
+                store, id_str, root=root, user=ctx.user, workspace=ctx.workspace, resolver=resolver
             )
         if type_name == "artifacts":
             return artifact_detail(store, id_str)

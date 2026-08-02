@@ -54,7 +54,7 @@ from pipeline.adapters.graphify import (
     NO_MATCH_BODY,
     QUERY_LOG_DISABLE_ENV,
     QUERY_SUBCOMMAND,
-    REPO_WORKSPACES,
+    REPO_USERS,
     GraphifyAdapter,
     RunOutcome,
     parse_query_output,
@@ -191,11 +191,11 @@ class TestConnectionValidation:
         with pytest.raises(AdapterError, match=r"\.json"):
             adapter.ground(connection={"path": "/somewhere/graph.yaml"}, query="q")
 
-    def test_path_inside_repo_workspaces_refused(self):
-        # Plan step 18: grounding sources live OUTSIDE this repo's workspaces.
-        inside = REPO_WORKSPACES / "some-client" / "graphify-out" / "graph.json"
+    def test_path_inside_repo_users_refused(self):
+        # Plan step 18 / §23: grounding sources live OUTSIDE this repo's users/ client tree.
+        inside = REPO_USERS / "some-user" / "workspaces" / "some-client" / "graphify-out" / "g.json"
         adapter, fake = adapter_with()
-        with pytest.raises(AdapterError, match="workspaces"):
+        with pytest.raises(AdapterError, match="users"):
             adapter.ground(connection={"path": str(inside)}, query="q")
         assert fake.calls == []
 

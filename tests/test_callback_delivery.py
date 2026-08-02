@@ -132,6 +132,7 @@ def _spec(callback_url: str | None = CB, target_ids=(A, B)) -> JobSpec:
         key=KEY,
         verb="continue-session",
         workspace="wsA",
+        user="acme",
         params={"action": "generate-next"},
         idempotency_key="exec-1",
         root="/repo-root",

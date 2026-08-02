@@ -52,6 +52,8 @@ from pipeline.schema import SCHEMA_FILENAME, load_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+#: §23: the owning user for the on-disk workspace shadow (users/<user>/workspaces/<ws>/).
+USER = "acme"
 
 #: The CA8 mandatory globals (all shipped framework ids — generic values only).
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
@@ -97,11 +99,12 @@ def build_root(tmp_path: Path, *, l2: str | None = BASE_L2, l3: str | None = Non
     if l2 is not None:
         (root / "instance").mkdir()
         (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
-    topics = root / "workspaces" / WS / "topics"
+    ws_home = root / "users" / USER / "workspaces" / WS
+    topics = ws_home / "topics"
     topics.mkdir(parents=True)
     (topics / "x-sample-topic.md").write_text(TOPIC_ENTRY, encoding="utf-8")
     if l3 is not None:
-        (root / "workspaces" / WS / "defaults.yaml").write_text(l3, encoding="utf-8")
+        (ws_home / "defaults.yaml").write_text(l3, encoding="utf-8")
     return root
 
 
@@ -116,7 +119,11 @@ def write_entry(
     body: str = "Test fixture body.",
 ) -> Path:
     provenance = "instance" if entry_id.startswith("x-") else "framework"
-    dirpath = root / "workspaces" / workspace / collection if workspace else root / collection
+    dirpath = (
+        root / "users" / USER / "workspaces" / workspace / collection
+        if workspace
+        else root / collection
+    )
     dirpath.mkdir(parents=True, exist_ok=True)
     path = dirpath / f"{entry_id}.md"
     path.write_text(
@@ -128,7 +135,7 @@ def write_entry(
 
 
 def make_env(root: Path, overrides=None, **kwargs) -> CascadeEnv:
-    return CascadeEnv(root, workspace=WS, overrides=overrides, **kwargs)
+    return CascadeEnv(root, user=USER, workspace=WS, overrides=overrides, **kwargs)
 
 
 SEL = RunSelection(recipe="explainer-post", topic="x-sample-topic")
@@ -1150,5 +1157,5 @@ def test_outline_is_a_pure_one_file_add() -> None:
     schema = load_schema(FORMATS_DIR / SCHEMA_FILENAME)
     discovered = {load_entry(p, schema).id for p in iter_entry_files(FORMATS_DIR)}
     assert "outline" in discovered
-    resolved = Resolver(REPO_ROOT, workspace="self").resolve("formats", "outline")
+    resolved = Resolver(REPO_ROOT, user="self", workspace="self").resolve("formats", "outline")
     assert resolved.id == "outline"

@@ -46,6 +46,7 @@ from pipeline.store import WorkspaceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "c7ws"
+USER = "acme"
 RECIPE = "explainer-post"
 TOPIC_ID = "x-architecture"
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
@@ -98,7 +99,7 @@ def build_root(tmp_path: Path, *, sources: tuple[tuple[str, str], ...] = (("x-ar
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    ws = root / "workspaces" / WS
+    ws = root / "users" / USER / "workspaces" / WS
     (ws / "topics").mkdir(parents=True)
     (ws / "topics" / f"{TOPIC_ID}.md").write_text(
         TOPIC_MD.format(tid=TOPIC_ID, why="Architecture."), encoding="utf-8"
@@ -110,7 +111,7 @@ def build_root(tmp_path: Path, *, sources: tuple[tuple[str, str], ...] = (("x-ar
 def add_sources(root: Path, *sources: tuple[str, str]) -> None:
     """Write `sources/<sid>.md` mock source entries into the workspace (used to CHANGE the pool
     between emit and drive — the σ source-subset probe)."""
-    sources_dir = root / "workspaces" / WS / "sources"
+    sources_dir = root / "users" / USER / "workspaces" / WS / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
     for sid, dataset in sources:
         (sources_dir / f"{sid}.md").write_text(
@@ -119,7 +120,7 @@ def add_sources(root: Path, *sources: tuple[str, str]) -> None:
 
 
 def store_for(root: Path) -> WorkspaceStore:
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     return store
 
@@ -169,7 +170,7 @@ def emit(root: Path, store: WorkspaceStore, adapters: dict, *, outline: str = DR
     the workspace pool identically to the drive path."""
     params = {"outline": outline, "recipe": RECIPE, "topic": TOPIC_ID, **over}
     out = invoke(
-        "emit-outline", WS, params, store=store, root=str(root),
+        "emit-outline", WS, USER, params, store=store, root=str(root),
         handlers={"emit-outline": session.emit_outline_handler(adapters=adapters)},
     )
     assert out["envelope"]["ok"] is True, out
@@ -207,7 +208,7 @@ def drive(
     if allow_drift:
         params["allow_drift"] = True
     return invoke(
-        "begin-session", WS, params, store=store, root=str(root),
+        "begin-session", WS, USER, params, store=store, root=str(root),
         handlers={"begin-session": session.begin_session_handler(adapters=adapters)},
     )
 
@@ -333,7 +334,7 @@ def test_allow_drift_downgrades_to_coded_warn(tmp_path):
     # the spend truly proceeds: a --go generate-next drives the one artifact through a fake runner.
     run = FakeRun()
     cont = invoke(
-        "continue-session", WS, {"action": "generate-next", "batch_size": "all"},
+        "continue-session", WS, USER, {"action": "generate-next", "batch_size": "all"},
         token=out["token"], store=store, root=str(root),
         handlers={"continue-session": session.continue_session_handler(
             adapters=adapters, run_artifact=run
@@ -424,7 +425,7 @@ def _cli_emit(root: Path, draft: str) -> str:
     from pipeline import __main__ as cli
 
     return cli._cmd_outline(["emit", draft, "--recipe", RECIPE, "--topic", TOPIC_ID,
-                             "--workspace", WS, "--root", str(root)])
+                             "--workspace", WS, "--user", USER, "--root", str(root)])
 
 
 def _cli_generate(root: Path, edited: str, *extra: str) -> int:
@@ -432,7 +433,7 @@ def _cli_generate(root: Path, edited: str, *extra: str) -> int:
 
     return cli._cmd_generate(
         ["--outline", edited, "--recipe", RECIPE, "--topic", TOPIC_ID,
-         "--workspace", WS, "--root", str(root), *extra]
+         "--workspace", WS, "--user", USER, "--root", str(root), *extra]
     )
 
 
@@ -499,7 +500,8 @@ def test_invoke_begin_session_is_exit_3_and_render_fetch_only(tmp_path):
     registers stay the safe stateless render + fetch-by-id."""
     root = build_root(tmp_path)
     code = invoke_mod.main_cli(
-        ["begin-session", "--workspace", WS, "--params-json", "{}", "--root", str(root)]
+        ["begin-session", "--workspace", WS, "--user", USER, "--params-json", "{}",
+         "--root", str(root)]
     )
     assert code == 3
     assert set(KNOWN_VERBS) & set(invoke_mod._VERB_HANDLERS) == {"render", "fetch-by-id"}

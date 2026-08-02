@@ -78,7 +78,7 @@ from pipeline.jobs import JobStore, is_deterministic_block
 from pipeline.store import WorkspaceStore
 from pipeline.telemetry import PresenceRegistry, TelemetryError
 from pipeline.transport import ApiKeyPresentError, BinaryNotFoundError
-from pipeline.workspace_name import validate_workspace_name
+from pipeline.workspace_name import validate_workspace_path
 
 __all__ = [
     "RE_DRIVABLE_CODE",
@@ -130,9 +130,12 @@ class JobSpec:
 
     `key` is the run-family job key `JobStore.submit` ALREADY minted + wrote the record under
     (Commit 6): the runner records terminals against this exact key, it does NOT recompute or
-    re-write the initial record (record → spawn → claim ordering). `root`/`workspace` locate the
-    workspace store (→ the `jobs/` dir) for `record_terminal`; `params`/`token`/`pins` are the
-    `invoke()` arguments. This crosses the process boundary as a small JSON SPAWN FILE (not argv)
+    re-write the initial record (record → spawn → claim ordering). `root`/`user`/`workspace` locate
+    the workspace store leaf `root/users/<user>/workspaces/<ws>/` (→ the `jobs/` dir) for
+    `record_terminal`; `params`/`token`/`pins` are the `invoke()` arguments. `user` is MANDATORY
+    (§23): a spawn-JSON written PRE-cutover LACKS it, so `from_json` RAISES loudly rather than build
+    a `users/None/…` path — safe because a job record is §22.7-class lossy bookkeeping (loud-fail +
+    poll re-drive). This crosses the process boundary as a small JSON SPAWN FILE (not argv)
     so structured params ride cleanly and NO secret is placed on argv — `token` is a §20 cursor,
     not a credential, and the subscription transport carries no API key at all (F10).
 
@@ -149,6 +152,7 @@ class JobSpec:
     key: str
     verb: str
     workspace: str
+    user: str
     params: Mapping[str, Any]
     idempotency_key: str | None
     root: str
@@ -174,6 +178,7 @@ class JobSpec:
                 "root": self.root,
                 "target_ids": list(self.target_ids),
                 "token": self.token,
+                "user": self.user,
                 "verb": self.verb,
                 "workspace": self.workspace,
             }
@@ -190,6 +195,10 @@ class JobSpec:
             key=obj["key"],
             verb=obj["verb"],
             workspace=obj["workspace"],
+            # §23: MANDATORY — a pre-cutover spawn-JSON LACKS `user`, so this bare subscript RAISES
+            # KeyError loudly (never a `users/None/…` path); a job record is §22.7-lossy, so the
+            # loud fail + poll re-drive is safe (mirrors the bare `key`/`verb`/`workspace`/`root`).
+            user=obj["user"],
             params=obj.get("params") or {},
             idempotency_key=obj.get("idempotency_key"),
             root=obj["root"],
@@ -275,11 +284,12 @@ def spawn_runner(
 
 
 def _store_for(spec: JobSpec) -> JobStore:
-    """The workspace's `jobs/` store for `record_terminal`. `validate_workspace_name` contains the
-    name to a direct child of `workspaces/` (the SAME §10/§21.1 containment `invoke()` applies), so
-    a malformed workspace can never move the record root."""
-    ws_root = validate_workspace_name(spec.workspace, spec.root)
-    return JobStore(WorkspaceStore(ws_root).jobs_dir)
+    """The workspace's `jobs/` store for `record_terminal`. `validate_workspace_path` contains the
+    `(user, workspace)` pair to a leaf under `users/<user>/workspaces/` (the SAME §10/§21.1/§23
+    containment `invoke()` applies), so a malformed user/workspace can never move the record root;
+    `.at()` then builds the byte-identical leaf WITH recorded identity."""
+    validate_workspace_path(spec.root, spec.user, spec.workspace)
+    return JobStore(WorkspaceStore.at(spec.root, spec.user, spec.workspace).jobs_dir)
 
 
 def _raised_terminal_code(exc: BaseException) -> str:
@@ -413,6 +423,7 @@ def run_job(
             out = call(
                 spec.verb,
                 spec.workspace,
+                spec.user,
                 dict(spec.params),
                 spec.token,
                 spec.pins,
@@ -424,6 +435,7 @@ def run_job(
                 "ok": False,
                 "verb": spec.verb,
                 "workspace": spec.workspace,
+                "user": spec.user,
                 "code": code,
                 "message": str(exc),
             }

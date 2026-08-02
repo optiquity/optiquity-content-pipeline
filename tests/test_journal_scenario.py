@@ -76,6 +76,7 @@ from pipeline.transport import ProcessOutcome
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "journal-demo"
+USER = "acme"
 COMMIT = "9f3c07d21b44e8aa9f3c07d21b44e8aa9f3c07d2"
 _L2_DEFAULTS = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 
@@ -131,7 +132,7 @@ def _build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
-    (root / "workspaces" / WS).mkdir(parents=True)
+    (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)
     return root
 
 
@@ -250,7 +251,7 @@ def _paper_preimage() -> dict:
 def _compose_conforming_ir(root: Path) -> dict:
     """Genuinely compose ONE conforming `academic-paper` IR over the REAL compose path (faked
     writer, real IR mint + grounding validation). Returns the validated canonical IR."""
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     claims = registry_for(store)
     preimage = _paper_preimage()
@@ -363,7 +364,7 @@ def _compose_citing_paper_ir(root: Path) -> dict:
     projection resolution gate). Its `references` are MACHINERY-projected from the TWO-source ledger
     (C2), and every `[@key]` in the body resolves against exactly that projected set (C4) — no
     fabrication. Returns the validated canonical IR (references == the projection; body cites)."""
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     claims = registry_for(store)
     preimage = _citing_paper_preimage()
@@ -415,7 +416,7 @@ def _reconcile_at(env: CascadeEnv, canonical_ir: dict, platform: str):
 
 def test_one_paper_three_journals_block_fit_set_and_siblings_continue(tmp_path):
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
 
     papers = {
         "conforming": _compose_conforming_ir(root),  # the genuinely-composed driving example
@@ -518,7 +519,7 @@ def _serialize_html(env: CascadeEnv, fitted_ir: dict, presentation: str, *, load
 def test_fitted_typed_deliverable_renders_valid_public_bytes(tmp_path):
     _requires_pandoc()
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     composed = _compose_conforming_ir(root)
 
     fit = _reconcile_at(env, composed, "journal-strict")  # conforming fits (no acknowledgements)
@@ -553,7 +554,7 @@ def test_two_phase_render_engine_records_the_typed_version(tmp_path):
     # lowers the real style with NO injection — the tmp world copies `presentations/` under the same
     # root. The deliverable is NON-citing, so csl never enters the preimage (this test probes SD-5).
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     fit = _reconcile_at(env, _compose_conforming_ir(root), "journal-strict")
     assert fit.status == "ok" and fit.fitted_ir is not None
 
@@ -564,8 +565,9 @@ def test_two_phase_render_engine_records_the_typed_version(tmp_path):
     # the two-phase engine, WITHOUT running dispatch, must reach the SAME conclusion and record it:
     leg = SerializeLeg(
         root=root,
+        user=USER,
         workspace=WS,
-        store=WorkspaceStore(root / "workspaces" / WS),
+        store=WorkspaceStore.at(root, USER, WS),
         fitted_id=fit.fitted_id,
         fitted_ir=fit.fitted_ir,
         output_type="html",
@@ -594,7 +596,7 @@ def test_render_engine_memoizes_serialize_fitted_by_fitted_id(monkeypatch, tmp_p
 
     def _leg(fitted_id: str, body: str):
         return render_api.SerializeLeg(
-            root=tmp_path, workspace=WS, store=store, fitted_id=fitted_id,
+            root=tmp_path, user=USER, workspace=WS, store=store, fitted_id=fitted_id,
             fitted_ir={"body": body}, output_type="html", presentation="plain",
         )
 
@@ -613,7 +615,7 @@ def test_stored_typed_deliverable_reports_no_spurious_drift(tmp_path):
     the SD-5 `section_attr_transform_version` flag on the rebuild."""
     _requires_pandoc()
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     composed = _compose_conforming_ir(root)
     fit = _reconcile_at(env, composed, "journal-strict")
     _dout, serialize_preimage = _serialize_html(env, fit.fitted_ir, "journal-strict-look")
@@ -621,7 +623,7 @@ def test_stored_typed_deliverable_reports_no_spurious_drift(tmp_path):
 
     resolver = discovery.DefaultCurrencyResolver()
     current = resolver.current_serialize_digest(
-        root=root, workspace=WS, deliverable_id="d", stored_preimage=serialize_preimage
+        root=root, user=USER, workspace=WS, deliverable_id="d", stored_preimage=serialize_preimage
     )
     assert current == serialize_digest(serialize_preimage)  # NO spurious drift
 
@@ -651,14 +653,14 @@ def test_default_currency_resolver_threads_the_section_attr_flag(tmp_path):
     # The live resolver re-derives the flag from the stored bundle → the typed deliverable reports
     # NO spurious drift (the pre-fix rebuild omitted the key and drifted).
     current_typed = resolver.current_serialize_digest(
-        root=tmp_path, workspace=WS, deliverable_id="typed", stored_preimage=typed
+        root=tmp_path, user=USER, workspace=WS, deliverable_id="typed", stored_preimage=typed
     )
     assert current_typed == serialize_digest(typed)
 
     # Control: an UNTYPED deliverable (no transform key) still reports no drift — the fix is
     # additive, never perturbing the existing SAFE-writer / non-typed corpus.
     current_untyped = resolver.current_serialize_digest(
-        root=tmp_path, workspace=WS, deliverable_id="untyped", stored_preimage=untyped
+        root=tmp_path, user=USER, workspace=WS, deliverable_id="untyped", stored_preimage=untyped
     )
     assert current_untyped == serialize_digest(untyped)
 
@@ -672,7 +674,7 @@ def test_default_currency_resolver_threads_the_section_attr_flag(tmp_path):
 def test_fitted_citing_deliverable_resolves_bibliography_and_records_version(tmp_path):
     _requires_pandoc()
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
 
     # The driver's threaded sequence (serialize_fitted -> dispatch -> serialize_inputs_preimage)
     # over a CITING fitted IR: dispatch appends `--citeproc`, the flag threads into the preimage.
@@ -707,7 +709,7 @@ def test_two_phase_render_engine_records_the_citeproc_version(tmp_path):
     # under the leg root. This deliverable CITES, so the csl STYLE asset enters the preimage's
     # render_inputs.
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     citing_ir = _citing_paper_ir()
 
     # dispatch (the reference) confirms this deliverable cites and appends `--citeproc`:
@@ -717,8 +719,9 @@ def test_two_phase_render_engine_records_the_citeproc_version(tmp_path):
     # the two-phase engine, WITHOUT running dispatch, must reach the SAME conclusion and record it:
     leg = SerializeLeg(
         root=root,
+        user=USER,
         workspace=WS,
-        store=WorkspaceStore(root / "workspaces" / WS),
+        store=WorkspaceStore.at(root, USER, WS),
         fitted_id=citing_ir["binding"]["artifact_id"] + ".journal-strict.en",
         fitted_ir=citing_ir,
         output_type="html",
@@ -736,13 +739,13 @@ def test_stored_citing_deliverable_reports_no_spurious_drift(tmp_path):
     the `citeproc_enablement_version` flag from the stored bundle on the rebuild."""
     _requires_pandoc()
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     _dout, serialize_preimage = _serialize_html(env, _citing_paper_ir(), "journal-strict-look")
     assert "citeproc_enablement_version" in serialize_preimage["tool_bundle"]  # citing
 
     resolver = discovery.DefaultCurrencyResolver()
     current = resolver.current_serialize_digest(
-        root=root, workspace=WS, deliverable_id="d", stored_preimage=serialize_preimage
+        root=root, user=USER, workspace=WS, deliverable_id="d", stored_preimage=serialize_preimage
     )
     assert current == serialize_digest(serialize_preimage)  # NO spurious drift
 
@@ -755,7 +758,7 @@ def test_production_loader_is_byte_and_id_identical_to_the_reference_loader(tmp_
     loaders. Asserted, not assumed."""
     _requires_pandoc()
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     citing_ir = _citing_paper_ir()
 
     # (a) reference: read the shipped `.csl` straight off the REAL repo root.
@@ -790,7 +793,7 @@ def _embed_leg(root, fitted_ir, *, body_png=_EMBED_PNG):
     from pipeline.api.render import SerializeLeg
     from pipeline.reconcile import build_fit_binding
 
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     (store.root / "assets").mkdir(parents=True, exist_ok=True)
     (store.root / "assets" / "x.png").write_bytes(body_png)
@@ -811,6 +814,7 @@ def _embed_leg(root, fitted_ir, *, body_png=_EMBED_PNG):
     )
     return SerializeLeg(
         root=root,
+        user=USER,
         workspace=WS,
         store=store,
         fitted_id=fb["fitted_id"],
@@ -844,7 +848,7 @@ def test_default_render_engine_embeds_a_body_figure_end_to_end(tmp_path):
     # F2: the live currency resolver reports NO phantom drift for the picture-bearing deliverable.
     resolver = discovery.DefaultCurrencyResolver()
     current = resolver.current_serialize_digest(
-        root=root, workspace=WS, deliverable_id="pic", stored_preimage=preimage
+        root=root, user=USER, workspace=WS, deliverable_id="pic", stored_preimage=preimage
     )
     assert current == serialize_digest(preimage)
 
@@ -867,7 +871,7 @@ def test_default_render_engine_embeds_a_body_figure_end_to_end(tmp_path):
 )
 def test_journal_looks_load_and_lower_to_valid_render_inputs(tmp_path, look):
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     pentry = env.resolver.resolve("presentations", look)
 
     pres = presentation_from_entry(
@@ -910,7 +914,7 @@ def test_one_ast_three_venues_differ_by_citation_style_only(tmp_path):
     `.csl` styles are the ACTUAL shipped framework files (injected `load_asset`). Real pandoc."""
     _requires_pandoc()
     root = _build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
 
     composed = _compose_citing_paper_ir(root)
 

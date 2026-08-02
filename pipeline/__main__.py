@@ -312,6 +312,9 @@ def _cmd_demo_thread(argv: list[str]) -> int:
         ),
     )
     parser.add_argument("--workspace", required=True, help="the demo workspace (e.g. mvp-demo)")
+    parser.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
+    )
     parser.add_argument("--root", default=".", help="the framework repo root (default: cwd)")
     parser.add_argument(
         "--now",
@@ -330,10 +333,14 @@ def _cmd_demo_thread(argv: list[str]) -> int:
         print(f"pipeline demo-thread: --now must be YYYY-MM-DD, got {args.now!r}", file=sys.stderr)
         return 2
 
-    print(f"=== demo-thread: workspace={args.workspace} root={args.root} now={now} ===")
+    print(
+        f"=== demo-thread: user={args.user} workspace={args.workspace} "
+        f"root={args.root} now={now} ==="
+    )
     try:
         result = run_thread(
             root=args.root,
+            user=args.user,
             workspace=args.workspace,
             now=now,
             model=args.model,
@@ -353,6 +360,7 @@ def _print_thread_report(result: object) -> None:
 
     assert isinstance(result, ThreadResult)
     print("\n=== THREAD COMPLETE ===")
+    print(f"user            : {result.user}")
     print(f"workspace       : {result.workspace}")
     print(f"recipe          : {result.recipe}")
     print(f"plan_hash       : {result.plan_hash}")
@@ -426,6 +434,9 @@ def _cmd_mvp_demo(argv: list[str]) -> int:
         ),
     )
     parser.add_argument("--workspace", required=True, help="the demo workspace (e.g. mvp-demo)")
+    parser.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
+    )
     parser.add_argument("--root", default=".", help="the framework repo root (default: cwd)")
     parser.add_argument(
         "--now",
@@ -444,10 +455,14 @@ def _cmd_mvp_demo(argv: list[str]) -> int:
         print(f"pipeline mvp-demo: --now must be YYYY-MM-DD, got {args.now!r}", file=sys.stderr)
         return 2
 
-    print(f"=== mvp-demo (§25): workspace={args.workspace} root={args.root} now={now} ===")
+    print(
+        f"=== mvp-demo (§25): user={args.user} workspace={args.workspace} "
+        f"root={args.root} now={now} ==="
+    )
     try:
         report = run_mvp_scenario(
             root=args.root,
+            user=args.user,
             workspace=args.workspace,
             adapters=_default_adapters(),  # the real graphify adapter (LIVE grounding + pin)
             runner=None,  # None → the real subscription WRITER transport (LIVE compose)
@@ -568,6 +583,9 @@ def _cmd_render(argv: list[str]) -> int:
     )
     parser.add_argument("item", help="the artifact-id to render (§7.4; the render `item`)")
     parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
+    parser.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
+    )
     parser.add_argument("--platform", default=None, help="the target platform slug (§5)")
     parser.add_argument("--language", default=None, help="the target language slug (§5)")
     parser.add_argument(
@@ -608,6 +626,8 @@ def _cmd_render(argv: list[str]) -> int:
             "render",
             "--workspace",
             args.workspace,
+            "--user",
+            args.user,
             "--root",
             args.root,
             "--params-json",
@@ -700,7 +720,14 @@ def _add_friendly_generate_args(parser: "object") -> None:
     )
     parser.add_argument("--workspace", default=None, help="the invoked workspace (§21.1)")
     parser.add_argument(
-        "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
+        "--user",
+        default=None,
+        help="the owning user (§23 isolation prefix; required whenever --workspace is given)",
+    )
+    parser.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
     )
 
 
@@ -736,6 +763,7 @@ def _friendly_from_args(args: "object", *, spend: bool) -> dict:
     single = {
         "recipe": args.recipe,
         "workspace": args.workspace,
+        "user": args.user,
         "platforms": args.platform,
         "languages": args.language,
         "output_types": args.output_type,
@@ -798,7 +826,9 @@ def _print_dim(indent: str, label: str, view: dict) -> None:
     print(f"{indent}{label:<13}: {view.get('entry')}{tail}")
 
 
-def _print_plan_preview(workspace: str, recipe: str, summary: dict, *, header: str) -> None:
+def _print_plan_preview(
+    workspace: str, user: str, recipe: str, summary: dict, *, header: str
+) -> None:
     """Print the free preview (C3a): the effective compose+render settings (which cascade layer
     set each), the plan (artifact/deliverable ids + advisory warnings), and `spend-scope: N paid
     artifact(s)`. Reads ONLY the C1 `explain` projection carried on the begin-session summary."""
@@ -810,7 +840,7 @@ def _print_plan_preview(workspace: str, recipe: str, summary: dict, *, header: s
     warnings = list(context.get("warnings") or [])
     spend_scope = context.get("spend_scope", len(artifact_ids))
 
-    print(f"=== {header}: workspace={workspace} recipe={recipe} ===")
+    print(f"=== {header}: user={user} workspace={workspace} recipe={recipe} ===")
     print("effective settings (which cascade layer set each):")
     for aid in artifact_ids:
         print(f"  {aid}")
@@ -863,6 +893,7 @@ def _begin_and_preview(
     result = invoke_mod.invoke(
         "begin-session",
         normalized.workspace,
+        normalized.user,
         normalized.params,
         handlers={"begin-session": begin_handler},
         root=root,
@@ -874,6 +905,7 @@ def _begin_and_preview(
         print(notice)
     _print_plan_preview(
         normalized.workspace,
+        normalized.user,
         normalized.params.get("recipe", ""),
         result["results"][0],
         header=header,
@@ -903,6 +935,7 @@ def _drive_generate(
         adapters=adapters, run_artifact=run_artifact
     )
     workspace = normalized.workspace
+    user = normalized.user
     token = begin_result["token"]
     planned = set(begin_result["results"][0]["ids"].get("artifact_ids") or [])
     consumed: set[str] = set()
@@ -912,6 +945,7 @@ def _drive_generate(
         out = invoke_mod.invoke(
             "continue-session",
             workspace,
+            user,
             {"action": "generate-next", "batch_size": "all"},
             token=token,
             handlers={"continue-session": continue_handler},
@@ -1021,6 +1055,7 @@ def _save_selection(
             base,
             variants,
             values=values,
+            user=normalized.user,
             workspace=normalized.workspace,
             force=force,
         )
@@ -1071,7 +1106,7 @@ def _attach_selection_or_usage(
         return 2
     try:
         base, variants, values = authoring.load_selection(
-            args.root, selection_id, workspace=normalized.workspace
+            args.root, selection_id, user=normalized.user, workspace=normalized.workspace
         )
     except authoring.AuthoringError as exc:
         print(f"pipeline {prog}: --selection: {exc}", file=sys.stderr)
@@ -1318,7 +1353,9 @@ def _emit_params_from_normalized(normalized: "object", text: str) -> dict:
     return emit
 
 
-def _emit_and_print(workspace: str, root: str, emit_params: dict, *, outline_file: str) -> int:
+def _emit_and_print(
+    workspace: str, user: str, root: str, emit_params: dict, *, outline_file: str
+) -> int:
     """Dispatch ONE `emit-outline` call via the direct-handler pattern and print the emitted
     artifact-id (the continuation HANDLE) + the copy-paste drive line C7's `--from` guard consumes.
     ONLY `emit_outline_handler` is constructed — no continue-session handler, no live runner is ever
@@ -1331,6 +1368,7 @@ def _emit_and_print(workspace: str, root: str, emit_params: dict, *, outline_fil
     result = invoke_mod.invoke(
         "emit-outline",
         workspace,
+        user,
         emit_params,
         handlers={"emit-outline": session.emit_outline_handler()},
         root=root,
@@ -1344,7 +1382,10 @@ def _emit_and_print(workspace: str, root: str, emit_params: dict, *, outline_fil
         _print_refusal("outline emit", result)
         return 1
     reused = item.get("code") == "already-materialized"
-    print(f"=== outline emit: workspace={workspace} recipe={emit_params['recipe']} ===")
+    print(
+        f"=== outline emit: user={user} workspace={workspace} "
+        f"recipe={emit_params['recipe']} ==="
+    )
     print(f"artifact-id: {aid}")
     if reused:
         print("status     : already-materialized (idempotent re-emit no-op)")
@@ -1400,7 +1441,14 @@ def _outline_emit(argv: list[str]) -> int:
     )
     parser.add_argument("--workspace", default=None, help="the invoked workspace (§21.1)")
     parser.add_argument(
-        "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
+        "--user",
+        default=None,
+        help="the owning user (§23 isolation prefix; required whenever --workspace is given)",
+    )
+    parser.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
     )
     args = parser.parse_args(argv)
 
@@ -1413,7 +1461,7 @@ def _outline_emit(argv: list[str]) -> int:
         return 2
 
     friendly: dict = {"spend": False}  # emit is Tier-A — never a spend verb (no idempotency key)
-    for key, value in (("recipe", args.recipe), ("workspace", args.workspace)):
+    for key, value in (("recipe", args.recipe), ("workspace", args.workspace), ("user", args.user)):
         if value:
             friendly[key] = value
     for key, value in (
@@ -1430,7 +1478,9 @@ def _outline_emit(argv: list[str]) -> int:
     if normalized is None:
         return code
     emit_params = _emit_params_from_normalized(normalized, text)
-    return _emit_and_print(normalized.workspace, args.root, emit_params, outline_file=args.file)
+    return _emit_and_print(
+        normalized.workspace, normalized.user, args.root, emit_params, outline_file=args.file
+    )
 
 
 def _outline_drive(
@@ -1529,7 +1579,7 @@ def _discovery_list_handler() -> "object":
 
 
 def _invoke_discovery_list(
-    type_name: str, workspace: str, root: str, filters: "object | None" = None
+    type_name: str, workspace: str, user: str, root: str, filters: "object | None" = None
 ) -> dict:
     """Dispatch ONE discovery `list` call via the direct-handler pattern (reused by `list` + `get`,
     both of which enumerate a type). Returns the raw `{envelope, results}` invoke output."""
@@ -1539,7 +1589,7 @@ def _invoke_discovery_list(
     if filters is not None:
         params["filters"] = filters
     return invoke_mod.invoke(
-        "list", workspace, params, handlers={"list": _discovery_list_handler()}, root=root
+        "list", workspace, user, params, handlers={"list": _discovery_list_handler()}, root=root
     )
 
 
@@ -1576,6 +1626,9 @@ def _cmd_list(argv: list[str]) -> int:
     )
     parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
     parser.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
+    )
+    parser.add_argument(
         "--filters",
         default=None,
         metavar="JSON",
@@ -1594,7 +1647,7 @@ def _cmd_list(argv: list[str]) -> int:
             print(f"pipeline list: --filters is not valid JSON: {exc}", file=sys.stderr)
             return 2
 
-    result = _invoke_discovery_list(args.type, args.workspace, args.root, filters)
+    result = _invoke_discovery_list(args.type, args.workspace, args.user, args.root, filters)
     if not result["envelope"]["ok"]:
         _print_refusal("list", result)
         return 1
@@ -1602,7 +1655,10 @@ def _cmd_list(argv: list[str]) -> int:
     if any(r.get("status") == "block" for r in rows):  # unknown type → not-found (no silent empty)
         _print_refusal("list", result)
         return 1
-    print(f"=== list {args.type}: {len(rows)} entry(ies) — workspace={args.workspace} ===")
+    print(
+        f"=== list {args.type}: {len(rows)} entry(ies) — "
+        f"user={args.user} workspace={args.workspace} ==="
+    )
     for r in rows:
         print(f"  {r.get('item')}{_discovery_row_tail(r.get('context') or {})}")
     return 0
@@ -1628,11 +1684,14 @@ def _cmd_get(argv: list[str]) -> int:
     parser.add_argument("id", help="the entry id to fetch")
     parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
     parser.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
+    )
+    parser.add_argument(
         "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
     )
     args = parser.parse_args(argv)
 
-    result = _invoke_discovery_list(args.type, args.workspace, args.root)
+    result = _invoke_discovery_list(args.type, args.workspace, args.user, args.root)
     if not result["envelope"]["ok"]:
         _print_refusal("get", result)
         return 1
@@ -1766,7 +1825,9 @@ def _recipe_error_types() -> tuple:
     )
 
 
-def _load_base_bundle(root: str, base_id: str, workspace: "str | None") -> dict:
+def _load_base_bundle(
+    root: str, base_id: str, user: "str | None", workspace: "str | None"
+) -> dict:
     """`--from BASE`: load an existing recipe's explicitly-SET slots (its bundle) — loud on unknown.
 
     Locates the base exactly as M1 does (`recipes/<id>.md`, workspace-shadowed for an `x-` id,
@@ -1784,6 +1845,7 @@ def _load_base_bundle(root: str, base_id: str, workspace: "str | None") -> dict:
 
     from pipeline import authoring, entries, m1
     from pipeline.attrtypes import AttrTypeSpec, ValueValidationError, validate_value
+    from pipeline.workspace_name import workspace_path
 
     try:  # the SSOT §7.4 slug validator (the one `_require_slug` wraps) — blocks a traversal id
         validate_value(AttrTypeSpec(kind="ref"), base_id)
@@ -1793,11 +1855,20 @@ def _load_base_bundle(root: str, base_id: str, workspace: "str | None") -> dict:
             "chars, no leading/trailing '-'); an unknown base is an error, never silent (§11.1)"
         ) from exc
 
+    # §23: a `--from` base named under a workspace needs its owning user BEFORE the eager join —
+    # a clean typed refusal (mirroring `authoring.resolve_recipe_target`), never a raw `TypeError`
+    # traceback from `workspace_path(..., None, ...)` (LOUD-and-clean; never a `users/None/` path).
+    if workspace is not None and user is None:
+        raise authoring.AuthoringError(
+            f"invalid-authoring: --from base {base_id!r} under a --workspace requires a --user + "
+            "--workspace home (instance config lives under users/<user>/workspaces/<client>/, "
+            "rule 2/§10)"
+        )
     root_path = Path(root)
     filename = f"{base_id}{entries.ENTRY_SUFFIX}"
     shared = root_path / authoring.RECIPE_COLLECTION / filename
     local = (
-        root_path / m1.WORKSPACES_DIRNAME / workspace / authoring.RECIPE_COLLECTION / filename
+        workspace_path(root_path, user, workspace, authoring.RECIPE_COLLECTION, filename)
         if workspace is not None
         else None
     )
@@ -1922,6 +1993,11 @@ def _cmd_recipe(argv: list[str]) -> int:
         help="the workspace home for a client (x-) recipe (§10); framework recipes need none",
     )
     new.add_argument(
+        "--user",
+        default=None,
+        help="the owning user (§23) for a client (x-) recipe home; required with --workspace",
+    )
+    new.add_argument(
         "--root", default=".", help="framework repo root → recipes/<id>.md (default: cwd)"
     )
     new.add_argument(
@@ -1947,13 +2023,13 @@ def _cmd_recipe(argv: list[str]) -> int:
             picks=picks, set_entries=args.set or [], unset=args.unset or []
         )
         base_bundle: dict = (
-            _load_base_bundle(args.root, args.base, args.workspace)
+            _load_base_bundle(args.root, args.base, args.user, args.workspace)
             if args.base is not None
             else {}
         )
         bundle = authoring.merge_bundle(base_bundle, edits)
         target = authoring.write_recipe(
-            args.root, args.id, bundle, workspace=args.workspace, force=args.force
+            args.root, args.id, bundle, user=args.user, workspace=args.workspace, force=args.force
         )
     except _recipe_error_types() as exc:
         print(f"pipeline recipe new: {exc}", file=sys.stderr)
@@ -2051,8 +2127,13 @@ def _cmd_entry(argv: list[str]) -> int:
     new.add_argument(
         "--workspace",
         default=None,
-        help="home an instance (x-) entry under workspaces/<W>/ (required for `topic`); a "
-        "framework-default candidate needs none",
+        help="home an instance (x-) entry under users/<user>/workspaces/<W>/ (required for "
+        "`topic`); a framework-default candidate needs none",
+    )
+    new.add_argument(
+        "--user",
+        default=None,
+        help="the owning user (§23) for a client (x-) entry home; required with --workspace",
     )
     new.add_argument(
         "--root", default=".", help="framework repo root → <dimension>/<id>.md (default: cwd)"
@@ -2071,7 +2152,8 @@ def _cmd_entry(argv: list[str]) -> int:
 
     try:
         target = entryscaffold.write_entry(
-            args.root, args.dimension, args.id, workspace=args.workspace, force=args.force
+            args.root, args.dimension, args.id,
+            user=args.user, workspace=args.workspace, force=args.force,
         )
     except _entry_error_types() as exc:
         print(f"pipeline entry new: {exc}", file=sys.stderr)

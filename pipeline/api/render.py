@@ -85,6 +85,7 @@ class FitLeg:
     """The fit-level render context handed to the engine: the coordinate + the loaded IR."""
 
     root: Path
+    user: str
     workspace: str
     store: WorkspaceStore
     item: str
@@ -98,6 +99,7 @@ class SerializeLeg:
     """The serialize-level render context: the resolved fit + its coordinate slugs."""
 
     root: Path
+    user: str
     workspace: str
     store: WorkspaceStore
     fitted_id: str
@@ -239,9 +241,11 @@ def _resolve_fit(
     # gates on a REAL absence (`record is None`) and unwraps whichever shape is stored (§15 RI4).
     canonical_ir = ir.unwrap_ir(canonical_record)
 
-    root = store.root.parent.parent
+    # §23: recover the framework root from the store's RECORDED identity (`.at()` set it), never
+    # depth-fragile positional path math; the owning user rides the leg for the config cascade.
+    root = store.framework_root
     fit_leg = FitLeg(
-        root=root, workspace=workspace, store=store, item=item,
+        root=root, user=store.user, workspace=workspace, store=store, item=item,
         platform=platform, language=language, canonical_ir=canonical_ir,
     )
     try:
@@ -302,7 +306,7 @@ def _resolve_deliverable(
         ser_res = serialize.resolve_deliverable(del_coord, render_bindings, {})
     else:
         ser_leg = SerializeLeg(
-            root=root, workspace=workspace, store=store, fitted_id=fitted_id,
+            root=root, user=store.user, workspace=workspace, store=store, fitted_id=fitted_id,
             fitted_ir=fitted_ir, output_type=output_type, presentation=presentation,
         )
         ser_preimage = engine.serialize_preimage(ser_leg)
@@ -917,7 +921,7 @@ class DefaultRenderEngine:
         from pipeline.cascade import CascadeEnv
         from pipeline.ids import delta_vs_floor  # noqa: F401 — parity with the driver's read
 
-        env = CascadeEnv(leg.root, workspace=leg.workspace)
+        env = CascadeEnv(leg.root, user=leg.user, workspace=leg.workspace)
         entry = env.resolver.resolve("platforms", leg.platform)
         schema = env.resolver.schema("platforms")
         limits = dict(entry.effective.get("hard_limits") or {})
@@ -941,7 +945,7 @@ class DefaultRenderEngine:
         from pipeline.cascade import CascadeEnv
         from pipeline.dispatch import render_target_from_entry
 
-        env = CascadeEnv(leg.root, workspace=leg.workspace)
+        env = CascadeEnv(leg.root, user=leg.user, workspace=leg.workspace)
         entry = env.resolver.resolve("render-targets", leg.output_type)
         target_values = {**entry.defaults(), **entry.effective, "id": entry.id}
         target = render_target_from_entry(target_values)

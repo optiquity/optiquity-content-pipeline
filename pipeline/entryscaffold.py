@@ -26,7 +26,7 @@ Wiring, never duplication (the C2a philosophy): the §7.4 slug alphabet is C2a's
 `ensure_writable` (D8: refuse-if-exists / `--force` / TTY-gated / fail-fast headless), the
 pinned frontmatter dumper is C2a's `_dump_yaml` (the G4 loader in reverse — one serializer, never
 a second), the dimension vocabulary is `m1.DIMENSION_COLLECTIONS`, the workspace isolation guard
-is `workspace_name.validate_workspace_name`, and the schema is the co-located `_schema.yaml`
+is `workspace_name.validate_workspace_path` (§23), and the schema is the co-located `_schema.yaml`
 loaded from the root (`schema.load_schema`). The typed refusal class is C2a's `AuthoringError`.
 
 MONEY-SAFETY (§21.9): a LOCAL Tier-A file write — the ONE composition writes exactly one file
@@ -56,7 +56,7 @@ from pipeline.entries import (
 )
 from pipeline.m1 import DIMENSION_COLLECTIONS
 from pipeline.schema import SCHEMA_FILENAME, Schema, load_schema
-from pipeline.workspace_name import validate_workspace_name
+from pipeline.workspace_name import validate_workspace_path
 
 __all__ = [
     "TOPIC_DIMENSION",
@@ -109,6 +109,7 @@ def resolve_entry_target(
     dimension: str,
     entry_id: str,
     *,
+    user: str | None = None,
     workspace: str | None = None,
 ) -> EntryTarget:
     """Validate the dimension + id and compute the provenance-homed target path (§10/§11.4).
@@ -125,13 +126,23 @@ def resolve_entry_target(
     root = Path(root)
 
     if workspace is not None:
+        if user is None:
+            raise AuthoringError(
+                "invalid-authoring: an instance (x-) entry requires --user — the home is "
+                "users/<user>/workspaces/<W>/<collection>/ (§23, rule 2/§10); a missing user "
+                "would build a users/None/ path (never silent)"
+            )
         wanted = (
             entry_id
             if isinstance(entry_id, str) and entry_id.startswith(INSTANCE_ID_PREFIX)
             else f"{INSTANCE_ID_PREFIX}{entry_id}"
         )
         _require_slug(wanted, "entry id")
-        home = validate_workspace_name(workspace, root) / collection / f"{wanted}{ENTRY_SUFFIX}"
+        home = (
+            validate_workspace_path(root, user, workspace)
+            / collection
+            / f"{wanted}{ENTRY_SUFFIX}"
+        )
         return EntryTarget(dimension, collection, wanted, PROVENANCE_INSTANCE, home, workspace)
 
     if dimension == TOPIC_DIMENSION:
@@ -246,6 +257,7 @@ def write_entry(
     dimension: str,
     entry_id: str,
     *,
+    user: str | None = None,
     workspace: str | None = None,
     force: bool = False,
     body: str | None = None,
@@ -260,7 +272,7 @@ def write_entry(
     re-implemented. Writes exactly one file (§5.4 one-file-add). NEVER registers an invoke verb /
     hits the invoke door (§21.9).
     """
-    target = resolve_entry_target(root, dimension, entry_id, workspace=workspace)
+    target = resolve_entry_target(root, dimension, entry_id, user=user, workspace=workspace)
     schema = load_dimension_schema(root, target.collection)
     text = serialize_entry_scaffold(
         schema,

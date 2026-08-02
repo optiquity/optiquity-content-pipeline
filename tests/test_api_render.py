@@ -32,6 +32,7 @@ from pipeline.yamlio import load_frontmatter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "ws-outline"
+USER = "acme"
 COMMIT_SHA = "9f3c07d21b44e8aa9f3c07d21b44e8aa9f3c07d2"
 PLATFORM, LANGUAGE, PRESENTATION = "github", "en", "plain"
 FIXED_TS = "2024-01-01T00:00:00+00:00"
@@ -80,7 +81,7 @@ def _registry_side(output_type: str) -> str:
 def outline_store(tmp_path):
     """A workspace store carrying ONE emitted `Format=outline` artifact — the `item` a render
     resolves. Returns (store, artifact_id)."""
-    store = WorkspaceStore(tmp_path / WS)
+    store = WorkspaceStore.at(tmp_path, USER, WS)
     store.ensure_layout()
     preimage = _outline_preimage(OUTLINE_MD)
     artifact_id = mint_artifact_id(preimage)
@@ -157,7 +158,7 @@ def _render(store, artifact_id, engine, output_type):
         "output_type": output_type,
         "presentation": PRESENTATION,
     }
-    return invoke("render", WS, params, store=store, handlers={"render": handler})
+    return invoke("render", WS, USER, params, store=store, handlers={"render": handler})
 
 
 class TestOutlineRendersAsOrdinaryArtifact:

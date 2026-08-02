@@ -54,6 +54,7 @@ from pipeline.transport import ProcessOutcome, ProcessRequest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "mvp-demo"
+USER = "acme"
 NOW = date(2026, 7, 7)
 _PANDOC_AVAILABLE = pandoc_available()
 
@@ -178,11 +179,13 @@ class PreciseCurrencyResolver:
         self.fit_calls = 0
         self.serialize_calls = 0
 
-    def current_fit_digest(self, *, root, workspace, fitted_id, stored_preimage) -> str:
+    def current_fit_digest(self, *, root, user, workspace, fitted_id, stored_preimage) -> str:
         self.fit_calls += 1
         return reconcile.fit_digest(stored_preimage)
 
-    def current_serialize_digest(self, *, root, workspace, deliverable_id, stored_preimage) -> str:
+    def current_serialize_digest(
+        self, *, root, user, workspace, deliverable_id, stored_preimage
+    ) -> str:
         self.serialize_calls += 1
         return serialize.serialize_digest(stored_preimage)
 
@@ -287,12 +290,12 @@ def build_world(tmp_path: Path) -> Path:
     (root / "platforms" / "github.md").write_text(_GITHUB_PASS, encoding="utf-8")
     (root / "platforms" / "tiny-limit.md").write_text(_TINY_LIMIT, encoding="utf-8")
 
-    topics_dir = root / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     for tid, why in _TOPICS:
         (topics_dir / f"{tid}.md").write_text(_TOPIC.format(tid=tid, why=why), encoding="utf-8")
 
-    sources_dir = root / "workspaces" / WS / "sources"
+    sources_dir = root / "users" / USER / "workspaces" / WS / "sources"
     sources_dir.mkdir(parents=True)
     for sid, dataset, trusted, independence, primariness in _SOURCES:
         (sources_dir / f"{sid}.md").write_text(
@@ -324,6 +327,7 @@ def test_mvp_scenario_covers_every_section_25_clause(tmp_path):
 
     report = run_mvp_scenario(
         root=root,
+        user=USER,
         workspace=WS,
         adapters=_adapters(),
         runner=writer,
@@ -441,13 +445,14 @@ def test_render_py_b1_plain_floor_is_byte_identical_to_lower_plain(tmp_path):
     from pipeline.presentation import render_inputs_to_mapping
 
     root = build_world(tmp_path)
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     entry = env.resolver.resolve("render-targets", "md")
     target = render_target_from_entry({**entry.defaults(), **entry.effective, "id": entry.id})
     leg = render_api.SerializeLeg(
         root=root,
+        user=USER,
         workspace=WS,
-        store=WorkspaceStore(root / "workspaces" / WS),
+        store=WorkspaceStore.at(root, USER, WS),
         fitted_id="a-0000000000000000.github.en",
         fitted_ir={},
         output_type="md",
@@ -491,7 +496,7 @@ def test_gate1_hard_limit_block_carries_the_taxonomy_code(tmp_path):
     exceeded` §21.7 code; generate-next surfaces a CODED block — never a bare hint, never a
     fabricated code."""
     root = build_world(tmp_path)
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     writer, review = WriterRunner(), ReviewRunner()
     handlers = _handlers(root, writer, review, PreciseCurrencyResolver())
@@ -499,6 +504,7 @@ def test_gate1_hard_limit_block_carries_the_taxonomy_code(tmp_path):
     begin = invoke_mod.invoke(
         "begin-session",
         WS,
+        USER,
         {
             "recipe": "explainer-post",
             "topics": ["x-widget-service"],
@@ -519,6 +525,7 @@ def test_gate1_hard_limit_block_carries_the_taxonomy_code(tmp_path):
     step = invoke_mod.invoke(
         "continue-session",
         WS,
+        USER,
         {"action": "generate-next", "batch_size": 1},
         token=begin["token"],
         store=store,
@@ -547,10 +554,12 @@ def test_gate2_failsafe_resolver_is_conservative_never_current(tmp_path):
     resolver = MvpFailSafeCurrencyResolver()
     assert not isinstance(resolver, discovery.DefaultCurrencyResolver)
     sentinel_fit = resolver.current_fit_digest(
-        root=Path(tmp_path), workspace=WS, fitted_id="fitted", stored_preimage={"any": "value"}
+        root=Path(tmp_path), user=USER, workspace=WS,
+        fitted_id="fitted", stored_preimage={"any": "value"},
     )
     sentinel_ser = resolver.current_serialize_digest(
-        root=Path(tmp_path), workspace=WS, deliverable_id="deliv", stored_preimage={"any": "value"}
+        root=Path(tmp_path), user=USER, workspace=WS,
+        deliverable_id="deliv", stored_preimage={"any": "value"},
     )
     # a real recorded digest is 12 lowercase hex; the sentinel can never equal one → not-current.
     assert not re.fullmatch(r"[0-9a-f]{12}", sentinel_fit)
@@ -597,11 +606,12 @@ def _drive_widget_artifact(root, *, runner, review, log, now=NOW):
     from pipeline.spine import registry_for
     from pipeline.ssot import Ssot
 
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     begin = invoke_mod.invoke(
         "begin-session",
         WS,
+        USER,
         {
             "recipe": "explainer-post",
             "topics": ["x-widget-service"],
@@ -616,7 +626,7 @@ def _drive_widget_artifact(root, *, runner, review, log, now=NOW):
         handlers={"begin-session": session.begin_session_handler(adapters=_adapters())},
     )
     token = invoke_mod.token_mod.decode(begin["token"], expected_workspace=WS)
-    plan, env, pool, source_repos = session._resolve_from_inputs(root, WS, token.inputs)
+    plan, env, pool, source_repos = session._resolve_from_inputs(root, USER, WS, token.inputs)
     item = next(i for i in plan.items if i.topic == "x-widget-service")
     return driver._run_artifact(
         env=env,

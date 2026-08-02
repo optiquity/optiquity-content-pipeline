@@ -472,29 +472,32 @@ def _tier_b_body(verb: str, params: Mapping[str, Any]) -> dict[str, Any]:
 # 403, never guessing a path itself.
 
 
-def _open_workspace(root: str, workspace: str) -> tuple[Any, Any, Any, Callable[[str], bool]]:
+def _open_workspace(
+    root: str, user: str, workspace: str
+) -> tuple[Any, Any, Any, Callable[[str], bool]]:
     """The CONTAINED (store, job_store, claims, is_done) bundle for a Tier-B submit/poll.
 
-    Delegates the GAP-9 resolve-and-contain to `jobrunner._store_for` (the job subsystem's
+    Delegates the §23 resolve-and-contain to `jobrunner._store_for` (the job subsystem's
     containment authority — NOT re-implemented here); it raises a `ValueError` (WorkspaceName
-    error) on an escaping name, which the caller maps to 403. Returns the full `WorkspaceStore`
-    (derived from the contained `jobs/` dir), the `JobStore`, a fresh claim registry (for `peek`),
-    and an `is_done(target_id)` closure over the §22.7 output-existence authority."""
+    error) on an escaping `(user, workspace)` pair, which the caller maps to 403. Returns the full
+    identity-bearing `WorkspaceStore` (built via `.at(root, user, workspace)` — the SAME contained
+    leaf, so downstream `store.user`/`framework_root` read loudly), the `JobStore`, a fresh claim
+    registry (for `peek`), and an `is_done(target_id)` closure over the §22.7 authority."""
     from pipeline.api import jobrunner
     from pipeline.spine import registry_for
     from pipeline.store import WorkspaceStore, is_done
 
-    # A minimal probe carrying only what `_store_for` reads (`.workspace`, `.root`) — the
-    # containment delegate. On an escaping name this RAISES before any store dir is created.
-    probe = SimpleNamespace(workspace=workspace, root=str(root))
+    # A minimal probe carrying only what `_store_for` reads (`.user`, `.workspace`, `.root`) — the
+    # containment delegate. On an escaping pair this RAISES before any store dir is created.
+    probe = SimpleNamespace(user=user, workspace=workspace, root=str(root))
     job_store = jobrunner._store_for(probe)
-    store = WorkspaceStore(job_store.jobs_dir.parent)
+    store = WorkspaceStore.at(root, user, workspace)
     claims = registry_for(store)
     return store, job_store, claims, (lambda target_id: is_done(store, target_id))
 
 
 def _default_plan_targets(
-    root: str, workspace: str, decoded: token_mod.Token, params: Mapping[str, Any]
+    root: str, user: str, workspace: str, decoded: token_mod.Token, params: Mapping[str, Any]
 ) -> list[str]:
     """The PREDICTABLE target artifact-id set a `generate-next` call will materialize — resolved
     LLM-FREE (§22.2), so the job can be keyed + polled BEFORE the paid call.
@@ -506,7 +509,7 @@ def _default_plan_targets(
     empty target set)."""
     from pipeline.api import session
 
-    return list(session.plan_next_batch_ids(Path(root), workspace, decoded, params))
+    return list(session.plan_next_batch_ids(Path(root), user, workspace, decoded, params))
 
 
 def _default_render_targets(store: Any, workspace: str, params: Mapping[str, Any]) -> Any:
@@ -788,22 +791,26 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             return  # `_read_json_object` already sent a 400
         endpoint(server, payload)
 
-    def _deny_unserved_workspace(self, server: ShimServer, workspace: str) -> bool:
-        """Workspace ALLOW-LIST (Commit 5c, applied to BOTH /invoke and /poll — N-6). If the
-        allow-list is CONFIGURED (non-empty), only a LISTED workspace is served: a non-member →
-        403 `workspace-not-served` BEFORE any dispatch/store access, and this returns True. If
-        UNSET (default), returns False (serve any workspace; the GAP-9 resolve-and-contain gate
-        remains the containment authority). NAME membership ONLY — never a path re-check (an
-        escaping name is still refused by the delegated GAP-9 gate)."""
+    def _deny_unserved_workspace(self, server: ShimServer, user: str, workspace: str) -> bool:
+        """Served-workspace ALLOW-LIST (Commit 5c, applied to BOTH /invoke and /poll — N-6). Now a
+        `(user, workspace)` POLICY-PAIR membership (§23): each allow-list entry is a
+        `user/workspace` string, or a `user/*` wildcard admitting every workspace under one user.
+        If the allow-list is CONFIGURED (non-empty), only a matching pair is served: a non-member →
+        403
+        `workspace-not-served` BEFORE any dispatch/store access, and this returns True. If UNSET
+        (default), returns False (serve any pair; the §23 resolve-and-contain gate remains the
+        containment authority). PAIR membership ONLY — never a path re-check (an escaping user/
+        workspace is still refused by the delegated GAP-9/§23 gate inside `invoke()`)."""
         allowed = server.allowed_workspaces
-        if allowed and workspace not in allowed:
+        if allowed and f"{user}/{workspace}" not in allowed and f"{user}/*" not in allowed:
             self._respond(
                 _HTTP_FORBIDDEN,
                 {
                     "error": "workspace-not-served",
                     "detail": (
-                        f"workspace {workspace!r} is not in this shim's served-workspace "
-                        "allow-list (workspaces.allowed in instance/shim.yaml)"
+                        f"user/workspace {user!r}/{workspace!r} is not in this shim's served "
+                        "allow-list (workspaces.allowed = 'user/workspace' or 'user/*' entries in "
+                        "instance/shim.yaml)"
                     ),
                 },
             )
@@ -850,6 +857,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         """`POST /invoke`: Tier-A synchronous dispatch + the Tier-B `generate-next` submit."""
         verb = payload.get("verb")
         workspace = payload.get("workspace")
+        user = payload.get("user")
         params = payload.get("params", {})
         token = payload.get("token")
         pins = payload.get("pins")
@@ -859,19 +867,24 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(workspace, str) or not workspace:
             self._bad_request("'workspace' is required (a non-empty string)")
             return
+        if not isinstance(user, str) or not user:
+            # §23: `user` is MANDATORY (the isolation prefix) — the SAME bad-request class as a
+            # missing workspace; a missing user must NEVER default (never `users/None/…`).
+            self._bad_request("'user' is required (a non-empty string; the §23 isolation prefix)")
+            return
         if not isinstance(params, Mapping):
             self._bad_request("'params' must be a JSON object")
             return
 
-        if self._deny_unserved_workspace(server, workspace):
+        if self._deny_unserved_workspace(server, user, workspace):
             return
 
         if classify_verb(verb, params) == TIER_B:
             if _is_generate_next_submit(verb, params):
-                self._submit_generate_next(server, workspace, params, token, pins)
+                self._submit_generate_next(server, workspace, user, params, token, pins)
                 return
             if verb == "render":
-                self._submit_render(server, workspace, params, token, pins)
+                self._submit_render(server, workspace, user, params, token, pins)
                 return
             # The STILL-DEFERRED Tier-B verb `begin-session{generate!=none}` (Commit 9).
             self._respond(_HTTP_NOT_IMPLEMENTED, _tier_b_body(verb, params))
@@ -879,7 +892,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
 
         # Tier-A or unknown-verb: `invoke()` is the authority (unknown-verb → its fatal envelope).
         try:
-            result = server.invoke_fn(verb, workspace, params, token, root=server.root)
+            result = server.invoke_fn(verb, workspace, user, params, token, root=server.root)
         except HandlerNotWired:
             # Post-`register_api_handlers()` this is unreachable; defensive only.
             self._respond(_HTTP_INTERNAL, {"error": "handler-not-wired", "verb": verb})
@@ -890,6 +903,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         self,
         server: ShimServer,
         workspace: str,
+        user: str,
         params: Mapping[str, Any],
         token: Any,
         pins: Any,
@@ -955,17 +969,18 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-        # (b) Build the CONTAINED store (delegated GAP-9 — an escaping name RAISES → 403).
+        # (b) Build the CONTAINED store (delegated §23 gate — an escaping user/workspace RAISES →
+        #     403).
         try:
-            store, job_store, claims, is_done_fn = _open_workspace(server.root, workspace)
+            store, job_store, claims, is_done_fn = _open_workspace(server.root, user, workspace)
         except ValueError:
             self._respond(
                 _HTTP_FORBIDDEN,
                 {
                     "error": "isolation-violation",
                     "detail": (
-                        "workspace name does not resolve to a contained store root — workspaces "
-                        "never cross (§10/§21.1)"
+                        "user/workspace does not resolve to a contained store root — workspaces "
+                        "never cross (§10/§21.1/§23)"
                     ),
                 },
             )
@@ -984,7 +999,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         plan_targets = (
             server.plan_targets_fn if server.plan_targets_fn is not None else _default_plan_targets
         )
-        target_ids = list(plan_targets(server.root, workspace, decoded, params))
+        target_ids = list(plan_targets(server.root, user, workspace, decoded, params))
         if not target_ids:
             self._respond(
                 _HTTP_OK,
@@ -1016,7 +1031,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 list(outcome.record.target_ids) if outcome.record is not None else target_ids
             )
             self._respond(
-                _HTTP_OK, self._done_body(server, workspace, outcome.key, record_targets)
+                _HTTP_OK, self._done_body(server, workspace, user, outcome.key, record_targets)
             )
             return
         if outcome.spawn:  # `spawned` or `stolen` — detach the runner (record already written).
@@ -1031,6 +1046,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 key=outcome.key,
                 verb="continue-session",
                 workspace=workspace,
+                user=user,
                 params=dict(params),
                 idempotency_key=idempotency_key,
                 root=str(server.root),
@@ -1057,6 +1073,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         self,
         server: ShimServer,
         workspace: str,
+        user: str,
         params: Mapping[str, Any],
         token: Any,
         pins: Any,
@@ -1115,17 +1132,18 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # (c) Build the CONTAINED store (delegated GAP-9 — an escaping name RAISES → 403).
+        # (c) Build the CONTAINED store (delegated §23 gate — an escaping user/workspace RAISES →
+        #     403).
         try:
-            store, job_store, claims, is_done_fn = _open_workspace(server.root, workspace)
+            store, job_store, claims, is_done_fn = _open_workspace(server.root, user, workspace)
         except ValueError:
             self._respond(
                 _HTTP_FORBIDDEN,
                 {
                     "error": "isolation-violation",
                     "detail": (
-                        "workspace name does not resolve to a contained store root — workspaces "
-                        "never cross (§10/§21.1)"
+                        "user/workspace does not resolve to a contained store root — workspaces "
+                        "never cross (§10/§21.1/§23)"
                     ),
                 },
             )
@@ -1161,7 +1179,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             self._respond(
                 _HTTP_OK,
                 self._done_body(
-                    server, workspace, job_key(target_ids, idempotency_key), target_ids
+                    server, workspace, user, job_key(target_ids, idempotency_key), target_ids
                 ),
             )
             return
@@ -1179,7 +1197,9 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         # A `done` disposition SHORT-CIRCUITS: the whole deliverable already materialized (a
         # cache-hit / an idempotent re-submit after completion) → 200 + the fetched output.
         if outcome.disposition == "done":
-            self._respond(_HTTP_OK, self._done_body(server, workspace, outcome.key, target_ids))
+            self._respond(
+                _HTTP_OK, self._done_body(server, workspace, user, outcome.key, target_ids)
+            )
             return
         if outcome.spawn:  # `spawned` or `stolen` — detach the runner (record already written).
             # ADVISORY concurrency cap (DR-1 Commit 10, Path A): at MAX_PARALLEL_SESSIONS → 429 +
@@ -1194,6 +1214,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 key=outcome.key,
                 verb="render",
                 workspace=workspace,
+                user=user,
                 params=dict(params),
                 idempotency_key=idempotency_key,
                 root=str(server.root),
@@ -1210,13 +1231,15 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             # output; a paid reshape exceeds it → the 202 ack below.
             if self._render_wait_for_done(server, is_done_fn, deliverable_id):
                 self._respond(
-                    _HTTP_OK, self._done_body(server, workspace, outcome.key, target_ids)
+                    _HTTP_OK, self._done_body(server, workspace, user, outcome.key, target_ids)
                 )
                 return
         elif is_done_fn(deliverable_id):
             # `existing` — a prior submit owns the spawn/wait; SHORT-CIRCUIT (never a second wait):
             # if it has since materialized → 200 + output, else the 202 ack below.
-            self._respond(_HTTP_OK, self._done_body(server, workspace, outcome.key, target_ids))
+            self._respond(
+                _HTTP_OK, self._done_body(server, workspace, user, outcome.key, target_ids)
+            )
             return
         # `spawned`/`stolen` exceeding the wait, or an `existing` not-yet-done → the N-3 202 ack
         # with the predictable deliverable-id (the detached runner continues; the client polls or
@@ -1252,12 +1275,16 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         gates as the submit (N-6) — a poll reads client job/deliverable data, so it is refused
         (401/403) exactly like the submit."""
         workspace = payload.get("workspace")
+        user = payload.get("user")
         key = payload.get("key")
         target_ids = payload.get("target_ids")
         if not isinstance(workspace, str) or not workspace:
             self._bad_request("'workspace' is required (a non-empty string)")
             return
-        if self._deny_unserved_workspace(server, workspace):  # N-6 allow-list, same as submit
+        if not isinstance(user, str) or not user:
+            self._bad_request("'user' is required (a non-empty string; the §23 isolation prefix)")
+            return
+        if self._deny_unserved_workspace(server, user, workspace):  # N-6 allow-list, same as submit
             return
         if not isinstance(key, str) or not key:
             self._bad_request("'key' is required (the run-family job key from the 202 ack)")
@@ -1272,17 +1299,17 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Build the CONTAINED store (delegated GAP-9 — an escaping name RAISES → 403).
+        # Build the CONTAINED store (delegated §23 gate — an escaping user/workspace RAISES → 403).
         try:
-            _store, job_store, claims, is_done_fn = _open_workspace(server.root, workspace)
+            _store, job_store, claims, is_done_fn = _open_workspace(server.root, user, workspace)
         except ValueError:
             self._respond(
                 _HTTP_FORBIDDEN,
                 {
                     "error": "isolation-violation",
                     "detail": (
-                        "workspace name does not resolve to a contained store root — workspaces "
-                        "never cross (§10/§21.1)"
+                        "user/workspace does not resolve to a contained store root — workspaces "
+                        "never cross (§10/§21.1/§23)"
                     ),
                 },
             )
@@ -1318,7 +1345,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 {
                     "status": "done",
                     "job": job_ref,
-                    "results": self._fetch_outputs(server, workspace, target_ids),
+                    "results": self._fetch_outputs(server, workspace, user, target_ids),
                 },
             )
             return
@@ -1382,24 +1409,24 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _done_body(
-        self, server: ShimServer, workspace: str, key: str, target_ids: Sequence[str]
+        self, server: ShimServer, workspace: str, user: str, key: str, target_ids: Sequence[str]
     ) -> dict[str, Any]:
         """The 200 DONE body — the job's key/target-ids + the fetched output items."""
         return {
             "status": "done",
             "job": {"key": key, "target_ids": list(target_ids)},
-            "results": self._fetch_outputs(server, workspace, target_ids),
+            "results": self._fetch_outputs(server, workspace, user, target_ids),
         }
 
     def _fetch_outputs(
-        self, server: ShimServer, workspace: str, target_ids: Sequence[str]
+        self, server: ShimServer, workspace: str, user: str, target_ids: Sequence[str]
     ) -> list[Any]:
         """Fetch each materialized target via the EXISTING `fetch-by-id` handler (dumb hot path,
         §21.5) and merge the returned result items — the shim adds no retrieval logic of its own."""
         merged: list[Any] = []
         for target_id in target_ids:
             result = server.invoke_fn(
-                "fetch-by-id", workspace, {"id": target_id}, None, root=server.root
+                "fetch-by-id", workspace, user, {"id": target_id}, None, root=server.root
             )
             items = result.get("results") if isinstance(result, Mapping) else None
             if isinstance(items, list):

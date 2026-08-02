@@ -28,6 +28,7 @@ FITTED = "a-9f3c07d21b44e8aa.github.en"
 DELIVERABLE = "a-9f3c07d21b44e8aa.github.en.md.plain"
 DELIVERABLE_REV = "a-9f3c07d21b44e8aa.github.en.md.plain_0123456789ab"
 WS = "wsA"
+USER = "acme"
 
 
 @pytest.fixture()
@@ -49,7 +50,8 @@ def _seed_deliverable(store: WorkspaceStore, deliverable_id: str, body: bytes) -
 
 def _fetch(store, id_str, return_mode="path"):
     return invoke(
-        "fetch-by-id", WS, {"id": id_str, "return": return_mode}, store=store, handlers=_handlers()
+        "fetch-by-id", WS, USER, {"id": id_str, "return": return_mode},
+        store=store, handlers=_handlers(),
     )
 
 
@@ -95,7 +97,9 @@ class TestFetchByIdPathAndBytes:
 
     def test_default_return_is_path(self, store):
         _seed_deliverable(store, DELIVERABLE, b"x")
-        out = invoke("fetch-by-id", WS, {"id": DELIVERABLE}, store=store, handlers=_handlers())
+        out = invoke(
+            "fetch-by-id", WS, USER, {"id": DELIVERABLE}, store=store, handlers=_handlers()
+        )
         assert out["results"][0]["context"]["return"] == "path"
 
     def test_fetch_an_artifact_record_returns_the_json_bytes(self, store):
@@ -124,7 +128,7 @@ class TestDumbHotPath:
 
 class TestFetchRefusals:
     def test_missing_id_is_a_typed_not_found(self, store):
-        out = invoke("fetch-by-id", WS, {}, store=store, handlers=_handlers())
+        out = invoke("fetch-by-id", WS, USER, {}, store=store, handlers=_handlers())
         assert out["results"][0]["code"] == "not-found"
 
     def test_bad_return_mode_is_a_typed_not_found(self, store):

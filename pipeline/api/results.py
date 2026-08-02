@@ -518,11 +518,17 @@ class Envelope:
     ok: bool
     verb: str
     workspace: str
+    user: str
     code: str | None = None
     message: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"ok": self.ok, "verb": self.verb, "workspace": self.workspace}
+        out: dict[str, Any] = {
+            "ok": self.ok,
+            "verb": self.verb,
+            "workspace": self.workspace,
+            "user": self.user,
+        }
         if self.code is not None:
             out["code"] = self.code
         if self.message is not None:

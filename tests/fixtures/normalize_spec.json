@@ -5,10 +5,17 @@
     {
       "name": "interactive_defaults_recipe_and_sole_workspace",
       "door_class": "interactive",
-      "friendly_inputs": {"available_workspaces": ["self"]},
+      "friendly_inputs": {
+        "available_workspaces": [
+          "self"
+        ],
+        "user": "self"
+      },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post"},
+      "params": {
+        "recipe": "explainer-post"
+      },
       "generated_key": false,
       "notices": []
     },
@@ -18,15 +25,24 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "topics": ["new-scheduler"],
-        "personas": ["principal-engineer"]
+        "topics": [
+          "new-scheduler"
+        ],
+        "personas": [
+          "principal-engineer"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
       "params": {
         "recipe": "explainer-post",
-        "topics": ["new-scheduler"],
-        "personas": ["principal-engineer"]
+        "topics": [
+          "new-scheduler"
+        ],
+        "personas": [
+          "principal-engineer"
+        ]
       },
       "generated_key": false,
       "notices": []
@@ -37,13 +53,20 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "personas": ["principal-engineer", "staff-engineer"]
+        "personas": [
+          "principal-engineer",
+          "staff-engineer"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
       "params": {
         "recipe": "explainer-post",
-        "personas": ["principal-engineer", "staff-engineer"]
+        "personas": [
+          "principal-engineer",
+          "staff-engineer"
+        ]
       },
       "generated_key": false,
       "notices": []
@@ -54,13 +77,22 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "goals": ["explain", "persuade"]
+        "goals": [
+          "explain",
+          "persuade"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
       "params": {
         "recipe": "explainer-post",
-        "goal_sets": [["explain", "persuade"]]
+        "goal_sets": [
+          [
+            "explain",
+            "persuade"
+          ]
+        ]
       },
       "generated_key": false,
       "notices": []
@@ -71,11 +103,19 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "set": ["voice.formality=2"]
+        "set": [
+          "voice.formality=2"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "overrides": {"voice.formality": 2}},
+      "params": {
+        "recipe": "explainer-post",
+        "overrides": {
+          "voice.formality": 2
+        }
+      },
       "generated_key": false,
       "notices": []
     },
@@ -85,11 +125,19 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "set": ["format.include_toc=true"]
+        "set": [
+          "format.include_toc=true"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "overrides": {"format.include_toc": true}},
+      "params": {
+        "recipe": "explainer-post",
+        "overrides": {
+          "format.include_toc": true
+        }
+      },
       "generated_key": false,
       "notices": []
     },
@@ -99,11 +147,19 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "set": ["voice.narrator_persona=null"]
+        "set": [
+          "voice.narrator_persona=null"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "overrides": {"voice.narrator_persona": null}},
+      "params": {
+        "recipe": "explainer-post",
+        "overrides": {
+          "voice.narrator_persona": null
+        }
+      },
       "generated_key": false,
       "notices": []
     },
@@ -113,13 +169,18 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "set": ["voice.narrator_persona=a colleague"]
+        "set": [
+          "voice.narrator_persona=a colleague"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
       "params": {
         "recipe": "explainer-post",
-        "overrides": {"voice.narrator_persona": "a colleague"}
+        "overrides": {
+          "voice.narrator_persona": "a colleague"
+        }
       },
       "generated_key": false,
       "notices": []
@@ -130,11 +191,19 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "set": ["topic.code=str:2"]
+        "set": [
+          "topic.code=str:2"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "overrides": {"topic.code": "2"}},
+      "params": {
+        "recipe": "explainer-post",
+        "overrides": {
+          "topic.code": "2"
+        }
+      },
       "generated_key": false,
       "notices": []
     },
@@ -144,11 +213,21 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "set": ["format.tags+=x"]
+        "set": [
+          "format.tags+=x"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "overrides": {"format.tags+": ["x"]}},
+      "params": {
+        "recipe": "explainer-post",
+        "overrides": {
+          "format.tags+": [
+            "x"
+          ]
+        }
+      },
       "generated_key": false,
       "notices": []
     },
@@ -158,31 +237,59 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "set": ["format.tags+=a,b"]
+        "set": [
+          "format.tags+=a,b"
+        ],
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "overrides": {"format.tags+": ["a", "b"]}},
+      "params": {
+        "recipe": "explainer-post",
+        "overrides": {
+          "format.tags+": [
+            "a",
+            "b"
+          ]
+        }
+      },
       "generated_key": false,
       "notices": []
     },
     {
       "name": "interactive_autokeys_and_surfaces_on_spend",
       "door_class": "interactive",
-      "friendly_inputs": {"recipe": "explainer-post", "workspace": "self", "spend": true},
+      "friendly_inputs": {
+        "recipe": "explainer-post",
+        "workspace": "self",
+        "spend": true,
+        "user": "self"
+      },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "idempotency_key": "<auto>"},
+      "params": {
+        "recipe": "explainer-post",
+        "idempotency_key": "<auto>"
+      },
       "generated_key": true,
-      "notices": ["generated idempotency key <auto> — reuse it to make a retry safe"]
+      "notices": [
+        "generated idempotency key <auto> — reuse it to make a retry safe"
+      ]
     },
     {
       "name": "automation_omits_key_on_spend",
       "door_class": "automation",
-      "friendly_inputs": {"recipe": "explainer-post", "workspace": "self", "spend": true},
+      "friendly_inputs": {
+        "recipe": "explainer-post",
+        "workspace": "self",
+        "spend": true,
+        "user": "self"
+      },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post"},
+      "params": {
+        "recipe": "explainer-post"
+      },
       "generated_key": false,
       "notices": []
     },
@@ -193,25 +300,37 @@
         "recipe": "explainer-post",
         "workspace": "self",
         "spend": true,
-        "idempotency_key": "exec-42"
+        "idempotency_key": "exec-42",
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "idempotency_key": "exec-42"},
+      "params": {
+        "recipe": "explainer-post",
+        "idempotency_key": "exec-42"
+      },
       "generated_key": false,
       "notices": []
     },
     {
       "name": "automation_missing_recipe_is_fatal",
       "door_class": "automation",
-      "friendly_inputs": {"workspace": "self", "spend": true},
+      "friendly_inputs": {
+        "workspace": "self",
+        "spend": true,
+        "user": "self"
+      },
       "expect": "error",
       "error_field": "recipe"
     },
     {
       "name": "automation_missing_workspace_on_spend_is_fatal",
       "door_class": "automation",
-      "friendly_inputs": {"recipe": "explainer-post", "spend": true},
+      "friendly_inputs": {
+        "recipe": "explainer-post",
+        "spend": true,
+        "user": "self"
+      },
       "expect": "error",
       "error_field": "workspace"
     },
@@ -221,7 +340,11 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "spend": true,
-        "available_workspaces": ["self", "acme"]
+        "available_workspaces": [
+          "self",
+          "acme"
+        ],
+        "user": "self"
       },
       "expect": "error",
       "error_field": "workspace"
@@ -229,10 +352,16 @@
     {
       "name": "interactive_read_takes_env_workspace_default",
       "door_class": "interactive",
-      "friendly_inputs": {"recipe": "explainer-post", "env_workspace": "self"},
+      "friendly_inputs": {
+        "recipe": "explainer-post",
+        "env_workspace": "self",
+        "user": "self"
+      },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post"},
+      "params": {
+        "recipe": "explainer-post"
+      },
       "generated_key": false,
       "notices": []
     },
@@ -243,7 +372,8 @@
         "recipe": "explainer-post",
         "workspace": "self",
         "spend": true,
-        "target_folio": "auto"
+        "target_folio": "auto",
+        "user": "self"
       },
       "expect": "ok",
       "workspace": "self",
@@ -261,17 +391,29 @@
     {
       "name": "explain_passthrough_read_side_channel",
       "door_class": "interactive",
-      "friendly_inputs": {"recipe": "explainer-post", "workspace": "self", "explain": true},
+      "friendly_inputs": {
+        "recipe": "explainer-post",
+        "workspace": "self",
+        "explain": true,
+        "user": "self"
+      },
       "expect": "ok",
       "workspace": "self",
-      "params": {"recipe": "explainer-post", "explain": true},
+      "params": {
+        "recipe": "explainer-post",
+        "explain": true
+      },
       "generated_key": false,
       "notices": []
     },
     {
       "name": "invalid_door_class_is_fatal",
       "door_class": "batch",
-      "friendly_inputs": {"recipe": "explainer-post", "workspace": "self"},
+      "friendly_inputs": {
+        "recipe": "explainer-post",
+        "workspace": "self",
+        "user": "self"
+      },
       "expect": "error",
       "error_field": "door_class"
     },
@@ -281,7 +423,10 @@
       "friendly_inputs": {
         "recipe": "explainer-post",
         "workspace": "self",
-        "set": ["voice.formality"]
+        "set": [
+          "voice.formality"
+        ],
+        "user": "self"
       },
       "expect": "error",
       "error_field": "set"

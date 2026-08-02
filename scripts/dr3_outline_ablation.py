@@ -262,6 +262,7 @@ def _compose_one(
 def run_ablation(
     *,
     root: str | Path,
+    user: str,
     workspace: str,
     outline_md: str,
     recipe: str = "explainer-post",
@@ -285,10 +286,10 @@ def run_ablation(
     """
     root = Path(root)
     now = now or date.today()
-    env = CascadeEnv(root, workspace=workspace)
+    env = CascadeEnv(root, user=user, workspace=workspace)
 
     # -- source pool + the pinned §7.2 commit-map/repo-map (the driver's own read, read-only).
-    source_ids = _list_source_ids(root, workspace)
+    source_ids = _list_source_ids(root, user, workspace)
     if not source_ids:
         raise AblationError(
             f"workspace {workspace!r} declares no sources under sources/ -- grounding needs a "
@@ -347,7 +348,7 @@ def run_ablation(
             "needs a grounded artifact"
         )
 
-    store = WorkspaceStore(root / "workspaces" / workspace)
+    store = WorkspaceStore.at(root, user, workspace)
     store.ensure_layout()
     claims = registry_for(store)
 
@@ -471,6 +472,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--workspace", required=True, help="the workspace (e.g. mvp-demo)")
+    parser.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
+    )
     parser.add_argument("--root", default=".", help="framework repo root (default: cwd)")
     parser.add_argument("--recipe", default="explainer-post", help="the content recipe")
     parser.add_argument("--topic", default="x-architecture-overview", help="the topic entry id")
@@ -504,12 +508,13 @@ def main(argv: list[str] | None = None) -> int:
         outline_md = DEFAULT_OUTLINE
 
     print(
-        f"=== dr3-ablation: workspace={args.workspace} root={args.root} topic={args.topic} "
-        f"now={now} (LIVE compose) ==="
+        f"=== dr3-ablation: user={args.user} workspace={args.workspace} root={args.root} "
+        f"topic={args.topic} now={now} (LIVE compose) ==="
     )
     try:
         result = run_ablation(
             root=args.root,
+            user=args.user,
             workspace=args.workspace,
             outline_md=outline_md,
             recipe=args.recipe,

@@ -101,7 +101,7 @@ from pipeline.schema import (
     UndeclaredAttributeError,
     load_schema,
 )
-from pipeline.workspace_name import WORKSPACES_DIRNAME
+from pipeline.workspace_name import WORKSPACES_DIRNAME, workspace_path
 
 __all__ = [
     "CONTENT_DIMENSION_TOKENS",
@@ -448,6 +448,7 @@ class Resolver:
         self,
         root: str | Path,
         *,
+        user: str | None = None,
         workspace: str | None = None,
         now: date | None = None,
         window: WindowOracle | None = None,
@@ -455,6 +456,18 @@ class Resolver:
         self._root = Path(root)
         if workspace is not None:
             _require_slug(workspace, "workspace")
+            # §23 re-home: the workspace SHADOW lives at users/<user>/workspaces/<ws>/, so a
+            # workspace-scoped resolver MUST carry its owning user — a missing one would build a
+            # `users/None/…` shadow path. Fail LOUD here rather than silently miss the shadow (the
+            # owner was validated at the door; this only enforces the pair is complete).
+            if user is None:
+                raise M1Error(
+                    "entry-resolution-refused: a workspace-scoped Resolver requires `user` — the "
+                    "workspace shadow lives at users/<user>/workspaces/<workspace>/ (§23); a "
+                    "missing user would build a users/None/ path (never silent)"
+                )
+            _require_slug(user, "user")
+        self._user = user
         self._workspace = workspace
         if window is not None and now is None:
             raise M1Error(
@@ -470,6 +483,10 @@ class Resolver:
     @property
     def root(self) -> Path:
         return self._root
+
+    @property
+    def user(self) -> str | None:
+        return self._user
 
     @property
     def workspace(self) -> str | None:
@@ -552,7 +569,12 @@ class Resolver:
         if shared.is_file():
             candidates.append((shared, "shared"))
         if self._workspace is not None:
-            local = self._root / WORKSPACES_DIRNAME / self._workspace / collection / filename
+            # §23 re-home: the shadow is a PURE join off the door-validated (user, workspace) pair —
+            # no re-resolve on the hot M1 path (`workspace_path`, the "validate once, pure-join
+            # downstream" discipline).
+            local = workspace_path(
+                self._root, self._user, self._workspace, collection, filename
+            )
             if local.is_file():
                 candidates.append((local, SCOPE_WORKSPACE))
         return candidates
@@ -564,11 +586,13 @@ class Resolver:
             if self._workspace is not None:
                 looked.append(
                     str(
-                        self._root
-                        / WORKSPACES_DIRNAME
-                        / self._workspace
-                        / collection
-                        / f"{entry_id}{ENTRY_SUFFIX}"
+                        workspace_path(
+                            self._root,
+                            self._user,
+                            self._workspace,
+                            collection,
+                            f"{entry_id}{ENTRY_SUFFIX}",
+                        )
                     )
                 )
             raise UnknownEntryError(

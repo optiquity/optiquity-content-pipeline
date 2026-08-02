@@ -39,6 +39,22 @@ EXISTING_VALID_NAMES = (
     "ws",
 )
 
+#: §23 (B5 door cutover): the invoke door now threads a MANDATORY `user` (the isolation prefix)
+#: and validates the `(user, workspace)` pair with the 3-level `validate_workspace_path` — which is
+#: lowercase-only (W5). The door-integration classes below therefore use a fixed owning user and a
+#: LOWERCASE-only valid-name subset (the legacy uppercase `wsA`/`wsB` labels stay above for the
+#: OLD-validator unit tests, whose rewrite is B9). The old `validate_workspace_name` unit tests
+#: (TestValidator*) are DELIBERATELY untouched here (B9).
+USER = "acme"
+DOOR_VALID_NAMES = (
+    "mvp-demo",
+    "optiquitytrader",
+    "workspace.template",  # interior DOT allowed; only a bare `..` is traversal
+    "testws",
+    "self",
+    "ws",
+)
+
 #: Names that MUST be refused — traversal, absolute, empty, bare dots, separators, flag-like.
 REJECTED_NAMES = (
     "../other-client",
@@ -133,53 +149,55 @@ class TestValidatorRejects:
 class TestInvokeDoorRejectsNameEscape:
     @pytest.mark.parametrize("name", REJECTED_NAMES)
     def test_bad_workspace_is_isolation_violation_fatal(self, tmp_path, name):
-        # No store injected → the door builds it from the name → the guard fires as a typed
-        # whole-invocation-fatal gate (`isolation-violation`, the root sibling of the per-id
-        # gate). `render` is a known verb, so this is NOT an unknown-verb refusal.
-        out = invoke("render", name, {"item": ART_A}, root=tmp_path)
+        # No store injected → the door builds it from the (user, name) pair → the 3-level guard
+        # fires as a typed whole-invocation-fatal gate (`isolation-violation`, the root sibling of
+        # the per-id gate). `render` is a known verb, so this is NOT an unknown-verb refusal.
+        out = invoke("render", name, USER, {"item": ART_A}, root=tmp_path)
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "isolation-violation"
         assert out["results"][0]["code"] == "isolation-violation"
         assert out["results"][0]["status"] == "block"
         assert out["results"][0]["context"]["workspace"] == str(name)
+        assert out["results"][0]["context"]["user"] == USER
         assert "reason" in out["results"][0]["context"]
         assert "token" not in out  # a fatal path never echoes a token (§21.7)
 
     def test_symlink_escape_through_the_door_is_fatal(self, tmp_path):
-        # A `workspaces/evil` symlink pointing outside → the door refuses it before any id
-        # resolves against the (relocated) store.
-        base = tmp_path / "workspaces"
-        base.mkdir()
+        # A `users/<user>/workspaces/evil` symlink pointing outside → the door refuses it before
+        # any id resolves against the (relocated) store (§23 L3 leaf containment).
+        base = tmp_path / "users" / USER / "workspaces"
+        base.mkdir(parents=True)
         outside = tmp_path / "outside"
         outside.mkdir()
         os.symlink(outside, base / "evil")
-        out = invoke("render", "evil", {"item": ART_A}, root=tmp_path)
+        out = invoke("render", "evil", USER, {"item": ART_A}, root=tmp_path)
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "isolation-violation"
         assert out["results"][0]["context"]["reason"] == "escapes-workspaces-root"
 
-    @pytest.mark.parametrize("name", EXISTING_VALID_NAMES)
+    @pytest.mark.parametrize("name", DOOR_VALID_NAMES)
     def test_valid_name_clears_the_guard_and_reaches_dispatch(self, tmp_path, name):
-        # A valid name (no injected store) clears Gate 1 + the name guard + token + isolation
-        # (no ids referenced), then hits the EMPTY registry — the honest unwired seam. Reaching
-        # HandlerNotWired proves the name was ACCEPTED (behavior-neutral for the corpus).
+        # A valid (lowercase) name + user (no injected store) clears Gate 1 + the 3-level guard +
+        # token + isolation (no ids referenced), then hits the EMPTY registry — the honest unwired
+        # seam. Reaching HandlerNotWired proves the pair was ACCEPTED.
         with pytest.raises(HandlerNotWired):
-            invoke("render", name, {}, root=tmp_path)
+            invoke("render", name, USER, {}, root=tmp_path)
 
     def test_injected_store_is_never_name_validated(self, tmp_path):
         # The store-injection seam places nothing from the name, so the guard does not apply —
         # an injected store dispatches normally even though the label is not re-validated here.
         store = WorkspaceStore(tmp_path / "wsA")
         with pytest.raises(HandlerNotWired):
-            invoke("render", "wsA", {}, store=store)
+            invoke("render", "wsA", USER, {}, store=store)
 
 
 class TestIsolationGateNowHoldsAtTheRoot:
     def test_traversal_no_longer_resolves_ids_in_the_wrong_workspace(self, tmp_path):
-        # The exploit the guard closes: `workspace="../victim"` would relocate the store root
-        # from `<root>/workspaces/../victim` to `<root>/victim`, where a victim artifact IS
-        # materialized — so the per-id gate would resolve it and PASS (a cross-workspace read).
-        victim_store = WorkspaceStore(tmp_path / "victim")  # the traversal target of `../victim`
+        # The exploit the guard closes: `workspace="../victim"` would relocate the store root from
+        # `<root>/users/<user>/workspaces/../victim` to `<root>/users/<user>/victim`, where a victim
+        # artifact IS materialized — so the per-id gate would resolve it and PASS (a cross-workspace
+        # read). The victim lives one level up in the SAME user's tree.
+        victim_store = WorkspaceStore(tmp_path / "users" / USER / "victim")
         _materialize(victim_store, ART_A)
         # Exploit target is real: the id genuinely resolves in the victim store.
         from pipeline.api.invoke import resolve_in_workspace
@@ -188,7 +206,7 @@ class TestIsolationGateNowHoldsAtTheRoot:
 
         # With the guard, the door refuses `../victim` BEFORE the store is built — the id never
         # gets the chance to resolve in the victim's store. The gate holds at the root.
-        out = invoke("render", "../victim", {"item": ART_A}, root=tmp_path)
+        out = invoke("render", "../victim", USER, {"item": ART_A}, root=tmp_path)
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "isolation-violation"
         assert out["results"][0]["context"]["reason"] == "not-a-safe-segment"

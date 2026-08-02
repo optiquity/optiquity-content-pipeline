@@ -43,7 +43,7 @@ from pipeline.adapters.fsast import (
     MODE_TREE,
     MODES,
     PY_SUFFIX,
-    REPO_WORKSPACES,
+    REPO_USERS,
     WORKSPACES_DIRNAME,
     FsAstAdapter,
 )
@@ -190,16 +190,16 @@ class TestConnectionValidation:
         with pytest.raises(AdapterError, match="not a directory"):
             FsAstAdapter().ground(connection={"path": str(file)}, query="q")
 
-    def test_path_inside_repo_workspaces_refused(self):
-        # planner-03 R6: grounding sources live OUTSIDE this repo's workspaces — the
+    def test_path_inside_repo_users_refused(self):
+        # planner-03 R6 / §23: grounding sources live OUTSIDE this repo's users/ client tree — the
         # boundary refusal fires BEFORE any existence probe.
-        inside = REPO_WORKSPACES / "some-client" / "src"
-        with pytest.raises(AdapterError, match="workspaces"):
+        inside = REPO_USERS / "some-user" / "workspaces" / "some-client" / "src"
+        with pytest.raises(AdapterError, match="users"):
             FsAstAdapter().ground(connection={"path": str(inside)}, query="q")
 
-    def test_workspaces_root_itself_refused(self):
-        with pytest.raises(AdapterError, match="workspaces"):
-            FsAstAdapter().ground(connection={"path": str(REPO_WORKSPACES)}, query="q")
+    def test_users_root_itself_refused(self):
+        with pytest.raises(AdapterError, match="users"):
+            FsAstAdapter().ground(connection={"path": str(REPO_USERS)}, query="q")
 
     def test_query_must_be_a_string(self, tmp_path):
         with pytest.raises(AdapterError, match="query must be a string"):
@@ -230,7 +230,7 @@ class TestQueryInsensitivity:
 
 class TestWalkScope:
     def test_workspaces_subdir_is_pruned_mid_walk(self, tmp_path):
-        # The tmp root is NOT under REPO_WORKSPACES (so the connection refusal does not
+        # The tmp root is NOT under REPO_USERS (so the connection refusal does not
         # fire) — this exercises the mid-walk prune folder.py lacks (R6): the nested
         # `workspaces/secret_code.py` and its `leaked_symbol` must never appear anywhere.
         result = ground_all(make_tree(tmp_path / "corpus"))

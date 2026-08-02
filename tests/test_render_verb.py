@@ -37,6 +37,7 @@ from pipeline.serialize import is_ci, pandoc_available, pandoc_gate
 from pipeline.store import WorkspaceStore
 
 WS = "wsA"
+USER = "acme"
 ART = "a-9f3c07d21b44e8aa"
 PLATFORM, LANGUAGE, OUTPUT_TYPE, PRESENTATION = "github", "en", "md", "plain"
 
@@ -45,7 +46,8 @@ FIXED_TS = "2024-01-01T00:00:00+00:00"
 
 @pytest.fixture()
 def store(tmp_path):
-    s = WorkspaceStore(tmp_path / WS)
+    # `.at(...)` records identity so the render resolver recovers the framework root loudly (§23).
+    s = WorkspaceStore.at(tmp_path, USER, WS)
     s.ensure_layout()
     # GAP-1a: the RAW compose envelope shape (top-level `body`/`binding`, NO `ir` wrapper) — exactly
     # what `compose.py` persists. The read now unwraps this via `ir.unwrap_ir`; the old wrapped
@@ -118,7 +120,7 @@ def _render(store, engine, *, force=False):
     if force:
         params["force_reconcile"] = True
     handler = render.render_handler(engine=engine)
-    return invoke("render", WS, params, store=store, handlers={"render": handler})
+    return invoke("render", WS, USER, params, store=store, handlers={"render": handler})
 
 
 def _inventory(store):
@@ -369,7 +371,7 @@ def _c6_world(tmp_path):
     (root / "instance" / "defaults.yaml").write_text(
         "voice: clear-explainer\nlanguage: en\noutput_type: md\n", encoding="utf-8"
     )
-    store = WorkspaceStore(root / "workspaces" / _C6_WS)
+    store = WorkspaceStore.at(root, USER, _C6_WS)
     store.ensure_layout()
     fitted_id = ids.fitted_id(ART, _C6_PLATFORM, _C6_LANGUAGE)
     # The fit record the engine reads for the fit-binding ref (`_read_record(store, fitted_id)`).
@@ -385,6 +387,7 @@ def _c6_world(tmp_path):
 def _c6_leg(root, store, fitted_id, output_type):
     return render.SerializeLeg(
         root=root,
+        user=USER,
         workspace=_C6_WS,
         store=store,
         fitted_id=fitted_id,

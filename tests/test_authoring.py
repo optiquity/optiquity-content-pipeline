@@ -272,10 +272,13 @@ def test_framework_only_homes_public(tmp_path: Path) -> None:
 
 def test_provenance_instance_id_homes_under_workspace(tmp_path: Path) -> None:
     target = resolve_recipe_target(
-        tmp_path, "x-launch-brief", {"topic": "x-architecture"}, workspace="mvp-demo"
+        tmp_path, "x-launch-brief", {"topic": "x-architecture"}, user="acme", workspace="mvp-demo"
     )
     assert target.provenance == PROVENANCE_INSTANCE
-    expected = tmp_path / "workspaces" / "mvp-demo" / RECIPE_COLLECTION / "x-launch-brief.md"
+    expected = (
+        tmp_path / "users" / "acme" / "workspaces" / "mvp-demo"
+        / RECIPE_COLLECTION / "x-launch-brief.md"
+    )
     assert target.path == expected
     assert target.workspace == "mvp-demo"
 
@@ -304,13 +307,13 @@ def test_client_binding_via_values_refused_from_public(tmp_path: Path) -> None:
     # A public id is refused; the same bundle homes under a workspace with an `x-` id.
     with pytest.raises(AuthoringError, match="never the public repo"):
         resolve_recipe_target(tmp_path, "brief", bundle)
-    target = resolve_recipe_target(tmp_path, "x-brief", bundle, workspace="mvp-demo")
+    target = resolve_recipe_target(tmp_path, "x-brief", bundle, user="acme", workspace="mvp-demo")
     assert target.provenance == PROVENANCE_INSTANCE
     assert target.workspace == "mvp-demo"
 
 
 def test_instance_id_requires_workspace(tmp_path: Path) -> None:
-    with pytest.raises(AuthoringError, match="requires a --workspace"):
+    with pytest.raises(AuthoringError, match="requires a --user"):
         resolve_recipe_target(tmp_path, "x-launch-brief", {"topic": "x-architecture"})
 
 

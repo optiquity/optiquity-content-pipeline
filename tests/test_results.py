@@ -261,12 +261,15 @@ class TestResultItem:
 
 class TestEnvelope:
     def test_ok_envelope_wire_shape(self):
-        env = Envelope(ok=True, verb="render", workspace="wsA")
-        assert env.as_dict() == {"ok": True, "verb": "render", "workspace": "wsA"}
+        env = Envelope(ok=True, verb="render", workspace="wsA", user="acme")
+        assert env.as_dict() == {
+            "ok": True, "verb": "render", "workspace": "wsA", "user": "acme"
+        }
 
     def test_fatal_envelope_carries_code_and_message(self):
         env = Envelope(
-            ok=False, verb="frob", workspace="wsA", code="unknown-verb", message="verb 'frob'..."
+            ok=False, verb="frob", workspace="wsA", user="acme",
+            code="unknown-verb", message="verb 'frob'...",
         )
         wire = env.as_dict()
         assert wire["ok"] is False

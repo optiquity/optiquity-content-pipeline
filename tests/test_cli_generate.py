@@ -39,6 +39,7 @@ from pipeline.store import WorkspaceStore, is_done
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+USER = "acme"
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 TOPIC = "---\nid: {tid}\nprovenance: instance\nschema_version: 1\nwhy: {why}\n---\n\nBody.\n"
 
@@ -59,7 +60,7 @@ def build_root(
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    topics_dir = root / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     for tid, why in topics:
         (topics_dir / f"{tid}.md").write_text(TOPIC.format(tid=tid, why=why), encoding="utf-8")
@@ -67,7 +68,7 @@ def build_root(
 
 
 def store_for(root: Path) -> WorkspaceStore:
-    return WorkspaceStore(root / "workspaces" / WS)
+    return WorkspaceStore.at(root, USER, WS)
 
 
 class FakeRun:
@@ -113,7 +114,7 @@ def base_argv(root: Path, *extra: str) -> list[str]:
         "--recipe", "explainer-post",
         "--topic", "x-t-alpha",
         "--platform", "github",
-        "--workspace", WS,
+        "--workspace", WS, "--user", USER,
         "--root", str(root),
         *extra,
     ]
@@ -128,7 +129,10 @@ def test_invoke_begin_session_is_exit_3_and_render_fetch_only(tmp_path):
     # safe stateless render + fetch-by-id (the live-quota session verbs stay structurally out).
     root = build_root(tmp_path)
     code = invoke_mod.main_cli(
-        ["begin-session", "--workspace", WS, "--params-json", "{}", "--root", str(root)]
+        [
+            "begin-session", "--workspace", WS, "--user", USER,
+            "--params-json", "{}", "--root", str(root),
+        ]
     )
     assert code == 3
     assert set(KNOWN_VERBS) & set(invoke_mod._VERB_HANDLERS) == {"render", "fetch-by-id"}
@@ -246,7 +250,7 @@ def test_generate_refusal_is_exit_1(tmp_path):
             "--recipe", "explainer-post",
             "--topic", "x-missing-topic",
             "--platform", "github",
-            "--workspace", WS,
+            "--workspace", WS, "--user", USER,
             "--root", str(root),
         ]
     )
@@ -308,6 +312,7 @@ def test_two_platforms_fan_out_two_deliverables(tmp_path):
     friendly = {
         "recipe": "explainer-post",
         "workspace": WS,
+        "user": USER,
         "topics": ["x-t-alpha"],
         "platforms": ["github", "linkedin"],
         "explain": True,
@@ -317,6 +322,7 @@ def test_two_platforms_fan_out_two_deliverables(tmp_path):
     result = invoke_mod.invoke(
         "begin-session",
         normalized.workspace,
+        normalized.user,
         normalized.params,
         handlers={"begin-session": session.begin_session_handler()},
         root=str(root),

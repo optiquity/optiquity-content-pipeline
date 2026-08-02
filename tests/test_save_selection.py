@@ -37,6 +37,7 @@ from pipeline.store import WorkspaceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+USER = "acme"
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 TOPIC_BODY = "---\nid: {tid}\nprovenance: instance\nschema_version: 1\nwhy: {why}\n---\n\nBody.\n"
 SUBSET = ("x-repo",)
@@ -60,7 +61,7 @@ def build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    topics = root / "workspaces" / WS / "topics"
+    topics = root / "users" / USER / "workspaces" / WS / "topics"
     topics.mkdir(parents=True)
     for tid, why in (("x-t-alpha", "First."), ("x-t-beta", "Second.")):
         (topics / f"{tid}.md").write_text(TOPIC_BODY.format(tid=tid, why=why), encoding="utf-8")
@@ -68,7 +69,7 @@ def build_root(tmp_path: Path) -> Path:
 
 
 def plan_for(root: Path, request: SelectionRequest, **kwargs) -> Plan:
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     return resolve_plan(env, request, source_subset=SUBSET, source_commit=COMMITS, **kwargs)
 
 
@@ -111,6 +112,7 @@ def argv(root: Path, *extra: str) -> list[str]:
     return [
         "--recipe", "explainer-post",
         "--workspace", WS,
+        "--user", USER,
         "--root", str(root),
         *extra,
     ]
@@ -198,7 +200,7 @@ def test_generate_save_selection_writes_n_variants_no_cartesian(tmp_path: Path, 
     assert code == 0
     assert "saved selection 'x-launch-set'" in out
     # instance provenance (x- topics) → homed under the workspace, NEVER the public root
-    path = root / "workspaces" / WS / "selections" / "x-launch-set.md"
+    path = root / "users" / USER / "workspaces" / WS / "selections" / "x-launch-set.md"
     assert path.exists()
     assert not list((root / "selections").glob("x-launch-set.md"))
     text = path.read_text(encoding="utf-8")
@@ -218,7 +220,7 @@ def test_single_run_saves_one_variant(tmp_path: Path, capsys) -> None:
         argv(root, "--topic", "x-t-alpha", "--platform", "github", "--save-selection", "x-one")
     )
     assert code == 0
-    path = root / "workspaces" / WS / "selections" / "x-one.md"
+    path = root / "users" / USER / "workspaces" / WS / "selections" / "x-one.md"
     assert len(selection_variants(path)) == 1
 
 
@@ -230,7 +232,7 @@ def test_variant_field_named_values_not_overrides(tmp_path: Path, capsys) -> Non
              "--set", "voice.formality=2", "--save-selection", "x-tuned")
     )
     assert code == 0
-    path = root / "workspaces" / WS / "selections" / "x-tuned.md"
+    path = root / "users" / USER / "workspaces" / WS / "selections" / "x-tuned.md"
     text = path.read_text(encoding="utf-8")
     assert "values:" in text
     assert "overrides" not in text
@@ -250,7 +252,8 @@ def test_client_binding_refused_from_public(tmp_path: Path, capsys) -> None:
     assert code == 1
     assert "not an instance id" in err or "client/instance" in err
     assert not (root / "selections" / "public-leak.md").exists()
-    assert not (root / "workspaces" / WS / "selections" / "public-leak.md").exists()
+    leak = root / "users" / USER / "workspaces" / WS / "selections" / "public-leak.md"
+    assert not leak.exists()
 
 
 def test_save_selection_without_go_builds_no_continue_handler(tmp_path, monkeypatch) -> None:
@@ -270,7 +273,7 @@ def test_save_selection_without_go_builds_no_continue_handler(tmp_path, monkeypa
     )
     assert code == 0
     assert constructed == []  # no continue-session handler / live runner instantiated
-    assert (root / "workspaces" / WS / "selections" / "x-safe.md").exists()
+    assert (root / "users" / USER / "workspaces" / WS / "selections" / "x-safe.md").exists()
 
 
 def test_save_selection_refused_when_no_deliverable(tmp_path: Path, capsys) -> None:
@@ -283,7 +286,7 @@ def test_save_selection_refused_when_no_deliverable(tmp_path: Path, capsys) -> N
     err = capsys.readouterr().err
     assert code == 1
     assert "no deliverable" in err
-    assert not (root / "workspaces" / WS / "selections" / "x-empty.md").exists()
+    assert not (root / "users" / USER / "workspaces" / WS / "selections" / "x-empty.md").exists()
 
 
 # --- the `--go` drive door: save AFTER the drive ----------------------------------------------
@@ -301,7 +304,7 @@ def test_save_selection_with_go_saves_after_drive(tmp_path: Path, capsys) -> Non
     )
     assert code == 0
     assert runner.calls  # the drive actually ran (through the injected seam)
-    path = root / "workspaces" / WS / "selections" / "x-go.md"
+    path = root / "users" / USER / "workspaces" / WS / "selections" / "x-go.md"
     assert len(selection_variants(path)) == 1
 
 
@@ -330,11 +333,13 @@ def test_client_binding_homes_under_workspace_via_serializer(tmp_path: Path) -> 
     root = tmp_path / "root"
     root.mkdir()
     shutil.copytree(REPO_ROOT / "selections", root / "selections")
-    (root / "workspaces" / WS).mkdir(parents=True)
+    (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)
     variants = [{"coordinate": {"topic": "x-t-alpha"}, "render": {"platform": "github"}}]
-    target = authoring.write_selection(root, "x-client", "explainer-post", variants, workspace=WS)
+    target = authoring.write_selection(
+        root, "x-client", "explainer-post", variants, user=USER, workspace=WS
+    )
     assert target.provenance == "instance"
-    assert target.path == root / "workspaces" / WS / "selections" / "x-client.md"
+    assert target.path == root / "users" / USER / "workspaces" / WS / "selections" / "x-client.md"
 
 
 def test_overwrite_guard_headless_then_force(tmp_path: Path) -> None:

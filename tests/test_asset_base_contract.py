@@ -50,6 +50,7 @@ from pipeline.store import WorkspaceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "base-contract"
+USER = "acme"
 _L2_DEFAULTS = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 _PANDOC_AVAILABLE = pandoc_available()
 
@@ -72,7 +73,7 @@ def _build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
-    (root / "workspaces" / WS).mkdir(parents=True)
+    (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)
     return root
 
 
@@ -96,6 +97,7 @@ def _embed_leg(root: Path, store: WorkspaceStore) -> SerializeLeg:
     )
     return SerializeLeg(
         root=root,
+        user=USER,
         workspace=WS,
         store=store,
         fitted_id=fb["fitted_id"],
@@ -130,7 +132,7 @@ def capture(tmp_path_factory) -> _Capture:
         pytest.skip("pandoc not installed; the base-contract drives the real A gate + B render leg")
 
     root = _build_root(tmp_path_factory.mktemp("base-contract"))
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     (store.root / "assets").mkdir(parents=True, exist_ok=True)
     (store.root / "assets" / "x.png").write_bytes(_PNG)

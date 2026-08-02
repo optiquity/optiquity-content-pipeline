@@ -127,7 +127,13 @@ class MvpFailSafeCurrencyResolver:
     _SENTINEL = "mvp-fail-safe-not-current"
 
     def current_fit_digest(
-        self, *, root: Path, workspace: str, fitted_id: str, stored_preimage: Mapping[str, Any]
+        self,
+        *,
+        root: Path,
+        user: str,
+        workspace: str,
+        fitted_id: str,
+        stored_preimage: Mapping[str, Any],
     ) -> str:
         return self._SENTINEL
 
@@ -135,6 +141,7 @@ class MvpFailSafeCurrencyResolver:
         self,
         *,
         root: Path,
+        user: str,
         workspace: str,
         deliverable_id: str,
         stored_preimage: Mapping[str, Any],
@@ -390,12 +397,12 @@ def _grounding_evidence(
     }
 
 
-def _override_evidence(root: Path, workspace: str) -> dict[str, Any]:
+def _override_evidence(root: Path, user: str, workspace: str) -> dict[str, Any]:
     """Prove the L6 override altered a RESOLVED `effective_values` entry the compose prompt honors
     (driver `_effective_values`), NOT merely the id hash (§8d)."""
     sel = RunSelection(recipe=RECIPE, topic=SEQ_TOPICS[0])
-    env_ov = CascadeEnv(root, workspace=workspace, overrides=OVERRIDES)
-    env_base = CascadeEnv(root, workspace=workspace)
+    env_ov = CascadeEnv(root, user=user, workspace=workspace, overrides=OVERRIDES)
+    env_base = CascadeEnv(root, user=user, workspace=workspace)
     ev_ov = driver._effective_values(resolve_compose(env_ov, sel))
     ev_base = driver._effective_values(resolve_compose(env_base, sel))
     dimension, attribute = OVERRIDE_ATTRIBUTE.split(".", 1)
@@ -412,6 +419,7 @@ def _override_evidence(root: Path, workspace: str) -> dict[str, Any]:
 def run_mvp_scenario(
     *,
     root: str | Path,
+    user: str,
     workspace: str,
     adapters: Mapping[str, SourceAdapter],
     runner: Runner | None,
@@ -428,7 +436,7 @@ def run_mvp_scenario(
     `DefaultCurrencyResolver` is never reached."""
     root = Path(root)
     log = log or (lambda _m: None)
-    store = WorkspaceStore(root / "workspaces" / workspace)
+    store = WorkspaceStore.at(root, user, workspace)
     store.ensure_layout()
 
     def manifest_now() -> datetime.datetime:  # the §21.5 deterministic-filename clock seam
@@ -447,7 +455,8 @@ def run_mvp_scenario(
 
     def do(verb: str, params: Mapping[str, Any], token: Any = None) -> dict[str, Any]:
         return invoke_mod.invoke(
-            verb, workspace, dict(params), token, store=store, root=str(root), handlers=handlers
+            verb, workspace, user, dict(params), token,
+            store=store, root=str(root), handlers=handlers,
         )
 
     def decode(wire: Any) -> Any:
@@ -473,13 +482,13 @@ def run_mvp_scenario(
     log(f"sequential begin-session ok={seq_begin['envelope']['ok']}")
     seq_token = seq_begin["token"]
     seq_plan, env, pool, _repos = session._resolve_from_inputs(
-        root, workspace, decode(seq_token).inputs
+        root, user, workspace, decode(seq_token).inputs
     )
     seq_widget = _item_for_topic(seq_plan, SEQ_TOPICS[0])
 
     # §6.3 grounding grammar + §12.5 override evidence (read-only, no LLM).
     report.grounding = _grounding_evidence(env, pool, seq_widget, now, workspace, adapters)
-    report.override = _override_evidence(root, workspace)
+    report.override = _override_evidence(root, user, workspace)
 
     # generate-next batch_size=1 × K → cursor 0 → 1 → … → K (§21.6 batch + cursor).
     token = seq_token
@@ -553,7 +562,7 @@ def run_mvp_scenario(
     par_token = parallel_ctx.pop("_token")
     report.parallel = parallel_ctx
     par_plan, _e2, _p2, _r2 = session._resolve_from_inputs(
-        root, workspace, decode(par_token).inputs
+        root, user, workspace, decode(par_token).inputs
     )
     par_widget = _item_for_topic(par_plan, SEQ_TOPICS[0])
 

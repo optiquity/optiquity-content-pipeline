@@ -71,6 +71,7 @@ from pipeline.schema import load_schema
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime.date(2026, 7, 1)
 WS = "testws"
+USER = "acme"
 
 RECORD_KIND = {  # a merged-code-style bundle (§6.1 SM5)
     "authoritative": 4,
@@ -1166,7 +1167,7 @@ def e2e_root(tmp_path: Path) -> Path:
             shutil.copytree(src, root / name)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    ws = root / "workspaces" / WS
+    ws = root / "users" / USER / "workspaces" / WS
     (ws / "topics").mkdir(parents=True)
     (ws / "topics" / "x-sample-topic.md").write_text(TOPIC_ENTRY, encoding="utf-8")
     (ws / "recipes").mkdir()
@@ -1180,7 +1181,7 @@ def e2e_root(tmp_path: Path) -> Path:
 
 class TestEndToEnd:
     def test_build_instance_resolves_kind_bundles_via_m1(self, e2e_root: Path):
-        env = CascadeEnv(e2e_root, workspace=WS)
+        env = CascadeEnv(e2e_root, user=USER, workspace=WS)
         alpha = build_instance(env.resolver, "x-alpha-record")
         assert alpha.adapter == "mock"
         assert alpha.content_kind == "merged-code"
@@ -1195,15 +1196,15 @@ class TestEndToEnd:
         bad = ALPHA_SOURCE.replace("id: x-alpha-record", "id: x-bad-kind").replace(
             "content_kind: merged-code", "content_kind: no-such-kind"
         )
-        (e2e_root / "workspaces" / WS / "sources" / "x-bad-kind.md").write_text(
+        (e2e_root / "users" / USER / "workspaces" / WS / "sources" / "x-bad-kind.md").write_text(
             bad, encoding="utf-8"
         )
-        env = CascadeEnv(e2e_root, workspace=WS)
+        env = CascadeEnv(e2e_root, user=USER, workspace=WS)
         with pytest.raises(DanglingRefError, match="no-such-kind"):
             build_instance(env.resolver, "x-bad-kind")
 
     def test_convince_clauses_resolve_and_ground_end_to_end(self, e2e_root: Path):
-        env = CascadeEnv(e2e_root, workspace=WS)
+        env = CascadeEnv(e2e_root, user=USER, workspace=WS)
         resolution = resolve_compose(env, RunSelection(recipe="x-grounded-post"))
         m3_inputs = resolution.m3_inputs
 

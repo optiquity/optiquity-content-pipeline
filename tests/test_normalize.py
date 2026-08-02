@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-# The real fixture-root builder + workspace name (a live registry copy in tmp_path).
-from test_cascade import WS, build_root
+# The real fixture-root builder + workspace name + owning user (a live registry copy in tmp_path).
+from test_cascade import USER, WS, build_root
 
 from pipeline.api import normalize as normalize_mod
 from pipeline.api.normalize import (
@@ -33,7 +33,7 @@ from pipeline.overrides import OverrideError
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "normalize_spec.json"
 
-_FLOOR = {"recipe": "explainer-post", "workspace": "self"}
+_FLOOR = {"recipe": "explainer-post", "workspace": "self", "user": "self"}
 
 
 # --- door-class: idempotency key policy (the no-double-charge door) ----------------------
@@ -98,14 +98,34 @@ def test_normalize_automation_fatal_on_missing_workspace_on_spend() -> None:
     assert ei.value.field == "workspace"
 
 
+def test_normalize_automation_fatal_on_missing_user() -> None:
+    # §23 never-None invariant (F3): the automation door refuses a workspace with no owning user —
+    # `field="user"` (never a silent default, never a `users/None/` path). Pins `_resolve_user` so a
+    # future refactor cannot silently drop it.
+    with pytest.raises(NormalizeError) as ei:
+        normalize({"recipe": "explainer-post", "workspace": "self"}, DOOR_AUTOMATION)
+    assert ei.value.field == "user"
+
+
+def test_normalize_interactive_workspace_without_user_is_fatal() -> None:
+    # §23 never-None invariant (F3): even on the lenient interactive door, a RESOLVED workspace with
+    # no user is refused at the pairing check (`field="user"`; a workspace always carries an owner).
+    with pytest.raises(NormalizeError) as ei:
+        normalize({"recipe": "explainer-post", "workspace": "self"}, DOOR_INTERACTIVE)
+    assert ei.value.field == "user"
+
+
 def test_normalize_interactive_recipe_defaults_to_explainer_post() -> None:
-    result = normalize({"workspace": "self"}, DOOR_INTERACTIVE)
+    result = normalize({"workspace": "self", "user": "self"}, DOOR_INTERACTIVE)
     assert result.params["recipe"] == DEFAULT_RECIPE == "explainer-post"
 
 
 def test_normalize_interactive_sole_workspace_infers() -> None:
     result = normalize(
-        {"recipe": "explainer-post", "spend": True, "available_workspaces": ["self"]},
+        {
+            "recipe": "explainer-post", "spend": True,
+            "available_workspaces": ["self"], "user": "self",
+        },
         DOOR_INTERACTIVE,
     )
     assert result.workspace == "self"
@@ -190,7 +210,7 @@ def test_set_typed_int_passes_the_real_wall(tmp_path: Path) -> None:
     real `CascadeEnv` override validation."""
     result = normalize({**_FLOOR, "set": ["voice.formality=2"]}, DOOR_INTERACTIVE)
     root = build_root(tmp_path)
-    env = CascadeEnv(root, workspace=WS, overrides=result.params["overrides"])
+    env = CascadeEnv(root, user=USER, workspace=WS, overrides=result.params["overrides"])
     assert env is not None  # no raise — the typed int clears the wall
 
 
@@ -205,7 +225,7 @@ def test_set_type_mismatch_is_invalid_override_at_the_real_wall(tmp_path: Path) 
 
     root = build_root(tmp_path)
     with pytest.raises(OverrideError) as ei:
-        CascadeEnv(root, workspace=WS, overrides=result.params["overrides"])
+        CascadeEnv(root, user=USER, workspace=WS, overrides=result.params["overrides"])
     assert "invalid-override" in str(ei.value)
     # The ORIGIN is the value-type wall (attrtypes), carried as the cause — the S-4 trace.
     assert isinstance(ei.value.__cause__, ValueValidationError)
@@ -219,7 +239,7 @@ def test_set_union_on_non_set_is_invalid_override_at_the_operator_wall(tmp_path:
 
     root = build_root(tmp_path)
     with pytest.raises(OverrideError) as ei:
-        CascadeEnv(root, workspace=WS, overrides=result.params["overrides"])
+        CascadeEnv(root, user=USER, workspace=WS, overrides=result.params["overrides"])
     assert "invalid-override" in str(ei.value)
     assert isinstance(ei.value.__cause__, CombineOperatorError)
 

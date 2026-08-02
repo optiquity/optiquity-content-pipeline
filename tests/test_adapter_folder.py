@@ -36,7 +36,7 @@ from pipeline.adapters.folder import (
     CONNECTION_KEYS,
     DEFAULT_BUDGET,
     DOC_SUFFIXES,
-    REPO_WORKSPACES,
+    REPO_USERS,
     FolderAdapter,
 )
 from pipeline.grounding import SourceInstance, ground_item
@@ -125,16 +125,16 @@ class TestConnectionValidation:
         with pytest.raises(AdapterError, match="not a directory"):
             FolderAdapter().ground(connection={"path": str(file)}, query="q")
 
-    def test_path_inside_repo_workspaces_refused(self):
-        # Plan step 18: grounding sources live OUTSIDE this repo's workspaces —
+    def test_path_inside_repo_users_refused(self):
+        # Plan step 18 / §23: grounding sources live OUTSIDE this repo's users/ client tree —
         # the boundary refusal fires BEFORE any existence probe.
-        inside = REPO_WORKSPACES / "some-client" / "output"
-        with pytest.raises(AdapterError, match="workspaces"):
+        inside = REPO_USERS / "some-user" / "workspaces" / "some-client" / "output"
+        with pytest.raises(AdapterError, match="users"):
             FolderAdapter().ground(connection={"path": str(inside)}, query="q")
 
-    def test_workspaces_root_itself_refused(self):
-        with pytest.raises(AdapterError, match="workspaces"):
-            FolderAdapter().ground(connection={"path": str(REPO_WORKSPACES)}, query="q")
+    def test_users_root_itself_refused(self):
+        with pytest.raises(AdapterError, match="users"):
+            FolderAdapter().ground(connection={"path": str(REPO_USERS)}, query="q")
 
     def test_query_must_be_a_string(self, tmp_path):
         with pytest.raises(AdapterError, match="query must be a string"):

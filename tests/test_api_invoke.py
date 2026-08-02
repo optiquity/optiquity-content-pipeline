@@ -33,6 +33,8 @@ from pipeline.store import WorkspaceStore
 ART_A = "a-9f3c07d21b44e8aa"
 ART_B = "a-1234567890abcdef"
 PLAN_HASH = "d3adb33fd3adb33fd3adb33fd3adb33fd3adb33fd3adb33fd3adb33fd3adb33f0"
+#: §23: the owning user threaded into every invoke call (parallel to `workspace`, never defaulted).
+USER = "acme"
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +70,7 @@ def _ok_handler(items, next_token=None):
 
 class TestVerbGate:
     def test_unknown_verb_is_envelope_fatal(self, store):
-        out = invoke("frobnicate", "wsA", {}, store=store)
+        out = invoke("frobnicate", "wsA", USER, {}, store=store)
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "unknown-verb"
         assert out["results"][0]["code"] == "unknown-verb"
@@ -76,7 +78,7 @@ class TestVerbGate:
 
     def test_unknown_verb_returns_before_touching_the_store(self):
         # No store, no root dir needed — the verb gate is the first thing checked (§21.1).
-        out = invoke("nope", "wsA", {})
+        out = invoke("nope", "wsA", USER, {})
         assert out["envelope"]["ok"] is False
 
     def test_every_known_verb_passes_the_verb_gate(self, store):
@@ -85,7 +87,7 @@ class TestVerbGate:
         # is explicit, so the default registry stays empty until a `register_*` call.
         for verb in KNOWN_VERBS:
             with pytest.raises(HandlerNotWired):
-                invoke(verb, "wsA", {}, store=store)
+                invoke(verb, "wsA", USER, {}, store=store)
 
     def test_every_known_verb_is_wired_after_registration(self, store):
         # The step-35 capstone: after registering the whole API surface, EVERY known verb
@@ -103,7 +105,7 @@ class TestTokenGate:
     def test_wrong_workspace_token_is_invalid_token(self, store):
         wire = token_mod.encode(token_mod.mint("wsA", PLAN_HASH))
         store_b = WorkspaceStore(store.root.parent / "wsB")
-        out = invoke("render", "wsB", {}, token=wire, store=store_b)
+        out = invoke("render", "wsB", USER, {}, token=wire, store=store_b)
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "invalid-token"
         assert out["results"][0]["code"] == "invalid-token"
@@ -112,7 +114,7 @@ class TestTokenGate:
     def test_tampered_token_is_invalid_token(self, store):
         wire = token_mod.encode(token_mod.mint("wsA", PLAN_HASH, produced_ids=[ART_A]))
         wire["plan_hash"] = "0" * 64  # break the digest
-        out = invoke("render", "wsA", {}, token=wire, store=store)
+        out = invoke("render", "wsA", USER, {}, token=wire, store=store)
         assert out["envelope"]["code"] == "invalid-token"
 
     def test_valid_token_reaches_the_handler_decoded(self, store):
@@ -120,7 +122,8 @@ class TestTokenGate:
         wire = token_mod.encode(token_mod.mint("wsA", PLAN_HASH, produced_ids=[ART_A]))
         handler = _ok_handler([results.make_result(results.CODE_ALREADY_MATERIALIZED, item=ART_A)])
         out = invoke(
-            "render", "wsA", {"item": ART_A}, token=wire, store=store, handlers={"render": handler}
+            "render", "wsA", USER, {"item": ART_A}, token=wire, store=store,
+            handlers={"render": handler},
         )
         assert out["envelope"]["ok"] is True
         assert handler.seen is not None
@@ -137,18 +140,21 @@ class TestIsolationGate:
         store_b = WorkspaceStore(tmp_path / "wsB")
         materialize(store_a, ART_A)
 
-        out = invoke("render", "wsB", {"item": ART_A}, store=store_b)
+        out = invoke("render", "wsB", USER, {"item": ART_A}, store=store_b)
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "isolation-violation"
         assert out["results"][0]["code"] == "isolation-violation"
         assert out["results"][0]["context"]["workspace"] == "wsB"
+        assert out["results"][0]["context"]["user"] == USER
 
     def test_same_id_resolves_in_its_own_workspace(self, store):
         # The mirror of the above: in wsA the id resolves, so isolation passes and dispatch
         # proceeds to the (injected) handler — no violation.
         materialize(store, ART_A)
         handler = _ok_handler([results.make_result(results.CODE_ALREADY_MATERIALIZED, item=ART_A)])
-        out = invoke("render", "wsA", {"item": ART_A}, store=store, handlers={"render": handler})
+        out = invoke(
+            "render", "wsA", USER, {"item": ART_A}, store=store, handlers={"render": handler}
+        )
         assert out["envelope"]["ok"] is True
 
     def test_resolve_in_workspace_by_output_existence(self, store):
@@ -165,6 +171,7 @@ class TestIsolationGate:
         out = invoke(
             "add-to-folio",
             "wsB",
+            USER,
             {"folio_id": "f-abcabcabcabc", "artifact_ids": [ART_A]},
             store=store_b,
         )
@@ -176,12 +183,14 @@ class TestIsolationGate:
 class TestDispatchAndEnvelope:
     def test_known_verb_without_a_handler_is_honestly_unwired(self, store):
         with pytest.raises(HandlerNotWired):
-            invoke("render", "wsA", {}, store=store)
+            invoke("render", "wsA", USER, {}, store=store)
 
     def test_wired_handler_happy_path_no_token(self, store):
         handler = _ok_handler([results.make_result(results.CODE_RE_RECONCILED, item="x")])
-        out = invoke("list", "wsA", {}, store=store, handlers={"list": handler})
-        assert out["envelope"] == {"ok": True, "verb": "list", "workspace": "wsA"}
+        out = invoke("list", "wsA", USER, {}, store=store, handlers={"list": handler})
+        assert out["envelope"] == {
+            "ok": True, "verb": "list", "workspace": "wsA", "user": USER
+        }
         assert out["results"][0]["code"] == "re-reconciled"
         assert "token" not in out
 
@@ -189,7 +198,9 @@ class TestDispatchAndEnvelope:
         next_tok = token_mod.mint("wsA", PLAN_HASH, cursor={"next": "item-2"})
         items = [results.make_result(results.CODE_ALREADY_MATERIALIZED, item="x")]
         handler = _ok_handler(items, next_tok)
-        out = invoke("begin-session", "wsA", {}, store=store, handlers={"begin-session": handler})
+        out = invoke(
+            "begin-session", "wsA", USER, {}, store=store, handlers={"begin-session": handler}
+        )
         assert "token" in out
         # The echoed token round-trips.
         assert token_mod.decode(out["token"], expected_workspace="wsA") == next_tok
@@ -198,7 +209,7 @@ class TestDispatchAndEnvelope:
         # SM1: a per-item block rides `results`; the envelope stays ok=True.
         blocked = results.make_result(results.CODE_HARD_LIMIT_EXCEEDED, item="x")
         handler = _ok_handler([blocked])
-        out = invoke("render", "wsA", {}, store=store, handlers={"render": handler})
+        out = invoke("render", "wsA", USER, {}, store=store, handlers={"render": handler})
         assert out["envelope"]["ok"] is True
         assert out["results"][0]["status"] == "block"
 
@@ -206,7 +217,7 @@ class TestDispatchAndEnvelope:
         handler = _ok_handler([results.make_result(results.CODE_RE_RECONCILED, item="x")])
         register_handler("list", handler)
         # No injected handlers — the invoke uses the module registry register_handler wrote.
-        out = invoke("list", "wsA", {}, store=store)
+        out = invoke("list", "wsA", USER, {}, store=store)
         assert out["envelope"]["ok"] is True
 
     def test_register_handler_rejects_unknown_verb(self):
@@ -259,19 +270,28 @@ class TestReferencedIds:
 
 class TestCli:
     def test_unknown_verb_prints_a_fatal_json_envelope(self, capsys):
-        rc = main_cli(["frobnicate", "--workspace", "wsA"])
+        rc = main_cli(["frobnicate", "--workspace", "wsA", "--user", USER])
         assert rc == 1  # a whole-invocation failure
         out = json.loads(capsys.readouterr().out)
         assert out["envelope"]["ok"] is False
         assert out["envelope"]["code"] == "unknown-verb"
 
+    def test_missing_user_is_a_usage_error(self, capsys):
+        # §23: `--user` is REQUIRED (never defaulted) — its absence is an argparse usage error
+        # (exit 2), NEVER a `users/None/…` path.
+        with pytest.raises(SystemExit) as exc:
+            main_cli(["render", "--workspace", "wsA", "--params-json", "{}"])
+        assert exc.value.code == 2
+
     def test_bad_params_json_is_a_usage_error(self, capsys):
-        rc = main_cli(["render", "--workspace", "wsA", "--params-json", "{not json"])
+        rc = main_cli(
+            ["render", "--workspace", "wsA", "--user", USER, "--params-json", "{not json"]
+        )
         assert rc == 2
         assert "must be valid JSON" in capsys.readouterr().err
 
     def test_params_json_must_be_an_object(self, capsys):
-        rc = main_cli(["render", "--workspace", "wsA", "--params-json", "[1,2,3]"])
+        rc = main_cli(["render", "--workspace", "wsA", "--user", USER, "--params-json", "[1,2,3]"])
         assert rc == 2
         assert "must be a JSON object" in capsys.readouterr().err
 
@@ -281,23 +301,41 @@ class TestCli:
         # empty seam → HandlerNotWired → exit 3 (§21.9 — never a fabricated success on a
         # quota-spending verb). (Pre-C7 this used `render`, now a wired verb — see TestCliDoor.)
         argv = [
-            "begin-session", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"
+            "begin-session", "--workspace", "ws-a", "--user", USER, "--root", str(tmp_path),
+            "--params-json", "{}",
         ]
         rc = main_cli(argv)
         assert rc == 3
         assert "not wired yet" in capsys.readouterr().err
 
     def test_cli_isolation_violation_prints_json_and_exits_one(self, tmp_path, capsys):
-        # A referenced id absent from wsA's (empty) store → isolation-violation on stdout.
+        # A referenced id absent from ws-a's (empty) store → isolation-violation on stdout.
         rc = main_cli(
             [
                 "render",
                 "--workspace",
-                "wsA",
+                "ws-a",
+                "--user",
+                USER,
                 "--root",
                 str(tmp_path),
                 "--params-json",
                 json.dumps({"item": ART_A}),
+            ]
+        )
+        assert rc == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out["envelope"]["code"] == "isolation-violation"
+
+    def test_cross_user_workspace_escape_is_refused_at_depth(self, tmp_path, capsys):
+        # §23 isolation preserved at the new depth: a `../victim` workspace (or user) name is
+        # refused at the door BEFORE the store exists — the containment gate resolves the whole
+        # users/<user>/workspaces/<ws>/ leaf and refuses any `..`/symlink escape (never a cross-user
+        # read). Whole-invocation-fatal `isolation-violation`, exit 1.
+        rc = main_cli(
+            [
+                "render", "--workspace", "../victim", "--user", USER, "--root", str(tmp_path),
+                "--params-json", "{}",
             ]
         )
         assert rc == 1
@@ -316,7 +354,10 @@ class TestCliDoor:
         # `render` DISPATCHES to the real handler through the door: a malformed render (no
         # coordinates) is a per-item block at envelope ok=True → exit 0, NOT the honest-unwired
         # exit 3. Reaching the handler at all is the proof the door registered `render`.
-        argv = ["render", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"]
+        argv = [
+            "render", "--workspace", "ws-a", "--user", USER, "--root", str(tmp_path),
+            "--params-json", "{}",
+        ]
         rc = main_cli(argv)
         assert rc == 0  # wired: exit 3 would mean not-wired
         out = json.loads(capsys.readouterr().out)
@@ -326,7 +367,10 @@ class TestCliDoor:
     def test_fetch_by_id_is_wired_through_the_door(self, tmp_path, capsys):
         # `fetch-by-id` is wired too: an id-less fetch DISPATCHES to the dumb path (a `not-found`
         # result at envelope ok=True → exit 0), proving the retrieve half of the loop is reachable.
-        argv = ["fetch-by-id", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"]
+        argv = [
+            "fetch-by-id", "--workspace", "ws-a", "--user", USER, "--root", str(tmp_path),
+            "--params-json", "{}",
+        ]
         rc = main_cli(argv)
         assert rc == 0
         out = json.loads(capsys.readouterr().out)
@@ -338,7 +382,8 @@ class TestCliDoor:
         # door refuses it at Gate 1 (`unknown-verb`, exit 1) — wiring render/fetch NEVER widens the
         # external surface to the operator CLI. (A live-quota session verb would answer exit 3.)
         argv = [
-            "drift-report", "--workspace", "wsA", "--root", str(tmp_path), "--params-json", "{}"
+            "drift-report", "--workspace", "ws-a", "--user", USER, "--root", str(tmp_path),
+            "--params-json", "{}",
         ]
         rc = main_cli(argv)
         assert rc == 1
@@ -363,25 +408,25 @@ class TestErgonomicRenderSubcommand:
         # the render handler RUNS and returns a deterministic `not-found` (no config, no mint) —
         # the SAME outcome for both the ergonomic and the raw-JSON form. Reaching `not-found`
         # proves the ergonomic command dispatches INTO the render handler, not just the gate.
-        store = WorkspaceStore(tmp_path / "workspaces" / "wsA")
+        store = WorkspaceStore.at(tmp_path, USER, "ws-a")
         store.output_path(ART_A).write_bytes(b"not a render record\n")
 
         rc_render = main(
             [
-                "render", ART_A, "--workspace", "wsA", "--root", str(tmp_path),
+                "render", ART_A, "--workspace", "ws-a", "--user", USER, "--root", str(tmp_path),
                 "--output-type", "html", "--platform", "github", "--language", "en",
             ]
         )
         render_out = json.loads(capsys.readouterr().out)
 
-        # The equivalent raw `invoke render` form — the SAME workspace/root, the SAME coordinates.
+        # The equivalent raw `invoke render` form — the SAME workspace/user/root + coordinates.
         params = {
             "item": ART_A, "platform": "github", "language": "en",
             "output_type": "html", "presentation": "plain",
         }
         rc_invoke = main_cli(
             [
-                "render", "--workspace", "wsA", "--root", str(tmp_path),
+                "render", "--workspace", "ws-a", "--user", USER, "--root", str(tmp_path),
                 "--params-json", json.dumps(params),
             ]
         )
@@ -419,11 +464,11 @@ class TestErgonomicRenderSubcommand:
         # it (the positional is the render `item`, never a verb selector). Even a coordinate-less
         # call (no --platform/--language) routes to `render` and rides the handler's own per-item
         # block at envelope ok=True — proving the only door this subcommand opens is `render`.
-        store = WorkspaceStore(tmp_path / "workspaces" / "wsA")
+        store = WorkspaceStore.at(tmp_path, USER, "ws-a")
         store.output_path(ART_A).write_bytes(b"not a render record\n")
         rc = main(
             [
-                "render", ART_A, "--workspace", "wsA", "--root", str(tmp_path),
+                "render", ART_A, "--workspace", "ws-a", "--user", USER, "--root", str(tmp_path),
                 "--output-type", "html",
             ]
         )

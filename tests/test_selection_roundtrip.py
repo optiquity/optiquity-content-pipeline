@@ -44,6 +44,7 @@ from pipeline.store import WorkspaceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+USER = "acme"
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 TOPIC_BODY = "---\nid: {tid}\nprovenance: instance\nschema_version: 1\nwhy: {why}\n---\n\nBody.\n"
 SUBSET = ("x-repo",)
@@ -61,7 +62,7 @@ def build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    topics = root / "workspaces" / WS / "topics"
+    topics = root / "users" / USER / "workspaces" / WS / "topics"
     topics.mkdir(parents=True)
     for tid, why in (("x-t-alpha", "First."), ("x-t-beta", "Second.")):
         (topics / f"{tid}.md").write_text(TOPIC_BODY.format(tid=tid, why=why), encoding="utf-8")
@@ -70,7 +71,7 @@ def build_root(tmp_path: Path) -> Path:
 
 def original_plan(root: Path, request: SelectionRequest) -> Plan:
     """The plan a fresh cartesian run resolves (explain=True → the C5b variant capture to save)."""
-    env = CascadeEnv(root, workspace=WS)
+    env = CascadeEnv(root, user=USER, workspace=WS)
     return resolve_plan(env, request, source_subset=SUBSET, source_commit=COMMITS, explain=True)
 
 
@@ -85,7 +86,7 @@ def _driven_request(base: str, variants: list[dict]) -> SelectionRequest:
 def driven_plan(root: Path, base: str, variants: list[dict], values=None) -> Plan:
     """The plan a saved-selection DRIVE re-resolves — the explicit grouped variant list, the run's
     shared `values` lifted back to the override layer (§12.5)."""
-    env = CascadeEnv(root, workspace=WS, overrides=values or None)
+    env = CascadeEnv(root, user=USER, workspace=WS, overrides=values or None)
     request = _driven_request(base, variants)
     return resolve_plan(env, request, source_subset=SUBSET, source_commit=COMMITS)
 
@@ -122,9 +123,11 @@ def test_selection_roundtrip_same_plan_hash_artifact_and_deliverable_ids(tmp_pat
     orig = original_plan(root, request)
     assert len(orig.artifact_ids()) == 2
     assert len(orig.deliverable_ids()) == 4
-    authoring.write_selection(root, "x-rt", "explainer-post", orig.selection_variants, workspace=WS)
+    authoring.write_selection(
+        root, "x-rt", "explainer-post", orig.selection_variants, user=USER, workspace=WS
+    )
 
-    base, variants, values = authoring.load_selection(root, "x-rt", workspace=WS)
+    base, variants, values = authoring.load_selection(root, "x-rt", user=USER, workspace=WS)
     assert base == "explainer-post"
     reload = driven_plan(root, base, variants, values)
 
@@ -146,9 +149,9 @@ def test_multi_render_per_artifact_groups_to_one_item(tmp_path: Path) -> None:
     )
     orig = original_plan(root, request)
     authoring.write_selection(
-        root, "x-grp", "explainer-post", orig.selection_variants, workspace=WS
+        root, "x-grp", "explainer-post", orig.selection_variants, user=USER, workspace=WS
     )
-    base, variants, values = authoring.load_selection(root, "x-grp", workspace=WS)
+    base, variants, values = authoring.load_selection(root, "x-grp", user=USER, workspace=WS)
     plan = driven_plan(root, base, variants, values)
 
     aids = plan.artifact_ids()
@@ -167,8 +170,8 @@ def test_curated_diagonal_render_yields_n_not_nxm(tmp_path: Path) -> None:
         {"coordinate": {"topic": "x-t-alpha"}, "render": {"platform": "github"}},
         {"coordinate": {"topic": "x-t-beta"}, "render": {"platform": "linkedin"}},
     ]
-    authoring.write_selection(root, "x-diag", "explainer-post", variants, workspace=WS)
-    base, loaded, values = authoring.load_selection(root, "x-diag", workspace=WS)
+    authoring.write_selection(root, "x-diag", "explainer-post", variants, user=USER, workspace=WS)
+    base, loaded, values = authoring.load_selection(root, "x-diag", user=USER, workspace=WS)
     plan = driven_plan(root, base, loaded, values)
 
     assert len(plan.artifact_ids()) == 2
@@ -207,7 +210,7 @@ def test_roundtrip_with_shared_values_byte_identical(tmp_path: Path) -> None:
     request = SelectionRequest(
         recipe="explainer-post", topics=["x-t-alpha", "x-t-beta"], platforms=["github"]
     )
-    env = CascadeEnv(root, workspace=WS, overrides=overrides)
+    env = CascadeEnv(root, user=USER, workspace=WS, overrides=overrides)
     orig = resolve_plan(env, request, source_subset=SUBSET, source_commit=COMMITS, explain=True)
     authoring.write_selection(
         root,
@@ -215,10 +218,11 @@ def test_roundtrip_with_shared_values_byte_identical(tmp_path: Path) -> None:
         "explainer-post",
         orig.selection_variants,
         values=overrides,
+        user=USER,
         workspace=WS,
     )
 
-    base, variants, values = authoring.load_selection(root, "x-tuned-rt", workspace=WS)
+    base, variants, values = authoring.load_selection(root, "x-tuned-rt", user=USER, workspace=WS)
     assert values == overrides  # the shared tweak map lifted back off the variants
     reload = driven_plan(root, base, variants, values)
     assert reload.plan_hash == orig.plan_hash
@@ -233,8 +237,8 @@ def test_n_variants_yield_n_deliverables(tmp_path: Path) -> None:
         {"coordinate": {"topic": "x-t-alpha"}, "render": {"platform": "github"}},
         {"coordinate": {"topic": "x-t-beta"}, "render": {"platform": "github"}},
     ]
-    authoring.write_selection(root, "x-nv", "explainer-post", variants, workspace=WS)
-    base, loaded, values = authoring.load_selection(root, "x-nv", workspace=WS)
+    authoring.write_selection(root, "x-nv", "explainer-post", variants, user=USER, workspace=WS)
+    base, loaded, values = authoring.load_selection(root, "x-nv", user=USER, workspace=WS)
     plan = driven_plan(root, base, loaded, values)
     assert len(plan.deliverable_ids()) == 2
     assert len(plan.artifact_ids()) == 2
@@ -278,9 +282,11 @@ def test_base_edit_surfaces_as_new_id_not_stale_copy(tmp_path: Path) -> None:
     )
     request = SelectionRequest(recipe="mybase", topics=["x-t-alpha"], platforms=["github"])
     orig = original_plan(root, request)
-    authoring.write_selection(root, "x-be", "mybase", orig.selection_variants, workspace=WS)
+    authoring.write_selection(
+        root, "x-be", "mybase", orig.selection_variants, user=USER, workspace=WS
+    )
 
-    base, variants, values = authoring.load_selection(root, "x-be", workspace=WS)
+    base, variants, values = authoring.load_selection(root, "x-be", user=USER, workspace=WS)
     # the saved variant omits voice (it rode the base) — so it MUST resolve fresh, not be frozen
     assert all("voice" not in v["coordinate"] for v in variants)
     id_before = driven_plan(root, base, variants, values).artifact_ids()
@@ -313,8 +319,8 @@ def test_duplicate_variant_refused(tmp_path: Path) -> None:
         {"coordinate": {"topic": "x-t-alpha"}, "render": {"platform": "github"}},
         {"coordinate": {"topic": "x-t-alpha"}, "render": {"platform": "github"}},
     ]
-    authoring.write_selection(root, "x-dup", "explainer-post", variants, workspace=WS)
-    base, loaded, values = authoring.load_selection(root, "x-dup", workspace=WS)
+    authoring.write_selection(root, "x-dup", "explainer-post", variants, user=USER, workspace=WS)
+    base, loaded, values = authoring.load_selection(root, "x-dup", user=USER, workspace=WS)
     with pytest.raises(FanoutError, match="exactly-once cover"):
         driven_plan(root, base, loaded, values)
 
@@ -336,7 +342,7 @@ def test_non_selection_path_omits_render_map_from_token_inputs(tmp_path: Path) -
 
 
 def _argv(root: Path, *extra: str) -> list[str]:
-    return ["--workspace", WS, "--root", str(root), *extra]
+    return ["--workspace", WS, "--user", USER, "--root", str(root), *extra]
 
 
 def test_generate_selection_previews_then_go_drives(tmp_path: Path, capsys) -> None:

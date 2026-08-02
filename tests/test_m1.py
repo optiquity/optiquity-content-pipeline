@@ -36,6 +36,8 @@ from pipeline.m1 import (
 from pipeline.schema import SCHEMA_FILENAME, Schema, UndeclaredAttributeError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+#: §23: the owning user for the on-disk workspace shadow (users/<user>/workspaces/<ws>/).
+USER = "acme"
 
 # ------------------------------------------------------------------------------------
 # Fixture builders (generic values only; instance entries carry the x- prefix, §11.4)
@@ -305,7 +307,7 @@ def write_entry(
     if workspace is None:
         dirpath = root / collection
     else:
-        dirpath = root / "workspaces" / workspace / collection
+        dirpath = root / "users" / USER / "workspaces" / workspace / collection
     dirpath.mkdir(parents=True, exist_ok=True)
     text = (
         f"---\nid: {entry_id}\nprovenance: {provenance}\nschema_version: {stamp}\n"
@@ -479,7 +481,7 @@ def test_workspace_full_redefinition_shadows_wholesale(tmp_path: Path) -> None:
     root = build_mini_root(tmp_path)
     write_entry(root, "voices", "x-brand", "formality: 4\nguidelines: Global brand prose.\n")
     write_entry(root, "voices", "x-brand", "formality: 2\n", workspace="testws")
-    resolved = Resolver(root, workspace="testws").resolve("voices", "x-brand")
+    resolved = Resolver(root, user=USER, workspace="testws").resolve("voices", "x-brand")
     # No extends → the workspace definition IS the definition that loads (§12.1).
     assert resolved.effective["formality"] == 2
     assert "guidelines" not in resolved.effective
@@ -490,7 +492,7 @@ def test_workspace_self_extends_field_merges_over_instance_global(tmp_path: Path
     root = build_mini_root(tmp_path)
     write_entry(root, "voices", "x-brand", "formality: 4\nguidelines: Global brand prose.\n")
     write_entry(root, "voices", "x-brand", "extends: x-brand\nformality: 2\n", workspace="testws")
-    resolved = Resolver(root, workspace="testws").resolve("voices", "x-brand")
+    resolved = Resolver(root, user=USER, workspace="testws").resolve("voices", "x-brand")
     assert resolved.effective["formality"] == 2
     assert resolved.effective["guidelines"] == "Global brand prose."
     assert resolved.field_provenance["formality"].scope == "workspace"
@@ -710,7 +712,7 @@ def test_valid_refs_resolve_transitively(tmp_path: Path) -> None:
         "topic: x-subject\npersona: base-persona\nformat: essay\ngoals: [explain]\n",
         workspace="testws",
     )
-    resolver = Resolver(root, workspace="testws")
+    resolver = Resolver(root, user=USER, workspace="testws")
     resolved = resolver.resolve("recipes", "x-full")
     assert resolved.effective["topic"] == "x-subject"
     # The transitively-referenced entries resolved (and cached) on the way.

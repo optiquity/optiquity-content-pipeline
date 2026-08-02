@@ -87,6 +87,7 @@ from pipeline.store import WorkspaceStore, is_done
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "shim-int"
+USER = "acme"
 
 #: The FULL §6.3 grounding grammar over ≥2 folder sources — the same shape the MVP scenario uses so
 #: the widget topic GROUNDS (a ≥2-instance resolved conflict on the timeout claim), which lets the
@@ -196,7 +197,7 @@ def _build_world(tmp: Path) -> Path:
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
     (root / "platforms" / "github.md").write_text(_GITHUB_PASS, encoding="utf-8")
 
-    topics_dir = root / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     (topics_dir / "x-widget-service.md").write_text(_TOPIC, encoding="utf-8")
 
@@ -208,7 +209,7 @@ def _build_world(tmp: Path) -> Path:
     _git_init(corpus_a)
     _git_init(corpus_b)
 
-    sources_dir = root / "workspaces" / WS / "sources"
+    sources_dir = root / "users" / USER / "workspaces" / WS / "sources"
     sources_dir.mkdir(parents=True)
     (sources_dir / "x-alpha.md").write_text(
         _SOURCE.format(sid="x-alpha", path=str(corpus_a), t=5, ind="first-party", pri="primary"),
@@ -357,6 +358,7 @@ def _begin_and_plan(root: Path, store: WorkspaceStore, adapters) -> tuple[str, l
     begin = invoke_mod.invoke(
         "begin-session",
         WS,
+        USER,
         dict(_BEGIN_PARAMS),
         store=store,
         root=str(root),
@@ -365,7 +367,7 @@ def _begin_and_plan(root: Path, store: WorkspaceStore, adapters) -> tuple[str, l
     assert begin["envelope"]["ok"], begin["envelope"]
     token = begin["token"]
     decoded = invoke_mod.token_mod.decode(token, expected_workspace=WS)
-    target_ids = list(session.plan_next_batch_ids(root, WS, decoded, {"batch_size": 1}))
+    target_ids = list(session.plan_next_batch_ids(root, USER, WS, decoded, {"batch_size": 1}))
     assert target_ids, "the plan must resolve a predictable target artifact-id"
     return token, target_ids
 
@@ -385,7 +387,7 @@ def test_poll_materialize_within_lifetime_and_no_double_spawn(tmp_path, monkeypa
     monkeypatch.setenv("FAKE_CLAUDE_WRITER_LOG", str(writer_log))
     monkeypatch.setenv("FAKE_CLAUDE_RELEASE_FILE", str(release_file))  # HOLD the writer
 
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     adapters = default_adapters()
     token, target_ids = _begin_and_plan(root, store, adapters)
@@ -405,6 +407,7 @@ def test_poll_materialize_within_lifetime_and_no_double_spawn(tmp_path, monkeypa
         key=outcome.key,
         verb="continue-session",
         workspace=WS,
+        user=USER,
         params={"action": "generate-next", "batch_size": 1, "idempotency_key": "idem-1"},
         idempotency_key="idem-1",
         root=str(root),
@@ -459,7 +462,7 @@ def test_poll_materialize_within_lifetime_and_no_double_spawn(tmp_path, monkeypa
 
     # The real output is fetchable through the existing `fetch-by-id` door.
     fetched = invoke_mod.invoke(
-        "fetch-by-id", WS, {"id": tid}, root=str(root),
+        "fetch-by-id", WS, USER, {"id": tid}, root=str(root),
         handlers={"fetch-by-id": fetch.fetch_handler()},
     )
     assert fetched["envelope"]["ok"] and fetched["results"]
@@ -515,7 +518,7 @@ def test_webhook_guard_rejects_loopback_at_real_detached_delivery(tmp_path, monk
     # No release sentinel → the writer emits immediately; the job materializes, THEN the runner
     # reaches the real delivery step.
 
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     adapters = default_adapters()
     token, target_ids = _begin_and_plan(root, store, adapters)
@@ -543,6 +546,7 @@ def test_webhook_guard_rejects_loopback_at_real_detached_delivery(tmp_path, monk
             key=outcome.key,
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "generate-next", "batch_size": 1, "idempotency_key": "idem-cb"},
             idempotency_key="idem-cb",
             root=str(root),
@@ -583,7 +587,7 @@ def test_nonok_records_a_terminal_surfaced_by_the_real_poll(tmp_path, monkeypatc
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "nonok")  # the writer emits is_error: true
 
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     adapters = default_adapters()
     token, target_ids = _begin_and_plan(root, store, adapters)
@@ -602,6 +606,7 @@ def test_nonok_records_a_terminal_surfaced_by_the_real_poll(tmp_path, monkeypatc
         key=outcome.key,
         verb="continue-session",
         workspace=WS,
+        user=USER,
         params={"action": "generate-next", "batch_size": 1, "idempotency_key": "idem-nonok"},
         idempotency_key="idem-nonok",
         root=str(root),

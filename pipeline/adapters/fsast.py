@@ -119,11 +119,11 @@ from pipeline.adapters.base import (
 )
 
 # `WORKSPACES_DIRNAME` (canonical def: pipeline.workspace_name, the single home for the layout
-# directory-name literals) is the directory name NEVER walked into (planner-03 R6): client
-# CONTENT lives under `workspaces/`, grounding SOURCES lie outside it — pruned wherever it is
-# met mid-walk. Value STAYS "workspaces" (the leaf-parent dir name is unchanged by the re-home);
-# this is a bare-name prune, NOT the self-grounding refusal (`REPO_WORKSPACES`, below). Also
-# re-exported in `__all__` for the adapter's tests.
+# directory-name literals) is the directory name NEVER walked into (planner-03 R6): a bound source
+# tree's own `workspaces/` dir is pruned wherever it is met mid-walk. Value STAYS "workspaces" (the
+# bare directory-name prune is unchanged by the §23 re-home); this is a bare-name prune, NOT the
+# self-grounding refusal (`REPO_USERS`, below). Also re-exported in `__all__` for the adapter's
+# tests.
 from pipeline.workspace_name import WORKSPACES_DIRNAME
 
 __all__ = [
@@ -138,7 +138,7 @@ __all__ = [
     "MODE_TREE",
     "PY_SUFFIX",
     "PYCACHE_DIRNAME",
-    "REPO_WORKSPACES",
+    "REPO_USERS",
     "WORKSPACES_DIRNAME",
 ]
 
@@ -183,9 +183,10 @@ CONNECTION_KEYS = frozenset({"path", "budget", "mode", "skip_dirs"})
 #: under the `built_at_commit` pin), never of whatever `.pyc` files happen to sit on disk.
 PYCACHE_DIRNAME = "__pycache__"
 
-#: This repo's workspaces root (CLAUDE.md rule 2): a bound path that IS or lies inside it is
-#: refused loudly (grounding sources live OUTSIDE the pipeline's client workspaces).
-REPO_WORKSPACES = Path(__file__).resolve().parents[2] / "workspaces"
+#: This repo's per-user client-content root (CLAUDE.md rule 2, §23 re-home): client content now
+#: lives under `users/<user>/workspaces/…`, so a bound path that IS or lies inside `users/` is
+#: refused loudly (grounding sources live OUTSIDE the pipeline's client content).
+REPO_USERS = Path(__file__).resolve().parents[2] / "users"
 
 
 @dataclass(frozen=True)
@@ -224,11 +225,11 @@ def _validate_connection(connection: Mapping[str, Any]) -> _Connection:
             f"adapter-failure: fsast connection path must be ABSOLUTE, got {raw_path!r}"
         )
     resolved = path.resolve()
-    if resolved == REPO_WORKSPACES or REPO_WORKSPACES in resolved.parents:
+    if resolved == REPO_USERS or REPO_USERS in resolved.parents:
         raise AdapterError(
             f"adapter-failure: fsast source path {str(resolved)!r} lies inside this "
-            f"repo's workspaces ({str(REPO_WORKSPACES)!r}) — grounding sources live "
-            "OUTSIDE the pipeline's client workspaces (CLAUDE.md rules 1/2; planner-03 R6)"
+            f"repo's client content ({str(REPO_USERS)!r}) — grounding sources live "
+            "OUTSIDE the pipeline's users/ tree (CLAUDE.md rules 1/2; §23)"
         )
     if not resolved.exists():
         raise AdapterError(

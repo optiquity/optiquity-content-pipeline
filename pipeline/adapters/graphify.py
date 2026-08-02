@@ -114,7 +114,7 @@ __all__ = [
     "ParsedQuery",
     "QUERY_LOG_DISABLE_ENV",
     "QUERY_SUBCOMMAND",
-    "REPO_WORKSPACES",
+    "REPO_USERS",
     "RunOutcome",
     "Runner",
     "TRUNCATION_PREFIX",
@@ -171,9 +171,10 @@ CANONICAL_CONTEXTS = (
 #: adapter). Closed = a connection can never smuggle extra flags or subcommands.
 CONNECTION_KEYS = frozenset({"path", "budget", "context", "dfs"})
 
-#: This repo's workspaces root (CLAUDE.md rule 2): client CONTENT lives there; grounding
-#: SOURCES live outside it. A graph path under it is refused loudly (plan step 18).
-REPO_WORKSPACES = Path(__file__).resolve().parents[2] / "workspaces"
+#: This repo's per-user client-content root (CLAUDE.md rule 2, §23 re-home): client CONTENT lives
+#: under `users/<user>/workspaces/…`; grounding SOURCES live outside it. A graph path under
+#: `users/` is refused loudly (plan step 18).
+REPO_USERS = Path(__file__).resolve().parents[2] / "users"
 
 # --- subprocess seam (injectable for tests; the default is the real thing) ------------------
 
@@ -340,11 +341,11 @@ class _Connection:
 def _outside_repo_workspaces(path: Path, *, adapter: str) -> Path:
     """Resolve `path` and refuse it under this repo's `workspaces/` (plan step 18)."""
     resolved = path.resolve()
-    if resolved == REPO_WORKSPACES or REPO_WORKSPACES in resolved.parents:
+    if resolved == REPO_USERS or REPO_USERS in resolved.parents:
         raise AdapterError(
             f"adapter-failure: {adapter} source path {str(resolved)!r} lies inside this "
-            f"repo's workspaces ({str(REPO_WORKSPACES)!r}) — grounding sources live "
-            "OUTSIDE the pipeline's client workspaces (CLAUDE.md rules 1/2; plan step 18)"
+            f"repo's client content ({str(REPO_USERS)!r}) — grounding sources live "
+            "OUTSIDE the pipeline's users/ tree (CLAUDE.md rules 1/2; §23)"
         )
     return resolved
 

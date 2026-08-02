@@ -45,6 +45,7 @@ __all__ = [
     "validate_user_segment",
     "validate_workspace_name",
     "validate_workspace_path",
+    "workspace_path",
 ]
 
 #: The single directory every client workspace lives under (CLAUDE.md rule 2; §23). This module
@@ -287,3 +288,24 @@ def validate_workspace_path(
             segment="workspace",
         )
     return candidate
+
+
+def workspace_path(
+    framework_root: str | Path, user: str, workspace: str, *parts: str
+) -> Path:
+    """The PURE `<framework_root>/users/<user>/workspaces/<workspace>[/<parts…>]` join — NO resolve.
+
+    The hot-path companion to `validate_workspace_path` (§23 re-home): once a door has VALIDATED
+    the `(framework_root, user, workspace)` triple ONCE (the resolve-and-contain gate), every
+    downstream path under that workspace — a per-collection M1 shadow dir, a `sources/` scan root,
+    a save-home — is a plain `Path` join off the SAME two layout literals
+    (`USERS_DIRNAME`/`WORKSPACES_DIRNAME`), never a second resolve on the hot cascade/M1 path (the
+    "validate once at the door, pure-join downstream" discipline). Byte-identical to
+    `WorkspaceStore.at(framework_root, user, workspace).root` when `parts` is empty, and to that
+    root joined with `parts` otherwise.
+
+    This is a pure calculator: it touches no filesystem and does NOT re-validate `user`/`workspace`
+    (a `None`/non-`str` segment surfaces LOUDLY as a `TypeError` from `Path.joinpath` — never a
+    silent `users/None/…` — so a caller that skipped the door still fails fast, never escapes).
+    """
+    return Path(framework_root).joinpath(USERS_DIRNAME, user, WORKSPACES_DIRNAME, workspace, *parts)

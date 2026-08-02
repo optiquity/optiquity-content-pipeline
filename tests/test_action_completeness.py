@@ -28,6 +28,7 @@ from pipeline.api.session import CONTINUE_ACTIONS, register_api_handlers
 from pipeline.store import WorkspaceStore
 
 WS = "wsA"
+USER = "acme"
 
 #: The two continue-session actions handled INLINE (not via a delegate verb handler).
 INLINE_ACTIONS = frozenset({"generate-next", "status"})
@@ -133,6 +134,7 @@ class TestActionCompleteness:
         ctx = HandlerContext(
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "emit-manifest"},  # a real action, but no handler supplied
             token=None,
             pins=None,

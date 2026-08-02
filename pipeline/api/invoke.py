@@ -39,7 +39,7 @@ from pipeline.api import token as token_mod
 from pipeline.canonical import canonical_json_str
 from pipeline.ids import IdError, parse_id
 from pipeline.store import WorkspaceStore
-from pipeline.workspace_name import WorkspaceNameError, validate_workspace_name
+from pipeline.workspace_name import WorkspaceNameError, validate_workspace_path
 
 __all__ = [
     "KNOWN_VERBS",
@@ -89,11 +89,12 @@ class HandlerNotWired(RuntimeError):
 @dataclass(frozen=True)
 class HandlerContext:
     """The bundle a verb handler consumes (steps 33-35). Everything the gates already vetted:
-    the verb, the invoked workspace, the raw params, the DECODED token (or None), the
-    supplied pins (or None), and the resolved workspace store."""
+    the verb, the invoked workspace, the owning user (§23 isolation prefix), the raw params, the
+    DECODED token (or None), the supplied pins (or None), and the resolved workspace store."""
 
     verb: str
     workspace: str
+    user: str
     params: Mapping[str, Any]
     token: token_mod.Token | None
     pins: Any
@@ -252,7 +253,7 @@ def referenced_ids(verb: str, params: Mapping[str, Any]) -> list[tuple[str, str]
 
 
 def _isolation_violations(
-    store: WorkspaceStore, workspace: str, referenced: list[tuple[str, str]]
+    store: WorkspaceStore, workspace: str, user: str, referenced: list[tuple[str, str]]
 ) -> list[results.ResultItem]:
     """One `isolation-violation` (§21.1) per referenced id that does not resolve here."""
     violations: list[results.ResultItem] = []
@@ -265,10 +266,15 @@ def _isolation_violations(
                     results.CODE_ISOLATION_VIOLATION,
                     item=id_str,
                     ids={"id": id_str},
-                    context={"id": id_str, "workspace": workspace, "at": location},
+                    context={
+                        "id": id_str,
+                        "workspace": workspace,
+                        "user": user,
+                        "at": location,
+                    },
                     hint=(
-                        f"id {id_str!r} does not resolve inside workspace {workspace!r} — "
-                        "workspaces never cross (§10)"
+                        f"id {id_str!r} does not resolve inside workspace {workspace!r} "
+                        f"(user {user!r}) — workspaces never cross (§10)"
                     ),
                 )
             )
@@ -281,11 +287,16 @@ def _isolation_violations(
 
 
 def _fatal(
-    verb: str, workspace: str, items: Sequence[results.ResultItem], code: str, message: str
+    verb: str,
+    workspace: str,
+    user: str,
+    items: Sequence[results.ResultItem],
+    code: str,
+    message: str,
 ) -> dict[str, Any]:
     """A whole-invocation failure (§21.7): ok=False, the fatal items, and NO echoed token."""
     envelope = results.Envelope(
-        ok=False, verb=verb, workspace=workspace, code=code, message=message
+        ok=False, verb=verb, workspace=workspace, user=user, code=code, message=message
     )
     return {"envelope": envelope.as_dict(), "results": [i.as_dict() for i in items]}
 
@@ -293,6 +304,7 @@ def _fatal(
 def invoke(
     verb: str,
     workspace: str,
+    user: str,
     params: Mapping[str, Any] | None = None,
     token: Any = None,
     pins: Any = None,
@@ -303,13 +315,18 @@ def invoke(
 ) -> dict[str, Any]:
     """One synchronous external-actor call (§21.1): `{envelope, results, [token]}`.
 
+    `user` is MANDATORY and never defaulted (§23): it is the isolation PREFIX of the store leaf
+    `root/users/<user>/workspaces/<workspace>/`, so a missing/None user fails LOUD at the door
+    (`validate_workspace_path`) rather than ever building a `users/None/…` path.
+
     The whole-invocation GATES run first, each envelope-fatal (§21.7):
     1. **unknown-verb** — `verb` not in `KNOWN_VERBS`;
     2. **isolation-violation (workspace root)** — when the store is built from the caller's
-       `workspace` name (`store` not injected), the name must resolve to a CONTAINED direct
-       child of `workspaces/` (`pipeline.workspace_name`); `../other-client`, an absolute
-       path, or a symlink escape would move the very store root Gate 3 checks against, so it
-       is refused BEFORE the store exists (§10/§21.1 — the root sibling of the per-id gate);
+       `(user, workspace)` names (`store` not injected), the pair must resolve to a CONTAINED
+       leaf under `users/<user>/workspaces/` (`pipeline.workspace_name.validate_workspace_path`);
+       a `../other-client`, an absolute path, or a symlink escape at ANY of the three levels
+       would move the very store root Gate 3 checks against, so it is refused BEFORE the store
+       exists (§10/§21.1/§23 — the root sibling of the per-id gate);
     3. **invalid-token** — a supplied `token` fails `token.decode` against `workspace`
        (malformed/tampered/cross-version/wrong-workspace, §20);
     4. **isolation-violation** — any params-referenced id does not resolve in `workspace`
@@ -317,8 +334,8 @@ def invoke(
     Past the gates, the verb dispatches to its registered handler; at step 32 the registry is
     empty, so a known verb raises `HandlerNotWired` (honest — never a fake success). A wired
     handler returns `(result_items, next_token?)`; per-item blocks ride `results` with `ok`
-    still True (SM1). `store` (or `root` → `workspaces/<workspace>/`) locates the workspace;
-    `handlers` overrides the registry (test/injection seam).
+    still True (SM1). `store` (or `root` → `users/<user>/workspaces/<workspace>/`) locates the
+    workspace; `handlers` overrides the registry (test/injection seam).
     """
     params = params or {}
     handlers = _VERB_HANDLERS if handlers is None else handlers
@@ -330,30 +347,42 @@ def invoke(
             item=verb,
             hint=f"verb {verb!r} is not in the closed API verb set {sorted(KNOWN_VERBS)!r}",
         )
-        return _fatal(verb, workspace, [item], results.CODE_UNKNOWN_VERB, str(item.item))
+        return _fatal(verb, workspace, user, [item], results.CODE_UNKNOWN_VERB, str(item.item))
 
-    # Workspace-root containment (§10/§21.1): when the store is built from the CALLER-SUPPLIED
-    # name, the name must resolve to a contained direct child of `workspaces/` BEFORE the store
-    # exists — else a `../other-client`, an absolute path, or a symlink escape would MOVE the
-    # store root the isolation gate (Gate 3) validates ids against, so ids would resolve in the
-    # WRONG workspace and pass. A breach is whole-invocation-fatal, `isolation-violation`-class
-    # (the root sibling of the per-id gate). An INJECTED store places nothing from the name.
+    # Workspace-root containment (§10/§21.1/§23): when the store is built from the CALLER-SUPPLIED
+    # names, the `(user, workspace)` pair must resolve to a contained leaf under
+    # `users/<user>/workspaces/` BEFORE the store exists — else a `../other-client`, an absolute
+    # path, or a symlink escape at ANY level would MOVE the store root the isolation gate (Gate 3)
+    # validates ids against, so ids would resolve in the WRONG workspace and pass. A breach is
+    # whole-invocation-fatal, `isolation-violation`-class (the root sibling of the per-id gate). An
+    # INJECTED store places nothing from the names. Validate ONCE here; `.at()` then builds the same
+    # (byte-identical) leaf WITH identity so downstream reads user/workspace/framework_root loudly.
     if store is not None:
         ws_store = store
     else:
         try:
-            ws_root = validate_workspace_name(workspace, root)
+            validate_workspace_path(root, user, workspace)
         except WorkspaceNameError as exc:
             item = results.make_result(
                 results.CODE_ISOLATION_VIOLATION,
                 item=str(workspace),
-                context={"workspace": str(workspace), "reason": exc.reason},
+                context={
+                    "workspace": str(workspace),
+                    "user": str(user),
+                    "reason": exc.reason,
+                    "segment": exc.segment,
+                },
                 hint=exc.detail,
             )
             return _fatal(
-                verb, str(workspace), [item], results.CODE_ISOLATION_VIOLATION, exc.detail
+                verb,
+                str(workspace),
+                str(user),
+                [item],
+                results.CODE_ISOLATION_VIOLATION,
+                exc.detail,
             )
-        ws_store = WorkspaceStore(ws_root)
+        ws_store = WorkspaceStore.at(root, user, workspace)
 
     # Gate 2 — token decode/verification against the invoked workspace (§20).
     decoded: token_mod.Token | None = None
@@ -367,14 +396,15 @@ def invoke(
                 context={"reason": exc.reason},
                 hint=exc.detail,
             )
-            return _fatal(verb, workspace, [item], results.CODE_INVALID_TOKEN, exc.detail)
+            return _fatal(verb, workspace, user, [item], results.CODE_INVALID_TOKEN, exc.detail)
 
     # Gate 3 — workspace isolation on every referenced id (§21.1/§10).
-    violations = _isolation_violations(ws_store, workspace, referenced_ids(verb, params))
+    violations = _isolation_violations(ws_store, workspace, user, referenced_ids(verb, params))
     if violations:
         return _fatal(
             verb,
             workspace,
+            user,
             violations,
             results.CODE_ISOLATION_VIOLATION,
             f"{len(violations)} id(s) do not resolve inside workspace {workspace!r}",
@@ -388,13 +418,14 @@ def invoke(
         HandlerContext(
             verb=verb,
             workspace=workspace,
+            user=user,
             params=params,
             token=decoded,
             pins=pins,
             store=ws_store,
         )
     )
-    envelope = results.Envelope(ok=True, verb=verb, workspace=workspace)
+    envelope = results.Envelope(ok=True, verb=verb, workspace=workspace, user=user)
     out: dict[str, Any] = {
         "envelope": envelope.as_dict(),
         "results": [item.as_dict() for item in result_items],
@@ -454,6 +485,9 @@ def main_cli(argv: list[str] | None = None) -> int:
     parser.add_argument("verb", help="the API verb (design §21.1 verb map)")
     parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
     parser.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
+    )
+    parser.add_argument(
         "--params-json", default=None, metavar="JSON", help="verb params as a JSON object"
     )
     parser.add_argument(
@@ -463,7 +497,9 @@ def main_cli(argv: list[str] | None = None) -> int:
         "--pins-json", default=None, metavar="JSON", help="explicit reproducibility pins (§21.8)"
     )
     parser.add_argument(
-        "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
     )
     args = parser.parse_args(argv)
 
@@ -489,7 +525,7 @@ def main_cli(argv: list[str] | None = None) -> int:
     fetch_mod.register_fetch_handler()
 
     try:
-        result = invoke(args.verb, args.workspace, params, token, pins, root=args.root)
+        result = invoke(args.verb, args.workspace, args.user, params, token, pins, root=args.root)
     except HandlerNotWired as exc:
         print(f"pipeline invoke: {exc}", file=sys.stderr)
         return 3

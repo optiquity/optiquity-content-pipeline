@@ -33,6 +33,7 @@ from pipeline.yamlio import load_frontmatter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+USER = "acme"
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 TOPIC = "---\nid: {tid}\nprovenance: instance\nschema_version: 1\nwhy: {why}\n---\n\nBody.\n"
 RECIPE = "explainer-post"
@@ -72,7 +73,7 @@ def build_root(tmp_path: Path, *, l2: str = BASE_L2) -> Path:
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
-    topics_dir = root / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     (topics_dir / f"{TOPIC_ID}.md").write_text(
         TOPIC.format(tid=TOPIC_ID, why="First."), encoding="utf-8"
@@ -81,7 +82,7 @@ def build_root(tmp_path: Path, *, l2: str = BASE_L2) -> Path:
 
 
 def store_for(root: Path) -> WorkspaceStore:
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     return store
 
@@ -110,6 +111,7 @@ def emit(root: Path, store: WorkspaceStore, **params) -> dict:
     return invoke(
         "emit-outline",
         WS,
+        USER,
         params,
         store=store,
         root=str(root),
@@ -197,7 +199,7 @@ def _render(store, artifact_id, engine, output_type) -> dict:
         "output_type": output_type, "presentation": PRESENTATION,
     }
     return invoke(
-        "render", WS, params, store=store,
+        "render", WS, USER, params, store=store,
         handlers={"render": render.render_handler(engine=engine)},
     )
 
@@ -266,7 +268,7 @@ class TestRendersAndFetchesThroughExistingVerbs:
     def test_fetch_by_id_returns_the_emitted_artifact(self, root, store):
         aid = _one(emit(root, store, **coord()))["ids"]["artifact_id"]
         out = invoke(
-            "fetch-by-id", WS, {"id": aid}, store=store,
+            "fetch-by-id", WS, USER, {"id": aid}, store=store,
             handlers={"fetch-by-id": fetch.fetch_handler()},
         )
         item = _one(out)

@@ -44,6 +44,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: obvious non-real placeholder; the security tests below drive the wrong/absent/rotation paths.
 TEST_SECRET = "shim-test-secret-do-not-ship"
 
+#: §23: the owning user threaded into every request body (the shim now requires it, parallel to
+#: `workspace`). `post`/`poll` inject it by default so a body carrying a `workspace` gets its user.
+USER = "acme"
+
 
 # --------------------------------------------------------------------------- fixtures/harness
 
@@ -132,6 +136,11 @@ def post(
     elif isinstance(body, str):
         raw = body.encode("utf-8")
     else:
+        # §23: the shim requires a `user` (parallel to `workspace`). Default-inject it for any dict
+        # body naming a workspace but no user, so the existing per-verb bodies get their owning user
+        # without repeating it everywhere (a body may still set `user` explicitly, incl. an escape).
+        if isinstance(body, dict) and "workspace" in body and "user" not in body:
+            body = {**body, "user": USER}
         raw = json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if auth is not None:
@@ -179,8 +188,9 @@ def post_with_declared_length(
 
 @pytest.fixture()
 def root(tmp_path: Path) -> str:
-    """A framework root with an empty `workspaces/wsA/` so `invoke(root=…)` resolves the store."""
-    (tmp_path / "workspaces" / "wsA").mkdir(parents=True)
+    """A framework root with an empty `users/<user>/workspaces/ws-a/` so `invoke(root=…)` resolves
+    the store at the §23 depth."""
+    (tmp_path / "users" / USER / "workspaces" / "ws-a").mkdir(parents=True)
     return str(tmp_path)
 
 
@@ -195,11 +205,11 @@ class TestTierARoundTrip:
 
         register_api_handlers()
         with running_server(root=root) as (host, port):
-            status, body = post(host, port, {"verb": "list", "workspace": "wsA", "params": {}})
+            status, body = post(host, port, {"verb": "list", "workspace": "ws-a", "params": {}})
         assert status == 200
         assert body["envelope"]["ok"] is True
         assert body["envelope"]["verb"] == "list"
-        assert body == invoke("list", "wsA", {}, root=root)
+        assert body == invoke("list", "ws-a", USER, {}, root=root)
 
     def test_emit_outline_reaches_the_registered_handler_200(self, root: str) -> None:
         # `emit-outline` is wired by `register_api_handlers()` (session.py:996) but DELIBERATELY
@@ -210,7 +220,7 @@ class TestTierARoundTrip:
         register_api_handlers()
         with running_server(root=root) as (host, port):
             status, body = post(
-                host, port, {"verb": "emit-outline", "workspace": "wsA", "params": {}}
+                host, port, {"verb": "emit-outline", "workspace": "ws-a", "params": {}}
             )
         assert status == 200
         assert body["envelope"]["ok"] is True
@@ -226,7 +236,7 @@ class TestStatusMapping:
         # The N-4 table, unit-pinned: envelope-is-authority; the two "token" concepts never
         # collapse to 401; cross-workspace is 403.
         def env(ok: bool, code: str | None = None) -> dict:
-            e: dict = {"ok": ok, "verb": "v", "workspace": "wsA"}
+            e: dict = {"ok": ok, "verb": "v", "workspace": "ws-a"}
             if code is not None:
                 e["code"] = code
             return {"envelope": e, "results": []}
@@ -243,14 +253,14 @@ class TestStatusMapping:
     def test_per_item_block_is_200_envelope_is_authority(self) -> None:
         # A per-item BLOCK rides results[] at ok=True → 200 (200 != "all succeeded"). Injected so
         # the block is unambiguous regardless of any handler's business logic.
-        def stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN202
+        def stub(verb, workspace, user, params, token, *, root):  # noqa: ANN001, ANN202
             return {
-                "envelope": {"ok": True, "verb": verb, "workspace": workspace},
+                "envelope": {"ok": True, "verb": verb, "workspace": workspace, "user": user},
                 "results": [{"item": "x", "status": "block", "ids": {}}],
             }
 
         with running_server(invoke_fn=stub) as (host, port):
-            status, body = post(host, port, {"verb": "list", "workspace": "wsA"})
+            status, body = post(host, port, {"verb": "list", "workspace": "ws-a"})
         assert status == 200
         assert body["results"][0]["status"] == "block"
 
@@ -259,11 +269,11 @@ class TestStatusMapping:
         from pipeline.api.session import register_api_handlers
 
         register_api_handlers()
-        wire = token_mod.encode(token_mod.mint("wsA", PLAN_HASH))
+        wire = token_mod.encode(token_mod.mint("ws-a", PLAN_HASH))
         wire["plan_hash"] = "0" * 64  # break the digest → invalid-token
         with running_server(root=root) as (host, port):
             status, body = post(
-                host, port, {"verb": "list", "workspace": "wsA", "params": {}, "token": wire}
+                host, port, {"verb": "list", "workspace": "ws-a", "params": {}, "token": wire}
             )
         assert status == 422
         assert status != 401
@@ -277,7 +287,7 @@ class TestStatusMapping:
         register_api_handlers()
         with running_server(root=root) as (host, port):
             status, body = post(
-                host, port, {"verb": "drift-report", "workspace": "wsA", "params": {}}
+                host, port, {"verb": "drift-report", "workspace": "ws-a", "params": {}}
             )
         assert status == 400
         assert body["envelope"]["ok"] is False
@@ -320,7 +330,7 @@ class TestTierGating:
             raise AssertionError("invoke() must not be called for a deferred Tier-B verb")
 
         with running_server(invoke_fn=stub) as (host, port):
-            body = {"verb": "begin-session", "workspace": "wsA", "params": {"generate": "full"}}
+            body = {"verb": "begin-session", "workspace": "ws-a", "params": {"generate": "full"}}
             status, payload = post(host, port, body)
             assert status == 501, body
             assert payload["error"] == "tier-b-not-served"
@@ -332,7 +342,7 @@ class TestTierGating:
             status, body = post(
                 host,
                 port,
-                {"verb": "continue-session", "workspace": "wsA", "params": {"action": "fetch"}},
+                {"verb": "continue-session", "workspace": "ws-a", "params": {"action": "fetch"}},
             )
         assert status == 200
         assert body["envelope"]["ok"] is True
@@ -360,14 +370,14 @@ class TestRobustness:
 
     def test_missing_verb_or_workspace_is_400(self) -> None:
         with running_server() as (host, port):
-            s1, _ = post(host, port, {"workspace": "wsA", "params": {}})
+            s1, _ = post(host, port, {"workspace": "ws-a", "params": {}})
             s2, _ = post(host, port, {"verb": "list", "params": {}})
-            s3, _ = post(host, port, {"verb": "list", "workspace": "wsA", "params": []})
+            s3, _ = post(host, port, {"verb": "list", "workspace": "ws-a", "params": []})
         assert (s1, s2, s3) == (400, 400, 400)
 
     def test_unknown_path_is_404_and_get_is_405(self) -> None:
         with running_server() as (host, port):
-            s_path, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, path="/nope")
+            s_path, _ = post(host, port, {"verb": "list", "workspace": "ws-a"}, path="/nope")
             s_get, _ = post(host, port, {}, method="GET")
         assert s_path == 404
         assert s_get == 405
@@ -400,9 +410,12 @@ class TestServeWiring:
 # --------------------------------------------------------------------------- Commit 5b: auth
 
 
-def _ok_stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN202
+def _ok_stub(verb, workspace, user, params, token, *, root):  # noqa: ANN001, ANN202
     """A minimal injected `invoke` that returns a valid ok envelope → 200 on a served request."""
-    return {"envelope": {"ok": True, "verb": verb, "workspace": workspace}, "results": []}
+    return {
+        "envelope": {"ok": True, "verb": verb, "workspace": workspace, "user": user},
+        "results": [],
+    }
 
 
 def _never_invoked(*a, **k):  # noqa: ANN002, ANN003, ANN202
@@ -457,9 +470,11 @@ class TestAuthGate:
     def test_absent_and_wrong_auth_401_correct_auth_200(self) -> None:
         # Absent auth → 401; wrong auth → 401; correct auth + a Tier-A verb → 200.
         with running_server(invoke_fn=_ok_stub) as (host, port):
-            s_absent, b_absent = post(host, port, {"verb": "list", "workspace": "wsA"}, auth=None)
-            s_wrong, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, auth="wrong-secret")
-            s_ok, b_ok = post(host, port, {"verb": "list", "workspace": "wsA"}, auth=TEST_SECRET)
+            s_absent, b_absent = post(host, port, {"verb": "list", "workspace": "ws-a"}, auth=None)
+            s_wrong, _ = post(
+                host, port, {"verb": "list", "workspace": "ws-a"}, auth="wrong-secret"
+            )
+            s_ok, b_ok = post(host, port, {"verb": "list", "workspace": "ws-a"}, auth=TEST_SECRET)
         assert s_absent == 401 and b_absent["error"] == "unauthorized"
         assert s_wrong == 401
         assert s_ok == 200 and b_ok["envelope"]["ok"] is True
@@ -472,7 +487,7 @@ class TestAuthGate:
                 conn.request(
                     "POST",
                     http_shim.INVOKE_PATH,
-                    body=json.dumps({"verb": "list", "workspace": "wsA"}).encode(),
+                    body=json.dumps({"verb": "list", "workspace": "ws-a", "user": USER}).encode(),
                     headers={"Content-Type": "application/json", "X-API-Key": TEST_SECRET},
                 )
                 resp = conn.getresponse()
@@ -487,9 +502,11 @@ class TestAuthGate:
         # any other secret is refused.
         secrets = frozenset({"old-secret", "new-secret"})
         with running_server(invoke_fn=_ok_stub, secrets=secrets) as (host, port):
-            s_old, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, auth="old-secret")
-            s_new, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, auth="new-secret")
-            s_other, _ = post(host, port, {"verb": "list", "workspace": "wsA"}, auth="third-secret")
+            s_old, _ = post(host, port, {"verb": "list", "workspace": "ws-a"}, auth="old-secret")
+            s_new, _ = post(host, port, {"verb": "list", "workspace": "ws-a"}, auth="new-secret")
+            s_other, _ = post(
+                host, port, {"verb": "list", "workspace": "ws-a"}, auth="third-secret"
+            )
         assert s_old == 200
         assert s_new == 200
         assert s_other == 401
@@ -506,7 +523,7 @@ class TestAuthGate:
 
         monkeypatch.setattr(http_shim.hmac, "compare_digest", spy)
         with running_server(invoke_fn=_ok_stub) as (host, port):
-            post(host, port, {"verb": "list", "workspace": "wsA"}, auth=TEST_SECRET)
+            post(host, port, {"verb": "list", "workspace": "ws-a"}, auth=TEST_SECRET)
         assert calls, "the auth gate must compare via hmac.compare_digest (constant-time)"
 
 
@@ -518,7 +535,7 @@ class TestRedaction:
         # log output OR in a response body — on the failure path (401) or the success path (200).
         configured = "CONFIGUREDSECRETMARKER-never-log-9f3a"
         presented_bad = "PRESENTEDBADTOKEN-never-log-7c21"
-        req = {"verb": "list", "workspace": "wsA"}
+        req = {"verb": "list", "workspace": "ws-a"}
         with running_server(invoke_fn=_ok_stub, secrets=frozenset({configured})) as (host, port):
             s_bad, b_bad = post(host, port, req, auth=presented_bad)
             s_ok, b_ok = post(host, port, req, auth=configured)
@@ -580,9 +597,12 @@ def _seen_stub(seen: list[str]):  # noqa: ANN202
     """An injected `invoke` that records each dispatched workspace and returns an ok envelope.
     Used to PROVE a non-served workspace never reaches dispatch (its name never lands in `seen`)."""
 
-    def stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN202
+    def stub(verb, workspace, user, params, token, *, root):  # noqa: ANN001, ANN202
         seen.append(workspace)
-        return {"envelope": {"ok": True, "verb": verb, "workspace": workspace}, "results": []}
+        return {
+            "envelope": {"ok": True, "verb": verb, "workspace": workspace, "user": user},
+            "results": [],
+        }
 
     return stub
 
@@ -594,36 +614,36 @@ class TestWorkspaceAllowList:
         # (proved by the recorded `seen` list containing only the listed workspace).
         seen: list[str] = []
         with running_server(
-            invoke_fn=_seen_stub(seen), allowed_workspaces=frozenset({"wsA"})
+            invoke_fn=_seen_stub(seen), allowed_workspaces=frozenset({"acme/ws-a"})
         ) as (host, port):
-            s_listed, b_listed = post(host, port, {"verb": "list", "workspace": "wsA"})
-            s_denied, b_denied = post(host, port, {"verb": "list", "workspace": "wsB"})
+            s_listed, b_listed = post(host, port, {"verb": "list", "workspace": "ws-a"})
+            s_denied, b_denied = post(host, port, {"verb": "list", "workspace": "ws-b"})
         assert s_listed == 200 and b_listed["envelope"]["ok"] is True
         assert s_denied == 403 and b_denied["error"] == "workspace-not-served"
-        assert seen == ["wsA"]  # the non-listed request NEVER reached invoke()
+        assert seen == ["ws-a"]  # the non-listed request NEVER reached invoke()
 
     def test_unset_serves_any_contained_workspace(self) -> None:
         # Allow-list UNSET (the default): a request for ANY workspace passes to dispatch (200),
         # proving the optional-when-unset semantics (containment stays invoke()'s GAP-9 gate).
         seen: list[str] = []
         with running_server(invoke_fn=_seen_stub(seen)) as (host, port):  # unset
-            for ws in ("wsA", "wsB", "another-ws"):
+            for ws in ("ws-a", "ws-b", "another-ws"):
                 status, body = post(host, port, {"verb": "list", "workspace": ws})
                 assert status == 200, ws
                 assert body["envelope"]["ok"] is True
-        assert seen == ["wsA", "wsB", "another-ws"]
+        assert seen == ["ws-a", "ws-b", "another-ws"]
 
     def test_allow_list_precedes_tier_gating(self) -> None:
         # A non-listed workspace is refused 403 BEFORE tier classification — even a Tier-B verb
         # gets `workspace-not-served` (403), NOT 501. Policy (is this workspace served?) precedes
         # tier routing; `_never_invoked` proves dispatch is never reached.
         with running_server(
-            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"wsA"})
+            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/ws-a"})
         ) as (host, port):
             status, body = post(
                 host,
                 port,
-                {"verb": "render", "workspace": "wsB", "params": {"item": "a-0000000000000000"}},
+                {"verb": "render", "workspace": "ws-b", "params": {"item": "a-0000000000000000"}},
             )
         assert status == 403
         assert body["error"] == "workspace-not-served"
@@ -652,7 +672,7 @@ class TestWorkspaceAllowList:
         # (still 403). Proves the allow-list does not need to — and does not — re-validate the
         # path; a misconfig cannot defeat GAP-9 because invoke() is the containment authority.
         with running_server(
-            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"wsA"})
+            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/ws-a"})
         ) as (host, port):
             status, body = post(host, port, {"verb": "list", "workspace": "../victim"})
         assert status == 403
@@ -684,15 +704,16 @@ class TestWorkspaceAllowList:
 
 class TestAllowListAndBindConfig:
     def test_allow_list_loads_from_shim_yaml(self, tmp_path: Path) -> None:
-        # workspaces.allowed loads from instance/shim.yaml as a SET (env-independent).
+        # workspaces.allowed loads from instance/shim.yaml as a SET of `user/workspace` policy
+        # pairs (§23; env-independent).
         (tmp_path / "instance").mkdir()
         (tmp_path / "instance" / "shim.yaml").write_text(
             "auth:\n  secrets:\n    - file-secret\n"
-            "workspaces:\n  allowed:\n    - wsA\n    - wsB\n",
+            "workspaces:\n  allowed:\n    - acme/ws-a\n    - acme/ws-b\n",
             encoding="utf-8",
         )
         cfg = http_shim.load_shim_config(str(tmp_path), env={})
-        assert cfg.allowed_workspaces == frozenset({"wsA", "wsB"})
+        assert cfg.allowed_workspaces == frozenset({"acme/ws-a", "acme/ws-b"})
 
     def test_allow_list_single_string_is_one_element(self, tmp_path: Path) -> None:
         # A single string under workspaces.allowed is accepted as a one-element allow-list.
@@ -761,7 +782,7 @@ class TestAllowListAndBindConfig:
         # workspace dispatches (200), a non-listed one is refused 403 without reaching invoke().
         (tmp_path / "instance").mkdir()
         (tmp_path / "instance" / "shim.yaml").write_text(
-            f"auth:\n  secrets:\n    - {TEST_SECRET}\nworkspaces:\n  allowed:\n    - wsA\n",
+            f"auth:\n  secrets:\n    - {TEST_SECRET}\nworkspaces:\n  allowed:\n    - acme/ws-a\n",
             encoding="utf-8",
         )
         cfg = http_shim.load_shim_config(str(tmp_path), env={})
@@ -771,11 +792,11 @@ class TestAllowListAndBindConfig:
             secrets=cfg.secrets,
             allowed_workspaces=cfg.allowed_workspaces,
         ) as (host, port):
-            s_ok, _ = post(host, port, {"verb": "list", "workspace": "wsA"})
-            s_no, b_no = post(host, port, {"verb": "list", "workspace": "wsB"})
+            s_ok, _ = post(host, port, {"verb": "list", "workspace": "ws-a"})
+            s_no, b_no = post(host, port, {"verb": "list", "workspace": "ws-b"})
         assert s_ok == 200
         assert s_no == 403 and b_no["error"] == "workspace-not-served"
-        assert seen == ["wsA"]
+        assert seen == ["ws-a"]
 
 
 # --------------------------------------------------- Commit 6: Tier-B generate-next submit + poll
@@ -789,7 +810,7 @@ class TestAllowListAndBindConfig:
 ART_ID = "a-0000000000000001"
 
 
-def _valid_token(workspace: str = "wsA") -> dict:
+def _valid_token(workspace: str = "ws-a") -> dict:
     """A minimal VALID wire token (decodes against `workspace`); the injected plan-targets stub
     ignores its inputs, so an empty-input token is enough for the submit tests."""
     return token_mod.encode(token_mod.mint(workspace, PLAN_HASH))
@@ -798,7 +819,7 @@ def _valid_token(workspace: str = "wsA") -> dict:
 def _fixed_targets(ids: list[str]):  # noqa: ANN202
     """A `plan_targets_fn` seam stub returning FIXED predictable ids (no live plan resolution)."""
 
-    def resolver(root, workspace, decoded, params):  # noqa: ANN001, ANN202
+    def resolver(root, user, workspace, decoded, params):  # noqa: ANN001, ANN202
         return list(ids)
 
     return resolver
@@ -814,12 +835,12 @@ def _spawn_recorder(calls: list):  # noqa: ANN202
     return spawn
 
 
-def _fetch_stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN202
+def _fetch_stub(verb, workspace, user, params, token, *, root):  # noqa: ANN001, ANN202
     """An injected invoke() that SERVES fetch-by-id — the DONE path fetches the materialized
     output via the existing handler; anything else is a trivial ok envelope."""
     if verb == "fetch-by-id":
         return {
-            "envelope": {"ok": True, "verb": verb, "workspace": workspace},
+            "envelope": {"ok": True, "verb": verb, "workspace": workspace, "user": user},
             "results": [
                 {
                     "item": params.get("id"),
@@ -828,7 +849,10 @@ def _fetch_stub(verb, workspace, params, token, *, root):  # noqa: ANN001, ANN20
                 }
             ],
         }
-    return {"envelope": {"ok": True, "verb": verb, "workspace": workspace}, "results": []}
+    return {
+        "envelope": {"ok": True, "verb": verb, "workspace": workspace, "user": user},
+        "results": [],
+    }
 
 
 class _FakeClock:
@@ -853,7 +877,7 @@ def poll(host, port, *, workspace, key, target_ids, auth=TEST_SECRET):  # noqa: 
 
 
 def _submit_gen_next(  # noqa: ANN201
-    host, port, *, workspace="wsA", idem="exec-1", token=None, callback_url=None
+    host, port, *, workspace="ws-a", idem="exec-1", token=None, callback_url=None
 ):  # noqa: ANN001
     """POST a generate-next submit (a valid token by default). `callback_url`, when given, rides in
     params (W3b) — omitted entirely when None so the poll-only path is exercised unchanged."""
@@ -898,9 +922,10 @@ class TestTierBSubmit:
         assert len(calls) == 1  # the runner was detached exactly once
         spec, spawn_dir = calls[0]
         assert spec.key == expected_key and spec.verb == "continue-session"
-        assert Path(spawn_dir) == Path(root) / "workspaces" / "wsA" / "jobs"
+        assert Path(spawn_dir) == Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs"
         # JobStore.submit wrote the lossy record keyed by the run-family id.
-        assert (Path(root) / "workspaces" / "wsA" / "jobs" / expected_key).exists()
+        jobs = Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs"
+        assert (jobs / expected_key).exists()
 
     def test_double_submit_same_key_spawns_once(self, root: str) -> None:
         # Two identical submits (same idempotency_key) collide on ONE job: both 202 with the SAME
@@ -934,7 +959,7 @@ class TestTierBSubmit:
                 port,
                 {
                     "verb": "continue-session",
-                    "workspace": "wsA",
+                    "workspace": "ws-a",
                     "params": {"action": "generate-next"},
                     "token": _valid_token(),
                 },
@@ -1029,7 +1054,8 @@ class TestTierBCallbackSubmit:
         assert body["callback"] == {"registered": True}
         assert body["poll"]["path"] == http_shim.POLL_PATH
         key = job_key([ART_ID], "exec-1")
-        record = json.loads((Path(root) / "workspaces" / "wsA" / "jobs" / key).read_bytes())
+        jobs = Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs"
+        record = json.loads((jobs / key).read_bytes())
         assert record["callback_url"] == cb  # rides the stored record
 
     def test_no_callback_url_omits_the_registered_note(self, root: str) -> None:
@@ -1125,7 +1151,8 @@ class TestTierBCallbackSubmit:
         spec, _spawn_dir = calls[0]
         assert spec.callback_url is None
         key = job_key([ART_ID], "exec-1")
-        record = json.loads((Path(root) / "workspaces" / "wsA" / "jobs" / key).read_bytes())
+        jobs = Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs"
+        record = json.loads((jobs / key).read_bytes())
         assert record["callback_url"] is None
 
     def test_rejection_body_does_not_echo_the_callback_url(self, root: str) -> None:
@@ -1170,12 +1197,12 @@ class TestTierBPoll:
             clock_fn=clock,
         ) as (host, port):
             key = self._submit(host, port, clock)
-            s_run, b_run = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+            s_run, b_run = poll(host, port, workspace="ws-a", key=key, target_ids=[ART_ID])
             assert s_run == 202 and b_run["status"] == "running"
             # materialize the output → the §22.7 DONE authority flips
-            store = WorkspaceStore(Path(root) / "workspaces" / "wsA")
+            store = WorkspaceStore(Path(root) / "users" / USER / "workspaces" / "ws-a")
             store.output_path(ART_ID).write_text("done-bytes", encoding="utf-8")
-            s_done, b_done = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+            s_done, b_done = poll(host, port, workspace="ws-a", key=key, target_ids=[ART_ID])
         assert s_done == 200 and b_done["status"] == "done"
         assert b_done["results"] and b_done["results"][0]["item"] == ART_ID
 
@@ -1194,7 +1221,7 @@ class TestTierBPoll:
             clock_fn=clock,
         ) as (host, port):
             key = self._submit(host, port, clock)
-            JobStore(Path(root) / "workspaces" / "wsA" / "jobs").record_terminal(
+            JobStore(Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs").record_terminal(
                 key,
                 code="re-drivable",
                 envelope={"ok": False, "code": "re-drivable", "message": "transport timeout"},
@@ -1203,7 +1230,7 @@ class TestTierBPoll:
             # A stored terminal surfaces PROMPTLY (resolver step 3, above the window): even a small
             # advance — within the lifetime window — is enough; it is never masked for 22 min.
             clock.now += NASCENT_RECORD_GRACE_SECONDS + 5
-            status, body = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+            status, body = poll(host, port, workspace="ws-a", key=key, target_ids=[ART_ID])
         assert status == 504  # timeout-class → re-drivable 504 (N-4)
         assert body["status"] == "failed" and body["code"] == "re-drivable"
         assert body["redrivable"] is True
@@ -1226,7 +1253,7 @@ class TestTierBPoll:
         ) as (host, port):
             key = self._submit(host, port, clock)
             clock.now += JOB_LIFETIME_SECONDS + 5
-            status, body = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+            status, body = poll(host, port, workspace="ws-a", key=key, target_ids=[ART_ID])
         assert status == 409
         assert body["status"] == "re-drivable" and body["redrivable"] is True
 
@@ -1247,7 +1274,7 @@ class TestTierBPoll:
         ) as (host, port):
             key = self._submit(host, port, clock)
             clock.now += NASCENT_RECORD_GRACE_SECONDS + 5  # past 120 s, still within the window
-            status, body = poll(host, port, workspace="wsA", key=key, target_ids=[ART_ID])
+            status, body = poll(host, port, workspace="ws-a", key=key, target_ids=[ART_ID])
         assert status == 202
         assert body["status"] == "running"
 
@@ -1255,7 +1282,7 @@ class TestTierBPoll:
         # A poll `key` that is not a run-family id is a clean 400 (the §22.7 keying pin).
         with running_server(root=root, invoke_fn=_never_invoked) as (host, port):
             status, _ = poll(
-                host, port, workspace="wsA", key="a-0000000000000000", target_ids=[ART_ID]
+                host, port, workspace="ws-a", key="a-0000000000000000", target_ids=[ART_ID]
             )
         assert status == 400
 
@@ -1266,7 +1293,7 @@ class TestTierBPoll:
             status, body = poll(
                 host,
                 port,
-                workspace="wsA",
+                workspace="ws-a",
                 key="r-0000000000000000",
                 target_ids=[ART_ID],
                 auth=None,
@@ -1277,10 +1304,10 @@ class TestTierBPoll:
         # N-6: a cross-workspace / non-allow-listed poll is refused 403 — the SAME allow-list gate
         # as the submit, BEFORE any store access (invoke()/store never reached).
         with running_server(
-            root=root, invoke_fn=_never_invoked, allowed_workspaces=frozenset({"wsA"})
+            root=root, invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/ws-a"})
         ) as (host, port):
             status, body = poll(
-                host, port, workspace="wsB", key="r-0000000000000000", target_ids=[ART_ID]
+                host, port, workspace="ws-b", key="r-0000000000000000", target_ids=[ART_ID]
             )
         assert status == 403 and body["error"] == "workspace-not-served"
 
@@ -1327,7 +1354,7 @@ def _render_params(*, item=RENDER_ART, callback_url=None, idem=None):  # noqa: A
     return params
 
 
-def _submit_render(host, port, *, workspace="wsA", **kw):  # noqa: ANN001, ANN201
+def _submit_render(host, port, *, workspace="ws-a", **kw):  # noqa: ANN001, ANN201
     """POST a token-free render submit (§21.8). `callback_url`/`idem`/`item` ride params via
     `_render_params`."""
     return post(
@@ -1419,7 +1446,7 @@ class TestRenderTierBSubmit:
     def test_already_materialized_render_short_circuits_200_no_spawn(self, root: str) -> None:
         # The deliverable already exists at SUBMIT → JobStore.submit disposition `done` short-
         # circuits to 200 + output WITHOUT spawning a runner (anti-double-charge on the door).
-        store = WorkspaceStore(Path(root) / "workspaces" / "wsA")
+        store = WorkspaceStore(Path(root) / "users" / USER / "workspaces" / "ws-a")
         out = store.output_path(DELIV_ID)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("already", encoding="utf-8")
@@ -1459,16 +1486,16 @@ class TestRenderTierBSubmit:
             assert len(calls) == 1  # detached exactly once
             # poll BEFORE materialization → 202 running (within the job-lifetime window)
             s_run, b_run = poll(
-                host, port, workspace="wsA", key=expected_key, target_ids=[DELIV_ID]
+                host, port, workspace="ws-a", key=expected_key, target_ids=[DELIV_ID]
             )
             assert s_run == 202 and b_run["status"] == "running"
             # materialize the deliverable → the §22.7 DONE authority flips
-            store = WorkspaceStore(Path(root) / "workspaces" / "wsA")
+            store = WorkspaceStore(Path(root) / "users" / USER / "workspaces" / "ws-a")
             out = store.output_path(DELIV_ID)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("rendered", encoding="utf-8")
             s_done, b_done = poll(
-                host, port, workspace="wsA", key=expected_key, target_ids=[DELIV_ID]
+                host, port, workspace="ws-a", key=expected_key, target_ids=[DELIV_ID]
             )
         assert s_done == 200 and b_done["status"] == "done"
         assert b_done["results"] and b_done["results"][0]["item"] == DELIV_ID
@@ -1539,15 +1566,16 @@ class TestRenderTierBSubmit:
         from pipeline.api import render as render_mod
         from pipeline.jobs import job_key
 
-        store = WorkspaceStore(tmp_path / "wsA")
+        # `.at(...)` records identity so the render resolver recovers the framework root (§23).
+        store = WorkspaceStore.at(tmp_path, USER, "ws-a")
         store.ensure_layout()
         store.output_path(RENDER_ART).write_bytes(
             b'{"body": "canonical", "binding": {"artifact_id": "x"}}\n'
         )
         params = _render_params()
         engine = _MiniRenderEngine()
-        r1 = render_mod.resolve_render_target(store, params, engine=engine, workspace="wsA")
-        r2 = render_mod.resolve_render_target(store, params, engine=engine, workspace="wsA")
+        r1 = render_mod.resolve_render_target(store, params, engine=engine, workspace="ws-a")
+        r2 = render_mod.resolve_render_target(store, params, engine=engine, workspace="ws-a")
         assert r1.block is None and r2.block is None
         assert r1.deliverable_id == r2.deliverable_id == DELIV_ID  # exact, matches the shim fixture
         assert job_key([r1.deliverable_id], None) == job_key([r2.deliverable_id], None)
@@ -1565,6 +1593,8 @@ def post_full(host, port, body, *, path=http_shim.INVOKE_PATH, auth=TEST_SECRET)
     """Like `post` but ALSO returns the response HEADERS — for the `Retry-After` assertion on a 429
     (the advisory cap + the backpressure backstop, DR-1 Commit 10)."""
     conn = http.client.HTTPConnection(host, port, timeout=5)
+    if isinstance(body, dict) and "workspace" in body and "user" not in body:
+        body = {**body, "user": USER}  # §23: default-inject the owning user (see `post`)
     raw = body if isinstance(body, (bytes, bytearray)) else json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if auth is not None:
@@ -1615,7 +1645,7 @@ class TestConcurrencyCap:
                 port,
                 {
                     "verb": "continue-session",
-                    "workspace": "wsA",
+                    "workspace": "ws-a",
                     "params": {"action": "generate-next", "idempotency_key": "exec-1"},
                     "token": _valid_token(),
                 },
@@ -1656,7 +1686,7 @@ class TestConcurrencyCap:
             live_count_fn=lambda _root: MAX_PARALLEL_SESSIONS,  # seeded AT the cap
         ) as (host, port):
             status, body, headers = post_full(
-                host, port, {"verb": "render", "workspace": "wsA", "params": _render_params()}
+                host, port, {"verb": "render", "workspace": "ws-a", "params": _render_params()}
             )
         assert status == 429 and body["error"] == "concurrency-cap"
         assert headers.get("Retry-After") == str(SHIM_CAP_RETRY_AFTER_SECONDS)
@@ -1739,7 +1769,7 @@ class TestConcurrencyBackstop:
         ) as (host, port):
             _s, ack = _submit_gen_next(host, port)
             key = ack["job"]["key"]
-            JobStore(Path(root) / "workspaces" / "wsA" / "jobs").record_terminal(
+            JobStore(Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs").record_terminal(
                 key,
                 code="rate-limit-backpressure",
                 envelope={
@@ -1751,7 +1781,7 @@ class TestConcurrencyBackstop:
             )
             clock.now += NASCENT_RECORD_GRACE_SECONDS + 5  # surface the stored terminal promptly
             status, body, headers = poll_full(
-                host, port, workspace="wsA", key=key, target_ids=[ART_ID]
+                host, port, workspace="ws-a", key=key, target_ids=[ART_ID]
             )
         assert status == 429
         assert body["status"] == "failed" and body["code"] == "rate-limit-backpressure"

@@ -43,6 +43,7 @@ from pipeline.store import WorkspaceStore, is_done
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+USER = "acme"
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 TOPIC = "---\nid: {tid}\nprovenance: instance\nschema_version: 1\nwhy: {why}\n---\n\nBody.\n"
 OUTLINE_MD = "# Launch outline\n\n- Problem\n- Approach\n- Ship\n"
@@ -64,7 +65,7 @@ def build_root(
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    topics_dir = root / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     for tid, why in topics:
         (topics_dir / f"{tid}.md").write_text(TOPIC.format(tid=tid, why=why), encoding="utf-8")
@@ -72,7 +73,7 @@ def build_root(
 
 
 def store_for(root: Path) -> WorkspaceStore:
-    return WorkspaceStore(root / "workspaces" / WS)
+    return WorkspaceStore.at(root, USER, WS)
 
 
 def write_outline(tmp_path: Path, text: str = OUTLINE_MD, *, name: str = "draft.md") -> Path:
@@ -120,7 +121,7 @@ def emit_flags(root: Path, *extra: str) -> list[str]:
     return [
         "--recipe", "explainer-post",
         "--topic", "x-t-alpha",
-        "--workspace", WS,
+        "--workspace", WS, "--user", USER,
         "--root", str(root),
         *extra,
     ]
@@ -133,7 +134,7 @@ def drive_flags(root: Path, *extra: str) -> list[str]:
         "--recipe", "explainer-post",
         "--topic", "x-t-alpha",
         "--platform", "github",
-        "--workspace", WS,
+        "--workspace", WS, "--user", USER,
         "--root", str(root),
         *extra,
     ]
@@ -154,7 +155,10 @@ def test_invoke_begin_session_is_exit_3_and_render_fetch_only(tmp_path):
     # fetch-by-id (the live-quota session verbs stay structurally out).
     root = build_root(tmp_path)
     code = invoke_mod.main_cli(
-        ["begin-session", "--workspace", WS, "--params-json", "{}", "--root", str(root)]
+        [
+            "begin-session", "--workspace", WS, "--user", USER,
+            "--params-json", "{}", "--root", str(root),
+        ]
     )
     assert code == 3
     assert set(KNOWN_VERBS) & set(invoke_mod._VERB_HANDLERS) == {"render", "fetch-by-id"}
@@ -340,10 +344,10 @@ def _spy_begin_params(monkeypatch) -> list[dict]:
     seen: list[dict] = []
     real = invoke_mod.invoke
 
-    def spy(verb, workspace, params=None, *args, **kwargs):
+    def spy(verb, workspace, user, params=None, *args, **kwargs):
         if verb == "begin-session":
             seen.append(params)
-        return real(verb, workspace, params, *args, **kwargs)
+        return real(verb, workspace, user, params, *args, **kwargs)
 
     monkeypatch.setattr(invoke_mod, "invoke", spy)
     return seen

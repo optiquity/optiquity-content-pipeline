@@ -86,6 +86,7 @@ from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive, registry_f
 from pipeline.ssot import Ssot
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, write_new
 from pipeline.transport import Runner
+from pipeline.workspace_name import workspace_path
 
 __all__ = [
     "DeliverableResult",
@@ -178,6 +179,7 @@ class ArtifactResult:
 class ThreadResult:
     """One full thread's outcome — the report/transcript payload."""
 
+    user: str
     workspace: str
     recipe: str
     plan_hash: str
@@ -215,10 +217,11 @@ def demo_selection() -> SelectionRequest:
 # --- Grounding inputs (pool, query, commit pin) --------------------------------------------
 
 
-def _list_source_ids(root: Path, workspace: str) -> list[str]:
+def _list_source_ids(root: Path, user: str, workspace: str) -> list[str]:
     """The workspace's declared source pool (§6.1): every `sources/<id>.md` instance
-    entry, in id order. Templates and the co-located schema are not entries."""
-    sources_dir = root / "workspaces" / workspace / "sources"
+    entry, in id order. Templates and the co-located schema are not entries. The pool lives
+    under `users/<user>/workspaces/<ws>/sources/` (§23) — a pure door-validated join."""
+    sources_dir = workspace_path(root, user, workspace, "sources")
     if not sources_dir.is_dir():
         return []
     ids: list[str] = []
@@ -958,6 +961,7 @@ def _run_artifact(
 def run_thread(
     *,
     root: str | Path,
+    user: str,
     workspace: str,
     request: SelectionRequest | None = None,
     now: date | None = None,
@@ -978,14 +982,14 @@ def run_thread(
     log = log or (lambda _msg: None)
     request = request or demo_selection()
 
-    env = CascadeEnv(root, workspace=workspace)
+    env = CascadeEnv(root, user=user, workspace=workspace)
 
     # -- source pool + the pinned commit-map (§7.2): read the graph's commit BY PATH.
-    source_ids = _list_source_ids(root, workspace)
+    source_ids = _list_source_ids(root, user, workspace)
     if not source_ids:
         raise DriverError(
             f"driver-error: workspace {workspace!r} declares no source instances under "
-            "workspaces/<ws>/sources/ — grounding needs a source pool (§6.1)"
+            "users/<user>/workspaces/<ws>/sources/ — grounding needs a source pool (§6.1)"
         )
     pool = build_pool(env.resolver, source_ids)
     # Build the adapter set FIRST so the commit-map is pinned through the SAME provenance
@@ -1022,8 +1026,9 @@ def run_thread(
             "must fan out to exactly one artifact (§8)"
         )
 
-    # -- the store, claims, and SSOT under the workspace (rule 2; instance data).
-    store = WorkspaceStore(root / "workspaces" / workspace)
+    # -- the store, claims, and SSOT under the workspace (rule 2; instance data). `.at()` records
+    #    the (user, workspace) identity so depth-robust framework-root recovery holds (§23).
+    store = WorkspaceStore.at(root, user, workspace)
     store.ensure_layout()
     claims = registry_for(store)
     ssot_csv = store.root / "ssot.csv"
@@ -1061,6 +1066,7 @@ def run_thread(
         "goals": [list(item.goals) for item in plan.items],
     }
     return ThreadResult(
+        user=user,
         workspace=workspace,
         recipe=request.recipe,
         plan_hash=plan.plan_hash,

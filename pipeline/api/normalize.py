@@ -86,9 +86,9 @@ ScalarValue = str | int | float | bool | None
 
 class NormalizeError(ValueError):
     """A LOUD, typed normalizer refusal (a fatal automation omission, or a malformed
-    `--set`). `field` names the offending input (`recipe`/`workspace`/`set`/`door_class`)
-    so a door can map it to its exit/HTTP code. Raised BEFORE the engine — an omitted
-    recipe/workspace on the paid door is an error, never a silent spend."""
+    `--set`). `field` names the offending input (`recipe`/`workspace`/`user`/`set`/
+    `door_class`) so a door can map it to its exit/HTTP code. Raised BEFORE the engine — an
+    omitted recipe/workspace/user on the paid door is an error, never a silent spend."""
 
     def __init__(self, message: str, *, field: str) -> None:
         super().__init__(message)
@@ -101,6 +101,10 @@ class Normalized:
 
     - `workspace` — the resolved workspace (the separate `invoke()` positional; may be
       `None` only for an interactive READ verb with no sole/env workspace).
+    - `user` — the resolved owning user (§23 isolation prefix; the separate `invoke()`
+      positional parallel to `workspace`). MANDATORY whenever `workspace` is non-None — a
+      workspace with no user is refused (never a `users/None/…` path); `None` only when
+      `workspace` is `None` (an interactive read with nothing to invoke against).
     - `params` — the canonical `invoke()` params dict (exactly what `ctx.params` carries
       for begin-session): `recipe`, the by-name axis lists, `overrides`, `target_folio`,
       `purpose`, `idempotency_key`, `explain`. Empty axes/maps are OMITTED (zero-churn).
@@ -111,6 +115,7 @@ class Normalized:
     """
 
     workspace: str | None
+    user: str | None
     params: dict[str, Any]
     generated_key: str | None = None
     notices: tuple[str, ...] = field(default_factory=tuple)
@@ -261,6 +266,24 @@ def _resolve_workspace(friendly: Mapping[str, Any], door_class: str, *, spend: b
     return None
 
 
+def _resolve_user(friendly: Mapping[str, Any], door_class: str) -> str | None:
+    """The resolved owning user (§23) — parallel to `_resolve_workspace`, but NEVER inferred from
+    env/sole (a user is the isolation prefix; a wrong silent default would spend on another owner's
+    tree). An explicit `user` passes both doors; the automation door REFUSES an omission
+    (`missing-user`); interactive returns `None` when absent (the `normalize` pairing check then
+    refuses a workspace-without-user, so a resolved workspace always carries its user)."""
+    explicit = friendly.get("user")
+    if explicit:
+        return str(explicit)
+    if door_class == DOOR_AUTOMATION:
+        raise NormalizeError(
+            "missing-user: the automation door must pass an explicit user — never a silent "
+            "default (a stale default would spend under the wrong owner; §23)",
+            field="user",
+        )
+    return None
+
+
 def _resolve_idempotency_key(
     friendly: Mapping[str, Any],
     door_class: str,
@@ -326,6 +349,15 @@ def normalize(
     spend = bool(friendly_inputs.get("spend"))
     recipe = _resolve_recipe(friendly_inputs, door_class)
     workspace = _resolve_workspace(friendly_inputs, door_class, spend=spend)
+    user = _resolve_user(friendly_inputs, door_class)
+    if workspace is not None and user is None:
+        # §23: a resolved workspace ALWAYS carries its owning user — a workspace without a user
+        # would build a `users/None/…` path. Fail LOUD here (never a silent default).
+        raise NormalizeError(
+            "missing-user: a workspace requires its owning --user (the §23 isolation prefix; "
+            "users/<user>/workspaces/<workspace>/) — never a users/None/ path",
+            field="user",
+        )
 
     params: dict[str, Any] = {"recipe": recipe}
     for key in _AXIS_KEYS:
@@ -380,6 +412,7 @@ def normalize(
 
     return Normalized(
         workspace=workspace,
+        user=user,
         params=params,
         generated_key=generated,
         notices=tuple(notices),

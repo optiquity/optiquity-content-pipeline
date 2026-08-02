@@ -26,7 +26,7 @@ Wiring, never duplication: the §7.4 slug alphabet is `attrtypes.validate_value`
 implementation every sibling `_require_slug` wraps); the value-tweak grammar is
 `normalize.compile_overrides` + `overrides.collect_overrides`; the dimension/reserved
 vocabularies are `m1.DIMENSION_COLLECTIONS` + `schema.RESERVED_ATTRIBUTE_NAMES`; the workspace
-isolation guard is `workspace_name.validate_workspace_name` (rule 2); the pinned dumper is the
+isolation guard is `workspace_name.validate_workspace_path` (rule 2/§23); the pinned dumper is the
 loader `yamlio.make_loader` runs in reverse. A LEAF module — it imports no identity/plan/
 cascade code and nothing in `pipeline/` imports it yet (C2b is the first consumer).
 """
@@ -59,7 +59,7 @@ from pipeline.schema import (
     Schema,
     load_schema,
 )
-from pipeline.workspace_name import validate_workspace_name
+from pipeline.workspace_name import validate_workspace_path
 from pipeline.yamlio import make_loader
 
 __all__ = [
@@ -431,6 +431,7 @@ def resolve_recipe_target(
     recipe_id: str,
     bundle: Mapping[str, Any],
     *,
+    user: str | None = None,
     workspace: str | None = None,
 ) -> RecipeTarget:
     """Infer provenance from the bindings and compute the home path — REFUSING a client
@@ -460,12 +461,16 @@ def resolve_recipe_target(
     )
     root = Path(root)
     if provenance == PROVENANCE_INSTANCE:
-        if not workspace:
+        if not workspace or not user:
             raise AuthoringError(
-                f"invalid-authoring: instance recipe {recipe_id!r} requires a --workspace home "
-                "(instance config lives under workspaces/<client>/, rule 2/§10)"
+                f"invalid-authoring: instance recipe {recipe_id!r} requires a --user + --workspace "
+                "home (instance config lives under users/<user>/workspaces/<client>/, rule 2/§10)"
             )
-        home = validate_workspace_name(workspace, root) / RECIPE_COLLECTION / f"{recipe_id}.md"
+        home = (
+            validate_workspace_path(root, user, workspace)
+            / RECIPE_COLLECTION
+            / f"{recipe_id}.md"
+        )
         return RecipeTarget(recipe_id, provenance, home, workspace)
 
     home = root / RECIPE_COLLECTION / f"{recipe_id}.md"
@@ -605,6 +610,7 @@ def write_recipe(
     recipe_id: str,
     bundle: Mapping[str, Any],
     *,
+    user: str | None = None,
     workspace: str | None = None,
     body: str | None = None,
     force: bool = False,
@@ -618,7 +624,7 @@ def write_recipe(
     same guard/provenance/serializer pieces. Writes exactly one file (§5.4 one-file-add).
     """
     schema = schema or load_recipe_schema()
-    target = resolve_recipe_target(root, recipe_id, bundle, workspace=workspace)
+    target = resolve_recipe_target(root, recipe_id, bundle, user=user, workspace=workspace)
     text = serialize_recipe(
         bundle, recipe_id=target.recipe_id, provenance=target.provenance, body=body, schema=schema
     )
@@ -800,6 +806,7 @@ def resolve_selection_target(
     base: str,
     variants: Sequence[Mapping[str, Any]],
     *,
+    user: str | None = None,
     workspace: str | None = None,
 ) -> SelectionTarget:
     """Infer provenance from the base + variant bindings and compute the home path — REFUSING a
@@ -829,12 +836,13 @@ def resolve_selection_target(
     )
     root = Path(root)
     if provenance == PROVENANCE_INSTANCE:
-        if not workspace:
+        if not workspace or not user:
             raise AuthoringError(
-                f"invalid-authoring: instance selection {selection_id!r} requires a --workspace "
-                "home (instance config lives under workspaces/<client>/, rule 2/§10)"
+                f"invalid-authoring: instance selection {selection_id!r} requires a --user + "
+                "--workspace home (instance config lives under users/<user>/workspaces/<client>/, "
+                "rule 2/§10)"
             )
-        ws_dir = validate_workspace_name(workspace, root)
+        ws_dir = validate_workspace_path(root, user, workspace)
         home = ws_dir / SELECTION_COLLECTION / f"{selection_id}.md"
         return SelectionTarget(selection_id, provenance, home, workspace)
 
@@ -913,6 +921,7 @@ def write_selection(
     variants: Sequence[Mapping[str, Any]],
     *,
     values: Mapping[str, Any] | None = None,
+    user: str | None = None,
     workspace: str | None = None,
     body: str | None = None,
     force: bool = False,
@@ -930,7 +939,9 @@ def write_selection(
     """
     schema = schema or load_selection_schema()
     prepared = _prepare_variants(variants, values)
-    target = resolve_selection_target(root, selection_id, base, prepared, workspace=workspace)
+    target = resolve_selection_target(
+        root, selection_id, base, prepared, user=user, workspace=workspace
+    )
     text = serialize_selection(
         base,
         prepared,
@@ -956,19 +967,23 @@ def write_selection(
 # flat variant list into the per-artifact render map happens downstream in `SelectionRequest`.
 
 
-def _selection_home(root: str | Path, selection_id: str, workspace: str | None) -> Path:
+def _selection_home(
+    root: str | Path, selection_id: str, user: str | None, workspace: str | None
+) -> Path:
     """The provenance home a saved selection is READ from (rule 4), keyed by the id's `x-` prefix —
     the write path's homing in reverse. An `x-` instance id lives under
-    `workspaces/<ws>/selections/`; a framework id lives in the public `selections/` root."""
+    `users/<user>/workspaces/<ws>/selections/`; a framework id lives in the public `selections/`
+    root."""
     _require_slug(selection_id, "selection id")
     root = Path(root)
     if selection_id.startswith(INSTANCE_ID_PREFIX):
-        if not workspace:
+        if not workspace or not user:
             raise AuthoringError(
-                f"invalid-authoring: instance selection {selection_id!r} requires a --workspace "
-                "home (instance config lives under workspaces/<client>/, rule 2/§10)"
+                f"invalid-authoring: instance selection {selection_id!r} requires a --user + "
+                "--workspace home (instance config lives under users/<user>/workspaces/<client>/, "
+                "rule 2/§10)"
             )
-        ws_dir = validate_workspace_name(workspace, root)
+        ws_dir = validate_workspace_path(root, user, workspace)
         return ws_dir / SELECTION_COLLECTION / f"{selection_id}.md"
     return root / SELECTION_COLLECTION / f"{selection_id}.md"
 
@@ -999,6 +1014,7 @@ def load_selection(
     root: str | Path,
     selection_id: str,
     *,
+    user: str | None = None,
     workspace: str | None = None,
     schema: Schema | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
@@ -1016,7 +1032,7 @@ def load_selection(
     the run OVERRIDE layer (§12.5), or `None`; variants that disagree on it are a loud refusal. The
     grouping of the flat list into the per-artifact render map happens in `SelectionRequest`."""
     schema = schema or load_selection_schema()
-    path = _selection_home(root, selection_id, workspace)
+    path = _selection_home(root, selection_id, user, workspace)
     if not path.exists():
         raise AuthoringError(
             f"invalid-authoring: no saved selection {selection_id!r} at {path} — save one with "

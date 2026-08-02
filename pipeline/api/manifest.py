@@ -145,8 +145,9 @@ def _timestamp(now: NowFn) -> str:
 
 
 def _root_of(store: WorkspaceStore) -> Path:
-    """The framework root for a workspace store (`root/workspaces/<ws>` → grandparent, §21.1)."""
-    return store.root.parent.parent
+    """The framework root for a workspace store — the store's RECORDED identity (§23), never
+    depth-fragile positional path math (`.at()` set it at the door)."""
+    return store.framework_root
 
 
 def _iter_deliverable_ids(store: WorkspaceStore) -> list[str]:
@@ -182,6 +183,7 @@ def _resolvable_fit(
     store: WorkspaceStore,
     *,
     root: Path,
+    user: str,
     workspace: str,
     resolver: CurrencyResolver,
     artifact_id: str,
@@ -226,6 +228,7 @@ def _resolvable_fit(
         if isinstance(recorded, str):
             current_d = resolver.current_fit_digest(
                 root=root,
+                user=user,
                 workspace=workspace,
                 fitted_id=entry.name,
                 stored_preimage=preimage if isinstance(preimage, Mapping) else {},
@@ -241,6 +244,7 @@ def _candidate_deliverables(
     store: WorkspaceStore,
     *,
     root: Path,
+    user: str,
     workspace: str,
     resolver: CurrencyResolver,
     artifact_id: str,
@@ -268,7 +272,7 @@ def _candidate_deliverables(
         ):
             continue
         detail = discovery.deliverable_detail(
-            store, did, root=root, workspace=workspace, resolver=resolver
+            store, did, root=root, user=user, workspace=workspace, resolver=resolver
         )
         if detail is not None:
             out.append(detail)
@@ -345,6 +349,7 @@ def _frozen_pin_row(
     store: WorkspaceStore,
     *,
     root: Path,
+    user: str,
     workspace: str,
     resolver: CurrencyResolver,
     base: Mapping[str, Any],
@@ -355,7 +360,7 @@ def _frozen_pin_row(
     detail: dict[str, Any] | None = None
     try:
         detail = discovery.deliverable_detail(
-            store, pin, root=root, workspace=workspace, resolver=resolver
+            store, pin, root=root, user=user, workspace=workspace, resolver=resolver
         )
     except IdError:
         detail = None  # a malformed pin (add-time shape-validated) — still referenced verbatim
@@ -380,6 +385,7 @@ def _resolved_row(
     store: WorkspaceStore,
     *,
     root: Path,
+    user: str,
     workspace: str,
     resolver: CurrencyResolver,
     base: Mapping[str, Any],
@@ -404,6 +410,7 @@ def _resolved_row(
     candidates = _candidate_deliverables(
         store,
         root=root,
+        user=user,
         workspace=workspace,
         resolver=resolver,
         artifact_id=artifact_id,
@@ -463,6 +470,7 @@ def _resolved_row(
     row["fitted_id"] = _resolvable_fit(
         store,
         root=root,
+        user=user,
         workspace=workspace,
         resolver=resolver,
         artifact_id=artifact_id,
@@ -507,6 +515,7 @@ def _member_rows(
     store: WorkspaceStore,
     *,
     root: Path,
+    user: str,
     workspace: str,
     resolver: CurrencyResolver,
     member: MemberFact,
@@ -524,7 +533,8 @@ def _member_rows(
     if member.pin is not None:
         rows.append(
             _frozen_pin_row(
-                store, root=root, workspace=workspace, resolver=resolver, base=base, pin=member.pin
+                store, root=root, user=user, workspace=workspace, resolver=resolver,
+                base=base, pin=member.pin,
             )
         )
 
@@ -534,6 +544,7 @@ def _member_rows(
             _resolved_row(
                 store,
                 root=root,
+                user=user,
                 workspace=workspace,
                 resolver=resolver,
                 base=base,
@@ -632,6 +643,7 @@ def _emit_manifest(
         member_rows, items = _member_rows(
             store,
             root=root,
+            user=ctx.user,
             workspace=ctx.workspace,
             resolver=resolver,
             member=member,

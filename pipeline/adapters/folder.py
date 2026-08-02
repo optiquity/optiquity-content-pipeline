@@ -83,7 +83,7 @@ __all__ = [
     "DEFAULT_BUDGET",
     "DOC_SUFFIXES",
     "FolderAdapter",
-    "REPO_WORKSPACES",
+    "REPO_USERS",
 ]
 
 #: The closed v1 document allowlist (one-constant change when a new doc kind is needed —
@@ -100,9 +100,10 @@ DEFAULT_BUDGET = 2000
 #: The closed connection-key set: the bound folder + its fact budget, nothing else.
 CONNECTION_KEYS = frozenset({"path", "budget"})
 
-#: This repo's workspaces root (CLAUDE.md rule 2): client CONTENT lives there; grounding
-#: SOURCES live outside it. A folder path under it is refused loudly (plan step 18).
-REPO_WORKSPACES = Path(__file__).resolve().parents[2] / "workspaces"
+#: This repo's per-user client-content root (CLAUDE.md rule 2, §23 re-home): client CONTENT lives
+#: under `users/<user>/workspaces/…`; grounding SOURCES live outside it. A folder path under
+#: `users/` is refused loudly (plan step 18).
+REPO_USERS = Path(__file__).resolve().parents[2] / "users"
 
 
 @dataclass(frozen=True)
@@ -166,11 +167,11 @@ def _validate_connection(connection: Mapping[str, Any]) -> _Connection:
             f"adapter-failure: folder connection path must be ABSOLUTE, got {raw_path!r}"
         )
     resolved = path.resolve()
-    if resolved == REPO_WORKSPACES or REPO_WORKSPACES in resolved.parents:
+    if resolved == REPO_USERS or REPO_USERS in resolved.parents:
         raise AdapterError(
             f"adapter-failure: folder source path {str(resolved)!r} lies inside this "
-            f"repo's workspaces ({str(REPO_WORKSPACES)!r}) — grounding sources live "
-            "OUTSIDE the pipeline's client workspaces (CLAUDE.md rules 1/2; plan step 18)"
+            f"repo's client content ({str(REPO_USERS)!r}) — grounding sources live "
+            "OUTSIDE the pipeline's users/ tree (CLAUDE.md rules 1/2; §23)"
         )
     if not resolved.exists():
         raise AdapterError(

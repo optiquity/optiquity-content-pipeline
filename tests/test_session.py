@@ -52,6 +52,7 @@ from pipeline.store import WorkspaceStore, is_done
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+USER = "acme"
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 TOPIC = "---\nid: {tid}\nprovenance: instance\nschema_version: 1\nwhy: {why}\n---\n\nBody.\n"
 
@@ -82,7 +83,7 @@ def build_root(
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
-    topics_dir = root / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     for tid, why in topics:
         (topics_dir / f"{tid}.md").write_text(TOPIC.format(tid=tid, why=why), encoding="utf-8")
@@ -90,7 +91,8 @@ def build_root(
 
 
 def store_for(root: Path) -> WorkspaceStore:
-    return WorkspaceStore(root / "workspaces" / WS)
+    # `.at(...)` records identity so session/render recover the framework root loudly (§23).
+    return WorkspaceStore.at(root, USER, WS)
 
 
 class FakeRun:
@@ -150,13 +152,13 @@ def handlers(run: FakeRun | None = None) -> dict:
 
 def begin(root: Path, store: WorkspaceStore, params: dict, *, hs: dict, **kw) -> dict:
     return invoke.invoke(
-        "begin-session", WS, params, store=store, root=str(root), handlers=hs, **kw
+        "begin-session", WS, USER, params, store=store, root=str(root), handlers=hs, **kw
     )
 
 
 def cont(root: Path, store: WorkspaceStore, params: dict, token, *, hs: dict) -> dict:
     return invoke.invoke(
-        "continue-session", WS, params, token=token, store=store, root=str(root), handlers=hs
+        "continue-session", WS, USER, params, token=token, store=store, root=str(root), handlers=hs
     )
 
 
@@ -233,7 +235,7 @@ class TestBeginSession:
         # AdapterError — parity with the sibling FanoutError/FolioError/UnknownEntryError paths.
         root = build_root(tmp_path)
         store = store_for(root)
-        sources_dir = root / "workspaces" / WS / "sources"
+        sources_dir = root / "users" / USER / "workspaces" / WS / "sources"
         sources_dir.mkdir(parents=True)
         (sources_dir / "x-bad-src.md").write_text(
             "---\nid: x-bad-src\nprovenance: instance\nschema_version: 1\n"
@@ -489,7 +491,9 @@ class TestNestedIdIsolation:
         # are stopped at the invoke gate before any handler dispatch.
         root = build_root(tmp_path)
         store = store_for(root)
-        verb_out = invoke.invoke("render", WS, {"item": FOREIGN_ART}, store=store, root=str(root))
+        verb_out = invoke.invoke(
+            "render", WS, USER, {"item": FOREIGN_ART}, store=store, root=str(root)
+        )
         action_out = cont(
             root,
             store,
@@ -576,7 +580,7 @@ class TestGenerateNext:
         token = begin(root, store, base_params(), hs=hs)["token"]
         # A mid-session workspace edit that changes the resolved plan (the topic's `why`
         # rides identity §7.2) → the re-resolve's plan_hash ≠ the token's → plan-stale.
-        (root / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
+        (root / "users" / USER / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
             TOPIC.format(tid="x-t-alpha", why="A completely rewritten rationale."), encoding="utf-8"
         )
         out = cont(root, store, {"action": "generate-next"}, token, hs=hs)
@@ -590,7 +594,7 @@ class TestGenerateNext:
         store = store_for(root)
         hs = handlers()
         token = begin(root, store, base_params(), hs=hs)["token"]
-        (root / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
+        (root / "users" / USER / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
             TOPIC.format(tid="x-t-alpha", why="A drifted rationale."), encoding="utf-8"
         )
         out = cont(root, store, {"action": "status"}, token, hs=hs)
@@ -653,7 +657,7 @@ class TestRegistration:
         store = store_for(root)
         session.register_session_handlers()
         # No injected handlers — the invoke uses the module registry the call wrote.
-        out = invoke.invoke("begin-session", WS, base_params(), store=store, root=str(root))
+        out = invoke.invoke("begin-session", WS, USER, base_params(), store=store, root=str(root))
         assert out["envelope"]["ok"] is True and "token" in out
 
 
@@ -784,7 +788,8 @@ class TestPlanNextBatchIds:
         params = base_params(topics=["x-t-alpha", "x-t-beta", "x-t-gamma"])
         wire = begin(root, store, params, hs=hs)["token"]
         gn = {"action": "generate-next", "batch_size": 2}
-        predicted = session.plan_next_batch_ids(root, WS, decode(wire), gn)  # BEFORE the paid call
+        # BEFORE the paid call:
+        predicted = session.plan_next_batch_ids(root, USER, WS, decode(wire), gn)
         out = cont(root, store, gn, wire, hs=hs)
         assert predicted == self._batch_ids(out)
         assert len(predicted) == 2  # a genuine multi-artifact slice, not a trivial single id
@@ -798,7 +803,7 @@ class TestPlanNextBatchIds:
         wire = begun["token"]
         target = [begun["results"][0]["ids"]["artifact_ids"][1]]  # a specific id
         gn = {"action": "generate-next", "only": target}
-        predicted = session.plan_next_batch_ids(root, WS, decode(wire), gn)
+        predicted = session.plan_next_batch_ids(root, USER, WS, decode(wire), gn)
         out = cont(root, store, gn, wire, hs=hs)
         assert predicted == self._batch_ids(out) == target
 
@@ -816,7 +821,7 @@ class TestPlanNextBatchIds:
         consumed_id = out1["results"][0]["item"]
         wire1 = out1["token"]  # the advanced cursor
         gn = {"action": "generate-next", "batch_size": 2}
-        predicted = session.plan_next_batch_ids(root, WS, decode(wire1), gn)
+        predicted = session.plan_next_batch_ids(root, USER, WS, decode(wire1), gn)
         out2 = cont(root, store, gn, wire1, hs=hs)
         assert predicted == self._batch_ids(out2)
         assert consumed_id not in predicted and len(predicted) == 2
@@ -828,10 +833,10 @@ class TestPlanNextBatchIds:
         store = store_for(root)
         hs = handlers(FakeRun())
         wire = begin(root, store, base_params(), hs=hs)["token"]
-        (root / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
+        (root / "users" / USER / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
             TOPIC.format(tid="x-t-alpha", why="A completely rewritten rationale."), encoding="utf-8"
         )
         gn = {"action": "generate-next"}
-        assert session.plan_next_batch_ids(root, WS, decode(wire), gn) == []
+        assert session.plan_next_batch_ids(root, USER, WS, decode(wire), gn) == []
         out = cont(root, store, gn, wire, hs=hs)
         assert out["results"][0]["code"] == "plan-stale"  # generate-next likewise composes nothing

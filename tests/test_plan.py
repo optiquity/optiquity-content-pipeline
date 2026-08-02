@@ -34,6 +34,7 @@ from pipeline.plan import Plan, plan_payload, resolve_plan
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+USER = "acme"
 
 #: The CA8 mandatory globals (all shipped framework ids — generic values only).
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
@@ -79,17 +80,18 @@ def build_root(
         )
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
-    topics = root / "workspaces" / WS / "topics"
+    ws_home = root / "users" / USER / "workspaces" / WS
+    topics = ws_home / "topics"
     topics.mkdir(parents=True)
     for tid, why in (("x-t-alpha", "First fixture subject."), ("x-t-beta", "Second one.")):
         (topics / f"{tid}.md").write_text(TOPIC_BODY.format(tid=tid, why=why), encoding="utf-8")
     if l3 is not None:
-        (root / "workspaces" / WS / "defaults.yaml").write_text(l3, encoding="utf-8")
+        (ws_home / "defaults.yaml").write_text(l3, encoding="utf-8")
     return root
 
 
 def write_entry(root: Path, collection: str, entry_id: str, frontmatter: str = "") -> Path:
-    dirpath = root / "workspaces" / WS / collection
+    dirpath = root / "users" / USER / "workspaces" / WS / collection
     dirpath.mkdir(parents=True, exist_ok=True)
     path = dirpath / f"{entry_id}.md"
     path.write_text(
@@ -101,7 +103,7 @@ def write_entry(root: Path, collection: str, entry_id: str, frontmatter: str = "
 
 
 def make_env(root: Path, **kwargs) -> CascadeEnv:
-    return CascadeEnv(root, workspace=WS, **kwargs)
+    return CascadeEnv(root, user=USER, workspace=WS, **kwargs)
 
 
 def plan_for(root: Path, request: SelectionRequest, **kwargs) -> Plan:
@@ -384,7 +386,7 @@ def test_plan_hash_is_stable_across_processes_and_hash_seeds(tmp_path: Path) -> 
         "from pipeline.cascade import CascadeEnv\n"
         "from pipeline.fanout import SelectionRequest\n"
         "from pipeline.plan import resolve_plan\n"
-        "env = CascadeEnv(sys.argv[1], workspace='testws')\n"
+        "env = CascadeEnv(sys.argv[1], user='acme', workspace='testws')\n"
         "request = SelectionRequest(\n"
         "    recipe='explainer-post',\n"
         "    topics=('x-t-alpha', 'x-t-beta'),\n"

@@ -31,6 +31,7 @@ from pipeline.schema import SCHEMA_FILENAME, load_schema
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NOW = date(2026, 7, 30)
 WS = "testws"
+USER = "acme"
 BASE_L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
 TOPIC = "---\nid: {tid}\nprovenance: instance\nschema_version: 1\nwhy: {why}\n---\n\nBody.\n"
 
@@ -84,7 +85,7 @@ def build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, root / reg)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    topics_dir = root / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     (topics_dir / "x-t-alpha.md").write_text(
         TOPIC.format(tid="x-t-alpha", why="First."), encoding="utf-8"
@@ -257,11 +258,12 @@ def test_client_binding_refused_from_public_no_file(tmp_path, capsys):
 def test_client_binding_homes_under_workspace(tmp_path):
     """The same binding with an `x-` id + `--workspace` homes under the workspace (instance)."""
     root = _recipe_root(tmp_path)
-    (root / "workspaces" / "demo").mkdir(parents=True)
+    (root / "users" / USER / "workspaces" / "demo").mkdir(parents=True)
     assert _run(
-        "new", "x-brief", "--topic", "x-secret", "--workspace", "demo", "--root", str(root)
+        "new", "x-brief", "--topic", "x-secret",
+        "--workspace", "demo", "--user", USER, "--root", str(root),
     ) == 0
-    written = root / "workspaces" / "demo" / RECIPE_COLLECTION / "x-brief.md"
+    written = root / "users" / USER / "workspaces" / "demo" / RECIPE_COLLECTION / "x-brief.md"
     assert written.is_file()
     assert not (root / RECIPE_COLLECTION / "x-brief.md").exists()  # NOT in public
     entry = load_entry(written, _recipe_schema(root))
@@ -275,6 +277,34 @@ def test_framework_recipe_is_framework_provenance(tmp_path):
     assert _run("new", "fw", "--persona", "technical-evaluator", "--root", str(root)) == 0
     entry = load_entry(root / RECIPE_COLLECTION / "fw.md", _recipe_schema(root))
     assert entry.provenance == PROVENANCE_FRAMEWORK
+
+
+def test_from_base_under_workspace_without_user_is_clean_typed_refusal(tmp_path, capsys):
+    """F1 (§23): `recipe new x-foo --from BASE --workspace demo` WITHOUT --user is a CLEAN typed
+    refusal (exit 1, an authoring message class) — NEVER a raw TypeError traceback from the eager
+    `_load_base_bundle` join, and never a `users/None/` path (LOUD-*and-clean*)."""
+    root = build_root(tmp_path)
+    code = _run(
+        "new", "x-foo", "--from", "explainer-post", "--workspace", "demo", "--root", str(root)
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "requires a --user" in err  # mirrors resolve_recipe_target's typed refusal
+    assert "Traceback" not in err  # a clean typed refusal, never a stack trace
+    assert "users/None" not in err
+
+
+def test_from_base_under_workspace_with_user_still_works(tmp_path):
+    """The SAME --from base WITH --user + --workspace resolves the base and homes the derived
+    recipe under `users/<user>/workspaces/<ws>/recipes/` (the happy path is unbroken)."""
+    root = build_root(tmp_path)
+    code = _run(
+        "new", "x-foo", "--from", "explainer-post",
+        "--user", "acme", "--workspace", "demo", "--root", str(root),
+    )
+    assert code == 0
+    written = root / "users" / "acme" / "workspaces" / "demo" / RECIPE_COLLECTION / "x-foo.md"
+    assert written.is_file()
 
 
 # --- loud edit / id refusals -----------------------------------------------------------------
@@ -325,7 +355,7 @@ def _preview_artifact_ids(root: Path, recipe: str, capsys) -> str:
     line (the plan-only preview mints the artifact-id at resolution, spending nothing)."""
     code = cli._cmd_preview(
         ["--recipe", recipe, "--topic", "x-t-alpha", "--platform", "github",
-         "--workspace", WS, "--root", str(root)]
+         "--workspace", WS, "--user", USER, "--root", str(root)]
     )
     assert code == 0
     out = capsys.readouterr().out

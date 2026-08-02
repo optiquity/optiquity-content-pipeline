@@ -34,6 +34,7 @@ from pipeline.store import WorkspaceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WS = "testws"
+USER = "acme"
 
 
 def build_root(tmp_path: Path) -> Path:
@@ -45,7 +46,7 @@ def build_root(tmp_path: Path) -> Path:
         src = REPO_ROOT / reg
         if src.is_dir():
             shutil.copytree(src, root / reg)
-    WorkspaceStore(root / "workspaces" / WS).ensure_layout()
+    WorkspaceStore.at(root, USER, WS).ensure_layout()
     return root
 
 
@@ -66,7 +67,7 @@ def _clean_registry():
 
 def test_list_voices_prints_the_real_entries(tmp_path, capsys):
     root = build_root(tmp_path)
-    code = cli._cmd_list(["voices", "--workspace", WS, "--root", str(root)])
+    code = cli._cmd_list(["voices", "--workspace", WS, "--user", USER, "--root", str(root)])
     out = capsys.readouterr().out
     assert code == 0
     assert "clear-explainer" in out and "confident-advocate" in out
@@ -75,7 +76,7 @@ def test_list_voices_prints_the_real_entries(tmp_path, capsys):
 
 def test_list_lexicons_resolves(tmp_path, capsys):
     root = build_root(tmp_path)
-    code = cli._cmd_list(["lexicons", "--workspace", WS, "--root", str(root)])
+    code = cli._cmd_list(["lexicons", "--workspace", WS, "--user", USER, "--root", str(root)])
     out = capsys.readouterr().out
     assert code == 0
     assert "house-standard" in out
@@ -83,10 +84,10 @@ def test_list_lexicons_resolves(tmp_path, capsys):
 
 def test_list_recipes_and_codes_resolve(tmp_path, capsys):
     root = build_root(tmp_path)
-    assert cli._cmd_list(["recipes", "--workspace", WS, "--root", str(root)]) == 0
+    assert cli._cmd_list(["recipes", "--workspace", WS, "--user", USER, "--root", str(root)]) == 0
     assert "explainer-post" in capsys.readouterr().out
     # `codes` is a meta-type: item == the code string, no provenance/path tail.
-    assert cli._cmd_list(["codes", "--workspace", WS, "--root", str(root)]) == 0
+    assert cli._cmd_list(["codes", "--workspace", WS, "--user", USER, "--root", str(root)]) == 0
     codes_out = capsys.readouterr().out
     for code_name in list(results.CODES)[:3]:
         assert code_name in codes_out
@@ -95,9 +96,9 @@ def test_list_recipes_and_codes_resolve(tmp_path, capsys):
 def test_list_outlines_reads_the_workspace_store(tmp_path, capsys):
     root = build_root(tmp_path)
     digest = outline_store.put_outline(
-        WorkspaceStore(root / "workspaces" / WS), "# Intro\n\nReal outline body.\n"
+        WorkspaceStore.at(root, USER, WS), "# Intro\n\nReal outline body.\n"
     )
-    code = cli._cmd_list(["outlines", "--workspace", WS, "--root", str(root)])
+    code = cli._cmd_list(["outlines", "--workspace", WS, "--user", USER, "--root", str(root)])
     out = capsys.readouterr().out
     assert code == 0
     assert digest in out  # the bare content-addressed outline digest
@@ -105,7 +106,7 @@ def test_list_outlines_reads_the_workspace_store(tmp_path, capsys):
 
 def test_list_unknown_type_is_not_found_exit_1(tmp_path, capsys):
     root = build_root(tmp_path)
-    code = cli._cmd_list(["nope", "--workspace", WS, "--root", str(root)])
+    code = cli._cmd_list(["nope", "--workspace", WS, "--user", USER, "--root", str(root)])
     err = capsys.readouterr().err
     assert code == 1  # a not-found refusal, NEVER a silent empty exit 0
     assert "not-found" in err or "unknown discovery type" in err
@@ -116,7 +117,7 @@ def test_list_filters_narrow_by_provenance(tmp_path, capsys):
 
     def _list_voices(provenance: str) -> int:
         return cli._cmd_list(
-            ["voices", "--workspace", WS, "--root", str(root),
+            ["voices", "--workspace", WS, "--user", USER, "--root", str(root),
              "--filters", f'{{"provenance": "{provenance}"}}']
         )
 
@@ -131,7 +132,7 @@ def test_list_filters_narrow_by_provenance(tmp_path, capsys):
 def test_list_bad_filters_json_is_usage_exit_2(tmp_path):
     root = build_root(tmp_path)
     code = cli._cmd_list(
-        ["voices", "--workspace", WS, "--root", str(root), "--filters", "{not json"]
+        ["voices", "--workspace", WS, "--user", USER, "--root", str(root), "--filters", "{not json"]
     )
     assert code == 2  # a pre-engine usage error, never a silent proceed
 
@@ -141,7 +142,9 @@ def test_list_bad_filters_json_is_usage_exit_2(tmp_path):
 
 def test_get_voice_returns_the_entry(tmp_path, capsys):
     root = build_root(tmp_path)
-    code = cli._cmd_get(["voices", "clear-explainer", "--workspace", WS, "--root", str(root)])
+    code = cli._cmd_get(
+        ["voices", "clear-explainer", "--workspace", WS, "--user", USER, "--root", str(root)]
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert "clear-explainer" in out
@@ -151,9 +154,11 @@ def test_get_voice_returns_the_entry(tmp_path, capsys):
 def test_get_outline_returns_the_entry(tmp_path, capsys):
     root = build_root(tmp_path)
     digest = outline_store.put_outline(
-        WorkspaceStore(root / "workspaces" / WS), "# Intro\n\nReal outline body.\n"
+        WorkspaceStore.at(root, USER, WS), "# Intro\n\nReal outline body.\n"
     )
-    code = cli._cmd_get(["outlines", digest, "--workspace", WS, "--root", str(root)])
+    code = cli._cmd_get(
+        ["outlines", digest, "--workspace", WS, "--user", USER, "--root", str(root)]
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert digest in out and "provenance:" in out
@@ -161,7 +166,9 @@ def test_get_outline_returns_the_entry(tmp_path, capsys):
 
 def test_get_unknown_id_is_exit_1(tmp_path, capsys):
     root = build_root(tmp_path)
-    code = cli._cmd_get(["voices", "no-such-voice", "--workspace", WS, "--root", str(root)])
+    code = cli._cmd_get(
+        ["voices", "no-such-voice", "--workspace", WS, "--user", USER, "--root", str(root)]
+    )
     err = capsys.readouterr().err
     assert code == 1
     assert "no voices entry" in err
@@ -169,7 +176,7 @@ def test_get_unknown_id_is_exit_1(tmp_path, capsys):
 
 def test_get_unknown_type_is_exit_1(tmp_path):
     root = build_root(tmp_path)
-    assert cli._cmd_get(["nope", "x", "--workspace", WS, "--root", str(root)]) == 1
+    assert cli._cmd_get(["nope", "x", "--workspace", WS, "--user", USER, "--root", str(root)]) == 1
 
 
 # --- §21.9 money-safety: list/get register nothing, spend nothing -----------------------------
@@ -180,7 +187,7 @@ def test_list_registers_no_verb_on_a_clean_registry(tmp_path):
     # clean registry it registers NOTHING (mirrors C3a `test_preview_prints_spend_scope`).
     root = build_root(tmp_path)
     invoke_mod._VERB_HANDLERS.clear()
-    cli._cmd_list(["voices", "--workspace", WS, "--root", str(root)])
+    cli._cmd_list(["voices", "--workspace", WS, "--user", USER, "--root", str(root)])
     assert not (set(KNOWN_VERBS) & set(invoke_mod._VERB_HANDLERS))
 
 
@@ -190,9 +197,12 @@ def test_list_leaves_the_safe_render_fetch_baseline_exactly(tmp_path):
     # a `pipeline list` run leaves it UNCHANGED — no session verb added, no safe verb removed.
     root = build_root(tmp_path)
     invoke_mod.main_cli(
-        ["begin-session", "--workspace", WS, "--params-json", "{}", "--root", str(root)]
+        [
+            "begin-session", "--workspace", WS, "--user", USER,
+            "--params-json", "{}", "--root", str(root),
+        ]
     )  # exit 3 (CLI-unwired) but registers the safe render + fetch-by-id baseline
-    cli._cmd_list(["voices", "--workspace", WS, "--root", str(root)])
+    cli._cmd_list(["voices", "--workspace", WS, "--user", USER, "--root", str(root)])
     assert set(KNOWN_VERBS) & set(invoke_mod._VERB_HANDLERS) == {"render", "fetch-by-id"}
 
 
@@ -206,8 +216,10 @@ def test_list_and_get_never_register_session_or_api_handlers(tmp_path, monkeypat
     monkeypatch.setattr(
         discovery, "register_discovery_handlers", lambda *a, **k: called.append("discovery")
     )
-    cli._cmd_list(["voices", "--workspace", WS, "--root", str(root)])
-    cli._cmd_get(["voices", "clear-explainer", "--workspace", WS, "--root", str(root)])
+    cli._cmd_list(["voices", "--workspace", WS, "--user", USER, "--root", str(root)])
+    cli._cmd_get(
+        ["voices", "clear-explainer", "--workspace", WS, "--user", USER, "--root", str(root)]
+    )
     assert called == []  # never registered a session/api/discovery verb (direct-handler pattern)
     assert "begin-session" not in invoke_mod._VERB_HANDLERS
     assert "continue-session" not in invoke_mod._VERB_HANDLERS
@@ -217,6 +229,9 @@ def test_invoke_begin_session_still_exit_3(tmp_path):
     # The §21.9 door invariant is UNMOVED by C3c: the live-quota session verb stays CLI-unwired.
     root = build_root(tmp_path)
     code = invoke_mod.main_cli(
-        ["begin-session", "--workspace", WS, "--params-json", "{}", "--root", str(root)]
+        [
+            "begin-session", "--workspace", WS, "--user", USER,
+            "--params-json", "{}", "--root", str(root),
+        ]
     )
     assert code == 3

@@ -34,6 +34,7 @@ from pipeline.folios import add_to_folio, create_folio
 from pipeline.store import WorkspaceStore
 
 WS = "wsA"
+USER = "acme"
 ART = "a-9f3c07d21b44e8aa"
 ART2 = "a-1234567890abcdef"
 FIXED_TS = "2024-01-01T00:00:00+00:00"
@@ -55,7 +56,8 @@ COORD = {
 
 @pytest.fixture()
 def store(tmp_path):
-    s = WorkspaceStore(tmp_path / WS)
+    # `.at(...)` records identity so manifest `_root_of` recovers the framework root loudly (§23).
+    s = WorkspaceStore.at(tmp_path, USER, WS)
     s.ensure_layout()
     return s
 
@@ -69,13 +71,13 @@ class FakeResolver:
         self.stale_serials = set(stale_serials)
         self.calls = 0
 
-    def current_fit_digest(self, *, root, workspace, fitted_id, stored_preimage):
+    def current_fit_digest(self, *, root, user, workspace, fitted_id, stored_preimage):
         self.calls += 1
         if fitted_id in self.stale_fits:
             return "ffffffffffff"
         return reconcile.fit_digest(stored_preimage)
 
-    def current_serialize_digest(self, *, root, workspace, deliverable_id, stored_preimage):
+    def current_serialize_digest(self, *, root, user, workspace, deliverable_id, stored_preimage):
         self.calls += 1
         if deliverable_id in self.stale_serials:
             return "ffffffffffff"
@@ -229,7 +231,9 @@ def _emit(store, folio_id, *, member_targets=None, resolver=None, now=None):
     params = {"folio_id": folio_id}
     if member_targets is not None:
         params["member_targets"] = member_targets
-    return invoke("emit-manifest", WS, params, store=store, handlers={"emit-manifest": handler})
+    return invoke(
+        "emit-manifest", WS, USER, params, store=store, handlers={"emit-manifest": handler}
+    )
 
 
 def _manifest(out) -> dict:
@@ -604,7 +608,9 @@ class TestPersistenceAndReturn:
 
     def test_missing_folio_id_param_is_a_block(self, store):
         handler = manifest.emit_manifest_handler(resolver=FakeResolver(), now=CountingNow())
-        out = invoke("emit-manifest", WS, {}, store=store, handlers={"emit-manifest": handler})
+        out = invoke(
+            "emit-manifest", WS, USER, {}, store=store, handlers={"emit-manifest": handler}
+        )
         assert out["results"][0]["status"] == "block"
 
 

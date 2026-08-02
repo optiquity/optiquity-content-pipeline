@@ -35,6 +35,7 @@ from pipeline.folios import add_to_folio, create_folio
 from pipeline.store import WorkspaceStore
 
 WS = "wsA"
+USER = "acme"
 ART = "a-9f3c07d21b44e8aa"
 ART2 = "a-1234567890abcdef"
 FIXED_TS = "2024-01-01T00:00:00+00:00"
@@ -47,7 +48,8 @@ ACTION_VOCAB = frozenset(
 
 @pytest.fixture()
 def store(tmp_path):
-    s = WorkspaceStore(tmp_path / WS)
+    # `.at(...)` records identity so discovery `_root_of` recovers the framework root loudly (§23).
+    s = WorkspaceStore.at(tmp_path, USER, WS)
     s.ensure_layout()
     return s
 
@@ -61,12 +63,12 @@ class FakeResolver:
         self.stale_fits = set(stale_fits)
         self.stale_serials = set(stale_serials)
 
-    def current_fit_digest(self, *, root, workspace, fitted_id, stored_preimage):
+    def current_fit_digest(self, *, root, user, workspace, fitted_id, stored_preimage):
         if fitted_id in self.stale_fits:
             return "ffffffffffff"
         return reconcile.fit_digest(stored_preimage)
 
-    def current_serialize_digest(self, *, root, workspace, deliverable_id, stored_preimage):
+    def current_serialize_digest(self, *, root, user, workspace, deliverable_id, stored_preimage):
         if deliverable_id in self.stale_serials:
             return "ffffffffffff"
         return serialize.serialize_digest(stored_preimage)
@@ -165,13 +167,13 @@ def _list(store, type_name, filters=None, *, resolver=None, folio_id=None):
     if folio_id is not None:
         params["folio_id"] = folio_id
     handler = discovery.list_handler(resolver=resolver or FakeResolver(), action_vocab=ACTION_VOCAB)
-    return invoke("list", WS, params, store=store, handlers={"list": handler})
+    return invoke("list", WS, USER, params, store=store, handlers={"list": handler})
 
 
 def _get(store, type_name, id_str, *, resolver=None):
     handler = discovery.get_handler(resolver=resolver or FakeResolver())
     params = {"type": type_name, "id": id_str}
-    return invoke("get", WS, params, store=store, handlers={"get": handler})
+    return invoke("get", WS, USER, params, store=store, handlers={"get": handler})
 
 
 def _items(out):
@@ -366,7 +368,7 @@ class TestC6CiteprocCurrencyCarryForward:
         # The live resolver re-derives the flag from the stored bundle → the citing deliverable
         # reports NO spurious drift (a pre-fix rebuild would omit the key and drift).
         current = resolver.current_serialize_digest(
-            root=tmp_path, workspace=WS, deliverable_id="citing", stored_preimage=citing
+            root=tmp_path, user=USER, workspace=WS, deliverable_id="citing", stored_preimage=citing
         )
         assert current == serialize.serialize_digest(citing)
 
@@ -378,7 +380,8 @@ class TestC6CiteprocCurrencyCarryForward:
         )
         assert "citeproc_enablement_version" not in non_citing["tool_bundle"]
         current = resolver.current_serialize_digest(
-            root=tmp_path, workspace=WS, deliverable_id="plain", stored_preimage=non_citing
+            root=tmp_path, user=USER, workspace=WS,
+            deliverable_id="plain", stored_preimage=non_citing,
         )
         assert current == serialize.serialize_digest(non_citing)
 
@@ -396,7 +399,7 @@ class TestC6CiteprocCurrencyCarryForward:
             both["tool_bundle"]
         )
         current = resolver.current_serialize_digest(
-            root=tmp_path, workspace=WS, deliverable_id="both", stored_preimage=both
+            root=tmp_path, user=USER, workspace=WS, deliverable_id="both", stored_preimage=both
         )
         assert current == serialize.serialize_digest(both)
 
@@ -457,7 +460,7 @@ class TestBAssetEmbedCurrencyCarryForward:
         # The live resolver re-derives the flag from the stored bundle AND carries the stored
         # `embedded_assets` through verbatim → the embedded deliverable reports NO phantom drift.
         current = resolver.current_serialize_digest(
-            root=tmp_path, workspace=WS, deliverable_id="pic", stored_preimage=embedded
+            root=tmp_path, user=USER, workspace=WS, deliverable_id="pic", stored_preimage=embedded
         )
         assert current == serialize.serialize_digest(embedded)
 
@@ -469,7 +472,8 @@ class TestBAssetEmbedCurrencyCarryForward:
         )
         assert "asset_embed_version" not in non_embedded["tool_bundle"]
         current = resolver.current_serialize_digest(
-            root=tmp_path, workspace=WS, deliverable_id="ref", stored_preimage=non_embedded
+            root=tmp_path, user=USER, workspace=WS,
+            deliverable_id="ref", stored_preimage=non_embedded,
         )
         assert current == serialize.serialize_digest(non_embedded)
 
@@ -491,7 +495,7 @@ class TestBAssetEmbedCurrencyCarryForward:
             "asset_embed_version",
         } <= set(allthree["tool_bundle"])
         current = resolver.current_serialize_digest(
-            root=tmp_path, workspace=WS, deliverable_id="all3", stored_preimage=allthree
+            root=tmp_path, user=USER, workspace=WS, deliverable_id="all3", stored_preimage=allthree
         )
         assert current == serialize.serialize_digest(allthree)
 
@@ -513,9 +517,9 @@ def _write_registry(path: Path, provenance: str) -> None:
 
 @pytest.fixture()
 def registry_store(tmp_path):
-    """A store whose framework root (`_root_of` grandparent = `<root>/workspaces/<ws>` → `<root>`)
-    is a controlled fixture root carrying `voices/` + `lexicons/` registry dirs — so `list voices`
-    / `list lexicons` read real entries, off the shared repo tree."""
+    """A store whose framework root (`_root_of` = the recorded `.at(...)` identity, §23) is a
+    controlled fixture root carrying `voices/` + `lexicons/` registry dirs — so `list voices` /
+    `list lexicons` read real entries, off the shared repo tree."""
     root = tmp_path / "root"
     _write_registry(root / "voices" / "clear-explainer.md", "framework")
     _write_registry(root / "voices" / "confident-advocate.md", "framework")
@@ -523,7 +527,7 @@ def registry_store(tmp_path):
     _write_registry(root / "voices" / "_schema.yaml", "framework")  # skipped (leading _)
     _write_registry(root / "voices" / "voice.template.md", "framework")  # skipped (.template.)
     _write_registry(root / "lexicons" / "house-standard.md", "framework")
-    store = WorkspaceStore(root / "workspaces" / WS)
+    store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     return store
 
@@ -578,7 +582,7 @@ class TestC3cNewListTypes:
 
     def test_recipes_and_codes_are_unchanged(self, registry_store):
         # C3c must not perturb the pre-existing registry/meta list types.
-        root = registry_store.root.parent.parent
+        root = registry_store.framework_root
         _write_registry(root / "recipes" / "explainer-post.md", "framework")
         recipes = _list(registry_store, "recipes")
         assert {i["item"] for i in _items(recipes)} == {"explainer-post"}

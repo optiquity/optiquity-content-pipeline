@@ -55,6 +55,7 @@ T0 = 1_000_000.0  # the injected epoch-seconds base (the test owns time)
 LIFETIME = float(JOB_LIFETIME_SECONDS)  # the running-vs-dead / job-lifetime window (22 min)
 NASCENT = float(NASCENT_RECORD_GRACE_SECONDS)  # the short torn/nascent-record grace (seconds-scale)
 WS = "ws"
+USER = "acme"
 IDK = "idk-1"
 
 
@@ -84,7 +85,7 @@ def _never_claimed(_id: str):
 
 @pytest.fixture
 def jobs_dir(tmp_path):
-    return tmp_path / "workspaces" / WS / "jobs"
+    return tmp_path / "users" / USER / "workspaces" / WS / "jobs"
 
 
 @pytest.fixture
@@ -104,6 +105,7 @@ def _spec(key: str, *, verb: str = "continue-session", token=None, params=None) 
         key=key,
         verb=verb,
         workspace=WS,
+        user=USER,
         params=params or {"action": "generate-next"},
         idempotency_key=IDK,
         root="/repo-root",
@@ -360,6 +362,7 @@ class TestPresenceLease:
             key=job_key((A,), IDK),
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "generate-next"},
             idempotency_key=IDK,
             root=str(tmp_path),
@@ -422,6 +425,7 @@ class TestSpawnPrimitive:
             key=job_key((A,), IDK),
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "generate-next"},
             idempotency_key=IDK,
             root="/repo-root",
@@ -490,6 +494,7 @@ class TestMain:
             key=job_key((A,), IDK),
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "generate-next"},
             idempotency_key=IDK,
             root=str(tmp_path),
@@ -532,6 +537,7 @@ class TestMain:
             key=key,
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "generate-next"},  # token-less → the real handler blocks, no LLM
             idempotency_key=IDK,
             root=str(tmp_path),
@@ -587,6 +593,7 @@ class TestMain:
             key=key,
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "generate-next"},
             idempotency_key=IDK,
             root=str(tmp_path),
@@ -628,6 +635,7 @@ class TestMain:
             key=key,
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "generate-next"},
             idempotency_key=IDK,
             root=str(tmp_path),
@@ -655,6 +663,7 @@ class TestMain:
             key=key,
             verb="continue-session",
             workspace=WS,
+            user=USER,
             params={"action": "generate-next"},
             idempotency_key=IDK,
             root=str(tmp_path),
