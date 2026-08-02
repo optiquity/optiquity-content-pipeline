@@ -199,7 +199,7 @@ and the old one is dead (Appendix B archives it).
 | **workspace state** | Durable, system-side, per-client state: registries, config, folios, artifacts, deliverables, claims (§20). |
 | **pins** | The reproducibility set a run stamps: global `schema_version`, the source commit-map (§7.2), render tool bundle (§21.8); suppliable explicitly at `begin-session` (§21.8). |
 | **SSOT** | The tracking spreadsheet — sole authority for the status/progress domain, and only that domain (§24, §22.7). |
-| **provenance / scope** | Provenance = who authored it (`framework|instance`), a metadata tag. Scope = where it applies (global vs `workspaces/<client>/`), encoded by location (§10). |
+| **provenance / scope** | Provenance = who authored it (`framework|instance`), a metadata tag. Scope = where it applies (global vs `users/<user>/workspaces/<workspace>/`), encoded by location (§10). |
 
 ## §5 Dimensions
 
@@ -234,7 +234,7 @@ The dimension inventory as tuples:
 **Topic — what is it about, and why it matters.** Owns the subject matter (grounded in sources)
 plus `why` — the editorial significance. Never touches audience, structure, destination, or the
 persuasion objective. Universal-archetype vs bespoke topics are handled purely by **scope** (§10):
-shared registry vs `workspaces/<client>/topics/` — no special archetype mechanism.
+shared registry vs `users/<user>/workspaces/<workspace>/topics/` — no special archetype mechanism.
 
 **Persona — who is it for.** Owns **audience facts only**: role/relationship, knowledge level,
 motivation, objections, credibility signals — plus a **`default_voice: <ref>`** to a Voice entry
@@ -1021,7 +1021,10 @@ it, Appendix B):
   shared directories are **mixed-provenance**: framework defaults and instance-global additions
   live side by side, distinguished by the tag, never by location.
 - **Scope** — where it applies: encoded by **location**. Shared `<dimension>/` directories =
-  global; `workspaces/<client>/<dimension>/` = that client only. Client isolation is structural.
+  global; `users/<user>/workspaces/<workspace>/<dimension>/` = that client only. Client isolation
+  is structural. The `users/<user>/` segment is an isolation/addressing **prefix**, orthogonal to
+  the value cascade (§12/§23): it changes *where* a workspace lives, not which rung a value binds
+  to — the cascade stays framework → instance-global → workspace (L1/L2/L3), never a `user` rung.
 
 The five interlocking rules (Q15, all normative):
 
@@ -1912,7 +1915,7 @@ survive. The old never-block text must not re-enter from any archived source.
   `--resource-path` is emitted ONLY for an EMBED writer (html5/docx). The once-deferred filesystem asset
   loader is now real and **FENCED to `presentations/`** (rule-2 client isolation — a styling `.csl`/CSS
   file resolves against the repo root but is refused unless it lands inside `<root>/presentations`, so a
-  tampered/legacy entry can never pull another client's `workspaces/…` file). Because embedding OPENS and
+  tampered/legacy entry can never pull another client's `users/…/workspaces/…` file). Because embedding OPENS and
   COPIES whatever a figure points at, before ANY embed flag is emitted the render leg **re-runs A's FULL
   compose-time containment gate** on the persisted AST — every image target (not just the tidy `assets/…`
   subset) plus the raw-markup refusal — and REFUSES the whole render if anything is off, so a tampered
@@ -2190,9 +2193,11 @@ what lets disconnected workflow 2 render or fetch what workflow 1 produced, toke
   §21.9) and **NOT a `continue-session` action** — the emitted artifact renders and fetches through
   the existing token-optional verbs.
 
-Every call carries `workspace`; **isolation is enforced by the API, not by trust**: every id must
-resolve inside that workspace or the item is refused (`isolation-violation`). One invocation is
-synchronous: `invoke(verb, workspace, params, [token], [pins]) → {envelope, results, [token']}`.
+Every call carries `user` + `workspace` (the `user` isolation prefix is MANDATORY, never defaulted
+— a missing/None `user` fails loud at the door rather than building a `users/None/…` path, §23);
+**isolation is enforced by the API, not by trust**: every id must resolve inside that workspace or
+the item is refused (`isolation-violation`). One invocation is synchronous:
+`invoke(verb, workspace, user, params, [token], [pins]) → {envelope, results, [token']}`.
 
 ### §21.2 The closed action vocabulary
 
@@ -2293,7 +2298,7 @@ SSOT and is not a slice of it** — it is a generated, deterministically regener
 (same membership + same targets ⇒ same work order). This supersedes the archived
 "manifest = a slice of the SSOT" definition (§4). **Where an emitted manifest lives:** the work
 order is returned in-band in the invocation `results` AND persisted under
-`workspaces/<client>/output/manifests/`, keyed by folio-id + emission timestamp (a machine
+`users/<user>/workspaces/<workspace>/output/manifests/`, keyed by folio-id + emission timestamp (a machine
 record, §13.3; workspace data, never public, §10). Deterministic regenerability makes retention
 policy free — a pruned manifest is re-emittable at will; the SSOT is never touched (§24).
 
@@ -2743,8 +2748,8 @@ content-kinds/                          # §6.1
 sources/                               # adapters + source-instance entries (§6.1)
 render-targets/                         # writer + side + pins entries (§17)
 recipes/ folio-types/                   # §8, §9.6
-workspaces/workspace.template/          # the only workspace in public
-workspaces/<client>/                    # instance-side only (gitignored in public)
+templates/workspace/                    # the shared workspace scaffold in public (framework; §23)
+users/<user>/workspaces/<workspace>/    # instance-side only (gitignored in public)
   topics/ <dimension>/ …                #   client-scoped entries + extends: partials (§10)
   folios/<folio-id>/members/<artifact-id>   # marker-per-member records (§13.3)
   artifacts/ deliverables/              #   IR-canonical/fitted/AST/bytes + render-bindings (§18)
@@ -2758,6 +2763,13 @@ instance/ops/                           # instance-scoped stores (§22.5): prese
 scripts/                                # incl. migrate.sh (§11.6), guards (§10, §11.7)
 .claude/{agents,skills}/                # framework-ops plane (product plane open, §27.4)
 ```
+
+The **`users/<user>/` level is an isolation/addressing prefix, not a new scope rung** (§10): it
+changes only *where* a workspace lives, leaving the value cascade framework → instance-global →
+workspace (L1/L2/L3, §12) untouched. `users/` and `workspaces/` are plural REST collection nouns,
+so the on-disk tree maps 1:1 to a future `/users/{user}/workspaces/{workspace}` REST path; the
+shared scaffold at `templates/workspace/` is the framework copy every new workspace is stamped from
+(`cp -R templates/workspace users/<user>/workspaces/<workspace>`).
 
 The **mechanism-public / data-instance split** (§10) governs every new store: the claim table,
 presence-lease registry, telemetry log, and the DR-1 `jobs/` record store are framework

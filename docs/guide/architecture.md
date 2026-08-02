@@ -2,14 +2,14 @@
 
 ## Repository layout
 
-The repository root contains CLAUDE.md, LICENSE, README.md, content-kinds/, docs/, folio-types/, formats/, goals/, instance/, languages/, lexicons/, output-types/, personas/, pipeline/, platforms/, presentations/, pyproject.toml, quickstart.md, recipes/, render-targets/, scripts/, sources/, state.md, state.template.md, topics/, uv.lock, voices/. It splits into four regions.
+The repository root contains CLAUDE.md, LICENSE, README.md, content-kinds/, docs/, folio-types/, formats/, goals/, instance/, languages/, lexicons/, output-types/, personas/, pipeline/, platforms/, presentations/, pyproject.toml, quickstart.md, recipes/, render-targets/, scripts/, sources/, state.md, state.template.md, templates/, topics/, uv.lock, voices/. It splits into four regions.
 
 - **Registries (one directory per axis or dimension).** The four core axes are topics/, personas/, platforms/, and formats/. Alongside them sit goals/, voices/, languages/, lexicons/, output-types/, render-targets/, presentations/, content-kinds/, folio-types/, and recipes/.
 - **The engine.** pipeline/ holds the Python modules — compose, cascade, grounding, ir, dispatch, serialize, and driver among them — with pipeline/adapters/ for source readers, pipeline/api/ for the verbs, pipeline/filters/ for the serialize filters, and pipeline/prompts/ for the writer and reviewer prompts.
 - **The design record.** docs/ carries the mission, the definitive design, design-decisions, and known-issues, with docs/reference/ holding the operator grammar.
-- **Scripts, instance config, and workspaces.** scripts/ holds the launcher and maintenance tools, and instance/ holds instance defaults and profile. Per-client work is isolated under workspaces/, created with cp -R workspaces/workspace.template workspaces/self.
+- **Scripts, instance config, templates, and workspaces.** scripts/ holds the launcher and maintenance tools, instance/ holds instance defaults and profile, and templates/ holds the shared framework blueprints (templates/workspace/). Per-client work is isolated under users/<user>/workspaces/<workspace>/, created with cp -R templates/workspace users/<user>/workspaces/self (the users/<user>/ segment is an isolation/addressing prefix, §23).
 
-A literal view of the current tree (excluding `tests/`, `archive/`, `workspaces/`, caches, and dot-directories — the same exclusions the grounding used; `pipeline/` and `docs/` expanded one level, deeper directories collapsed):
+A literal view of the current tree (excluding `tests/`, `archive/`, instance-owned `users/`, caches, and dot-directories — the same exclusions the grounding used; `pipeline/` and `docs/` expanded one level, deeper directories collapsed):
 
 ```
 .
@@ -90,6 +90,7 @@ A literal view of the current tree (excluding `tests/`, `archive/`, `workspaces/
 ├── render-targets/
 ├── scripts/
 ├── sources/
+├── templates/
 ├── topics/
 ├── voices/
 ├── CLAUDE.md

@@ -10,11 +10,11 @@ if you like, others') that pull your improvements non-destructively.
 
 | Repo | Contains | Never contains |
 |---|---|---|
-| **Public framework** (MIT) | `CLAUDE.md`, `docs/`, `*.template.*` registry files, `.claude/` agents+skills, `scripts/`, `workspaces/workspace.template/`, QuickStart | Any populated registries, `instance/profile.md`, real workspaces, generated output |
-| **Private instance** | Everything from public **+** populated registries, `instance/profile.md`, real `workspaces/<client>/`, output | — |
+| **Public framework** (MIT) | `CLAUDE.md`, `docs/`, `*.template.*` registry files, `.claude/` agents+skills, `scripts/`, `templates/workspace/`, QuickStart | Any populated registries, `instance/profile.md`, real workspaces, generated output |
+| **Private instance** | Everything from public **+** populated registries, `instance/profile.md`, real `users/<user>/workspaces/<workspace>/`, output | — |
 
-Your own instance is just the first private instance; you are `workspaces/self`. Others clone the
-public repo to make their own private instances.
+Your own instance is just the first private instance; you are `users/<user>/workspaces/self`. Others
+clone the public repo to make their own private instances.
 
 ## The ownership boundary (why updates stay clean)
 
@@ -22,7 +22,9 @@ public repo to make their own private instances.
 (`provenance: framework | instance`) — is a **metadata tag**; **scope** — where it applies — is
 **location**. Shared registry directories hold framework-shipped defaults and instance-global
 additions side by side, distinguished by the tag, never by the directory. Client scope is still
-structural: `workspaces/<client>/` entries apply to that client only.
+structural: `users/<user>/workspaces/<workspace>/` entries apply to that client only. (The
+`users/<user>/` segment is an isolation/addressing prefix — it changes *where* a workspace lives,
+not the value cascade; `docs/design.md` §10/§23.)
 
 Updates stay clean because framework and instance content never share a **file** (git merges at
 file granularity, so a merge only conflicts when *both* sides edit the *same* file):
@@ -34,7 +36,7 @@ file granularity, so a merge only conflicts when *both* sides edit the *same* fi
 - **Instance-owned (you add these; upstream never touches them):** instance-global registry
   entries in the shared dirs (`provenance: instance`, ids/filenames carrying the reserved `x-`
   prefix — `docs/design.md` §11.4 — so framework↔instance filename collisions are impossible),
-  `content-kinds/` additions, `workspaces/<client>/**` — including client-scoped entries and
+  `content-kinds/` additions, `users/<user>/workspaces/<workspace>/**` — including client-scoped entries and
   **workspace `extends:` partials**, the partial-customization path that field-merges over a
   shipped entry instead of editing it — `instance/profile.md`, `instance/ops/` stores
   (presence-lease registry, telemetry — mechanism framework, data instance; `docs/design.md`
@@ -61,8 +63,9 @@ place a conflict can arise — resolve by moving your change into an instance-ow
 
 Enforced two ways, not willpower:
 
-1. `scripts/check-no-content.sh` fails if populated registries, a real `profile.md`, or
-   non-template `workspaces/*` appear.
+1. `scripts/check-no-content.sh` fails if populated registries, a real `profile.md`, or any tracked
+   client content under `users/*` appear. (The shared scaffold at `templates/workspace/` is
+   framework, so it stays; its subtree is scanned for the `x-`/`provenance: instance` signals only.)
 2. `.github/workflows/guard.yml` runs that check on every push/PR to the public repo. The private
    repo simply doesn't run it, so it tracks your content freely.
 
@@ -70,12 +73,12 @@ Do all content work in the **private** repo; push only framework changes to publ
 
 ## Client isolation (inside the private repo)
 
-- Each client repo is `workspaces/<client>/` with its own `topics/`, `select/`, `output/`.
+- Each client repo is `users/<user>/workspaces/<workspace>/` with its own `topics/`, `select/`, `output/`.
 - Source/client repos are **read-only** (durable rule, CLAUDE.md). Their Graphify graph lives in the
   client-repo checkout (`graphify-out/`, gitignored there) and is **read by path**; no graphs are stored here.
 - `personas/`, `platforms/`, `formats/` are **shared defaults** across clients (they describe
   audiences/channels/formats, not client secrets). Need a client-specific variant? Add
-  `workspaces/<client>/overrides/` and have the resolver prefer overrides for that workspace.
+  `users/<user>/workspaces/<workspace>/overrides/` and have the resolver prefer overrides for that workspace.
 - Content and output never cross workspaces.
 
 ## Setup recap
@@ -88,7 +91,8 @@ git remote rename origin upstream
 git remote add origin <YOUR_PRIVATE_REPO_URL>
 git push -u origin main
 cp instance/profile.template.md instance/profile.md    # fill with your goals/audiences
-cp -R workspaces/workspace.template workspaces/self
+mkdir -p users/<user>/workspaces                        # your isolation/addressing prefix (§23)
+cp -R templates/workspace users/<user>/workspaces/self  # your first workspace (a future `workspace new`)
 ```
 
 ## Backward compatibility of framework changes
@@ -112,7 +116,7 @@ improvements without disturbing that instance's tracked content and history.
 
 ## Your content is tracked (durability)
 
-Your private instance versions its **full** history: populated registries, `workspaces/<client>/`
+Your private instance versions its **full** history: populated registries, `users/<user>/workspaces/<workspace>/`
 (topics, selection configs, and generated `output/`), `instance/profile.md`, and `state.md`.
 The framework `.gitignore` ignores only local cruft (`reference/`, OS/editor files) — never your
 content. Merges from upstream stay clean because upstream never has files under your workspaces.

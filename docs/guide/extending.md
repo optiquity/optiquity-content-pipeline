@@ -7,7 +7,7 @@ Every extension point is a one-file change; a new axis/stage is a config additio
 - **A new matrix value.** Drop a Markdown entry into the axis directory — topics/, personas/, platforms/, or formats/ — and the resolver picks it up.
 - **A recipe.** Add a file under recipes/ to bundle a genre's settings.
 - **A source adapter.** Add a reader module under pipeline/adapters/ next to folder.py, fsast.py, and graphify.py, then register it so the driver can select it.
-- **A scope default.** Set instance- or workspace-level defaults that load_scope_defaults reads into a ScopeDefaults.
+- **A scope default.** Set instance- or workspace-level defaults that load_scope_defaults reads into a ScopeDefaults. (The `users/<user>/` addressing prefix is **not** a scope-default rung — the value cascade stays framework → instance-global → workspace; the user level only changes *where* a workspace lives, §23.)
 - **A whole pipeline stage.** Adding an editor-style stage is three steps: Add the agent file... Register it in the pipeline stage list (config), positioned after writer... items flow through the new stage and record its result column. New stages attach here without disturbing existing ones.
 
 ## Schema evolution and versioning

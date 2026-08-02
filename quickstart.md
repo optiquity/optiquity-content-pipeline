@@ -30,7 +30,8 @@ graphify --help                # confirm current subcommands/flags
 **3. Create a workspace** (your own repo is a client too)
 
 ```bash
-cp -R workspaces/workspace.template workspaces/self
+mkdir -p users/<you>/workspaces                        # your isolation/addressing prefix (§23)
+cp -R templates/workspace users/<you>/workspaces/self  # a future `workspace new` will scaffold this
 ```
 
 **4. Build the graph in your checked-out client repo (gitignored there)**
@@ -41,7 +42,7 @@ graphify extract .                # builds graphify-out/ here; gitignored in tha
 graphify export wiki              # optional agent-crawlable wiki snapshot (needs the extract first)
 ```
 
-Record the checkout path + its `graphify-out/graph.json` path in `workspaces/self/source.md`.
+Record the checkout path + its `graphify-out/graph.json` path in `users/<you>/workspaces/self/source.md`.
 The pipeline reads the graph by that path; it stores no graphs itself.
 
 **5. Smoke test the grounding (read-only)**
@@ -72,7 +73,7 @@ shipped entry. Start from the templates for the axes you customize most:
 cp personas/persona.template.md   personas/x-hiring-manager.md      # per audience
 cp platforms/platform.template.md platforms/x-company-blog.md       # per platform
 cp formats/format.template.md     formats/x-launch-note.md          # per format
-cp topics/topic.template.md       workspaces/self/topics/<id>.md    # per topic (client-scoped)
+cp topics/topic.template.md       users/<you>/workspaces/self/topics/<id>.md  # per topic (client-scoped)
 ```
 
 Private, instance-only entries take the reserved `x-` filename prefix and `provenance: instance`
@@ -98,21 +99,21 @@ conforms to the axis's `_schema.yaml`.
 **7. Try it — preview, then generate** (the friendly CLI; nothing paid happens without `--go`)
 
 ```bash
-# See the plan + the exact paid count — spends nothing:
-uv run pipeline preview --topic <your-topic> --workspace self
+# See the plan + the exact paid count — spends nothing (--user is REQUIRED with --workspace):
+uv run pipeline preview --user <you> --topic <your-topic> --workspace self
 
 # Same plan as a free dry-run, then --go to actually compose (Claude SUBSCRIPTION quota, never an API key):
-uv run pipeline generate --topic <your-topic> --workspace self          # dry-run
-uv run pipeline generate --topic <your-topic> --workspace self --go     # spends
+uv run pipeline generate --user <you> --topic <your-topic> --workspace self          # dry-run
+uv run pipeline generate --user <you> --topic <your-topic> --workspace self --go     # spends
 ```
 
 `preview`/`generate` default to the `explainer-post` recipe; add `--persona/--format/--voice/--goals`
 to pick content axes and `--platform/--language/--output-type/--presentation` to route the output.
-Review the deliverable in `workspaces/self/output/`. The full authoring surface — recipes, saved
+Review the deliverable in `users/<you>/workspaces/self/output/`. The full authoring surface — recipes, saved
 selections, entries, outlines, discovery — lives in `docs/guide/authoring.md`.
 
 (Prefer to drive it from a Claude Code session instead? Open the repo and ask it to preview then
-generate one thread for `workspaces/self` — it runs the very same commands, and still spends nothing
+generate one thread for `users/<you>/workspaces/self` — it runs the very same commands, and still spends nothing
 until you approve `--go`.)
 
 ---

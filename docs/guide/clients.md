@@ -38,8 +38,9 @@ X-API-Key: <secret>
 ```
 
 `pipeline serve` is **fail-closed**: it refuses to start with no secret, binds to loopback by
-default, and serves only allow-listed workspaces. A missing/invalid secret is `401`
-(`unauthorized`).
+default, and serves only allow-listed `user/workspace` pairs (§23 — each allow-list entry is a
+`user/workspace` string, or a `user/*` wildcard admitting every workspace under one user). A
+missing/invalid secret is `401` (`unauthorized`).
 
 ### 1.2 The invoke request
 
@@ -49,6 +50,7 @@ default, and serves only allow-listed workspaces. A missing/invalid secret is `4
 {
   "verb": "render",
   "workspace": "acme",
+  "user": "acme-corp",
   "params": { "item": "deck-intro", "platform": "linkedin",
               "language": "en", "output_type": "post" },
   "token": null,
@@ -56,7 +58,9 @@ default, and serves only allow-listed workspaces. A missing/invalid secret is `4
 }
 ```
 
-- `verb` and `workspace` are top-level and required.
+- `verb`, `workspace`, and `user` are top-level and required. `user` is the §23 isolation prefix
+  (the pair addresses `users/<user>/workspaces/<workspace>/`) — a missing/empty `user` is a
+  `400 bad-request`, exactly like a missing workspace, and is **never** defaulted.
 - `params` carries the per-verb inputs. **`idempotency_key` and `callback_url`, when used, live
   inside `params`** (not at the top level) — `generate-next` requires a non-empty
   `params.idempotency_key`; `render` is content-addressed so its key is optional.
@@ -68,7 +72,7 @@ Cheap, model-free verbs (list/get, folio verbs, `emit-manifest`, `begin-session{
 run inline and return the same JSON **envelope** the CLI produces:
 
 ```json
-{ "ok": true, "verb": "list", "workspace": "acme" }
+{ "ok": true, "verb": "list", "workspace": "acme", "user": "acme-corp" }
 ```
 
 `ok` reflects **whole-invocation** validity only (a per-item `block` in `results[]` never flips
@@ -112,7 +116,7 @@ web request allows, so the shim replies **`202 Accepted`** with a job handle ins
 {
   "status": "accepted",
   "job": { "key": "r-0123456789abcdef", "target_ids": ["<deliverable-id>"] },
-  "poll": { "path": "/poll", "method": "POST", "needs": ["workspace", "key", "target_ids"] }
+  "poll": { "path": "/poll", "method": "POST", "needs": ["workspace", "user", "key", "target_ids"] }
 }
 ```
 
@@ -122,8 +126,9 @@ it will get `200` or `202`, so it must handle both.
 
 ### 1.5 The poll states
 
-`POST /poll` takes `{ "workspace", "key", "target_ids" }` (all three come from the 202 `job` +
-`poll.needs`). Its reply carries a `status` field; the full set of async status values is:
+`POST /poll` takes `{ "workspace", "user", "key", "target_ids" }` (the `user` prefix is required
+here too, §23; the rest come from the 202 `job` + `poll.needs`). Its reply carries a `status`
+field; the full set of async status values is:
 
 <!-- wire-tokens:async-status:begin -->
 ```text
@@ -233,28 +238,29 @@ Config is env, identically across languages: `OPTIQUITY_SHIM_URL` + `OPTIQUITY_S
 ### 2.2 The raw layer (1:1 with the wire)
 
 ```text
-invoke(verb, workspace, params, token = null, pins = null) -> Response
-poll(workspace, key, target_ids)                           -> Response
-list(type, workspace, filters = null)                      -> Response
-get(type, id, workspace)                                   -> Response
+invoke(verb, workspace, user, params, token = null, pins = null) -> Response
+poll(workspace, user, key, target_ids)                           -> Response
+list(type, workspace, user, filters = null)                      -> Response
+get(type, id, workspace, user)                                   -> Response
 ```
 
 The generic `invoke(verb, ...)` forwards any verb, so the raw layer covers the whole startup-wired
-surface with no per-verb code. `Response` is the normalized value type below.
+surface with no per-verb code. `user` is the §23 isolation prefix and is **required** on every call
+(it rides in the request body beside `workspace`); `Response` is the normalized value type below.
 
 ### 2.3 The ergonomic async layer + the poll state machine
 
 ```text
-begin_session(workspace, selection, overrides=null, pins=null,
+begin_session(workspace, user, selection, overrides=null, pins=null,
               generate="none", idempotency_key=null)  -> SessionHandle
         // generate MUST be "none": the one-call begin-session{generate!=none} is a 501
         // deferred convenience. The supported path is two calls.
 
-generate_and_wait(workspace, token, idempotency_key,   // idempotency_key REQUIRED
+generate_and_wait(workspace, user, token, idempotency_key,   // idempotency_key REQUIRED
                   batch_size=null, only=null, callback_url=null, ...)  -> Result
         // drives the served continue-session{generate-next} door.
 
-render_and_wait(workspace, item, platform, language, output_type,
+render_and_wait(workspace, user, item, platform, language, output_type,
                 presentation=null, force_reconcile=false,
                 idempotency_key=null, callback_url=null)  -> Result
         // render is content-addressed + token-free; idempotency_key OPTIONAL.
@@ -341,7 +347,7 @@ The load-bearing shared algorithm — submit → 202 → poll(Retry-After) → d
 curl -sS -X POST "$OPTIQUITY_SHIM_URL/invoke" \
   -H "Authorization: Bearer $OPTIQUITY_SHIM_SECRET" \
   -H 'Content-Type: application/json' \
-  -d '{"verb":"render","workspace":"acme",
+  -d '{"verb":"render","workspace":"acme","user":"acme-corp",
        "params":{"item":"deck-intro","platform":"linkedin",
                  "language":"en","output_type":"post"}}'
 # -> 202 {"status":"accepted","job":{"key":"r-...","target_ids":["..."]},"poll":{...}}
@@ -354,7 +360,7 @@ cadence (or the integer `Retry-After` on a `429`):
 curl -sS -X POST "$OPTIQUITY_SHIM_URL/poll" \
   -H "Authorization: Bearer $OPTIQUITY_SHIM_SECRET" \
   -H 'Content-Type: application/json' \
-  -d '{"workspace":"acme","key":"r-...","target_ids":["..."]}'
+  -d '{"workspace":"acme","user":"acme-corp","key":"r-...","target_ids":["..."]}'
 # -> 202 {"status":"running",...}      (keep polling)
 # -> 429 + Retry-After: N              (sleep N seconds, then poll)
 # -> 200 {"status":"done","results":[...]}   (done — this is the result)

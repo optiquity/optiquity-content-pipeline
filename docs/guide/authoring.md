@@ -44,6 +44,11 @@ Everything below walks these in the order you would actually use them. Run any o
 `--help` for the authoritative flag list — the CLI's own help is the source of truth, and these
 pages track it.
 
+**`--user` is required with `--workspace`.** Every workspace lives at
+`users/<user>/workspaces/<workspace>/` (§23), so any command that names a `--workspace` must also
+name its owning `--user` — a missing `--user` is a usage error, never a default. The examples below
+use `--user <you> --workspace myrepo`; substitute your own owner and workspace.
+
 ## Step 1 — Preview the plan (spends nothing)
 
 `preview` takes your picks and prints three things: the **effective settings** (and which cascade
@@ -54,7 +59,7 @@ The minimal first run leans on the default recipe (`explainer-post`) and one top
 your workspace:
 
 ```bash
-uv run pipeline preview --topic <your-topic> --workspace myrepo
+uv run pipeline preview --topic <your-topic> --user <you> --workspace myrepo
 ```
 
 A fuller pick names the axes explicitly:
@@ -66,13 +71,13 @@ uv run pipeline preview \
   --format readme \
   --voice clear-explainer \
   --goals explain \
-  --workspace myrepo
+  --user <you> --workspace myrepo
 ```
 
 Output looks like this (trimmed):
 
 ```text
-=== preview: workspace=myrepo recipe=explainer-post ===
+=== preview: user=<you> workspace=myrepo recipe=explainer-post ===
 effective settings (which cascade layer set each):
   a-5dc2cbd9676240e9
     topic        : <your-topic>  [why=L1-entry-default]
@@ -98,7 +103,7 @@ so they add rendering work but not new paid composes.
 preview — the plan and the count, and nothing spent:
 
 ```bash
-uv run pipeline generate --topic <your-topic> --workspace myrepo
+uv run pipeline generate --topic <your-topic> --user <you> --workspace myrepo
 ```
 
 It ends with an explicit reminder:
@@ -113,7 +118,7 @@ When the count is what you intended, add `--go` — and *only* then does it spen
 to compose (and, if you gave render axes, render):
 
 ```bash
-uv run pipeline generate --topic <your-topic> --platform github --workspace myrepo --go
+uv run pipeline generate --topic <your-topic> --platform github --user <you> --workspace myrepo --go
 ```
 
 Other `generate` flags you will reach for: `--set path=value` for run overrides (next step),
@@ -129,7 +134,7 @@ ephemeral top of the cascade — captured in the artifact's identity, never pers
 
 ```bash
 uv run pipeline preview \
-  --topic <your-topic> --workspace myrepo \
+  --topic <your-topic> --user <you> --workspace myrepo \
   --set voice.formality=5 \
   --set voice.warmth=2
 ```
@@ -171,7 +176,7 @@ uv run pipeline recipe new launch-readme \
 That writes `recipes/launch-readme.md`. Provenance is **inferred over every binding**: a
 framework-only recipe homes public at `recipes/<id>.md`; the moment a binding references a client
 (`x-`) entry, the recipe refuses to land in the public repo and homes under the workspace instead —
-`workspaces/<ws>/recipes/x-<id>.md` — which requires `--workspace W`. `recipe new` **refuses if the
+`users/<user>/workspaces/<ws>/recipes/x-<id>.md` — which requires `--user U --workspace W`. `recipe new` **refuses if the
 file exists** unless you pass `--force`, and it **never spends** (it is a local file write, not a
 paid verb).
 
@@ -184,7 +189,7 @@ with or without `--go`):
 ```bash
 uv run pipeline generate \
   --topic <your-topic> --platform github \
-  --workspace myrepo --save-selection my-diagonal
+  --user <you> --workspace myrepo --save-selection my-diagonal
 ```
 
 The saved file is `{base: <recipe ref>, variants: [...]}` — one delta per resulting deliverable, each
@@ -194,15 +199,15 @@ replay surfaces the change as a new version rather than silently serving a stale
 
 > A selection replays a **fan-out**, so the run must resolve at least one deliverable — give it a
 > render axis such as `--platform`, or `--save-selection` has nothing to save. And, as with recipes,
-> a client (`x-`) binding homes the selection under `workspaces/<ws>/selections/` and takes an `x-`
+> a client (`x-`) binding homes the selection under `users/<user>/workspaces/<ws>/selections/` and takes an `x-`
 > id.
 
 Replay it 1:1 with `--selection ID` — the exact saved set, with **no cartesian re-expansion**, so a
 curated diagonal stays a diagonal:
 
 ```bash
-uv run pipeline generate --selection my-diagonal --workspace myrepo        # dry-run
-uv run pipeline generate --selection my-diagonal --workspace myrepo --go   # drive it
+uv run pipeline generate --selection my-diagonal --user <you> --workspace myrepo        # dry-run
+uv run pipeline generate --selection my-diagonal --user <you> --workspace myrepo --go   # drive it
 ```
 
 `--selection` is mutually exclusive with the axis flags / `--set` / `--recipe` / `--outline` — a
@@ -217,14 +222,14 @@ same guidance the attribute reference surfaces). A floor-only entry **lints gree
 can scaffold first and fill in what you want to change.
 
 ```bash
-uv run pipeline entry new voice warm-mentor --workspace myrepo
+uv run pipeline entry new voice warm-mentor --user <you> --workspace myrepo
 ```
 
-`--workspace W` homes an **instance** entry (auto-prefixed `x-`, `provenance: instance`) under
-`workspaces/<W>/<dimension>/x-<id>.md`. **Without** `--workspace` it writes a framework-default
+`--user U --workspace W` homes an **instance** entry (auto-prefixed `x-`, `provenance: instance`) under
+`users/<U>/workspaces/<W>/<dimension>/x-<id>.md`. **Without** `--workspace` it writes a framework-default
 candidate (`<dimension>/<id>.md`, `provenance: framework`) for a deliberate human commit into the
-public repo. One special case: `entry new topic` **requires** `--workspace`, because topics are
-per-workspace editorial data. As with recipes, it refuses if the file exists unless `--force`, and it
+public repo. One special case: `entry new topic` **requires** `--user`+`--workspace`, because topics are
+per-workspace editorial data. (Whenever `--workspace` is given, `--user` is mandatory.) As with recipes, it refuses if the file exists unless `--force`, and it
 never spends.
 
 ## Step 7 — Author with an editable outline (`pipeline outline emit` / `drive`)
@@ -235,13 +240,13 @@ outline flow lets you: **emit** an authored outline as a viewable artifact, revi
 
 ```bash
 # realize the outline as a viewable artifact — SPENDS NOTHING — and print a --from handle
-uv run pipeline outline emit my-outline.md --topic <your-topic> --workspace myrepo
+uv run pipeline outline emit my-outline.md --topic <your-topic> --user <you> --workspace myrepo
 ```
 
 `emit` prints the artifact id (the continuation **handle**) and a copy-paste drive line:
 
 ```text
-=== outline emit: workspace=myrepo recipe=explainer-post ===
+=== outline emit: user=<you> workspace=myrepo recipe=explainer-post ===
 artifact-id: a-a5046e6c1423f2e3
 handle     : a-a5046e6c1423f2e3
 — drive with: pipeline generate --outline my-outline.md --from a-a5046e6c1423f2e3 --go
@@ -252,7 +257,7 @@ just like `generate`. Carry the emit handle with `--from AID` so the drift guard
 your config has drifted from the emit; `--allow-drift` proceeds on purpose:
 
 ```bash
-uv run pipeline outline drive my-outline.md --from a-a5046e6c1423f2e3 --workspace myrepo --go
+uv run pipeline outline drive my-outline.md --from a-a5046e6c1423f2e3 --user <you> --workspace myrepo --go
 ```
 
 `outline drive FILE` is exactly `generate --outline FILE` — same behavior, two spellings. Either way
@@ -265,12 +270,12 @@ discovery type; run `pipeline list types` for the full set (recipes, voices, lex
 deliverables, artifacts, folios, …):
 
 ```bash
-uv run pipeline list types --workspace myrepo
-uv run pipeline list recipes --workspace myrepo
+uv run pipeline list types --user <you> --workspace myrepo
+uv run pipeline list recipes --user <you> --workspace myrepo
 ```
 
 ```text
-=== list recipes: 2 entry(ies) — workspace=myrepo ===
+=== list recipes: 2 entry(ies) — user=<you> workspace=myrepo ===
   explainer-post  provenance=framework path=recipes/explainer-post.md
   project-manual  provenance=framework path=recipes/project-manual.md
 ```
@@ -278,7 +283,7 @@ uv run pipeline list recipes --workspace myrepo
 `get <type> <id>` fetches one entry:
 
 ```bash
-uv run pipeline get voices clear-explainer --workspace myrepo
+uv run pipeline get voices clear-explainer --user <you> --workspace myrepo
 ```
 
 ```text
@@ -305,7 +310,7 @@ neutral-professional (the default), `5` formal/institutional. Read the level you
 at run time:
 
 ```bash
-uv run pipeline generate --topic <your-topic> --workspace myrepo --set voice.formality=5
+uv run pipeline generate --topic <your-topic> --user <you> --workspace myrepo --set voice.formality=5
 ```
 
 The generator walks framework registries only (no client content) and is deterministic, so a
@@ -327,10 +332,10 @@ Format's **diagram-disposition** knob, tunable per run with
 
 ```bash
 # demand a grounded diagram or refuse the compose:
-uv run pipeline generate --topic <your-topic> --workspace myrepo --set format.diagram_disposition=require
+uv run pipeline generate --topic <your-topic> --user <you> --workspace myrepo --set format.diagram_disposition=require
 
 # guarantee no diagram:
-uv run pipeline preview --topic <your-topic> --workspace myrepo --set format.diagram_disposition=suppress
+uv run pipeline preview --topic <your-topic> --user <you> --workspace myrepo --set format.diagram_disposition=suppress
 ```
 
 A value outside the allowed set is refused **before any writer call** (closed-schema validation at

@@ -39,7 +39,7 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
   *generation*. There is no ideation engine: nothing reads a repo's Graphify graph (god-nodes,
   communities, suggested questions) + audience personas to propose and rank content ideas. The nine-axis
   matrix starts from **topics** (§5.2, axis 1), which in v1 must be **hand-authored** as
-  `workspaces/<client>/topics/<id>.md` entries (they may be manually seeded from Graphify's
+  `users/<user>/workspaces/<workspace>/topics/<id>.md` entries (they may be manually seeded from Graphify's
   `GRAPH_REPORT.md`, but nothing generates them) before anything runs.
 - **Root cause / rationale:** ideation internals were deliberately deferred from v1 — no ratified
   contract for how ideation should work; the ratified boundary is "hand-authored topic entries through
@@ -54,6 +54,29 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
   ideation contract first. Post-v1.
 - **Source:** `docs/mission.md` (the two-stage pipeline; §Role 2 "Ideation engine") + `docs/design.md:84`
   + the "Not in this build" register; maintainer asked it be tracked (2026-07-13).
+
+### GAP-11 — The content guard's `templates/*` arm cannot default-deny a marker-less generic file
+- **Status:** Open (accepted residual — documented, not a defect to fix; same class as the GAP-4a limit)
+- **Severity:** Low (needs an actively mislabeled, marker-less client file dropped into a framework
+  blueprint dir — no live path produces one; the two real instance signals are already caught).
+- **Symptom:** `scripts/check-no-content.sh`'s `[W8] templates/*` arm scans the WHOLE `templates/`
+  subtree (including `templates/workspace/**`) and LEAKS the two instance signals — an `x-*` path
+  segment (SV5, §11.4) or an explicit `provenance: instance` line. But a **generic-named file carrying
+  no `provenance:` line at all PASSES**: templates legitimately ship without provenance frontmatter, so
+  this arm cannot default-deny on its absence the way the registry-root arm does. A marker-less
+  client-authored file smuggled under `templates/` would therefore slip the guard.
+- **Root cause:** `templates/` is FRAMEWORK MECHANISM (owner-agnostic blueprints, provenance framework
+  by home, never tagged) and is deliberately **extensible** — so no allowlist/emptiness backstop is
+  imposed. Absence-of-marker cannot be a leak signal where markers are legitimately absent.
+- **Impact / workaround:** the guard is inline-documented as an accepted residual
+  (`scripts/check-no-content.sh` `[W8]`); this is the **same class** as the GAP-4a marker-less-dir
+  limit. The 8 shipped `templates/workspace/**` files are generic framework files (none `x-`-named or
+  `provenance: instance`), so they pass legitimately. Provenance/schema PARSING is `schema-lint.sh`'s
+  job, not this script's.
+- **Proposed fix / when:** none planned — accepted. If ever tightened, it would key on a co-located
+  marker (as the GAP-4a additive-registry-root coverage check does), never on an allowlist.
+- **Source:** B7 template-home move (`a55febd`) + this §23 docs sweep (B9); the guard arm records the
+  same reasoning inline.
 
 ---
 
@@ -960,8 +983,8 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     reach across into another client's files — blocking at compose, closes a live cross-client read;
     reuses GAP-9's resolve-and-contain *shape* at path granularity, but is a NEW check); and the two
     **framework/instance provenance homes** (framework example assets in a public `assets/…`; client
-    assets in `workspaces/<client>/assets/…`, gitignored + isolated) + a shipped
-    `workspaces/workspace.template/assets/.gitkeep`. **Delivered:** the two asset homes + the
+    assets in `users/<user>/workspaces/<workspace>/assets/…`, gitignored + isolated) + a shipped
+    `templates/workspace/assets/.gitkeep`. **Delivered:** the two asset homes + the
     content-addressed store + the compose-time client-isolation containment guard (refuses any body image
     reference escaping the client's own `assets/`, incl. `..`/absolute/`%2e%2e`/backslash/NUL/raw-`<img>`/symlink)
     + the raw-markup ban; suite 3001→3055; adversarially reviewed. **B is now BUILT (below); C/D remain designed-not-built.**
@@ -971,7 +994,7 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     fold + discovery carry-forward, `8469980` C3 the A↔B base-equality contract drift-catcher, + this C4
     docs/SSOT sync) the once-deferred filesystem asset loader is now real (was a loud RAISE, deferred to
     §17/step-29) and **fenced to `presentations/`** (rule-2 client isolation — a styling file can never
-    reach into another client's `workspaces/…`); the Presentation lowering emits `--embed-resources
+    reach into another client's `users/…/workspaces/…`); the Presentation lowering emits `--embed-resources
     --standalone` for html5 and native `--resource-path` embedding for docx, so a client figure now
     **embeds in HTML/docx** (a `data:` image in a self-contained HTML document, a real `word/media/` part
     in the .docx) rather than surviving only as a path — Markdown keeps referencing by path (all it
@@ -1271,6 +1294,13 @@ entries below are post-build defects, starting with the **`render-output-fix`** 
   `scripts/check-no-content.sh`, and `scripts/schema-lint.sh` clean.
 - **Source:** surfaced + verified by the DR-1 architect design pass and ratified by the maintainer as a
   **standalone** framework fix, independent of DR-1 (2026-07-23).
+- **Superseded / extended by (§23 users/-layout re-home, B4→B5):** workspace addressing moved to
+  `users/<user>/workspaces/<workspace>/`, and the single-level `validate_workspace_name` was replaced
+  by a **3-level `validate_workspace_path(root, user, workspace)`** (`3b7984d` B4, added beside the old
+  one; cut over in `ff41a30` B5). It applies the SAME resolve-and-contain + hygiene checks at ALL THREE
+  levels (`users/` → `<user>` → `workspaces/` → `<workspace>`) and refuses a missing/None `user` at the
+  door (never a `users/None/…` path). GAP-9's invariant ("isolation enforced by the API, not by trust")
+  holds unchanged and is now enforced one level deeper.
 
 ### Folder adapter could ground but not compose (commitless + unregistered) — RESOLVED (2026-07-18)
 - **Symptom:** a `folder` source grounded fine but couldn't mint an artifact-id — the folder adapter was
@@ -1307,9 +1337,10 @@ entries below are post-build defects, starting with the **`render-output-fix`** 
   JSON envelope on stdout, exit codes 0/1/2/3, §21.9 operator verbs structurally excluded via the
   `KNOWN_VERBS` gate) + `7ab9663` (the ergonomic `pipeline render` subcommand delegating to the same
   door).
-- **Two doors, one seam:** a human runs `pipeline render --workspace W --item <id> --output-type <t>`;
+- **Two doors, one seam:** a human runs `pipeline render --user U --workspace W --item <id> --output-type <t>`;
   an external actor (v1: self-hosted n8n via its Execute Command node) runs
-  `pipeline invoke render --workspace W --params-json '{…}'`. Cloud orchestrators still need the HTTP
+  `pipeline invoke render --user U --workspace W --params-json '{…}'` (`--user` is mandatory wherever
+  `--workspace` appears, §23). Cloud orchestrators still need the HTTP
   shim — see **DR-1**.
 - **Verified:** both doors exercised by `tests/test_api_invoke.py` (`TestCliDoor`,
   `TestErgonomicRenderSubcommand`); the live re-render above went through the door.

@@ -46,7 +46,8 @@ deviations from mission §6.2 in `state.md` (feeds decision D4). (P0.3)
 Create a workspace (your own repos are clients too):
 
 ```bash
-cp -R workspaces/workspace.template workspaces/self   # or workspaces/<client-name>
+mkdir -p users/<user>/workspaces                              # your isolation/addressing prefix (§23)
+cp -R templates/workspace users/<user>/workspaces/self        # or …/workspaces/<workspace-name>
 ```
 
 Each client repo is checked out locally. Build its Graphify graph **in that checkout** — the
@@ -61,7 +62,7 @@ graphify export wiki              # optional agent-crawlable wiki snapshot (need
 ```
 
 Record the client-repo checkout path + its `graphify-out/graph.json` path in
-`workspaces/self/source.md`. (P0.4/P0.5)
+`users/<user>/workspaces/self/source.md`. (P0.4/P0.5)
 
 ---
 

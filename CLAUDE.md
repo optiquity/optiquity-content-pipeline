@@ -10,10 +10,12 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
    Graphify graph by path**. Each client repo is checked out locally and graphed there; its
    `graphify-out/` is gitignored inside the client repo and read by path. **No graphs are stored
    in this pipeline repo.**
-2. **CLIENT ISOLATION VIA WORKSPACES.** Every client repo gets a workspace: `workspaces/<client>/`.
-   A client's docs, topics, metadata, and output live only under its workspace and must never
-   leak into another. There is **one** repo with many workspaces — never a separate repo per
-   client. (This instance's own repos are clients too, e.g. `workspaces/self/`.)
+2. **CLIENT ISOLATION VIA WORKSPACES.** Every client repo gets a workspace:
+   `users/<user>/workspaces/<workspace>/`. A client's docs, topics, metadata, and output live only
+   under its workspace and must never leak into another. There is **one** repo with many
+   workspaces — never a separate repo per client. (This instance's own repos are clients too, e.g.
+   `users/<user>/workspaces/self/`.) The `users/<user>/` segment is an isolation/addressing
+   **prefix** — it changes *where* a workspace lives, not the value cascade (§10/§23).
 3. **SINGLE SOURCE OF TRUTH.** The **tracking spreadsheet is the SSOT** for status/progress.
    `state.md` is **always a derived convenience document** — a session-facing mirror of the
    spreadsheet, never an authority. If they disagree, the spreadsheet wins; update `state.md`
@@ -21,7 +23,8 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
 4. **PUBLIC FRAMEWORK STAYS EMPTY OF CLIENT-SPECIFIC CONTENT.** Generic framework defaults —
    entries, recipes, and folio types marked `provenance: framework` — are welcome in the public
    repo (they are the deliverable). What must never appear: `instance/profile.md`, any entry marked
-   `provenance: instance`, or client content under `workspaces/*/` other than `workspace.template/`.
+   `provenance: instance`, or client content under `users/*/workspaces/*/`. (The shared workspace
+   scaffold now ships at `templates/workspace/` — framework, not client content.)
    (A CI guard will enforce this once the `provenance:` convention is implemented — see
    `docs/design-decisions.md` §3.9; don't rely on it alone.)
 5. **EXTEND, DON'T EDIT (framework vs. instance).** Downstream instances **add** files
@@ -72,8 +75,9 @@ spawn discipline are the **main session's** playbook — see `docs/ops-workflow.
 CLAUDE.md · README.md · quickstart.md · state.md (derived from spreadsheet SSOT; tracked for history)
 docs/{mission,operating-model,bootstrap,claude-code-usage}.md
 personas/ platforms/ formats/     # *.template.* (framework) + populated entries (instance)
-topics/topic.template.md          # topics live under workspaces/<client>/topics/
-workspaces/<client>/{topics,select,output}/            # instance-owned, per client repo
+topics/topic.template.md          # topics live under users/<user>/workspaces/<workspace>/topics/
+templates/workspace/              # shared workspace scaffold (framework; copied per workspace)
+users/<user>/workspaces/<workspace>/{topics,select,output}/   # instance-owned, per client repo
 instance/profile.md               # instance-owned goals/audiences (gitignored in public)
 scripts/ .claude/{agents,skills}/ # framework
 ```
