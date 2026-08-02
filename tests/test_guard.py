@@ -331,12 +331,13 @@ def test_all_mode_scans_untracked_files(tmp_path):
 
 def test_workspace_jobs_data_is_gitignored_and_a_tracked_leak_is_flagged(tmp_path):
     """DR-1 Commit 2 — the two-part async-`jobs/` boundary story, proven end to end:
-    (1) job DATA is gitignored (`workspaces/*/jobs/`), so a job record is never tracked in the
-        normal course; (2) IF one were ever force-tracked, the guard's workspace-content class
-        flags it — client isolation holds regardless (CLAUDE.md rules 2/4)."""
-    # (1) the DATA-untracked half: the framework .gitignore carries the jobs rule.
+    (1) job DATA is gitignored (`users/*/workspaces/` broadly ignores all per-user workspace
+        content, jobs/ included), so a job record is never tracked in the normal course; (2) IF
+        one were ever force-tracked, the guard's workspace-content class flags it — client
+        isolation holds regardless (CLAUDE.md rules 2/4)."""
+    # (1) the DATA-untracked half: the .gitignore broadly ignores users/ workspace content.
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert "users/*/workspaces/*/jobs/" in gitignore
+    assert "users/*/workspaces/" in gitignore
     # (2) the guard half: a planted job record under a client workspace is caught by PATH.
     root = tmp_path / "jobs-leak"
     (root / "users" / "acme" / "workspaces" / "proj" / "jobs").mkdir(parents=True)
