@@ -13,8 +13,9 @@
 build delivered at `5f58d63` (final verification PASSED; cross-reference audit **DELIVERABLE**; Gate G2
 CLOSED, the §21.7-code HARD GATE CLOSED at step 39, the §21.9 gate correctly OPEN/honored). The prepared
 CLAUDE.md diff was applied post-delivery (`5b1c584`). Since then a series of ratified design-record
-increments + the friendly CLI surface + the authoring layer landed. **Current HEAD `e8a7963`.** Detailed
-per-increment records live in the commit history + `ops-handoff/`; the summary below is orientation only.
+increments + the friendly CLI surface + the authoring layer + the users/-namespace restructure landed.
+**Current HEAD `2284517`.** Detailed per-increment records live in the commit history + `ops-handoff/`;
+the summary below is orientation only.
 
 **Post-build increments (each planned + coder→reviewer→commit):**
 - **DR-1 … DR-9** — the HTTP shim (poll/webhook); mixed-media assets + `{type=diagram}` (grounded
@@ -42,6 +43,29 @@ per-increment records live in the commit history + `ops-handoff/`; the summary b
   first change AFTER a release bumps. Aligns the code with the documented §11.2 / `5b1c584` release-only
   policy. Verified not-weakened (fires with an explicit baseline) and not-toothless (all within-tree
   invariants still fire pre-release).
+- **Guide/docs (`51750b4`) + tracker sync (`7c902f8`):** documented the friendly CLI + authoring surface
+  under `docs/guide/` (new `authoring.md`) and the release-relative versioning; discharged GAP-4; brought
+  this file current.
+- **★ users/-namespace restructure — the REST resource hierarchy (`686541f`..`2284517`; 10 increments
+  B1–B10, each coder→reviewer→commit; an adversarial security-design pass + a data-safety-reviewed
+  migration).** Workspace addressing moved from flat `workspaces/<ws>/` to
+  `users/<user>/workspaces/<workspace>/` (maps 1:1 to a future `/users/{owner}/workspaces/{workspace}`
+  REST route). **`--user` is now MANDATORY** on every command / API / shim / client call (never defaulted;
+  a missing user is a loud usage/validation error, never a `users/None/…` path). Highlights: a 3-level
+  resolve-and-contain validator (`validate_workspace_path`, isolation proven at the users/owner/workspace
+  levels); `WorkspaceStore` gains explicit identity (`framework_root`/`user`/`workspace` via `.at()`),
+  curing the silent-wrong-root positional recovery; the shared template moved
+  `workspaces/workspace.template/` → `templates/workspace/`; the public-boundary guards + lint scopes moved
+  to `users/` + a new `templates/` scan arm (which also **closed a pre-existing template-exemption leak**);
+  the 3 self-grounding refusals follow client content to `users/`; lowercase-only ids (APFS cross-user
+  aliasing closed); the DR-8 Python + C++ clients and the n8n example flows all thread `user`. Net:
+  isolation is **STRICTER** (6 latent trust-the-name path builders + the shim callers now all validated).
+  §10/§23 clarified: `users/<user>/` is an isolation/ADDRESSING PREFIX, NOT a new cascade rung (the value
+  cascade stays framework→instance→workspace). On-disk instance data migrated locally
+  (`mvp-demo`/`optiquitytrader` → `users/optiquity/workspaces/…` via `scripts/migrate-to-users-layout.sh`,
+  idempotent, ZERO data loss). GAP-9 marked SUPERSEDED; GAP-11 records the accepted marker-less `templates/`
+  guard residual. Follow-ons open: W1 (`workspace new`/`user new` scaffolder), W2 (encapsulation cleanup —
+  `workspace list`/`delete`). **Current HEAD `2284517`.**
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
