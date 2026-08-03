@@ -171,8 +171,9 @@ commands:
                             (TTY-gated prompt; headless fails fast). Options: --workspace W ·
                             --root DIR · --force. Exit 0 ok; 1 refusal (bad dimension / non-slug id
                             / topic-without-workspace / refuse-if-exists); 2 usage.
-  workspace      the FRIENDLY local workspace scaffolder (design §23). LOCAL Tier-A file scaffold —
-                 never an invoke verb / HTTP door (§21.9 preserved). Subcommand:
+  workspace      the FRIENDLY local workspace lifecycle (design §23) over the self-contained
+                 users/<user>/workspaces/<workspace>/ layout. LOCAL Tier-A file ops — never an
+                 invoke verb / HTTP door (§21.9 preserved). Subcommands:
                    new WORKSPACE   seed ONE new client workspace under
                             users/<user>/workspaces/<workspace>/
                             by copying the shared framework blueprint templates/workspace/ (the
@@ -184,6 +185,20 @@ commands:
                             files only, never deletes client data). Options: --user U (required) ·
                             --root DIR · --force. Exit 0 ok; 1 refusal (bad name / refuse-if-exists
                             / missing blueprint); 2 usage (no subcommand / missing --user).
+                   list            READ-ONLY: list workspaces as <user>/<workspace> with a
+                            topic-count + has-output summary. With --user, one user's workspaces;
+                            without it, ALL users (scan users/*/workspaces/*). A missing/empty
+                            users/ prints "no workspaces found" (exit 0), never a traceback.
+                            Options: --user U · --root DIR. Exit 0 ok; 1 refusal (bad --user).
+                   delete WORKSPACE  DESTRUCTIVE, SAFE-BY-DEFAULT: remove ONE workspace. --user is
+                            REQUIRED. Refuse-by-default — interactive TYPE the workspace name to
+                            confirm (a mismatch aborts); headless pass --yes. A workspace holding
+                            generated output is refused even with --yes unless --force is ALSO
+                            passed. Never deletes through a symlink; removes only the validated
+                            contained dir (users/<user>/ + workspaces/ survive). Options: --user U
+                            (required) · --yes · --force · --root DIR. Exit 0 ok; 1 refusal
+                            (bad name / non-existent / symlink / unconfirmed / has-output);
+                            2 usage (no subcommand / missing --user).
   user           the FRIENDLY per-user namespace setup (design §23). LOCAL Tier-A file op — never an
                  invoke verb / HTTP door (§21.9 preserved). Subcommand:
                    new USER   create the empty per-user namespace users/<user>/workspaces/ (the
@@ -2188,7 +2203,8 @@ def _cmd_entry(argv: list[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# W1: `pipeline workspace new` + `pipeline user new` — the FRIENDLY local workspace scaffolder.
+# W1/W2: `pipeline workspace new|list|delete` + `pipeline user new` — the FRIENDLY local workspace
+# lifecycle (scaffold / list / delete).
 #
 # The local, friendly form of the documented onboarding flow (`cp -R templates/workspace
 # users/<user>/workspaces/<ws>`): a dimension-entry/recipe-authoring sibling that seeds a new
@@ -2216,28 +2232,34 @@ def _workspace_error_types() -> tuple:
 
 
 def _cmd_workspace(argv: list[str]) -> int:
-    """W1: `pipeline workspace new <workspace> --user <user> [--root DIR] [--force]` — seed one new
-    client workspace under a user's namespace from the shared blueprint `templates/workspace/`.
+    """W1/W2: `pipeline workspace <new|list|delete> …` — the FRIENDLY local workspace lifecycle.
 
-    A LOCAL Tier-A file scaffold (never an invoke verb / HTTP door; §21.9): validate `<user>` +
-    `<workspace>` via the isolation gate (lowercase-only, single safe segment, resolve-and-contain),
-    auto-create the `users/<user>/workspaces/` namespace on demand (noting a brand-new user home so
-    a mistyped `--user` is visible), refuse an existing target unless `--force` (which NEVER
-    overwrites an existing file — the copy is non-destructive), and print the created path + a
-    next-step hint.
-    Exit 0 ok; 1 refusal (bad name / refuse-if-exists / missing blueprint); 2 usage (no subcommand /
-    missing `--user`)."""
+    Sub-dispatches (mirroring `_cmd_entry`) over the SAME self-contained
+    `users/<user>/workspaces/<workspace>/` layout, all LOCAL Tier-A file ops (never an invoke verb /
+    HTTP door; §21.9):
+
+    - `new WORKSPACE --user U [--root DIR] [--force]` (W1) — seed one new workspace from the shared
+      blueprint `templates/workspace/`.
+    - `list [--user U] [--root DIR]` (W2) — READ-ONLY: list workspaces (one user, or all users) with
+      a topic-count + has-output summary.
+    - `delete WORKSPACE --user U [--yes] [--force] [--root DIR]` (W2) — DESTRUCTIVE,
+      safe-by-default: remove ONE workspace; refuse-by-default (typed-name confirm / --yes), refuse
+      a has-output workspace unless --force too, never delete through a symlink.
+
+    Exit 0 ok; 1 refusal (bad name / refuse-if-exists / missing blueprint / delete refusal);
+    2 usage (no subcommand / missing required flag)."""
     import argparse
 
     parser = argparse.ArgumentParser(
         prog="pipeline workspace",
         description=(
-            "The friendly local workspace scaffolder (design §23): seed a new client workspace "
-            "under a user's namespace from the shared blueprint templates/workspace/. LOCAL Tier-A "
-            "file scaffold — never an invoke verb / HTTP door (§21.9). Subcommand: new."
+            "The friendly local workspace lifecycle (design §23) over the self-contained "
+            "users/<user>/workspaces/<workspace>/ layout. LOCAL Tier-A file ops — never an invoke "
+            "verb / HTTP door (§21.9). Subcommands: new, list, delete."
         ),
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+
     new = sub.add_parser(
         "new",
         help="seed one new workspace under users/<user>/workspaces/ from templates/workspace/",
@@ -2272,13 +2294,84 @@ def _cmd_workspace(argv: list[str]) -> int:
         help="proceed if the workspace exists — seeds only MISSING files, never overwrites "
         "(default: refuse)",
     )
+
+    lst = sub.add_parser(
+        "list",
+        help="list workspaces (one user, or all users) with a topic-count + has-output summary",
+        description=(
+            "READ-ONLY: list workspaces under users/. With --user, list that one user's "
+            "workspaces; without it, scan EVERY user (users/*/workspaces/*), each row shown as "
+            "<user>/<workspace> (workspaces are discovered by scanning — no global index). "
+            "Each row carries a light TRUE summary: the authored-topic count and whether the "
+            "workspace holds generated output. A missing/empty users/ prints 'no workspaces found' "
+            "(exit 0), never a traceback. Mutates nothing (never an invoke verb; §21.9)."
+        ),
+    )
+    lst.add_argument(
+        "--user",
+        default=None,
+        help="restrict to one user's workspaces (§23 lowercase-safe segment; default: all users)",
+    )
+    lst.add_argument(
+        "--root", default=".", help="framework repo root → users/ (default: cwd)"
+    )
+
+    dele = sub.add_parser(
+        "delete",
+        help="remove ONE workspace (destructive, safe-by-default: --user + confirmation required)",
+        description=(
+            "DESTRUCTIVE, SAFE-BY-DEFAULT: remove ONE workspace users/<user>/workspaces/"
+            "<workspace>/. --user is REQUIRED. Validates + resolves + contains the target via the "
+            "isolation gate, REFUSES a non-existent target, and NEVER deletes through a symlink "
+            "(removes only the validated contained real directory). Tier-1 confirmation is ALWAYS "
+            "required: interactively you TYPE the workspace name (a mismatch aborts); headless you "
+            "pass --yes. Tier-2: a workspace holding GENERATED output (spent work/money) is "
+            "refused even with --yes unless --force is ALSO passed. On success, users/<user>/ and "
+            "workspaces/ are left in place. LOCAL file op (never an invoke verb; §21.9)."
+        ),
+    )
+    dele.add_argument(
+        "workspace",
+        help="the workspace name to delete (§23 lowercase-safe segment; the directory name)",
+    )
+    dele.add_argument(
+        "--user",
+        required=True,
+        help="the owning user (§23 isolation prefix; users/<user>/workspaces/<workspace>/)",
+    )
+    dele.add_argument(
+        "--yes",
+        action="store_true",
+        help="supply the confirmation non-interactively (skip the type-the-name prompt)",
+    )
+    dele.add_argument(
+        "--force",
+        action="store_true",
+        help="ALSO required (with --yes) to delete a workspace holding generated output",
+    )
+    dele.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
+    )
+
     args = parser.parse_args(argv)
 
-    if args.subcommand != "new":
-        parser.print_usage(sys.stderr)
-        print("pipeline workspace: a subcommand is required (known: new)", file=sys.stderr)
-        return 2
+    if args.subcommand == "new":
+        return _workspace_new(args)
+    if args.subcommand == "list":
+        return _workspace_list(args)
+    if args.subcommand == "delete":
+        return _workspace_delete(args)
+    parser.print_usage(sys.stderr)
+    print(
+        "pipeline workspace: a subcommand is required (known: new, list, delete)", file=sys.stderr
+    )
+    return 2
 
+
+def _workspace_new(args: "object") -> int:
+    """W1: `workspace new` — seed one workspace from the blueprint + print the path/next hint."""
     from pipeline import workspacescaffold
 
     try:
@@ -2307,6 +2400,63 @@ def _cmd_workspace(argv: list[str]) -> int:
         f"  next: edit {result.path / 'source.md'} (the graph path), add topics under "
         f"{result.path / 'topics'}/, then `pipeline preview --user {result.user} "
         f"--workspace {result.workspace} …`"
+    )
+    return 0
+
+
+def _workspace_list(args: "object") -> int:
+    """W2: `workspace list` — READ-ONLY enumeration with a TRUE per-workspace summary.
+
+    One user (`--user`) or every user (`users/*/workspaces/*`, rows shown `<user>/<workspace>`). A
+    bad/uppercase `--user` is a loud refusal (exit 1); a missing/empty users/ prints a clean
+    'no workspaces found' (exit 0), never a traceback. Mutates nothing (§21.9)."""
+    from pipeline import workspacescaffold
+
+    try:
+        rows = workspacescaffold.list_workspaces(args.root, user=args.user)
+    except _workspace_error_types() as exc:
+        print(f"pipeline workspace list: {exc}", file=sys.stderr)
+        return 1
+
+    if not rows:
+        scope = f" for user {args.user!r}" if args.user else ""
+        print(f"pipeline workspace list: no workspaces found{scope}")
+        return 0
+
+    for row in rows:
+        output_note = "has output" if row.has_output else "no output"
+        print(
+            f"{row.user}/{row.workspace}  "
+            f"({row.topic_count} topic(s), {output_note})  — {row.path}"
+        )
+    return 0
+
+
+def _workspace_delete(args: "object") -> int:
+    """W2: `workspace delete` — DESTRUCTIVE, safe-by-default removal of ONE workspace.
+
+    --user is mandatory (argparse). The layered guards (validate/contain, symlink refusal,
+    non-existent refusal, Tier-2 has-output override, Tier-1 confirmation) live in
+    `workspacescaffold.delete_workspace`; every refusal is a typed exit-1, never a traceback. On
+    success, only the one contained workspace dir is removed. LOCAL file op (§21.9)."""
+    from pipeline import workspacescaffold
+
+    try:
+        result = workspacescaffold.delete_workspace(
+            args.root,
+            args.user,
+            args.workspace,
+            assume_yes=args.yes,
+            force=args.force,
+        )
+    except _workspace_error_types() as exc:
+        print(f"pipeline workspace delete: {exc}", file=sys.stderr)
+        return 1
+
+    forced = " (forced: held generated output)" if result.had_output else ""
+    print(
+        f"pipeline workspace delete: removed workspace {result.workspace!r} for user "
+        f"{result.user!r} ({result.file_count} file(s)){forced} — {result.path}"
     )
     return 0
 

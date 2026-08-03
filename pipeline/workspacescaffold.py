@@ -1,4 +1,4 @@
-"""Workspace scaffolder (design §23; authoring layer). PURE + REUSABLE, LOCAL.
+"""Workspace lifecycle — scaffold / list / delete (design §23). PURE + REUSABLE, LOCAL.
 
 `pipeline workspace new <workspace> --user <user>` seeds a new client workspace under a user's
 namespace (`users/<user>/workspaces/<workspace>/`) by copying the shared framework blueprint
@@ -16,29 +16,41 @@ every instance (never the caller's `--root` data tree). The blueprint is copied 
 an existing destination file is NEVER overwritten (client data is irreplaceable, rule 1/2),
 mirroring the migrate-to-users-layout never-delete-data discipline.
 
+W2 completes the workspace CRUD with two more LOCAL conveniences over the SAME self-contained
+`users/<user>/workspaces/<workspace>/` layout: `list_workspaces` (READ-ONLY discovery — scans
+`users/*/workspaces/*`, since workspaces are discovered by scanning, NOT via a global index) and
+`delete_workspace` (the FIRST destructive verb — safe-by-default: it validates + resolves + contains
+the target via the SAME isolation gate, REFUSES a non-existent target, NEVER deletes through a
+symlink, requires a Tier-1 confirmation (typed name interactively / `--yes` headless), and REFUSES a
+workspace holding generated output even under `--yes` unless `--force` is ALSO passed — generated
+output is spent work/money). It `shutil.rmtree`s ONLY the validated contained real directory,
+leaving `users/<user>/` and its `workspaces/` in place.
+
 Wiring, never duplication (the authoring philosophy): the overwrite guard is C2a's `ensure_writable`
 (refuse-if-exists / `--force` / TTY-gated / fail-fast headless), the isolation gate is
 `workspace_name.validate_workspace_path` / `validate_user_segment`, the framework-root locator is
 `authoring._framework_root`, and the typed refusal class is `authoring.AuthoringError`. A LEAF
 module: it imports no identity / plan / cascade / invoke code; `__main__` (`workspace new` /
-`user new`) is the first and only consumer.
+`workspace list` / `workspace delete` / `user new`) is the first and only consumer.
 
-MONEY-SAFETY (§21.9): a LOCAL Tier-A directory scaffold — it seeds files under a user's namespace
-and NOTHING else. It registers NO invoke verb, touches NO `_VERB_HANDLERS`, and never dispatches
-through the invoke door, so it cannot spend subscription quota or mint a token. A workspace name
-never enters the artifact preimage; a scaffolded workspace is inert to identity until a run selects
-it.
+MONEY-SAFETY (§21.9): every verb here is a LOCAL Tier-A file op — `new` seeds files under a user's
+namespace, `list` reads, `delete` removes ONE contained directory, and NOTHING else. None registers
+an invoke verb, touches `_VERB_HANDLERS`, or dispatches through the invoke door, so none can spend
+subscription quota or mint a token. A workspace name never enters the artifact preimage; a
+scaffolded workspace is inert to identity until a run selects it.
 """
 
 from __future__ import annotations
 
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline.authoring import AuthoringError, _framework_root, ensure_writable
 from pipeline.workspace_name import (
+    USERS_DIRNAME,
     WORKSPACES_DIRNAME,
     validate_user_segment,
     validate_workspace_path,
@@ -47,8 +59,12 @@ from pipeline.workspace_name import (
 __all__ = [
     "WORKSPACE_BLUEPRINT_DIRS",
     "UserNamespace",
+    "WorkspaceDeletion",
+    "WorkspaceRow",
     "WorkspaceScaffold",
     "blueprint_dir",
+    "delete_workspace",
+    "list_workspaces",
     "scaffold_user",
     "scaffold_workspace",
 ]
@@ -211,3 +227,230 @@ def scaffold_user(
     ensure_writable(ws_base, force=force, isatty=isatty, confirm=confirm)
     ws_base.mkdir(parents=True, exist_ok=True)
     return UserNamespace(user=user, path=ws_base, created_user_namespace=created_user_namespace)
+
+
+# ===========================================================================
+# W2: `workspace list` (READ-ONLY) + `workspace delete` (DESTRUCTIVE, SAFE-BY-DEFAULT).
+#
+# The encapsulation conveniences that complete the workspace CRUD over the SAME self-contained
+# `users/<user>/workspaces/<workspace>/` layout. Workspaces are discovered by SCANNING (there is
+# no global workspace index/registry/manifest anywhere in the codebase — verified — so a delete is
+# self-contained: an `rmtree` of the workspace dir leaves no orphaned entry elsewhere). Both stay
+# LEAF, LOCAL file ops — no invoke/session import, no `_VERB_HANDLERS`, no quota/token (§21.9).
+# ===========================================================================
+
+#: The workspace subdirs whose non-empty presence marks GENERATED work (spent compose/review calls,
+#: rendered bytes, tracking) — the Tier-2 has-output guard's oracle. A pristine blueprint workspace
+#: ships NONE of these (only `assets/`/`output/`/`select/`/`topics/` .gitkeep homes + the config
+#: files), and a store a driver merely OPENED (`ensure_layout` mkdirs them EMPTY) does not count
+#: — only REAL files inside do. `output/` is handled separately (it ships a `.gitkeep` that must not
+#: count) and `ssot.csv` is a file, not a dir; both are checked in `_has_generated_output`.
+_GENERATED_WORK_SUBDIRS = ("artifacts", "deliverables", "folios", "reviews")
+
+#: The per-workspace tracking CSV a completed thread/MVP writes (`store.root / "ssot.csv"`,
+#: driver.py / mvpdemo.py): its presence alone is generated (spent) work.
+_SSOT_CSV_NAME = "ssot.csv"
+
+#: The empty-home marker the blueprint stamps into `output/` (and the other empty dirs). An
+#: `output/` holding ONLY this is still pristine — real generated output is any OTHER file.
+_GITKEEP = ".gitkeep"
+
+
+@dataclass(frozen=True)
+class WorkspaceRow:
+    """One `workspace list` row: the owning user, the workspace name, its directory path, and a
+    light TRUE summary — the count of authored topic files (`topics/*.md`) and whether the workspace
+    holds generated output (`has_output`, the same oracle the delete Tier-2 guard reads). A pure
+    read projection; no field is fabricated."""
+
+    user: str
+    workspace: str
+    path: Path
+    topic_count: int
+    has_output: bool
+
+
+@dataclass(frozen=True)
+class WorkspaceDeletion:
+    """The result of a successful `workspace delete`: the owning user, the workspace name, the
+    (now-removed) target path, the count of files that were under it, and whether it held generated
+    output (only ever True when `--force` accompanied `--yes`). `users/<user>/` and its
+    `workspaces/` are left in place — only the one contained workspace dir was removed."""
+
+    user: str
+    workspace: str
+    path: Path
+    file_count: int
+    had_output: bool
+
+
+def _count_topics(ws_dir: Path) -> int:
+    """Count the authored topic files under `<ws>/topics/` (`*.md`, e.g. the `x-`-prefixed client
+    topics `entry new topic` writes). The blueprint's `topics/.gitkeep` is not a `*.md` file, so a
+    pristine workspace reports 0 — TRUE, never fabricated."""
+    topics = ws_dir / "topics"
+    if not topics.is_dir():
+        return 0
+    return sum(1 for p in topics.glob("*.md") if p.is_file())
+
+
+def _has_generated_output(ws_dir: Path) -> bool:
+    """True iff `ws_dir` holds GENERATED work — the Tier-2 delete guard's oracle + the list summary.
+
+    Generated = spent work/money: any file under `output/` other than the blueprint `.gitkeep`; OR a
+    non-empty `artifacts/`/`deliverables/`/`folios/`/`reviews/` store dir (real composed/rendered/
+    reviewed records — a driver that merely `ensure_layout`-created these EMPTY does not count);
+    OR a per-workspace `ssot.csv`. A pristine/scaffolded workspace has none → False. Pure read."""
+    output = ws_dir / "output"
+    if output.is_dir():
+        for entry in output.rglob("*"):
+            if entry.is_file() and entry.name != _GITKEEP:
+                return True
+    for sub in _GENERATED_WORK_SUBDIRS:
+        d = ws_dir / sub
+        if d.is_dir() and any(p.is_file() for p in d.rglob("*")):
+            return True
+    return (ws_dir / _SSOT_CSV_NAME).is_file()
+
+
+def list_workspaces(root: str | Path, *, user: str | None = None) -> list[WorkspaceRow]:
+    """List workspaces under `<root>/users/…`, sorted by `(user, workspace)` — READ-ONLY.
+
+    With `user`: list workspaces under that one user's `users/<user>/workspaces/`; `user` is put
+    through `validate_user_segment` (lowercase, single safe segment) for hygiene even though reading
+    is safe. Without `user`: scan EVERY user (`users/*/workspaces/*`), each row identified as
+    `<user>/<workspace>`. A missing/empty `users/` (or a user with no namespace) yields an EMPTY
+    list — never a traceback; the caller prints a clean "no workspaces found". Each row carries a
+    light TRUE summary (topic count + has-output). Pure read; mutates nothing."""
+    root = Path(root)
+    users_base = root / USERS_DIRNAME
+    if user is not None:
+        validate_user_segment(root, user)  # hygiene only; reading never mutates
+        owners = [users_base / user]
+    else:
+        if not users_base.is_dir():
+            return []
+        owners = sorted(
+            (p for p in users_base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+            key=lambda p: p.name,
+        )
+
+    rows: list[WorkspaceRow] = []
+    for owner in owners:
+        ws_base = owner / WORKSPACES_DIRNAME
+        if not ws_base.is_dir():
+            continue
+        for ws_dir in sorted(
+            (p for p in ws_base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+            key=lambda p: p.name,
+        ):
+            rows.append(
+                WorkspaceRow(
+                    user=owner.name,
+                    workspace=ws_dir.name,
+                    path=ws_dir,
+                    topic_count=_count_topics(ws_dir),
+                    has_output=_has_generated_output(ws_dir),
+                )
+            )
+    rows.sort(key=lambda r: (r.user, r.workspace))
+    return rows
+
+
+def _default_delete_confirm(workspace: str) -> str:
+    """The interactive Tier-1 prompt: ask the operator to TYPE the workspace name back. Returns the
+    typed string (stripped) so the caller can compare it to the target name; a mismatch aborts."""
+    return input(
+        f"type the workspace name {workspace!r} to confirm deletion (anything else aborts): "
+    ).strip()
+
+
+def delete_workspace(
+    root: str | Path,
+    user: str,
+    workspace: str,
+    *,
+    assume_yes: bool = False,
+    force: bool = False,
+    confirm_fn: Callable[[str], str] | None = None,
+    isatty: Callable[[], bool] | None = None,
+) -> WorkspaceDeletion:
+    """Remove ONE workspace `users/<user>/workspaces/<workspace>/` — DESTRUCTIVE, SAFE-BY-DEFAULT.
+
+    The FIRST destructive verb in the toolset; it matches the refuse-rather-than-clobber bar of
+    everything else with a layered contract, in order:
+
+    1. **Validate + contain.** `validate_workspace_path` (the SOLE isolation gate: lowercase, single
+       safe segment, resolve-and-contain) yields the contained target. A bad/uppercase/escaping
+       `user` or `workspace` raises `WorkspaceNameError` here. `user` is MANDATORY.
+    2. **Never delete through a symlink.** If the target itself is a symlink, REFUSE — an `rmtree`
+       must never follow a link out. (`shutil.rmtree` also never recurses INTO symlinked children,
+       so only the validated real tree is ever removed.)
+    3. **Refuse a non-existent target** — nothing to delete.
+    4. **Tier-2 has-output guard.** If the workspace holds GENERATED output (`_has_generated_output`
+       — spent work/money), REFUSE even with `assume_yes`, unless `force` is ALSO passed. Checked
+       BEFORE the prompt so spent work fails fast, never prompts-then-refuses.
+    5. **Tier-1 confirmation (always).** With `assume_yes` the confirmation is supplied
+       non-interactively (skip the prompt). Otherwise, mirroring `ensure_writable`'s TTY gate:
+       interactive (a TTY, or an injected `confirm_fn`) prompts the operator to TYPE the workspace
+       name — a mismatch ABORTS (nothing deleted); headless (no TTY, no `confirm_fn`) REFUSES
+       fast ("pass --yes to confirm"), never hangs.
+    6. **Remove.** `shutil.rmtree` the validated contained target ONLY; `users/<user>/` and its
+       `workspaces/` are left in place.
+
+    Every refusal is a typed `AuthoringError`/`WorkspaceNameError` (a clean exit-1 at the CLI, never
+    a traceback) raised BEFORE any removal, so a refused delete touches nothing. LOCAL file op;
+    registers NO invoke verb (§21.9)."""
+    root = Path(root)
+    target = validate_workspace_path(root, user, workspace)  # isolation gate + contained path
+
+    # (2) Never delete through a symlink — catches a workspace dir planted as a link (broken or
+    # live). Checked before `exists()` so a broken link is refused as a symlink, not "not found".
+    if target.is_symlink():
+        raise AuthoringError(
+            f"invalid-authoring: {target} is a symlink — refusing to delete through it (a delete "
+            "never follows a link out of the contained workspace); nothing removed"
+        )
+    # (3) Refuse a non-existent (or non-directory) target — nothing to delete.
+    if not target.is_dir():
+        raise AuthoringError(
+            f"invalid-authoring: no workspace directory at {target} to delete — name an existing "
+            "workspace under users/<user>/workspaces/; nothing removed"
+        )
+
+    # (4) Tier-2: generated output is spent work/money — refuse even with --yes unless --force too.
+    had_output = _has_generated_output(target)
+    if had_output and not force:
+        raise AuthoringError(
+            f"invalid-authoring: {target} holds generated output (spent work) — refusing to "
+            "delete; pass --force together with --yes to override; nothing removed"
+        )
+
+    # (5) Tier-1: confirmation is ALWAYS required. --yes supplies it non-interactively.
+    if not assume_yes:
+        interactive = (
+            confirm_fn is not None
+            or (isatty() if isatty is not None else (sys.stdin.isatty() and sys.stdout.isatty()))
+        )
+        if not interactive:
+            raise AuthoringError(
+                f"invalid-authoring: refusing to delete {target} without confirmation — pass "
+                "--yes to confirm (non-interactive: never prompts, never hangs); nothing removed"
+            )
+        typed = (confirm_fn or _default_delete_confirm)(workspace)
+        if typed != workspace:
+            raise AuthoringError(
+                f"invalid-authoring: confirmation {typed!r} did not match the workspace name "
+                f"{workspace!r} — aborted, nothing deleted"
+            )
+
+    # (6) Remove ONLY the validated, contained, real directory. Count first (for the report).
+    file_count = sum(1 for p in target.rglob("*") if p.is_file())
+    shutil.rmtree(target)
+    return WorkspaceDeletion(
+        user=user,
+        workspace=workspace,
+        path=target,
+        file_count=file_count,
+        had_output=had_output,
+    )

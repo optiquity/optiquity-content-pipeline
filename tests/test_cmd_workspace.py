@@ -1,5 +1,5 @@
-"""CLI tests for `pipeline workspace new` + `pipeline user new` (W1) — the friendly LOCAL
-workspace scaffolder.
+"""CLI tests for `pipeline workspace <new|list|delete>` + `pipeline user new` (W1/W2) — the
+friendly LOCAL workspace lifecycle.
 
 `workspace new <workspace> --user <user> [--root DIR] [--force]` wires the thin
 `pipeline.workspacescaffold` leaf (which REUSES the C2a `pipeline.authoring` overwrite guard + the
@@ -11,9 +11,15 @@ created workspace resolves via `validate_workspace_path`; refuse-if-exists fails
 `--force` seeds only MISSING files (NEVER overwrites client data); a missing `--user` is a usage
 error (exit 2); a bad/uppercase `--user` or `<workspace>` is a loud refusal (exit 1, never a crash);
 the new-user-namespace note prints only when the user is new. `user new` creates the empty per-user
-namespace, refuses-if-exists, and refuses a bad user. The §21.9 money-safety invariant holds
-(neither verb registers an invoke handler / mutates the module-global handler map). Every write is
-under a `tmp_path` `--root` — the real `users/` is never touched.
+namespace, refuses-if-exists, and refuses a bad user.
+
+W2 adds `workspace list` (READ-ONLY discovery — per-user + all-users `<user>/<workspace>` rows with
+a TRUE topic-count/has-output summary; a missing users/ is a clean "no workspaces found"; a bad
+--user refused) and `workspace delete` (DESTRUCTIVE, safe-by-default — refuse-by-default confirm,
+Tier-2 has-output override needing --force, non-existent/symlink/bad-name refusals, sibling +
+namespace survival). The §21.9 money-safety invariant holds for every verb (none registers an invoke
+handler / mutates the module-global handler map). Every write is under a `tmp_path` `--root` — the
+real `users/` is never touched.
 """
 
 from __future__ import annotations
@@ -24,6 +30,8 @@ import pytest
 
 import pipeline.api.invoke as invoke_mod
 from pipeline import __main__ as cli
+from pipeline import workspacescaffold
+from pipeline.authoring import AuthoringError
 from pipeline.workspace_name import validate_workspace_path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -329,3 +337,263 @@ def test_user_new_never_registers_a_verb(tmp_path):
     before = dict(invoke_mod._VERB_HANDLERS)
     assert _run_user("new", "bob", "--root", str(root)) == 0
     assert invoke_mod._VERB_HANDLERS == before
+
+
+# ==============================================================================================
+# W2: `pipeline workspace list` (READ-ONLY) + `pipeline workspace delete` (DESTRUCTIVE, SAFE).
+# ==============================================================================================
+
+
+def _seed(root: Path, workspace: str, *, user: str = USER) -> Path:
+    """Seed ONE pristine workspace under `user` via the real CLI and return its target path."""
+    assert _run_ws("new", workspace, "--user", user, "--root", str(root)) == 0
+    return root / "users" / user / "workspaces" / workspace
+
+
+# --- `workspace list`: per-user, all-users, empty, accurate summary, bad --user ---------------
+
+
+def test_list_per_user_scoped(tmp_path, capsys):
+    """`workspace list --user acme` lists ONLY acme's workspaces (bob's are excluded)."""
+    root = _root(tmp_path)
+    _seed(root, "alpha")
+    _seed(root, "beta")
+    _seed(root, "gamma", user="bob")
+    capsys.readouterr()  # drop the seed output
+    assert _run_ws("list", "--user", USER, "--root", str(root)) == 0
+    out = capsys.readouterr().out
+    assert "acme/alpha" in out and "acme/beta" in out
+    assert "bob/gamma" not in out  # scoped to --user acme
+
+
+def test_list_all_users(tmp_path, capsys):
+    """`workspace list` WITHOUT --user scans every user (users/*/workspaces/*), each row shown
+    as <user>/<workspace>."""
+    root = _root(tmp_path)
+    _seed(root, "alpha")
+    _seed(root, "gamma", user="bob")
+    capsys.readouterr()
+    assert _run_ws("list", "--root", str(root)) == 0
+    out = capsys.readouterr().out
+    assert "acme/alpha" in out
+    assert "bob/gamma" in out
+
+
+def test_list_empty_missing_users_is_clean_exit0(tmp_path, capsys):
+    """A missing/empty users/ prints a clean 'no workspaces found' (exit 0), never a traceback."""
+    root = _root(tmp_path)  # no users/ dir at all
+    assert _run_ws("list", "--root", str(root)) == 0
+    out = capsys.readouterr().out
+    assert "no workspaces found" in out
+    assert "Traceback" not in out
+
+
+def test_list_summary_is_true(tmp_path, capsys):
+    """The per-row summary is ACCURATE: a pristine workspace reports 0 topics + no output; after a
+    real topic (topics/x-*.md) and a generated output file are added, it reports them."""
+    root = _root(tmp_path)
+    target = _seed(root, "demo")
+    capsys.readouterr()
+    assert _run_ws("list", "--user", USER, "--root", str(root)) == 0
+    pristine = capsys.readouterr().out
+    assert "acme/demo" in pristine
+    assert "0 topic(s)" in pristine and "no output" in pristine
+
+    (target / "topics" / "x-widgets.md").write_text("# widgets\n", encoding="utf-8")
+    (target / "output" / "post.md").write_text("generated bytes\n", encoding="utf-8")
+    assert _run_ws("list", "--user", USER, "--root", str(root)) == 0
+    summary = capsys.readouterr().out
+    assert "1 topic(s)" in summary and "has output" in summary
+
+
+def test_list_gitkeep_only_output_is_not_generated(tmp_path, capsys):
+    """A blueprint `output/.gitkeep` alone is NOT generated output — the summary stays 'no output'
+    (the .gitkeep marker must never count as spent work)."""
+    root = _root(tmp_path)
+    target = _seed(root, "demo")
+    assert (target / "output" / ".gitkeep").is_file()  # guard: blueprint really ships it
+    capsys.readouterr()
+    assert _run_ws("list", "--user", USER, "--root", str(root)) == 0
+    assert "no output" in capsys.readouterr().out
+
+
+def test_list_bad_user_refused(tmp_path, capsys):
+    """A bad/uppercase --user is a loud refusal (exit 1), never a traceback."""
+    root = _root(tmp_path)
+    assert _run_ws("list", "--user", "Acme", "--root", str(root)) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("pipeline workspace list:")
+    assert "Traceback" not in err
+
+
+def test_workspace_list_never_registers_a_verb(tmp_path):
+    """`workspace list` is a pure read: never registers a verb / mutates `_VERB_HANDLERS`."""
+    root = _root(tmp_path)
+    _seed(root, "demo")
+    before = dict(invoke_mod._VERB_HANDLERS)
+    assert _run_ws("list", "--user", USER, "--root", str(root)) == 0
+    assert invoke_mod._VERB_HANDLERS == before
+
+
+# --- `workspace delete`: confirmation, has-output override, refusals, symlink, isolation -------
+
+
+def test_delete_refuse_without_confirmation_headless(tmp_path, capsys):
+    """Headless with NO --yes: refuse fast (exit 1, 'pass --yes'), nothing deleted (no TTY prompt
+    to hang on)."""
+    root = _root(tmp_path)
+    target = _seed(root, "demo")
+    capsys.readouterr()
+    code = _run_ws("delete", "demo", "--user", USER, "--root", str(root))
+    assert code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("pipeline workspace delete:")
+    assert "--yes" in err
+    assert target.is_dir()  # untouched
+
+
+def test_delete_yes_removes_pristine(tmp_path, capsys):
+    """`--yes` deletes a pristine (no generated output) workspace → exit 0, dir gone."""
+    root = _root(tmp_path)
+    target = _seed(root, "demo")
+    capsys.readouterr()
+    assert _run_ws("delete", "demo", "--user", USER, "--root", str(root), "--yes") == 0
+    assert not target.exists()
+    assert "removed workspace 'demo'" in capsys.readouterr().out
+
+
+def test_delete_hasoutput_refused_with_yes_then_deleted_with_force(tmp_path, capsys):
+    """Tier-2 output guard: a workspace holding generated output is REFUSED with --yes alone
+    (exit 1, 'generated output'), and DELETED only with --yes --force."""
+    root = _root(tmp_path)
+    target = _seed(root, "demo")
+    (target / "output" / "post.md").write_text("spent work\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _run_ws("delete", "demo", "--user", USER, "--root", str(root), "--yes") == 1
+    err = capsys.readouterr().err
+    assert "generated output" in err
+    assert target.is_dir()  # NOT deleted — spent work protected
+
+    assert _run_ws("delete", "demo", "--user", USER, "--root", str(root), "--yes", "--force") == 0
+    assert not target.exists()
+
+
+def test_delete_nonexistent_refused(tmp_path, capsys):
+    """Deleting a workspace that does not exist is a loud exit-1 refusal (nothing to delete)."""
+    root = _root(tmp_path)
+    _seed(root, "demo")  # the user namespace exists; 'nope' does not
+    capsys.readouterr()
+    assert _run_ws("delete", "nope", "--user", USER, "--root", str(root), "--yes") == 1
+    err = capsys.readouterr().err
+    assert err.startswith("pipeline workspace delete:")
+    assert "no workspace" in err
+
+
+def test_delete_uppercase_workspace_refused(tmp_path, capsys):
+    """A bad/uppercase <workspace> is refused by the isolation gate (exit 1), never a crash."""
+    root = _root(tmp_path)
+    assert _run_ws("delete", "Demo", "--user", USER, "--root", str(root), "--yes") == 1
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_delete_uppercase_user_refused(tmp_path, capsys):
+    """A bad/uppercase --user is refused by the isolation gate (exit 1), never a crash."""
+    root = _root(tmp_path)
+    assert _run_ws("delete", "demo", "--user", "Acme", "--root", str(root), "--yes") == 1
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_delete_missing_user_is_usage_error(tmp_path):
+    """`workspace delete demo` WITHOUT --user is a usage error (argparse exit 2) — --user is
+    MANDATORY on delete."""
+    root = _root(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _run_ws("delete", "demo", "--root", str(root), "--yes")
+    assert exc.value.code == 2
+
+
+def test_delete_symlink_target_refused_link_target_intact(tmp_path, capsys):
+    """A workspace dir that IS a symlink (pointing at a real sibling) is REFUSED (never delete
+    through a link), even with --yes --force; the link target (and the link) stay intact."""
+    root = _root(tmp_path)
+    realws = _seed(root, "realws")
+    (realws / "output" / "keep.md").write_text("real content\n", encoding="utf-8")
+    ws_base = root / "users" / USER / "workspaces"
+    linked = ws_base / "linked"
+    linked.symlink_to(realws, target_is_directory=True)
+    capsys.readouterr()
+
+    code = _run_ws("delete", "linked", "--user", USER, "--root", str(root), "--yes", "--force")
+    assert code == 1
+    assert "symlink" in capsys.readouterr().err
+    # the link target is untouched (never rmtree'd through the link), and the link itself remains
+    assert realws.is_dir()
+    assert (realws / "output" / "keep.md").read_text(encoding="utf-8") == "real content\n"
+    assert linked.is_symlink()
+
+
+def test_delete_preserves_namespace_and_sibling(tmp_path, capsys):
+    """After a successful delete, users/<user>/ + its workspaces/ survive and a SIBLING workspace
+    is UNTOUCHED (client isolation, rule 2)."""
+    root = _root(tmp_path)
+    keep = _seed(root, "keep")
+    goner = _seed(root, "goner")
+    (keep / "output" / "post.md").write_text("sibling work\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _run_ws("delete", "goner", "--user", USER, "--root", str(root), "--yes") == 0
+    assert not goner.exists()
+    assert (root / "users" / USER / "workspaces").is_dir()  # namespace survives
+    assert keep.is_dir()  # sibling untouched
+    assert (keep / "output" / "post.md").read_text(encoding="utf-8") == "sibling work\n"
+
+
+def test_delete_never_registers_a_verb(tmp_path):
+    """`workspace delete` is a LOCAL file op: never registers a verb / mutates `_VERB_HANDLERS`
+    (§21.9 — a delete cannot spend quota or mint a token)."""
+    root = _root(tmp_path)
+    _seed(root, "demo")
+    before = dict(invoke_mod._VERB_HANDLERS)
+    assert _run_ws("delete", "demo", "--user", USER, "--root", str(root), "--yes") == 0
+    assert invoke_mod._VERB_HANDLERS == before
+
+
+# --- the interactive type-the-name confirmation path (confirm_fn injection seam) ---------------
+
+
+def test_delete_interactive_confirm_match_proceeds(tmp_path):
+    """Interactive (confirm_fn injected): the operator TYPES the workspace name → the delete
+    proceeds (the library seam, no --yes)."""
+    root = _root(tmp_path)
+    target = _seed(root, "demo")
+    result = workspacescaffold.delete_workspace(
+        root, USER, "demo", assume_yes=False, force=False, confirm_fn=lambda name: name
+    )
+    assert result.workspace == "demo"
+    assert result.path == target
+    assert not target.exists()
+
+
+def test_delete_interactive_confirm_mismatch_aborts(tmp_path):
+    """Interactive with a WRONG typed name → AuthoringError, nothing deleted."""
+    root = _root(tmp_path)
+    target = _seed(root, "demo")
+    with pytest.raises(AuthoringError):
+        workspacescaffold.delete_workspace(
+            root, USER, "demo", assume_yes=False, force=False, confirm_fn=lambda name: "not-it"
+        )
+    assert target.is_dir()  # nothing deleted on a mismatch
+
+
+def test_delete_hasoutput_refused_even_interactively_without_force(tmp_path):
+    """The Tier-2 has-output guard fires BEFORE the prompt: a matching typed name still cannot
+    delete a workspace holding generated output without --force (spent work is protected)."""
+    root = _root(tmp_path)
+    target = _seed(root, "demo")
+    (target / "output" / "post.md").write_text("spent\n", encoding="utf-8")
+    with pytest.raises(AuthoringError):
+        workspacescaffold.delete_workspace(
+            root, USER, "demo", assume_yes=False, force=False, confirm_fn=lambda name: name
+        )
+    assert target.is_dir()  # refused despite a matching confirmation
