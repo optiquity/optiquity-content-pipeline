@@ -171,6 +171,26 @@ commands:
                             (TTY-gated prompt; headless fails fast). Options: --workspace W ·
                             --root DIR · --force. Exit 0 ok; 1 refusal (bad dimension / non-slug id
                             / topic-without-workspace / refuse-if-exists); 2 usage.
+  workspace      the FRIENDLY local workspace scaffolder (design §23). LOCAL Tier-A file scaffold —
+                 never an invoke verb / HTTP door (§21.9 preserved). Subcommand:
+                   new WORKSPACE   seed ONE new client workspace under
+                            users/<user>/workspaces/<workspace>/
+                            by copying the shared framework blueprint templates/workspace/ (the
+                            friendly form of `cp -R templates/workspace users/<user>/workspaces/
+                            <ws>`). --user is REQUIRED (§23 isolation prefix); the user namespace is
+                            auto-created on demand (a brand-new user home is announced so a mistyped
+                            --user is visible). Refuse-if-exists unless --force; --force NEVER
+                            overwrites an existing file (non-destructive — tops up MISSING blueprint
+                            files only, never deletes client data). Options: --user U (required) ·
+                            --root DIR · --force. Exit 0 ok; 1 refusal (bad name / refuse-if-exists
+                            / missing blueprint); 2 usage (no subcommand / missing --user).
+  user           the FRIENDLY per-user namespace setup (design §23). LOCAL Tier-A file op — never an
+                 invoke verb / HTTP door (§21.9 preserved). Subcommand:
+                   new USER   create the empty per-user namespace users/<user>/workspaces/ (the
+                            extensible per-user home) WITHOUT a workspace. <user> is a §23
+                            lowercase-safe segment. Refuse-if-exists unless --force (a safe no-op;
+                            deletes nothing). Options: --root DIR · --force. Exit 0 ok; 1 refusal
+                            (bad user / refuse-if-exists); 2 usage.
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -2167,6 +2187,195 @@ def _cmd_entry(argv: list[str]) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# W1: `pipeline workspace new` + `pipeline user new` — the FRIENDLY local workspace scaffolder.
+#
+# The local, friendly form of the documented onboarding flow (`cp -R templates/workspace
+# users/<user>/workspaces/<ws>`): a dimension-entry/recipe-authoring sibling that seeds a new
+# workspace from the shared framework blueprint `templates/workspace/` (via the thin
+# `pipeline.workspacescaffold` leaf, which REUSES the C2a `pipeline.authoring` overwrite guard +
+# the `pipeline.workspace_name` isolation gate — nothing re-implemented). `user new` is the
+# sibling that stands up just the empty per-user namespace `users/<user>/workspaces/`.
+#
+# MONEY-SAFETY (§21.9): both are LOCAL Tier-A file scaffolds. Neither registers an invoke verb,
+# touches `_VERB_HANDLERS`, or dispatches through the invoke door — so neither can spend
+# subscription quota or mint a token. A workspace name never enters the artifact preimage; a
+# scaffolded workspace is inert to identity until a run selects it.
+# ---------------------------------------------------------------------------
+
+
+def _workspace_error_types() -> tuple:
+    """The typed refusals `workspace new` / `user new` map to a loud exit 1 (never a stack trace):
+    a bad / uppercase / escaping user or workspace name (`workspace_name.WorkspaceNameError`), and a
+    refuse-if-exists or missing-blueprint refusal (`authoring.AuthoringError`). The tuple stays
+    specific so a genuine bug is never swallowed."""
+    from pipeline import authoring
+    from pipeline.workspace_name import WorkspaceNameError
+
+    return (authoring.AuthoringError, WorkspaceNameError)
+
+
+def _cmd_workspace(argv: list[str]) -> int:
+    """W1: `pipeline workspace new <workspace> --user <user> [--root DIR] [--force]` — seed one new
+    client workspace under a user's namespace from the shared blueprint `templates/workspace/`.
+
+    A LOCAL Tier-A file scaffold (never an invoke verb / HTTP door; §21.9): validate `<user>` +
+    `<workspace>` via the isolation gate (lowercase-only, single safe segment, resolve-and-contain),
+    auto-create the `users/<user>/workspaces/` namespace on demand (noting a brand-new user home so
+    a mistyped `--user` is visible), refuse an existing target unless `--force` (which NEVER
+    overwrites an existing file — the copy is non-destructive), and print the created path + a
+    next-step hint.
+    Exit 0 ok; 1 refusal (bad name / refuse-if-exists / missing blueprint); 2 usage (no subcommand /
+    missing `--user`)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline workspace",
+        description=(
+            "The friendly local workspace scaffolder (design §23): seed a new client workspace "
+            "under a user's namespace from the shared blueprint templates/workspace/. LOCAL Tier-A "
+            "file scaffold — never an invoke verb / HTTP door (§21.9). Subcommand: new."
+        ),
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    new = sub.add_parser(
+        "new",
+        help="seed one new workspace under users/<user>/workspaces/ from templates/workspace/",
+        description=(
+            "Seed ONE new client workspace users/<user>/workspaces/<workspace>/ by copying the "
+            "shared framework blueprint templates/workspace/ (design §23; the friendly form of "
+            "`cp -R templates/workspace users/<user>/workspaces/<ws>`). --user is REQUIRED (the "
+            "§23 isolation prefix); the user namespace is auto-created on demand (a brand-new user "
+            "home is announced so a mistyped --user is visible). Refuse-if-exists unless --force; "
+            "--force NEVER overwrites an existing file (the copy is non-destructive — it only tops "
+            "up MISSING blueprint files, never deletes client data). Then edit source.md (the "
+            "graph path) and add topics. NEVER spends quota (never an invoke verb; §21.9)."
+        ),
+    )
+    new.add_argument(
+        "workspace",
+        help="the workspace name to create (§23 lowercase-safe segment; the directory name)",
+    )
+    new.add_argument(
+        "--user",
+        required=True,
+        help="the owning user (§23 isolation prefix; users/<user>/workspaces/<workspace>/)",
+    )
+    new.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
+    )
+    new.add_argument(
+        "--force",
+        action="store_true",
+        help="proceed if the workspace exists — seeds only MISSING files, never overwrites "
+        "(default: refuse)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.subcommand != "new":
+        parser.print_usage(sys.stderr)
+        print("pipeline workspace: a subcommand is required (known: new)", file=sys.stderr)
+        return 2
+
+    from pipeline import workspacescaffold
+
+    try:
+        result = workspacescaffold.scaffold_workspace(
+            args.root, args.workspace, user=args.user, force=args.force
+        )
+    except _workspace_error_types() as exc:
+        print(f"pipeline workspace new: {exc}", file=sys.stderr)
+        return 1
+
+    if result.created_user_namespace:
+        print(
+            f"pipeline workspace new: created new user namespace {result.path.parent.parent} "
+            f"(users/{result.user}/)"
+        )
+    print(
+        f"pipeline workspace new: seeded workspace {result.workspace!r} for user {result.user!r} "
+        f"({len(result.copied)} blueprint file(s)) — {result.path}"
+    )
+    if result.skipped:
+        print(
+            f"pipeline workspace new: left {len(result.skipped)} existing file(s) untouched "
+            f"(never overwritten): {', '.join(result.skipped)}"
+        )
+    print(
+        f"  next: edit {result.path / 'source.md'} (the graph path), add topics under "
+        f"{result.path / 'topics'}/, then `pipeline preview --user {result.user} "
+        f"--workspace {result.workspace} …`"
+    )
+    return 0
+
+
+def _cmd_user(argv: list[str]) -> int:
+    """W1 (sibling): `pipeline user new <user> [--root DIR] [--force]` — create just the empty
+    per-user namespace users/<user>/workspaces/ (the extensible per-user home) without a workspace.
+
+    A LOCAL Tier-A file op (never an invoke verb / HTTP door; §21.9): validate `<user>` via the
+    isolation gate, create users/<user>/workspaces/, refuse an existing namespace unless --force
+    (a SAFE no-op that deletes nothing), and print the created namespace path. Exit 0 ok; 1 refusal
+    (bad user / refuse-if-exists); 2 usage (no subcommand)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline user",
+        description=(
+            "The explicit per-user namespace setup (design §23): create users/<user>/workspaces/ "
+            "(the extensible per-user home) without a workspace. LOCAL Tier-A file op — never an "
+            "invoke verb / HTTP door (§21.9). Subcommand: new."
+        ),
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    new = sub.add_parser(
+        "new",
+        help="create the empty per-user namespace users/<user>/workspaces/",
+        description=(
+            "Create the empty per-user namespace users/<user>/workspaces/ (design §23) — the "
+            "extensible per-user home, set up explicitly BEFORE any workspace exists. <user> is a "
+            "§23 lowercase-safe segment. Refuse-if-exists unless --force (a safe no-op; deletes "
+            "nothing). NEVER spends quota (never an invoke verb; §21.9)."
+        ),
+    )
+    new.add_argument(
+        "user",
+        help="the user name to create (§23 lowercase-safe segment) → users/<user>/workspaces/",
+    )
+    new.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/workspaces/ (default: cwd)",
+    )
+    new.add_argument(
+        "--force",
+        action="store_true",
+        help="proceed if the namespace exists — a safe no-op, never deletes (default: refuse)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.subcommand != "new":
+        parser.print_usage(sys.stderr)
+        print("pipeline user: a subcommand is required (known: new)", file=sys.stderr)
+        return 2
+
+    from pipeline import workspacescaffold
+
+    try:
+        result = workspacescaffold.scaffold_user(args.root, args.user, force=args.force)
+    except _workspace_error_types() as exc:
+        print(f"pipeline user new: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"pipeline user new: created user namespace {result.user!r} — {result.path}")
+    print(
+        f"  next: `pipeline workspace new <workspace> --user {result.user}` to seed a workspace"
+    )
+    return 0
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
@@ -2182,6 +2391,8 @@ _COMMANDS = {
     "docs": _cmd_docs,
     "recipe": _cmd_recipe,
     "entry": _cmd_entry,
+    "workspace": _cmd_workspace,
+    "user": _cmd_user,
 }
 
 
