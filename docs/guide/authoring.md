@@ -32,6 +32,8 @@ The rhythm, then, is always the same: **preview → dry-run → read the count �
 
 | Door | What it does | Spends? |
 |------|--------------|---------|
+| `pipeline workspace new` / `list` / `delete` | scaffold a workspace from the blueprint, list them, or safely remove one (`delete` needs confirmation + `--force` over generated output) | never |
+| `pipeline user new` | create an empty per-user namespace | never |
 | `pipeline preview` | plan-only: effective settings + the plan + the paid count | never |
 | `pipeline generate` | dry-run by default; `--go` drives + spends | only with `--go` |
 | `pipeline recipe new` | author a reusable starting point (a recipe file) | never |
