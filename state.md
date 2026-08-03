@@ -14,7 +14,7 @@ build delivered at `5f58d63` (final verification PASSED; cross-reference audit *
 CLOSED, the §21.7-code HARD GATE CLOSED at step 39, the §21.9 gate correctly OPEN/honored). The prepared
 CLAUDE.md diff was applied post-delivery (`5b1c584`). Since then a series of ratified design-record
 increments + the friendly CLI surface + the authoring layer + the users/-namespace restructure landed.
-**Current HEAD `2284517`.** Detailed per-increment records live in the commit history + `ops-handoff/`;
+**Current HEAD `783b57d`.** Detailed per-increment records live in the commit history + `ops-handoff/`;
 the summary below is orientation only.
 
 **Post-build increments (each planned + coder→reviewer→commit):**
@@ -64,8 +64,24 @@ the summary below is orientation only.
   cascade stays framework→instance→workspace). On-disk instance data migrated locally
   (`mvp-demo`/`optiquitytrader` → `users/optiquity/workspaces/…` via `scripts/migrate-to-users-layout.sh`,
   idempotent, ZERO data loss). GAP-9 marked SUPERSEDED; GAP-11 records the accepted marker-less `templates/`
-  guard residual. Follow-ons open: W1 (`workspace new`/`user new` scaffolder), W2 (encapsulation cleanup —
-  `workspace list`/`delete`). **Current HEAD `2284517`.**
+  guard residual. **Current HEAD (restructure) `2284517`.**
+- **★ Workspace CRUD conveniences — W1 + W2 (`4ec8ae6`, `783b57d`; each coder→reviewer→commit; W1 carried
+  one LOW review fix, W2 reviewed CLEAN first pass).** The friendly local lifecycle on top of the
+  users/-namespace: **W1** — `pipeline workspace new <ws> --user <u>` (seeds from the `templates/workspace/`
+  blueprint; `--user` mandatory; auto-creates a new user namespace, announced; refuse-if-exists; **`--force`
+  is non-destructive** — tops up only missing files, never overwrites/deletes) + `pipeline user new <u>`
+  (the empty per-user namespace). **W2** — `pipeline workspace list [--user U]` (read-only; per-user or all;
+  topic-count + has-output summary) + `pipeline workspace delete <ws> --user U [--yes] [--force]` (the FIRST
+  destructive command, SAFE-BY-DEFAULT two-tier: Tier-1 always needs confirmation — type-the-name or `--yes`,
+  headless-without-yes refuses; Tier-2 refuses a workspace holding generated output even with `--yes` unless
+  `--force`; never rmtrees through a symlink or outside the validated target). All FOUR are LOCAL Tier-A file
+  ops — never an invoke/HTTP verb, no spend (§21.9 money-safety held: `begin-session` stays exit 3). Logic in
+  the pure leaf `pipeline/workspacescaffold.py`; reuses the validator + typed refusals (nothing
+  re-implemented). **Encapsulation (maintainer's explicit question): delete is SELF-CONTAINED — there is NO
+  global workspace index; workspaces are discovered by scanning `users/*/workspaces/*` and all workspace
+  state lives under the workspace dir, so a delete orphans nothing (reviewer-confirmed independently).** This
+  CLOSES the original W1/W2/W3 trio. Docs still describe the manual `cp -R templates/workspace …` onboarding
+  flow — a follow-up should point it at `workspace new` as the friendly path. **Current HEAD `783b57d`.**
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
