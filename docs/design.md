@@ -2769,7 +2769,11 @@ changes only *where* a workspace lives, leaving the value cascade framework → 
 workspace (L1/L2/L3, §12) untouched. `users/` and `workspaces/` are plural REST collection nouns,
 so the on-disk tree maps 1:1 to a future `/users/{user}/workspaces/{workspace}` REST path; the
 shared scaffold at `templates/workspace/` is the framework copy every new workspace is stamped from
-(`cp -R templates/workspace users/<user>/workspaces/<workspace>`).
+by `pipeline workspace new <workspace> --user <user>` (equivalently `cp -R templates/workspace
+users/<user>/workspaces/<workspace>`). The workspace lifecycle is CRUD-complete on that CLI —
+`workspace new` / `workspace list` / `workspace delete` (+ `user new`), all local Tier-A file ops
+that never spend (§21.9); `delete` is safe-by-default (confirmation, plus a `--force` gate over any
+workspace holding generated output) and self-contained (no global index to orphan).
 
 The **mechanism-public / data-instance split** (§10) governs every new store: the claim table,
 presence-lease registry, telemetry log, and the DR-1 `jobs/` record store are framework

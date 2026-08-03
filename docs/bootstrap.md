@@ -46,9 +46,12 @@ deviations from mission §6.2 in `state.md` (feeds decision D4). (P0.3)
 Create a workspace (your own repos are clients too):
 
 ```bash
-mkdir -p users/<user>/workspaces                              # your isolation/addressing prefix (§23)
-cp -R templates/workspace users/<user>/workspaces/self        # or …/workspaces/<workspace-name>
+uv run pipeline workspace new self --user <user>   # scaffolds users/<user>/workspaces/self (use any <workspace-name>)
 ```
+
+(`workspace new` creates the user namespace on first use and seeds the workspace from
+`templates/workspace/`; the equivalent by hand is `mkdir -p users/<user>/workspaces && cp -R
+templates/workspace users/<user>/workspaces/self`.)
 
 Each client repo is checked out locally. Build its Graphify graph **in that checkout** — the
 `graphify-out/` is gitignored inside the client repo, so it never dirties it. The pipeline stores

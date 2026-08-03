@@ -91,8 +91,7 @@ git remote rename origin upstream
 git remote add origin <YOUR_PRIVATE_REPO_URL>
 git push -u origin main
 cp instance/profile.template.md instance/profile.md    # fill with your goals/audiences
-mkdir -p users/<user>/workspaces                        # your isolation/addressing prefix (§23)
-cp -R templates/workspace users/<user>/workspaces/self  # your first workspace (a future `workspace new`)
+uv run pipeline workspace new self --user <user>        # your first workspace under users/<user>/workspaces/self (§23)
 ```
 
 ## Backward compatibility of framework changes

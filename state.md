@@ -80,8 +80,10 @@ the summary below is orientation only.
   re-implemented). **Encapsulation (maintainer's explicit question): delete is SELF-CONTAINED — there is NO
   global workspace index; workspaces are discovered by scanning `users/*/workspaces/*` and all workspace
   state lives under the workspace dir, so a delete orphans nothing (reviewer-confirmed independently).** This
-  CLOSES the original W1/W2/W3 trio. Docs still describe the manual `cp -R templates/workspace …` onboarding
-  flow — a follow-up should point it at `workspace new` as the friendly path. **Current HEAD `783b57d`.**
+  CLOSES the original W1/W2/W3 trio. Docs swept to point the onboarding flow at `workspace new` as the
+  friendly path (quickstart, getting-started, bootstrap, operating-model, architecture, design §23 repo-map,
+  the blueprint readme) + the new commands added to the `interfaces.md` CLI door list; the manual `cp -R`
+  is kept only as an "equivalent by hand" note. **Current HEAD `783b57d`.**
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;

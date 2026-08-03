@@ -13,6 +13,8 @@ The surface has four parts: the selection inputs, the verbs, the store, and the 
 
 Locally, the friendly way in is `scripts/pipeline` (also `uv run pipeline`) — English-ish flags onto the same verbs, built so nothing paid happens by accident (`generate` is a dry-run until you add `--go`, and spend is subscription-only, never an API key). The doors, one line each:
 
+- **`pipeline workspace new` / `list` / `delete`** — the workspace lifecycle: scaffold a new workspace from the `templates/workspace/` blueprint, list existing workspaces (with a topic-count / has-output summary), or remove one. `delete` is safe-by-default — it needs confirmation (type-the-name or `--yes`) and refuses a workspace holding generated output unless you also pass `--force`. All local file ops; nothing paid.
+- **`pipeline user new`** — create an empty per-user namespace (`users/<user>/workspaces/`) on its own.
 - **`pipeline preview`** — plan-only: the effective settings, the plan, and the exact paid count. Spends nothing.
 - **`pipeline generate`** — dry-run by default; `--go` drives the plan and is the only thing that spends.
 - **`pipeline recipe new`** — author a reusable, *partial* recipe (a saved set of axis picks + tweaks).

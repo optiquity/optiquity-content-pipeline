@@ -30,9 +30,12 @@ graphify --help                # confirm current subcommands/flags
 **3. Create a workspace** (your own repo is a client too)
 
 ```bash
-mkdir -p users/<you>/workspaces                        # your isolation/addressing prefix (§23)
-cp -R templates/workspace users/<you>/workspaces/self  # a future `workspace new` will scaffold this
+uv run pipeline workspace new self --user <you>   # scaffolds users/<you>/workspaces/self from the blueprint (§23)
 ```
+
+(That one command creates the user namespace on first use and seeds the workspace from
+`templates/workspace/`. The equivalent by hand is `mkdir -p users/<you>/workspaces && cp -R
+templates/workspace users/<you>/workspaces/self`.)
 
 **4. Build the graph in your checked-out client repo (gitignored there)**
 

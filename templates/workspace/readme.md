@@ -1,13 +1,15 @@
 # workspace blueprint (templates/workspace/) — one workspace per client repo
 
-Copy this directory to `users/<user>/workspaces/<workspace>/` to onboard a client repo (your own
-repos are clients too, e.g. `users/<user>/workspaces/self/`). Everything for that workspace lives
-here and never leaks into another workspace (CLAUDE.md rule 2; design §10 — scope is encoded by
-location). This blueprint is the framework-owned, owner-agnostic template that ships in the public
-framework; instantiated `users/<user>/workspaces/<workspace>/` trees are instance-owned (gitignored
-in public). Full layout: design §23.
+Scaffold a workspace from this blueprint to onboard a client repo (your own repos are clients too,
+e.g. `users/<user>/workspaces/self/`). Everything for that workspace lives there and never leaks into
+another workspace (CLAUDE.md rule 2; design §10 — scope is encoded by location). This blueprint is
+the framework-owned, owner-agnostic template that ships in the public framework; instantiated
+`users/<user>/workspaces/<workspace>/` trees are instance-owned (gitignored in public). Full layout:
+design §23.
 
 ```bash
+pipeline workspace new <workspace> --user <user>   # the friendly path — stamps this blueprint
+# equivalently, by hand:
 cp -R templates/workspace users/<user>/workspaces/<workspace>
 ```
 
