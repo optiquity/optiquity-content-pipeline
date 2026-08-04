@@ -51,7 +51,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from pipeline.adapters.base import AdapterError, GroundingResult, SourceAdapter
+from pipeline.adapters.base import (
+    TEMPORALITY_VALUES,
+    AdapterError,
+    GroundingResult,
+    SourceAdapter,
+    temporality_ok,
+)
 from pipeline.sources.cache import (
     CacheError,
     query_facts,
@@ -68,8 +74,13 @@ __all__ = ["CONNECTION_KEYS", "DEFAULT_BUDGET", "CacheReaderAdapter"]
 DEFAULT_BUDGET = 2000
 
 #: The CLOSED connection keyset (§3.3): the namespace path + the fact budget + the optional pinned
-#: slice selector, nothing else. An unknown key fails LOUD (never a silent typo).
-CONNECTION_KEYS = frozenset({"path", "budget", "slice"})
+#: slice selector + the optional `temporality` slice-provenance token, nothing else. An unknown key
+#: fails LOUD (never a silent typo). `temporality` (§6.1, sources P2) is NOT an identity input and
+#: NOT a §6.2 score — it is grounding-ledger provenance this reader SURFACES onto the result (the
+#: `attestation` posture); homing it on the CONNECTION (not the sealed slice) keeps it OUT of the
+#: content address → out of the §7.2 `source_commit` → out of the artifact-id (a per-slice seal
+#: would couple this pure annotation into identity). Absent ⇒ omit-when-absent (ledger unchanged).
+CONNECTION_KEYS = frozenset({"path", "budget", "slice", "temporality"})
 
 
 class CacheReaderAdapter(SourceAdapter):
@@ -143,21 +154,40 @@ class CacheReaderAdapter(SourceAdapter):
         except CacheError as exc:
             raise AdapterError(f"adapter-failure: {exc}") from exc
 
+    def _temporality(self, connection: Mapping[str, Any]) -> str | None:
+        """The OPTIONAL §6.1 temporality this connection declares (`archival`, …), or `None` when
+        absent (omit-when-absent). Read-only ledger provenance the reader surfaces onto the result;
+        a malformed value fails LOUD (never a silent drop of a provenance claim). Homed here (not on
+        the sealed slice) so it never touches the content address / §7.2 identity."""
+        if "temporality" not in connection:
+            return None
+        value = connection.get("temporality")
+        if not temporality_ok(value) or value is None:
+            raise AdapterError(
+                f"adapter-failure: cache `temporality` must be one of {TEMPORALITY_VALUES} "
+                f"(§6.1 slice provenance, not a §6.2 score), got {value!r}"
+            )
+        return value
+
     def ground(self, *, connection: Mapping[str, Any], query: str) -> GroundingResult:
         """Read the PINNED slice and FTS5-query it deterministically (read-only, no network/LLM).
 
         Returns up to `budget` facts (subject/claim/tier/anchors/as_of) in the deterministic
         `rank, stable-id` order. `built_at_commit` is the sealed slice digest — the SAME marker
-        `pin_commit` returns (CF-1). A namespace with nothing pinned/published grounds EMPTY +
-        commitless (`None`) — the resolver's SM1 owns the empty outcome (the folder posture); a
-        pinned-but-missing slice fails LOUD (a corrupt pin, never a silent empty)."""
+        `pin_commit` returns (CF-1). `temporality` is the OPTIONAL §6.1 slice-provenance the
+        connection declares, surfaced onto the result for the §15 ledger (omit-when-absent). A
+        namespace with nothing pinned/published grounds EMPTY + commitless (`None`) — the resolver's
+        SM1 owns the empty outcome (the folder posture); a pinned-but-missing slice fails LOUD (a
+        corrupt pin, never a silent empty)."""
         if not isinstance(query, str):
             raise AdapterError(
                 f"adapter-failure: query must be a string, got {type(query).__name__}"
             )
         ns_dir, budget, digest = self._resolve(connection)
+        temporality = self._temporality(connection)
         if digest is None:
-            return GroundingResult(facts=(), built_at_commit=None)  # nothing acquired yet (SM1)
+            # nothing acquired yet (SM1); temporality still rides as declared config
+            return GroundingResult(facts=(), built_at_commit=None, temporality=temporality)
         if not slice_path(ns_dir, digest).exists():
             raise AdapterError(
                 f"adapter-failure: pinned slice {digest} is absent under {ns_dir} — a pinned "
@@ -168,7 +198,7 @@ class CacheReaderAdapter(SourceAdapter):
             grounded = query_facts(facts, query, budget)
         except CacheError as exc:
             raise AdapterError(f"adapter-failure: {exc}") from exc
-        return GroundingResult(facts=grounded, built_at_commit=digest)
+        return GroundingResult(facts=grounded, built_at_commit=digest, temporality=temporality)
 
     def pin_commit(self, connection: Mapping[str, Any]) -> str | None:
         """The §7.2 identity commit-map value for a cache source — the SAME sealed digest `ground`

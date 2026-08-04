@@ -77,7 +77,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline.adapters.base import TIERS
+from pipeline.adapters.base import TEMPORALITY_VALUES, TIERS, temporality_ok
 from pipeline.canonical import CanonicalizationError, digest_full
 from pipeline.ids import IdError, PreimageError, mint_artifact_id, parse_id, part_id
 from pipeline.sections import (
@@ -164,9 +164,13 @@ LEDGER_REQUIRED = (
 #: Additive-optional ledger keys (F-a landed the empty envelope governance; DR-6 COMMIT 2 lands
 #: the first carrier). `attestation` is the OPTIONAL PROV-O-shaped scenario-2 pool-relation record
 #: (§15 RI3): an in-pool-primary scenario-1 entry OMITS it (6-field, byte-unchanged) while a
-#: scenario-2 entry MAY carry it. A later generation appends more names; the governance stays
-#: `LEDGER_REQUIRED ⊆ keys ⊆ LEDGER_REQUIRED ∪ LEDGER_OPTIONAL` (an undeclared key is refused).
-LEDGER_OPTIONAL: tuple[str, ...] = ("attestation",)
+#: scenario-2 entry MAY carry it. `temporality` (sources P2) is the OPTIONAL §6.1 slice-provenance
+#: carrier — how the grounded content relates to time (`archival` for an immutable filing); a fact
+#: from a source that declares none OMITS it (byte-unchanged), so the pre-P2 corpus is untouched.
+#: A later generation appends more names; the governance stays `LEDGER_REQUIRED ⊆ keys ⊆
+#: LEDGER_REQUIRED ∪ LEDGER_OPTIONAL` (an undeclared key is refused). Neither optional carrier is a
+#: §7.2 identity input — the ledger is not in the artifact-id preimage.
+LEDGER_OPTIONAL: tuple[str, ...] = ("attestation", "temporality")
 
 #: Back-compat alias (exported): the pre-F-a name for the required set. Callers importing
 #: `LEDGER_FIELDS` keep working; it equals `LEDGER_REQUIRED`.
@@ -696,6 +700,12 @@ def validate_grounding_ledger(ledger: Any, *, where: str = "grounding") -> None:
         )
         if "attestation" in entry:  # DR-6 optional scenario-2 carrier — validated only when present
             _validate_attestation(entry["attestation"], f"{loc}.attestation")
+        if "temporality" in entry:  # sources-P2 optional §6.1 slice-provenance — checked if present
+            _require(
+                temporality_ok(entry["temporality"]) and entry["temporality"] is not None,
+                f"{loc}.temporality must be one of {sorted(TEMPORALITY_VALUES)} (§6.1 slice "
+                f"provenance), got {entry['temporality']!r}",
+            )
     _scan_no_secrets(ledger, where)
 
 

@@ -343,6 +343,12 @@ def build_grounding_ledger(
         # ledger is not an identity input, §7.2). Pass-through only — nothing here SETS attestation.
         if fact.attestation is not None:
             entry["attestation"] = fact.attestation
+        # sources-P2 §6.1 slice provenance (§15 RI3): emit `temporality` ONLY when the fact carries
+        # one (an EDGAR/cache fact → `archival`). A source that declares none (graphify/folder)
+        # leaves the entry byte-unchanged — omit-when-absent, exactly like `attestation`; neither is
+        # a §7.2 identity input, so the artifact-id/binding are untouched. Pass-through only.
+        if fact.temporality is not None:
+            entry["temporality"] = fact.temporality
         ledger[fact_id] = entry
         entries.append((fact_id, fact))
     ir.validate_grounding_ledger(ledger)  # closed schema + §3.3 secret scan — loud on a secret

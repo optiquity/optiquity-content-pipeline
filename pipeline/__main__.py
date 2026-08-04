@@ -206,6 +206,19 @@ commands:
                             lowercase-safe segment. Refuse-if-exists unless --force (a safe no-op;
                             deletes nothing). Options: --root DIR · --force. Exit 0 ok; 1 refusal
                             (bad user / refuse-if-exists); 2 usage.
+  sources        the OUT-OF-BAND acquisition maintenance door (design §6; sources P2). LOCAL Tier-A:
+                 it fetches FREE HTTP and writes the LOCAL sealed cache; it NEVER spends quota,
+                 mints a token, or touches the paid job path (§21.9 preserved; no paid-drive flag /
+                 session / external door). Subcommand:
+                   ingest WORKSPACE  acquire the workspace's feed sources (sources/feeds/<id>.yaml)
+                            fetch → normalize → dedup + θ-gate → SEAL into the sealed cache under
+                            users/<user>/workspaces/<ws>/sources/cache/<namespace>/ (gitignored; the
+                            rule-1 carve-out) and advance HEAD. Idempotent: a re-ingest of unchanged
+                            content is a no-op. --user is REQUIRED (§23 prefix); --source ID picks
+                            one feed (default: all). Prints per-feed facts-cached + θ-stop reason +
+                            bytes/requests ($0 model spend). Options: --user U (required) · --source
+                            ID · --root DIR. Exit 0 ok; 1 refusal (bad name / unknown feed / busy
+                            namespace); 2 usage (no subcommand / missing --user).
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -2526,6 +2539,100 @@ def _cmd_user(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
+    """Sources P2: `pipeline sources ingest <workspace> --user <u>` — the OUT-OF-BAND acquisition
+    maintenance door (design §6).
+
+    An OUT-OF-BAND, Tier-A maintenance verb in the `migrate.sh` / `workspace new` family: it fetches
+    FREE HTTP and writes the LOCAL sealed cache, and NEVER touches the paid job path — no paid
+    transport layer, no paid-drive flag, no session/external-actor door, no token, $0 model spend
+    (§21.9 preserved). The `http_get` fetch seam is INJECTABLE (default: `acquire.default_http_get`)
+    so a test drives the whole command with a fixture fn and NEVER hits the live network. Exit 0 ok;
+    1 refusal (bad name / unknown feed / busy namespace); 2 usage (no subcommand / missing --user).
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline sources",
+        description=(
+            "The out-of-band acquisition maintenance door (design §6; sources P2): fetch a "
+            "workspace's feed source(s), normalize + dedup + θ-gate, and SEAL into the local "
+            "sealed cache. LOCAL Tier-A — free HTTP + a local cache write, never paid quota / a "
+            "token / the external-actor door (§21.9). Subcommand: ingest."
+        ),
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    ingest = sub.add_parser(
+        "ingest",
+        help="acquire a workspace's feed source(s) into the sealed cache (Tier-A, no spend)",
+        description=(
+            "Resolve the workspace's feed descriptor(s) under sources/feeds/<id>.yaml and run each "
+            "through fetch → normalize → dedup + θ-gate → SEAL (advancing the namespace HEAD). "
+            "Idempotent: a re-ingest of unchanged content is a content-addressed no-op. Writes "
+            "only the gitignored sealed cache under the workspace (rule-1 carve-out); reads every "
+            "source read-only. Spends NOTHING (free HTTP; $0 model spend)."
+        ),
+    )
+    ingest.add_argument("workspace", help="the workspace to acquire into (§21.1)")
+    ingest.add_argument(
+        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
+    )
+    ingest.add_argument(
+        "--source",
+        default=None,
+        metavar="ID",
+        help="a single feed id under sources/feeds/ (default: every feed descriptor)",
+    )
+    ingest.add_argument(
+        "--root", default=".", help="framework repo root → users/<user>/workspaces/<ws>/ (def: cwd)"
+    )
+    args = parser.parse_args(argv)
+
+    if args.subcommand != "ingest":
+        parser.print_usage(sys.stderr)
+        print("pipeline sources: a subcommand is required (known: ingest)", file=sys.stderr)
+        return 2
+
+    from pipeline.sources import acquire
+    from pipeline.sources.cache import CacheError
+    from pipeline.store import WorkspaceStore
+    from pipeline.workspace_name import WorkspaceNameError, validate_workspace_path
+
+    try:
+        validate_workspace_path(args.root, args.user, args.workspace)  # door: resolve-and-contain
+    except WorkspaceNameError as exc:
+        print(f"pipeline sources ingest: {exc}", file=sys.stderr)
+        return 1
+
+    store = WorkspaceStore.at(args.root, args.user, args.workspace)
+    fetch = http_get if http_get is not None else acquire.default_http_get
+    try:
+        # A malformed feed `namespace:` surfaces from the cache-store gate as a typed CacheError —
+        # catch it alongside FeedError so a bad slug is a clean exit-1 refusal, never a traceback.
+        reports = acquire.ingest_workspace(store, source=args.source, http_get=fetch)
+    except (acquire.FeedError, CacheError) as exc:
+        print(f"pipeline sources ingest: {exc}", file=sys.stderr)
+        return 1
+
+    if not reports:
+        print(
+            "pipeline sources ingest: no feed sources found under "
+            f"users/{args.user}/workspaces/{args.workspace}/sources/feeds/ — add a "
+            "sources/feeds/<id>.yaml descriptor (kind/namespace/connection), then re-run",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"=== sources ingest: user={args.user} workspace={args.workspace} "
+        f"feeds={len(reports)} ==="
+    )
+    for report in reports:
+        for line in report.summary_lines():
+            print(line)
+    return 0
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
@@ -2543,6 +2650,7 @@ _COMMANDS = {
     "entry": _cmd_entry,
     "workspace": _cmd_workspace,
     "user": _cmd_user,
+    "sources": _cmd_sources,
 }
 
 

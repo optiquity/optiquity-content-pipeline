@@ -615,10 +615,11 @@ class TestIrVersionGenerationTolerance:
 
     def test_ledger_required_alias_and_dr6_optional_carrier(self):
         # The required set is the pre-F-a `LEDGER_FIELDS` verbatim (back-compat alias); DR-6
-        # COMMIT 2 lands the FIRST optional carrier (`attestation`), so scenario-1 6-field
-        # ledgers stay valid while a scenario-2 entry MAY carry it.
+        # COMMIT 2 landed the FIRST optional carrier (`attestation`), and sources-P2 appends
+        # `temporality` (the §6.1 slice-provenance carrier) — so a pre-P2 entry that carries
+        # neither stays valid while a cache/EDGAR fact MAY carry temporality.
         assert LEDGER_FIELDS == LEDGER_REQUIRED
-        assert LEDGER_OPTIONAL == ("attestation",)
+        assert LEDGER_OPTIONAL == ("attestation", "temporality")
 
 
 # --- The §15 substance floor (GAP-6): a body whose VISIBLE text has no letter/digit is refused ---

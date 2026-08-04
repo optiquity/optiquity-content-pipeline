@@ -441,6 +441,12 @@ class GroundedFact:
     #: resolver does not SET it yet (this is the CARRIER + pass-through commit — no scenario-2
     #: detection). Compose emits it into the ledger entry ONLY when present.
     attestation: Mapping[str, Any] | None = None
+    #: §6.1 TEMPORALITY (sources P2): the SLICE-level provenance the adapter surfaced on its
+    #: `GroundingResult` (`archival`, …), passed THROUGH onto each fact from that invocation. A
+    #: DEDICATED provenance field like `attestation` — NOT a §6.2 score (absent from `scores` and
+    #: from `pipeline.m3`), NOT an identity input (§7.2). Compose emits it omit-when-absent; `None`
+    #: (a graphify/folder source declares none) leaves the ledger entry byte-unchanged.
+    temporality: str | None = None
 
     @property
     def publishable(self) -> bool:
@@ -516,6 +522,7 @@ class _WorkingFact:
     weight: float = 0.0
     attributed: bool = False
     conflict: ConflictInfo | None = None
+    temporality: str | None = None
 
 
 @dataclass
@@ -963,6 +970,7 @@ def ground_item(
                     agreeing=(instance.id,),
                     scores={},
                     citable=len(fact.anchors) > 0,
+                    temporality=result.temporality,  # §6.1 slice provenance → §15 ledger
                 )
             )
 
@@ -1117,6 +1125,8 @@ def ground_item(
             # ride kind_defaults). NOT §6.2-selectable — a dedicated field, not a score.
             reuse_rights=wf.instance.kind_value("reuse_rights"),
             conflict=wf.conflict,
+            # §6.1 slice provenance from the adapter's GroundingResult → §15 ledger (omit-when-none)
+            temporality=wf.temporality,
         )
         for wf in working
     )

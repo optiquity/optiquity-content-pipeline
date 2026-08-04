@@ -55,10 +55,12 @@ __all__ = [
     "Fact",
     "GroundingResult",
     "SourceAdapter",
+    "TEMPORALITY_VALUES",
     "TIERS",
     "TIER_AMBIGUOUS",
     "TIER_EXTRACTED",
     "TIER_INFERRED",
+    "temporality_ok",
     "tier_rank",
     "upgrade_tier",
 ]
@@ -73,6 +75,22 @@ _TIER_RANK = {tier: rank for rank, tier in enumerate(TIERS)}
 
 #: §6.2 `traceability`: "a resolvable anchor — file:line, SHA, URL fragment". Closed v1 set.
 ANCHOR_KINDS = ("file-line", "sha", "url-fragment")
+
+#: §6.1 TEMPORALITY — how a source's acquired content relates to time. SLICE-level grounding
+#: PROVENANCE the reader surfaces onto `GroundingResult`/the §15 ledger — NOT a §6.2 selectable
+#: score (deliberately absent from `pipeline.m3` `SCORES`/`ASSERTABLE_SCORES`, so no
+#: `prefer`/`require` clause can name it) and NOT sealed onto a fact (the sealed slice stores only
+#: the five §6.2 fields; temporality never enters the content address → never the §7.2 artifact-id,
+#: exactly like the `attestation` ledger carrier). A CLOSED, one-file-extensible tuple: v1 carries
+#: `archival` (an immutable, dated record — a SEC filing, a court docket). Append a token to widen
+#: it (e.g. a future `live`/`revisable`); NEVER an inline literal, so the vocabulary has one home.
+TEMPORALITY_VALUES = ("archival",)
+
+
+def temporality_ok(value: object) -> bool:
+    """True iff `value` is `None` (omit-when-absent) or a known `TEMPORALITY_VALUES` token.
+    The single validation gate the contract, the cache reader, and the §15 ledger share."""
+    return value is None or value in TEMPORALITY_VALUES
 
 
 class AdapterError(ValueError):
@@ -174,10 +192,19 @@ class GroundingResult:
     graph.json's top-level `built_at_commit`; step-05 report §6) — `None` when the
     adapter kind has no commit notion (e.g. a plain folder). It feeds each fact's
     per-fact instance+commit stamp in the §6.3 union step and the §15 grounding ledger.
+
+    `temporality` is OPTIONAL SLICE-level grounding provenance (§6.1): how this
+    invocation's acquired content relates to time (`archival` for an immutable filing).
+    `None` = the adapter declares none — the OMIT-WHEN-ABSENT default (a graphify/folder
+    read carries no temporality, its ledger entries are byte-unchanged). It rides ONTO the
+    result (not the fact) because it is uniform per invocation/slice, and the resolver
+    threads it onto each grounded fact for the §15 ledger — the `attestation` posture: a
+    dedicated provenance carrier, never a §6.2 score, never an identity input (§7.2).
     """
 
     facts: tuple[Fact, ...]
     built_at_commit: str | None = None
+    temporality: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.facts, tuple) or not all(isinstance(f, Fact) for f in self.facts):
@@ -191,6 +218,11 @@ class GroundingResult:
             raise AdapterError(
                 "adapter-failure: built_at_commit must be a non-empty string or None, "
                 f"got {self.built_at_commit!r}"
+            )
+        if not temporality_ok(self.temporality):
+            raise AdapterError(
+                f"adapter-failure: temporality must be None or one of {TEMPORALITY_VALUES} "
+                f"(§6.1 slice provenance, not a §6.2 score), got {self.temporality!r}"
             )
 
 
