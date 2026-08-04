@@ -78,6 +78,26 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
 - **Source:** B7 template-home move (`a55febd`) + this §23 docs sweep (B9); the guard arm records the
   same reasoning inline.
 
+### GAP-12 — The "no publishable facts" driver error is imprecise when facts are held purely by rights
+- **Status:** Open (deferred to sources-subsystem P1; introduced by P0 the `reuse_rights`/`republishable` gate).
+- **Severity:** Low (behaviour is CORRECT — the facts are rightly withheld; only the operator-facing
+  message can mislead. Never fires under backward-compat: the schema floor `full` ⇒ every existing
+  source is `republishable` ⇒ `published == publishable_facts`. Manifests only in the pathological
+  config where EVERY EXTRACTED fact is rights-restricted (`reuse_rights < attribution`)).
+- **Symptom:** `pipeline/driver.py` raises "grounding returned no publishable (EXTRACTED) facts" when
+  `published` is empty. Post-P0, `published = publishable_facts filtered by republishable`, so this
+  path is now also reachable when there ARE EXTRACTED facts that are merely rights-restricted — the
+  "no EXTRACTED facts" framing points an operator at the wrong axis (tiers/anchoring) instead of the
+  `reuse_rights` config.
+- **Root cause:** the no-publishable block predates the confidence/rights split; it was left unchanged
+  in P0 per "downstream rides `published` unchanged" (orthogonality preserved, message not yet split).
+- **Impact / workaround:** none in practice (dormant until a source declares restricted rights, which
+  first happens at P2). Correct behaviour; imprecise diagnostics only.
+- **Proposed fix / when:** at sources P1 (or when the rights path first goes live), split the empty-
+  `published` case into two coded messages — "no EXTRACTED facts" vs "EXTRACTED facts withheld by
+  reuse_rights (leads only)" — so the operator debugs the right axis.
+- **Source:** sources subsystem P0 (`reuse_rights`/`republishable` gate) coder + reviewer flag.
+
 ---
 
 ## Deferred requirements

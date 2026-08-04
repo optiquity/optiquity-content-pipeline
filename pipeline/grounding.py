@@ -117,7 +117,11 @@ __all__ = [
     "GroundingRequest",
     "INSTANCE_SCORE_FLOORS",
     "KIND_SCORE_FLOORS",
+    "REUSE_RIGHTS",
+    "REUSE_RIGHTS_FLOOR",
+    "REUSE_RIGHTS_PUBLISH_THRESHOLD",
     "RefinementError",
+    "ReuseRightsError",
     "STATUS_BLOCK",
     "STATUS_OK",
     "STATUS_WARN",
@@ -129,6 +133,7 @@ __all__ = [
     "ground_batch",
     "ground_item",
     "register_conflict_strategy",
+    "reuse_rights_rank",
 ]
 
 #: §21.7 codes owned by this module.
@@ -147,6 +152,7 @@ KIND_SCORE_FLOORS: dict[str, Any] = {
     "opinionated": 3,
     "freshness": "",
     "review_status": "unknown",
+    "reuse_rights": "full",
 }
 
 #: Instance-tier score floors (same mirror, same pin test).
@@ -195,6 +201,52 @@ class UnknownConflictStrategyError(GroundingError):
     selectable and extensible — register, never guess)."""
 
     code = "unknown-conflict-strategy"
+
+
+class ReuseRightsError(GroundingError):
+    """A `reuse_rights` value outside the §6.1 ordinal — loud, typed, never silently
+    coerced. The rights ordinal fails CLOSED on an unknown value rather than guess
+    whether it clears the publish threshold."""
+
+    code = "invalid-reuse-rights"
+
+
+# --- The reuse_rights ordinal (§6.1 rights dimension; INTERNAL to grounding) ----------------
+
+#: §6.1 REUSE-RIGHTS, low → high — the republish-RIGHTS dimension of a content-kind,
+#: ORTHOGONAL to the §6.5 confidence tier (`publishable`). A content-kind ATTRIBUTE
+#: (content-kinds/_schema.yaml), NOT a §6.2 selectable score: it is deliberately absent
+#: from `ASSERTABLE_SCORES` and `pipeline.m3`'s `SCORES`/`SELECTABLE_CHARACTERISTICS`, so
+#: no `prefer`/`require` clause can name it. The rank below is compared INTERNALLY here to
+#: gate `republishable` — an ordered-tuple comparison exactly like `adapters.base.tier_rank`,
+#: never the selection grammar.
+REUSE_RIGHTS = ("forbidden", "internal-only", "lead-only", "attribution", "full")
+
+#: The publish threshold: a fact republishes iff its kind's rights rank is >= this rank.
+#: `attribution`/`full` clear it; `lead-only`/`internal-only`/`forbidden` are LEADS ONLY —
+#: not republished, even at EXTRACTED tier. `internal-only`/`forbidden` are RESERVED
+#: members with NO special P0 enforcement beyond this `< attribution` gate (YAGNI).
+REUSE_RIGHTS_PUBLISH_THRESHOLD = "attribution"
+
+#: The schema floor/default (mirrors content-kinds/_schema.yaml): an un-tagged kind claims
+#: FULL reuse — the BACKWARD-COMPAT guarantee (every existing kind ⇒ republishable ⇒ the
+#: published set is byte-identical to before this dimension existed).
+REUSE_RIGHTS_FLOOR = "full"
+
+_REUSE_RIGHTS_RANK = {value: rank for rank, value in enumerate(REUSE_RIGHTS)}
+
+
+def reuse_rights_rank(value: str) -> int:
+    """The rights rank (0 = forbidden … 4 = full) of a `reuse_rights` value; an unknown
+    value refuses LOUDLY (`ReuseRightsError`). Mirrors `adapters.base.tier_rank`: an
+    ordered-tuple comparison INTERNAL to grounding, never the §6.2 selection grammar."""
+    rank = _REUSE_RIGHTS_RANK.get(value)
+    if rank is None:
+        raise ReuseRightsError(
+            f"invalid-reuse-rights: unknown reuse_rights value {value!r} (§6.1 "
+            f"reuse_rights, low→high: {', '.join(REUSE_RIGHTS)})"
+        )
+    return rank
 
 
 # --- The source instance (config view the resolver consumes; §6.1) -------------------------
@@ -376,6 +428,13 @@ class GroundedFact:
     scores: Mapping[str, Any]  # the effective per-fact characteristic view
     weight: float
     attributed: bool = False
+    #: §6.1 REUSE-RIGHTS: the content-kind's republish-rights value, resolved via the SAME
+    #: content-kind resolution as the kind-tier scores (`SourceInstance.kind_value`). A
+    #: DEDICATED field, NOT a `scores` entry — reuse_rights is not §6.2-selectable, so like
+    #: `citable` (SM9) it rides the fact separately from the selection view (and stays out
+    #: of the §15 `scores_snapshot`). Default/floor `full` = the backward-compat guarantee;
+    #: it drives the computed `republishable` gate below.
+    reuse_rights: str = REUSE_RIGHTS_FLOOR
     conflict: ConflictInfo | None = None
     #: DR-6 scenario-2 pool-relation carrier (§15 RI3), ABSENT-by-default: a PROV-O-shaped
     #: {primary, anchor, relation} attestation. Scenario-1 facts (in-pool primary) carry None; the
@@ -388,6 +447,18 @@ class GroundedFact:
         """§6.5: only EXTRACTED-tier facts publish as fact — computed from the tier
         ALONE; a framework invariant no configuration input can relax."""
         return self.tier == TIER_EXTRACTED
+
+    @property
+    def republishable(self) -> bool:
+        """§6.1 RIGHTS gate — ORTHOGONAL to the §6.5 confidence floor `publishable`: a
+        fact may be republished only when its content-kind's `reuse_rights` clears the
+        `attribution` threshold (`attribution`/`full`). `lead-only` and below are LEADS
+        to inform generation, never republished — even at EXTRACTED tier. The driver ANDs
+        the two gates (a fact publishes iff `publishable and republishable`). Floor `full`
+        ⇒ True (the backward-compat guarantee); an unknown value refuses loudly."""
+        return reuse_rights_rank(self.reuse_rights) >= reuse_rights_rank(
+            REUSE_RIGHTS_PUBLISH_THRESHOLD
+        )
 
 
 @dataclass(frozen=True)
@@ -1041,6 +1112,10 @@ def ground_item(
             scores=dict(wf.scores),
             weight=wf.weight,
             attributed=wf.attributed,
+            # §6.1 rights: resolved from the fact's content-kind via the EXISTING
+            # content-kind resolution (kind default → schema floor; `extends:` overrides
+            # ride kind_defaults). NOT §6.2-selectable — a dedicated field, not a score.
+            reuse_rights=wf.instance.kind_value("reuse_rights"),
             conflict=wf.conflict,
         )
         for wf in working

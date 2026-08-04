@@ -38,10 +38,14 @@ from pipeline.adapters.base import (
 from pipeline.adapters.mock import MockAdapter, default_datasets, synthetic_commit
 from pipeline.cascade import CascadeEnv, RunSelection, resolve_compose
 from pipeline.grounding import (
+    ASSERTABLE_SCORES,
     CODE_EMPTY_POOL,
     CODE_LOW_CONFIDENCE_GROUNDING,
     INSTANCE_SCORE_FLOORS,
     KIND_SCORE_FLOORS,
+    REUSE_RIGHTS,
+    REUSE_RIGHTS_FLOOR,
+    REUSE_RIGHTS_PUBLISH_THRESHOLD,
     STATUS_BLOCK,
     STATUS_OK,
     STATUS_WARN,
@@ -49,6 +53,7 @@ from pipeline.grounding import (
     GroundingError,
     GroundingRequest,
     RefinementError,
+    ReuseRightsError,
     SourceInstance,
     UnknownConflictStrategyError,
     build_instance,
@@ -57,10 +62,13 @@ from pipeline.grounding import (
     ground_batch,
     ground_item,
     register_conflict_strategy,
+    reuse_rights_rank,
 )
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.m1 import DanglingRefError
 from pipeline.m3 import (
+    SCORES,
+    SELECTABLE_CHARACTERISTICS,
     UnknownScoreError,
     WindowExpressionError,
     parse_clause,
@@ -1309,3 +1317,144 @@ class TestAttestationCarrier:
         out = ground([inst("x-a", "d")], datasets={"d": (fact("s", "c"),)})
         assert out.facts  # the walk produced facts
         assert all(f.attestation is None for f in out.facts)
+
+
+# --- §6.1 reuse_rights / republishable (the publish-vs-lead RIGHTS gate) --------------------
+
+
+def _published(out):
+    """The driver seam (`pipeline/driver.py`): the two ORTHOGONAL publish gates ANDed — the
+    §6.5 confidence floor (`publishable_facts`) AND the §6.1 rights gate (`republishable`)."""
+    return tuple(f for f in out.publishable_facts if f.republishable)
+
+
+class TestReuseRights:
+    """The §6.1 reuse_rights dimension + the computed `republishable` gate: a fact publishes
+    only when it clears BOTH the §6.5 confidence floor AND the rights threshold. The floor
+    `full` keeps today's published set byte-identical (backward compat); a lead-only/
+    internal-only/forbidden kind holds even an EXTRACTED fact back as a LEAD."""
+
+    # -- the ordinal + its schema pin -------------------------------------------------------
+
+    def test_ordinal_is_ordered_low_to_high(self):
+        assert REUSE_RIGHTS == (
+            "forbidden", "internal-only", "lead-only", "attribution", "full"
+        )
+        ranks = [reuse_rights_rank(v) for v in REUSE_RIGHTS]
+        assert ranks == [0, 1, 2, 3, 4] == sorted(ranks)
+        assert REUSE_RIGHTS_FLOOR == "full"
+        assert REUSE_RIGHTS_PUBLISH_THRESHOLD == "attribution"
+
+    def test_schema_enum_and_floor_match_the_ordinal(self):
+        # The content-kinds schema declares the SAME closed member set + the `full` floor;
+        # the RANK order of record is the grounding tuple (the schema list is documentation).
+        kinds = load_schema(REPO_ROOT / "content-kinds" / "_schema.yaml")
+        spec = kinds.attributes["reuse_rights"]
+        assert set(spec.type.values) == set(REUSE_RIGHTS)
+        assert spec.default == REUSE_RIGHTS_FLOOR == "full"
+
+    def test_unknown_value_is_a_loud_typed_error(self):
+        # The ordinal fails CLOSED (typed) on an unknown value — never a silent pass/fail.
+        with pytest.raises(ReuseRightsError, match="unknown reuse_rights value"):
+            reuse_rights_rank("public-domain")
+        with pytest.raises(ReuseRightsError, match="unknown reuse_rights value"):
+            bool(grounded_fact(reuse_rights="public-domain").republishable)
+
+    # -- the property: threshold + orthogonality to confidence ------------------------------
+
+    def test_property_gates_exactly_at_attribution(self):
+        assert grounded_fact(reuse_rights="full").republishable is True
+        assert grounded_fact(reuse_rights="attribution").republishable is True
+        assert grounded_fact(reuse_rights="lead-only").republishable is False
+        assert grounded_fact(reuse_rights="internal-only").republishable is False
+        assert grounded_fact(reuse_rights="forbidden").republishable is False
+
+    def test_floor_default_is_full_and_republishable(self):
+        # A fact built WITHOUT reuse_rights rides the `full` floor -> republishable (the
+        # backward-compat default: absence of rights info means full reuse).
+        f = grounded_fact()
+        assert f.reuse_rights == REUSE_RIGHTS_FLOOR == "full"
+        assert f.republishable is True
+
+    def test_rights_gate_is_orthogonal_to_the_confidence_gate(self):
+        # publishable is tier-ONLY in every rights case; republishable is rights-ONLY in
+        # every tier case — the two gates never touch (SM9-style orthogonality).
+        for rights in REUSE_RIGHTS:
+            ext = grounded_fact(reuse_rights=rights, tier=TIER_EXTRACTED, base_tier=TIER_EXTRACTED)
+            inf = grounded_fact(reuse_rights=rights, tier=TIER_INFERRED, base_tier=TIER_INFERRED)
+            assert ext.publishable is True and inf.publishable is False  # tier-only
+            expected = reuse_rights_rank(rights) >= reuse_rights_rank("attribution")
+            assert ext.republishable == inf.republishable == expected  # rights-only
+
+    # -- the score/selection grammar invariant: reuse_rights is NOT selectable --------------
+
+    def test_reuse_rights_is_not_in_the_selection_grammar(self):
+        assert "reuse_rights" not in SCORES
+        assert "reuse_rights" not in SELECTABLE_CHARACTERISTICS
+        assert "reuse_rights" not in ASSERTABLE_SCORES
+        # a clause naming it is refused as an unknown score (never a legal `prefer`/`require`).
+        with pytest.raises(UnknownScoreError):
+            parse_clause("reuse_rights >= attribution")
+
+    # -- resolver-level: the gate over a real §6.3 walk -------------------------------------
+
+    def test_resolver_attaches_reuse_rights_from_the_content_kind(self):
+        # Default (no kind reuse_rights) rides the `full` floor via `kind_value`.
+        out = ground([inst("x-a", "d")], datasets={"d": (fact("s", "c"),)})
+        assert out.facts[0].reuse_rights == "full"
+        # An explicit kind reuse_rights (the extends/override path) rides through unchanged.
+        lead = ground(
+            [inst("x-b", "d", kind_defaults={"reuse_rights": "lead-only"})],
+            datasets={"d": (fact("s", "c"),)},
+        )
+        assert lead.facts[0].reuse_rights == "lead-only"
+
+    def test_backward_compat_published_set_is_byte_identical(self):
+        # HEADLINE BACKWARD-COMPAT PROOF: with every kind at the `full` floor, the rights
+        # filter is a NO-OP — the driver's published set equals `publishable_facts` EXACTLY
+        # (same facts, same order), so today's output is unchanged by this dimension.
+        pool = [
+            inst("x-a", "d1", content_kind="merged-code", kind_defaults=RECORD_KIND),
+            inst("x-b", "d2"),  # general kind -> `full` floor
+        ]
+        out = ground(
+            pool,
+            datasets={
+                "d1": (fact("s1", "c1"), fact("s2", "c2")),
+                "d2": (fact("s3", "c3", tier=TIER_INFERRED),),  # a lead by CONFIDENCE
+            },
+        )
+        assert all(f.republishable for f in out.facts)  # full floor everywhere
+        assert out.publishable_facts  # the proof is meaningful (non-empty published set)
+        assert _published(out) == out.publishable_facts  # BYTE-IDENTICAL
+
+    def test_lead_only_kind_holds_an_extracted_fact_back_as_a_lead(self):
+        # RIGHTS MATRIX: a lead-only kind's EXTRACTED fact stays publishable (confidence is
+        # UNCHANGED) yet is NOT republishable -> excluded from the published set (a lead).
+        out = ground(
+            [inst("x-a", "d", kind_defaults={"reuse_rights": "lead-only"})],
+            datasets={"d": (fact("s", "c"),)},  # EXTRACTED + anchored
+        )
+        f = out.facts[0]
+        assert f.tier == TIER_EXTRACTED and f.publishable is True  # confidence untouched
+        assert f.republishable is False
+        assert f in out.publishable_facts  # the §6.5 floor still keeps it
+        assert _published(out) == ()  # the §6.1 rights gate holds it back
+
+    def test_forbidden_and_internal_only_never_publish_even_at_extracted(self):
+        for rights in ("forbidden", "internal-only", "lead-only"):
+            out = ground(
+                [inst("x-a", "d", kind_defaults={"reuse_rights": rights})],
+                datasets={"d": (fact("s", "c"),)},
+            )
+            assert out.facts[0].publishable is True  # EXTRACTED — confidence unchanged
+            assert _published(out) == ()  # < attribution -> never a published fact
+
+    def test_attribution_and_full_kinds_publish(self):
+        for rights in ("attribution", "full"):
+            out = ground(
+                [inst("x-a", "d", kind_defaults={"reuse_rights": rights})],
+                datasets={"d": (fact("s", "c"),)},
+            )
+            # every fact EXTRACTED + republishable -> the published set is the full fact set.
+            assert _published(out) == out.publishable_facts == out.facts

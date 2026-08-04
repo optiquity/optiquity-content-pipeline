@@ -261,11 +261,15 @@ class TestOutlineBriefLoad:
         return store, claims, ssot, plan, item
 
     def _patch_stages(self, monkeypatch):
+        # The driver ANDs the §6.5 confidence gate (`publishable_facts`) with the §6.1 rights
+        # gate (`.republishable`) at ONE seam, so a stand-in publishable fact must expose
+        # `.republishable`; `True` mirrors the `full`-rights floor (the pass-through case).
+        fact = SimpleNamespace(republishable=True)
         monkeypatch.setattr(
             driver,
             "ground_item",
             lambda **kw: SimpleNamespace(
-                status="ok", publishable_facts=("F",), facts=("F",), commit_map={}
+                status="ok", publishable_facts=(fact,), facts=(fact,), commit_map={}
             ),
         )
         monkeypatch.setattr(

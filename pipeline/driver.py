@@ -778,10 +778,15 @@ def _run_artifact(
                 else None
             ),
         )
-    published = outcome.publishable_facts
+    # The publish set ANDs the two ORTHOGONAL gates at this ONE seam: the §6.5 confidence
+    # floor (`publishable` — EXTRACTED tier, a framework invariant) AND the §6.1 rights gate
+    # (`republishable` — the content-kind's reuse_rights clears `attribution`). With every
+    # content-kind at the `full` floor this is byte-identical to `publishable_facts`; a
+    # lead-only/internal-only/forbidden kind holds its EXTRACTED facts back as leads.
+    published = tuple(f for f in outcome.publishable_facts if f.republishable)
     log(
-        f"  ground: {len(outcome.facts)} fact(s), {len(published)} publishable (EXTRACTED); "
-        f"commits {dict(outcome.commit_map)}"
+        f"  ground: {len(outcome.facts)} fact(s), {len(published)} published "
+        f"(EXTRACTED + republishable); commits {dict(outcome.commit_map)}"
     )
     if not published:
         raise DriverError(

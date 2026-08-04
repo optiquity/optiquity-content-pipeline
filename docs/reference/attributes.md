@@ -6,7 +6,7 @@ What every registry attribute MEANS and DOES. This page is generated from the fr
 
 Regenerate with `pipeline docs attributes`. A byte-equality CI test (`tests/test_attributes_doc_contract.py`) fails loudly if a schema `definition:` is edited without regenerating this file.
 
-Documented: 17 collections, 77 attributes.
+Documented: 17 collections, 78 attributes.
 
 ## `content-kinds` — schema_version 1
 
@@ -33,6 +33,14 @@ The kind-level FRESHNESS POLICY (§6.1 table: "freshness-policy"; §6.2 score `f
 - **definition version:** 1
 
 §6.2 score `opinionated` (scalar 1-5; asserted default per kind; attach: content-kind -> per-fact refine). How much of this kind of content is stance/ judgment rather than record: 1 = pure record/fact; 3 = mixed record and view (the middle); 5 = heavily editorial (argument or opinion throughout). Serves selection/weight; independently useful from `authoritative` — not its inverse (§6.2).
+
+### `reuse_rights`
+
+- **type:** `enum ("forbidden", "internal-only", "lead-only", "attribution", "full")`
+- **floor (default):** `"full"`
+- **definition version:** 1
+
+§6.1 REUSE-RIGHTS: the republish-RIGHTS of this kind of content — ORTHOGONAL to the §6.5 confidence tier. The tier answers "is this TRUE enough to publish?" (`publishable`, a framework invariant no config relaxes); reuse_rights answers the independent question "are we ALLOWED to republish it?" (`republishable`). A 5-value ORDINAL, low → high: `forbidden` < `internal-only` < `lead-only` < `attribution` < `full`. The publish threshold is `attribution`: a kind resolving `>= attribution` (`attribution`/`full`) may be republished; `lead-only` and below are LEADS ONLY — usable to inform generation, never republished as content, even when EXTRACTED. Default/floor `full` is the BACKWARD-COMPAT guarantee: an un-tagged kind claims full reuse, so the published set is unchanged from before this attribute existed. NOT a §6.2 selectable score — it never enters the selection grammar (a `prefer`/`require` clause cannot name it); the resolver compares its ordinal rank INTERNALLY to gate `republishable`. `internal-only`/`forbidden` are RESERVED members with NO special P0 enforcement beyond the `< attribution` publish gate (YAGNI). Per-instance overrides ride the EXISTING `extends:` field-merge over the KIND entry (Mechanism 1, §12.1), never edits to shipped entries (§10 rule 2).
 
 ### `review_status`
 
