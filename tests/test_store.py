@@ -92,8 +92,9 @@ class TestLayout:
         }
 
     def test_subdir_set_is_exactly_the_section_23_tree(self):
-        # `jobs` (DR-1) and `assets` (increment A) are APPENDED subdirs (additive; see
-        # test_store_subdirs_is_additive_over_the_original_seven) — identity-inert.
+        # `jobs` (DR-1), `assets` (increment A), and `sources/cache` (sources P1) are APPENDED
+        # subdirs (additive; see test_store_subdirs_is_additive_over_the_original_seven) —
+        # identity-inert.
         assert STORE_SUBDIRS == (
             "artifacts",
             "deliverables",
@@ -104,13 +105,16 @@ class TestLayout:
             "output",
             "jobs",
             "assets",
+            "sources/cache",
         )
 
     def test_store_subdirs_is_additive_over_the_original_seven(self):
-        # DR-1 Commit 2 + increment A: adding `jobs` then `assets` must be PURELY ADDITIVE — every
-        # original §23 subdir keeps its exact position (byte-identical prefix) and the appended tail
-        # is `("jobs", "assets")`. This is the tuple half of the identity-inertness claim; the
-        # routing half is TestJobsBoundary (jobs) and TestContentAssets (assets).
+        # DR-1 Commit 2 + increment A + sources P1: adding `jobs`, then `assets`, then
+        # `sources/cache` must be PURELY ADDITIVE — every original §23 subdir keeps its exact
+        # position (byte-identical prefix) and the appended tail is `("jobs", "assets",
+        # "sources/cache")`. This is the tuple half of the identity-inertness claim; the routing
+        # half is TestJobsBoundary (jobs) and TestContentAssets (assets), and sources/cache is a
+        # DISTINCT keying scheme never routed by output_path (pipeline.sources.cache).
         original_seven = (
             "artifacts",
             "deliverables",
@@ -121,7 +125,11 @@ class TestLayout:
             "output",
         )
         assert STORE_SUBDIRS[: len(original_seven)] == original_seven  # prefix unchanged
-        assert STORE_SUBDIRS[len(original_seven) :] == ("jobs", "assets")  # appended, nothing else
+        assert STORE_SUBDIRS[len(original_seven) :] == (
+            "jobs",
+            "assets",
+            "sources/cache",
+        )  # appended, nothing else
 
     def test_jobs_dir_created_on_demand(self, tmp_path):
         # DR-1 Commit 2: `jobs_dir` is created on first access, like every other store, and

@@ -47,9 +47,10 @@ def make_corpus(root: Path) -> Path:
 
 class TestProductionAdapterSet:
     def test_factory_registers_graphify_folder_and_fsast(self):
-        # The single registration point (`pipeline.adapters.default_adapters`).
+        # The single registration point (`pipeline.adapters.default_adapters`). `cache` (sources
+        # P1) is registered alongside the original three — one-file add per the matrix rule.
         adapters = default_adapters()
-        assert set(adapters) == {"graphify", "folder", "fsast"}
+        assert set(adapters) == {"graphify", "folder", "fsast", "cache"}
         assert isinstance(adapters["graphify"], GraphifyAdapter)
         assert isinstance(adapters["folder"], FolderAdapter)
         assert all(isinstance(a, SourceAdapter) for a in adapters.values())
@@ -59,7 +60,7 @@ class TestProductionAdapterSet:
     def test_session_default_adapters_registers_all_three(self):
         # The API path (`begin-session`/`invoke` resolve adapters from here).
         adapters = session._default_adapters()
-        assert set(adapters) == {"graphify", "folder", "fsast"}
+        assert set(adapters) == {"graphify", "folder", "fsast", "cache"}
         assert isinstance(adapters["folder"], FolderAdapter)
 
     def test_session_resolves_from_the_single_source(self):

@@ -6,10 +6,14 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
 ## Durable rules (never violated)
 
 1. **SOURCE / CLIENT REPOS ARE READ-ONLY — ALWAYS.** Never write, edit, commit, move, or run
-   any write/destructive command in any source or client repo. The pipeline only **reads the
-   Graphify graph by path**. Each client repo is checked out locally and graphed there; its
-   `graphify-out/` is gitignored inside the client repo and read by path. **No graphs are stored
-   in this pipeline repo.**
+   any write/destructive command in any source or client repo. The pipeline only **reads** its
+   sources (the Graphify graph by path; feeds/web/research sources read-only). Each client repo is
+   checked out locally and graphed there; its `graphify-out/` is gitignored inside the client repo
+   and read by path. **No graphs are stored in this pipeline repo.** **Carve-out (sources
+   subsystem):** the pipeline MAY cache **acquired third-party content** (feeds, web/research
+   extracts) under the owning workspace at `users/<user>/workspaces/<workspace>/sources/cache/` —
+   **gitignored, never committed**, and still read-only toward every upstream source. This is the
+   one sanctioned local acquired-content store; it never mutates a source and stores no graphs.
 2. **CLIENT ISOLATION VIA WORKSPACES.** Every client repo gets a workspace:
    `users/<user>/workspaces/<workspace>/`. A client's docs, topics, metadata, and output live only
    under its workspace and must never leak into another. There is **one** repo with many

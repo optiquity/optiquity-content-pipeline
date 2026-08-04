@@ -19,6 +19,7 @@ from pipeline.adapters.base import SourceAdapter
 from pipeline.adapters.folder import FolderAdapter
 from pipeline.adapters.fsast import FsAstAdapter
 from pipeline.adapters.graphify import GraphifyAdapter
+from pipeline.sources.reader import CacheReaderAdapter
 
 __all__ = ["default_adapters"]
 
@@ -32,4 +33,5 @@ def default_adapters() -> dict[str, SourceAdapter]:
         "graphify": GraphifyAdapter(),
         "folder": FolderAdapter(),
         "fsast": FsAstAdapter(),
+        "cache": CacheReaderAdapter(),
     }

@@ -122,11 +122,13 @@ __all__ = [
     "write_replace",
 ]
 
-#: §23: the per-client stores created on demand under `workspaces/<client>/`. `jobs/` (DR-1)
-#: and `assets/` (increment A) are ADDITIVE subdirs consumed ONLY by `ensure_layout` here —
-#: each is in NO id/preimage/digest and `output_path` routes by id family (never this tuple), so
-#: appending them is identity-inert (no `schema_version`/`ir_version` bump). `assets/` is the
-#: content-addressed content-asset home (see "The content-asset boundary" in the module docstring).
+#: §23: the per-client stores created on demand under `workspaces/<client>/`. `jobs/` (DR-1),
+#: `assets/` (increment A), and `sources/cache` (sources P1) are ADDITIVE subdirs consumed ONLY by
+#: `ensure_layout` here — each is in NO id/preimage/digest and `output_path` routes by id family
+#: (never this tuple), so appending them is identity-inert (no `schema_version`/`ir_version` bump).
+#: `assets/` is the content-addressed content-asset home; `sources/cache` is the sealed
+#: acquired-content slice store (see the respective boundary notes / `pipeline.sources.cache`). The
+#: nested `sources/cache` segment flows through `_dir` (joinpath + `mkdir(parents=True)`) exactly.
 STORE_SUBDIRS = (
     "artifacts",
     "deliverables",
@@ -137,6 +139,7 @@ STORE_SUBDIRS = (
     "output",
     "jobs",
     "assets",
+    "sources/cache",
 )
 
 #: Staged-temp filenames start with this. A leading dot can never collide with an id
@@ -374,6 +377,18 @@ class WorkspaceStore:
         nested `assets/diagrams/` generated-SVG path) beneath it.
         """
         return self._dir("assets")
+
+    @property
+    def sources_cache_dir(self) -> Path:
+        """The sealed acquired-content slice store: `sources/cache/` (sources P1).
+
+        The per-workspace home for `pipeline.sources.cache` — ACQUIRED THIRD-PARTY CONTENT written
+        as immutable, content-addressed sealed slices, gitignored (`users/*/workspaces/`) and never
+        committed. A DISTINCT keying scheme (bare slice digests + a namespace `HEAD` marker), never
+        routed by `output_path`/`is_done`: like `jobs/` and `assets/` it is identity-inert (in no
+        id/preimage/digest), so appending its STORE_SUBDIR is a purely additive change. Namespaces
+        + slices are derived beneath it by `pipeline.sources.cache.namespace_dir`/`slice_path`."""
+        return self._dir("sources", "cache")
 
     def ensure_layout(self) -> tuple[Path, ...]:
         """Materialize the full §23 tree (idempotent); returns the created directories."""
