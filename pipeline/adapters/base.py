@@ -230,3 +230,23 @@ class SourceAdapter(ABC):
         (graphify) overrides this to read exactly what its `ground()` reports. Read-only,
         never a write (rule 1)."""
         return None
+
+    def freeze_connection(
+        self, connection: Mapping[str, Any], pinned_commit: str
+    ) -> Mapping[str, Any]:
+        """Return a connection that PINS `pinned_commit` — the plan-time §7.2 commit this
+        adapter's `pin_commit` returned for `connection` — so the DRIVE-time `ground()`
+        reads THAT EXACT snapshot, immune to any mid-session source advance (N2 for a
+        HEAD/'latest'-mode config). The `ground(connection, query)` CONTRACT signature is
+        UNTOUCHED: the driver threads the pinned commit back by AUGMENTING the connection,
+        never by a new `ground` argument.
+
+        CF-1 is preserved by contract: `pin_commit(freeze_connection(conn, c))` MUST still
+        return `c`. The DEFAULT is the connection UNCHANGED — an adapter whose source is
+        externally snapshot-stable (graphify reads a fixed graph.json checkout; folder /
+        fsast read a fixed tree) already grounds the same snapshot its `pin_commit` saw, so
+        a no-op is correct AND leaves its CLOSED connection keyset undisturbed (no reserved
+        key is injected). An adapter with a MUTABLE 'latest' pointer (the cache reader's
+        namespace HEAD) OVERRIDES this to name the pinned snapshot explicitly. Read-only,
+        never a write (rule 1)."""
+        return connection

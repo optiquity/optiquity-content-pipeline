@@ -33,12 +33,16 @@ shift what ground reads). Against the REAL driver flow — `driver.run_thread` b
     HEAD (CF-1 holds). It is NOT immune to a mid-session PUBLISH (a HEAD advance shifts a later
     "latest" read) — the documented boundary of this form.
 
-**FLAGGED for review (the forward wiring):** to give `HEAD`-mode config full N2 the DRIVER should
-FREEZE the namespace HEAD digest captured at plan-time pin into the connection's `slice` before
-grounding (mechanism (a)) — the driver already captures the pin into the §7.2 `source_commit` map
-but does not thread it back into `ground()`. That freeze is the P2 driver-integration step; no
-current adapter needs it (graphify/folder lean on external-snapshot stability), and P1's reader
-delivers full N2 today via the pinned-digest form. See the implementation report.
+**THE DRIVER HEAD-FREEZE (mechanism (a); WIRED at P2a):** to give a `HEAD`-mode config full N2 the
+DRIVER FREEZES the namespace HEAD digest captured at plan-time pin into the connection's `slice`
+before grounding — the driver already captures the pin into the §7.2 `source_commit` map, and now
+threads it back into the connection this adapter grounds. This is done via the `freeze_connection`
+contract hook (`adapters.base.SourceAdapter.freeze_connection`, connection-AUGMENTATION — the
+`ground` signature is untouched), which THIS adapter OVERRIDES to set `slice` to the pinned digest;
+graphify/folder/fsast keep the default no-op (external-snapshot stability, CLOSED keysets
+undisturbed). Applied at BOTH pin→ground seams — `driver.run_thread` and the production
+`session._generate_next` drive path. CF-1 holds by construction: `pin_commit` over the frozen
+connection re-resolves the SAME digest (the `slice` selector routes through the SAME `_resolve`).
 """
 
 from __future__ import annotations
@@ -173,3 +177,29 @@ class CacheReaderAdapter(SourceAdapter):
         `None` when nothing is pinned/published (the commitless posture; `ground` then grounds
         empty, so no diverged id is ever persisted). Read-only, never a write (rule 1)."""
         return self._resolve(connection)[2]
+
+    def freeze_connection(
+        self, connection: Mapping[str, Any], pinned_commit: str
+    ) -> Mapping[str, Any]:
+        """Freeze the plan-time pinned slice into the connection's `slice` selector, so the
+        DRIVE-time `ground()` reads THAT sealed slice — not the (possibly-advanced) namespace
+        HEAD. This is mechanism (a): it upgrades a `HEAD`-mode config (which a static config MUST
+        use — it cannot hardcode a per-acquisition digest) to full N2, exactly as the pinned-digest
+        form already has. `pinned_commit` is the digest THIS adapter's `pin_commit` returned for
+        `connection` (validated as a bare 64-hex content address); it becomes the `slice` selector
+        (an existing CLOSED-keyset member — the connection stays valid).
+
+        Idempotent + CF-1-safe: a connection already carrying `slice` gets the SAME digest back
+        (its `pin_commit` returned exactly that), and `pin_commit(frozen)` re-resolves it through
+        the SAME `_resolve`, so identity never shifts. A malformed pin fails LOUD here (a corrupt
+        pin, never a silent live-HEAD fallthrough)."""
+        try:
+            digest = require_digest(pinned_commit)
+        except CacheError as exc:
+            raise AdapterError(
+                f"adapter-failure: cannot freeze a non-digest cache commit {pinned_commit!r} "
+                f"into `slice` ({exc}) — the plan-time pin must be a sealed slice digest"
+            ) from exc
+        frozen = dict(connection)
+        frozen["slice"] = digest
+        return frozen

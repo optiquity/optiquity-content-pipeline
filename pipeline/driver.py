@@ -44,7 +44,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -71,7 +71,7 @@ from pipeline.dispatch import (
     review_deliverable,
 )
 from pipeline.fanout import SelectionRequest
-from pipeline.grounding import GroundingOutcome, build_pool, ground_item
+from pipeline.grounding import GroundingOutcome, SourceInstance, build_pool, ground_item
 from pipeline.ids import mint_artifact_id
 from pipeline.outline_store import get_outline
 from pipeline.plan import DeliverableItem, Plan, PlanItem, resolve_plan
@@ -275,6 +275,37 @@ def _pin_source_commit(
     over real selections can). `None` for an unbound adapter or a commitless source (the
     designed folder-style posture)."""
     return adapter.pin_commit(connection) if adapter is not None else None
+
+
+def _freeze_pool(
+    pool: Sequence[SourceInstance],
+    adapters: Mapping[str, SourceAdapter],
+    source_commit: Mapping[str, str],
+) -> tuple[SourceInstance, ...]:
+    """FREEZE each source's plan-time pinned commit into the connection the DRIVE-time
+    `ground()` reads (§6 mechanism (a)) — so a HEAD/'latest'-mode source grounds the PINNED
+    snapshot (full N2), never a live pointer a mid-session acquire may have advanced.
+
+    The pin already ran (it produced `source_commit`); this threads that pinned commit BACK
+    into the connection via the adapter's `freeze_connection` hook (connection-AUGMENTATION —
+    the `ground` contract signature is untouched). Adapters whose sources are externally
+    snapshot-stable (graphify/folder/fsast) keep the default NO-OP, so their CLOSED connection
+    keysets stay undisturbed AND their instance identity is unchanged (no `replace`); only the
+    cache reader names its pinned slice. CF-1 is preserved: `pin_commit` over the frozen
+    connection re-resolves the SAME commit. A commitless source (no `source_commit` entry) has
+    nothing pinned to freeze and rides through unchanged (the SM1 empty posture)."""
+    frozen: list[SourceInstance] = []
+    for inst in pool:
+        commit = source_commit.get(inst.id)
+        adapter = adapters.get(inst.adapter)
+        if commit is None or adapter is None:
+            frozen.append(inst)
+            continue
+        connection = adapter.freeze_connection(inst.connection, commit)
+        frozen.append(
+            inst if connection is inst.connection else replace(inst, connection=connection)
+        )
+    return tuple(frozen)
 
 
 # --- Persistence (spine-driven records over the workspace store) ---------------------------
@@ -789,6 +820,19 @@ def _run_artifact(
         f"(EXTRACTED + republishable); commits {dict(outcome.commit_map)}"
     )
     if not published:
+        # GAP-12: an empty `published` set has TWO distinct causes — split them so the operator
+        # debugs the RIGHT axis (§6.5 tiers/anchoring vs §6.1 rights config), never guesses.
+        # `published = publishable_facts (EXTRACTED) AND republishable`; so a non-empty
+        # `publishable_facts` here ⇒ EXTRACTED facts EXIST but reuse_rights held them ALL back.
+        if outcome.publishable_facts:
+            raise DriverError(
+                f"driver-error: grounding produced {len(outcome.publishable_facts)} EXTRACTED "
+                f"fact(s) for {item.artifact_id}, but ALL were WITHHELD BY reuse_rights (leads "
+                "only) — every publishable fact's content-kind clears BELOW the `attribution` "
+                "republish threshold, so none may be republished as fact. Debug the source "
+                "content-kind `reuse_rights` (§6.1 rights gate), NOT the confidence "
+                "tiers/anchoring — the facts are correctly held as leads."
+            )
         raise DriverError(
             f"driver-error: grounding returned no publishable (EXTRACTED) facts for "
             f"{item.artifact_id} — the milestone thread must produce a GROUNDED artifact"
@@ -1007,6 +1051,11 @@ def run_thread(
         commit = _pin_source_commit(adapters.get(inst.adapter), inst.connection)
         if commit is not None:
             source_commit[inst.id] = commit
+    # N2 HEAD-FREEZE (mechanism (a)): thread each plan-time pinned commit BACK into the
+    # connection the drive-time `ground()` reads, so a HEAD-mode cache source grounds the PINNED
+    # slice — not a mid-session-advanced HEAD. A no-op for graphify/folder/fsast (unchanged
+    # identity); the pin (and thus every artifact-id) is untouched (CF-1).
+    pool = _freeze_pool(pool, adapters, source_commit)
     log(
         f"pool: {source_ids}; commit-map {source_commit}; "
         f"repos {source_repos}"

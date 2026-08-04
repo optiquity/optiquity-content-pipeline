@@ -813,6 +813,14 @@ def _generate_next(
     plan, env, pool, source_repos = _resolve_from_inputs(
         root, ctx.user, ctx.workspace, token.inputs
     )
+    # N2 HEAD-FREEZE (mechanism (a), the PRODUCTION drive seam): the plan-time §7.2 commit-map is
+    # FROZEN in the token (`begin-session`, §21.8); the pool is re-BUILT from static config here, so
+    # a HEAD-mode cache connection would otherwise ground the LIVE HEAD an out-of-band acquire may
+    # have advanced across the begin→generate gap. Thread the frozen commit BACK into each drive
+    # connection (the SAME `driver._freeze_pool` the `run_thread` seam uses) so ground() reads the
+    # PINNED slice. A no-op for graphify/folder/fsast; the frozen source_commit (and every
+    # artifact-id) is untouched (CF-1).
+    pool = driver._freeze_pool(pool, adapters, dict(token.inputs.get("source_commit") or {}))
     if plan.plan_hash != token.plan_hash:
         stale = results.make_result(
             results.CODE_PLAN_STALE,
