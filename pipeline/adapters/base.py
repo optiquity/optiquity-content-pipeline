@@ -81,10 +81,14 @@ ANCHOR_KINDS = ("file-line", "sha", "url-fragment")
 #: score (deliberately absent from `pipeline.m3` `SCORES`/`ASSERTABLE_SCORES`, so no
 #: `prefer`/`require` clause can name it) and NOT sealed onto a fact (the sealed slice stores only
 #: the five §6.2 fields; temporality never enters the content address → never the §7.2 artifact-id,
-#: exactly like the `attestation` ledger carrier). A CLOSED, one-file-extensible tuple: v1 carries
-#: `archival` (an immutable, dated record — a SEC filing, a court docket). Append a token to widen
-#: it (e.g. a future `live`/`revisable`); NEVER an inline literal, so the vocabulary has one home.
-TEMPORALITY_VALUES = ("archival",)
+#: exactly like the `attestation` ledger carrier). A CLOSED, one-file-extensible tuple:
+#:   `archival` — an immutable, dated record (a SEC EDGAR filing, a court docket): the EDGAR feed.
+#:   `snapshot` — a point-in-time capture of a mutable subject (a GDELT DOC index pull): true AS OF
+#:                the seen date; the underlying article/index moves on.
+#:   `live`     — a rolling, continuously-updated stream (a generic RSS/Atom web feed): each pull is
+#:                the head of a moving window, superseded by the next.
+#: Append a token to widen it; NEVER an inline literal, so the vocabulary has one home.
+TEMPORALITY_VALUES = ("archival", "snapshot", "live")
 
 
 def temporality_ok(value: object) -> bool:

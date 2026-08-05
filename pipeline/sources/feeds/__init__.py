@@ -13,12 +13,20 @@ from __future__ import annotations
 
 from pipeline.sources.acquire import Feed, FeedError
 from pipeline.sources.feeds.edgar import EdgarFeed
+from pipeline.sources.feeds.gdelt import GdeltFeed
+from pipeline.sources.feeds.rss import RssFeed
 
 __all__ = ["feed_for", "feed_kinds"]
 
 #: The shipped feed set (kind → the stateless feed instance). A fresh module-level singleton per
 #: kind is fine (feeds are stateless — cost/state ride the per-run `CostMeter`, never the feed).
-_FEEDS: dict[str, Feed] = {EdgarFeed.kind: EdgarFeed()}
+#: v1 (P2b-core): EDGAR — a characterized primary that PUBLISHES (EXTRACTED). P2b-feeds adds the
+#: generic web LEAD sources: `rss` (RSS 2.0 / Atom, INFERRED) and `gdelt` (news metadata, INFERRED).
+_FEEDS: dict[str, Feed] = {
+    EdgarFeed.kind: EdgarFeed(),
+    GdeltFeed.kind: GdeltFeed(),
+    RssFeed.kind: RssFeed(),
+}
 
 
 def feed_for(kind: str) -> Feed:

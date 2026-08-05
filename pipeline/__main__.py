@@ -2552,6 +2552,10 @@ def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
     """
     import argparse
 
+    from pipeline.sources.feeds import feed_kinds  # the shipped feed set (discovery surface)
+
+    known_kinds = ", ".join(feed_kinds())
+
     parser = argparse.ArgumentParser(
         prog="pipeline sources",
         description=(
@@ -2570,7 +2574,8 @@ def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
             "through fetch → normalize → dedup + θ-gate → SEAL (advancing the namespace HEAD). "
             "Idempotent: a re-ingest of unchanged content is a content-addressed no-op. Writes "
             "only the gitignored sealed cache under the workspace (rule-1 carve-out); reads every "
-            "source read-only. Spends NOTHING (free HTTP; $0 model spend)."
+            "source read-only. Spends NOTHING (free HTTP; $0 model spend). "
+            f"Known feed kinds: {known_kinds}."
         ),
     )
     ingest.add_argument("workspace", help="the workspace to acquire into (§21.1)")

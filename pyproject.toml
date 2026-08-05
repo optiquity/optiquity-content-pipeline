@@ -12,6 +12,10 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
+    # Sources P2b-feeds (maintainer-approved 2nd runtime dep): RSS 2.0 / Atom parsing for
+    # the generic web feed (`pipeline/sources/feeds/rss.py`). Pure-Python, no C extension;
+    # used only in the OUT-OF-BAND Tier-A ingest path (free HTTP, $0 model spend).
+    "feedparser==6.0.14",
     # G4 pin (step-2 gate; parameter sheet item 2): YAML 1.2 typed safe-load,
     # used as YAML(typ='safe', pure=True). Do NOT add ruamel.yaml.clib.
     "ruamel.yaml==0.19.1",

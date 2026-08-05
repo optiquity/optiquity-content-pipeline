@@ -85,6 +85,7 @@ def default_http_get(url: str, *, headers: Mapping[str, str], timeout: float = 3
     `https` (an `http`/`file`/other scheme is refused) so a mistyped descriptor can never read a
     local file or an unencrypted endpoint. This is the SOLE live-network path; it is never reached
     under test (the fixture `http_get` is injected)."""
+    import urllib.error
     import urllib.request
 
     scheme = urlsplit(url).scheme
@@ -94,8 +95,17 @@ def default_http_get(url: str, *, headers: Mapping[str, str], timeout: float = 3
             f"got scheme {scheme!r} in {url!r}"
         )
     request = urllib.request.Request(url, headers=dict(headers), method="GET")
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 — https-only, guarded above
-        return response.read()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 — https-only, guarded above
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        # A conditional GET (RSS `If-None-Match`/`If-Modified-Since`) whose validator still matched
+        # answers 304 Not Modified with NO body. Read that as an EMPTY payload — a feed treats an
+        # empty body as "nothing new to acquire" (its 304 = no-new-work path), never an error. EDGAR
+        # sends no validators, so it never reaches this branch (its behavior is byte-unchanged).
+        if exc.code == 304:
+            return b""
+        raise
 
 
 @dataclass(frozen=True)
