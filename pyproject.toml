@@ -19,6 +19,13 @@ dependencies = [
     # G4 pin (step-2 gate; parameter sheet item 2): YAML 1.2 typed safe-load,
     # used as YAML(typ='safe', pure=True). Do NOT add ruamel.yaml.clib.
     "ruamel.yaml==0.19.1",
+    # Sources P3a (maintainer-approved 3rd runtime dep): main-text + publication-date
+    # extraction for the deterministic research primitives (`pipeline/sources/extract.py`,
+    # feeding the Common Crawl LEAD feed). License Apache-2.0 (permissive, MIT-compatible).
+    # Transitive: lxml (+lxml-html-clean), htmldate, courlan, justext, charset-normalizer,
+    # dateparser, certifi, urllib3, … — see uv.lock. Used ONLY in the OUT-OF-BAND Tier-A
+    # ingest path (extractor is fed BYTES, never a URL — no network; $0 model spend).
+    "trafilatura==2.2.0",
 ]
 
 [dependency-groups]
