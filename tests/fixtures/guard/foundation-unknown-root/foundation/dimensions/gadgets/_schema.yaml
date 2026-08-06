@@ -1,0 +1,9 @@
+# Synthetic guard fixture (tests/fixtures/guard/foundation-unknown-root): a registry-shaped
+# directory under the `foundation/`-reorg layout whose token — `gadgets` — is NOT in
+# pipeline.layout.REGISTRY_BASE / FOUNDATION_REGISTRY_DIRS. The GAP-4a foundation arm must
+# FAIL LOUDLY on it (LEAK[unknown-registry-root], exit 1): an unlisted foundation registry
+# would otherwise ship unvetted. This is the foundation-anchored counterpart to the flat
+# `glossaries/` unknown-root fixture. The dir holds ONLY this marker so the guard fires
+# exactly one leak (the structural coverage check), mirroring the flat case.
+schema_version: 1
+attributes: {}

@@ -1,0 +1,7 @@
+# Synthetic guard fixture (tests/fixtures/guard/x-schema-registry): an instance's reserved-namespace
+# (`x-*`, §11.4 SV5) EXTENSION registry inside a scanned root. It is naturally registry-shaped and
+# carries a co-located `_schema.yaml`, so it exercises the RV-1 ORDERING lock: the `x-*` PATH check
+# must fire BEFORE the depth-agnostic `_schema.yaml` basename exemption — otherwise this reserved
+# instance namespace would ship UNFLAGGED. Expected: LEAK[x-file] topics/x-acme/_schema.yaml, exit 1.
+schema_version: 1
+attributes: {}

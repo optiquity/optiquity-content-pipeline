@@ -11,8 +11,10 @@
 # default-denies by provenance instead of rejecting every populated entry.
 #
 # SCAN SCOPE (PA-1): tracked files only in the default mode (`git ls-files`, so local
-# uncommitted instance/demo data never false-positives), restricted to the named registry
-# roots plus instance/, users/ (the §23 re-home — all client content lives under
+# uncommitted instance/demo data never false-positives), restricted to the named FLAT registry
+# roots PLUS `foundation/` (the reorg grouping — a dual-safe union for the B-2→B-3 window: it is
+# inert on today's still-flat repo where no `foundation/` dir exists, and scans the moved registries
+# once B-3 lands), plus instance/, users/ (the §23 re-home — all client content lives under
 # users/<user>/workspaces/<workspace>/), and templates/ (framework blueprints). NEVER scans
 # tests/ docs/ pipeline/ scripts/
 # .claude/ .github/ — tracked negative fixtures under tests/fixtures/guard/ cannot
@@ -31,8 +33,9 @@
 # workspace blueprint at templates/workspace/ is NOT exempt: its whole subtree is scanned
 # by the [W8] templates/* arm (its 8 generic framework files carry no x-/provenance-instance
 # instance signal, so they PASS; the stale platforms/platform.template.md stays green until
-# the step-40 sweep). A co-located `<root>/_schema.yaml` is framework mechanism (SV4) and is
-# likewise exempt.
+# the step-40 sweep). A co-located `_schema.yaml` is framework mechanism (SV4) and is likewise exempt
+# BY BASENAME at ANY depth — so a flat `<root>/_schema.yaml` and a `foundation/**/_schema.yaml` are
+# both exempt from the missing-provenance default-deny.
 #
 # LEAK CLASSES (each named in the output; negative fixtures per class under
 # tests/fixtures/guard/):
@@ -74,17 +77,39 @@
 # this guard is the grep-level tracked-file boundary scan that pairs with it.
 set -euo pipefail
 
-# REGISTRY_ROOTS is the hardcoded whitelist of registry roots the content scan covers. It is
-# self-enforcing: the GAP-4a coverage check below fails the guard if any top-level dir has
-# registry SHAPE (the SV4 `<dir>/_schema.yaml` marker) but is missing from this list — so a
-# new registry root (e.g. a future `lexicons/`) can never ship UNSCANNED. Add a new root here.
+# REGISTRY_ROOTS is the hardcoded whitelist of FLAT (today's live layout) registry roots the content
+# scan covers. It is self-enforcing: the GAP-4a coverage check below fails the guard if any top-level
+# dir has registry SHAPE (the SV4 `<dir>/_schema.yaml` marker) but is missing from this list — so a
+# new registry root (e.g. a future `lexicons/`) can never ship UNSCANNED. Add a new root here. It is
+# the bash mirror of `pipeline.lint.REGISTRY_ROOTS`; the parity test (tests/test_layout_guard_parity.py)
+# fails on any drift between the two, so an 18th registry can never desync bash↔Python.
 REGISTRY_ROOTS="topics personas formats voices goals platforms languages output-types presentations content-kinds sources render-targets recipes folio-types lexicons diagram-styles selections"
-# SCOPES feeds `git ls-files -- $SCOPES` (and the --mode all find loop). It is REGISTRY_ROOTS plus
-# the non-registry scan surfaces: instance/ (per-deployment config), users/ (the §23 re-home — ALL
-# client content lives under users/<user>/workspaces/<workspace>/) and templates/ (framework-owned,
+# FOUNDATION_REGISTRY_DIRS is the whitelist of full `foundation/`-anchored registry directories — the
+# homes the framework registries move to under the `foundation/` reorg (the bash mirror of the values
+# of `pipeline.layout.REGISTRY_BASE`, the Python SSOT the B-3 flip fills). It is the foundation-arm
+# counterpart to REGISTRY_ROOTS: the GAP-4a check below leaks `unknown-registry-root` on any
+# `foundation/**/_schema.yaml` whose registry dir is NOT in this list (an unlisted foundation registry
+# shipping unvetted). DUAL-SAFE for the B-2→B-3 window: today's live repo has no `foundation/` dir, so
+# this arm no-ops (nothing to match); it fires only once the registries are `foundation/`-shaped (B-3,
+# or a foundation-shaped `--root` fixture/tree). The AUTHORITATIVE binning (reconciled design of
+# record, Option-3): the nine §3/§4 dimension axes home under `foundation/dimensions/<axis>`; the
+# grounding registries under `foundation/grounding/` (sources, content-kinds); the composition
+# registries under `foundation/composition/` (recipes, selections, folio-types); the render-config
+# registries under `foundation/render-config/` (render-targets, diagram-styles); and `lexicons` sits
+# flat at `foundation/lexicons` (the sole depth-2 singleton). These are the exact values B-3 assigns
+# into `pipeline.layout.REGISTRY_BASE` VERBATIM — the parity test (tests/test_layout_guard_parity.py)
+# locks this list to that SSOT (value-parity engages the moment REGISTRY_BASE is populated at B-3).
+FOUNDATION_REGISTRY_DIRS="foundation/dimensions/topics foundation/dimensions/personas foundation/dimensions/formats foundation/dimensions/voices foundation/dimensions/goals foundation/dimensions/platforms foundation/dimensions/languages foundation/dimensions/output-types foundation/dimensions/presentations foundation/grounding/sources foundation/grounding/content-kinds foundation/composition/recipes foundation/composition/selections foundation/composition/folio-types foundation/render-config/render-targets foundation/render-config/diagram-styles foundation/lexicons"
+# SCOPES feeds `git ls-files -- $SCOPES` (and the --mode all find loop). For the B-2 dual-safe window it
+# is a UNION: the flat REGISTRY_ROOTS (today's live layout) PLUS `foundation` (the reorg grouping — a
+# single pathspec that recurses the whole foundation subtree once the registries move) PLUS the
+# non-registry scan surfaces: instance/ (per-deployment config), users/ (the §23 re-home — ALL client
+# content lives under users/<user>/workspaces/<workspace>/) and templates/ (framework-owned,
 # owner-agnostic blueprints — the [W8] framework mechanism scan surface; a client file must not hide
-# under templates/ unscanned).
-SCOPES="$REGISTRY_ROOTS instance users templates"
+# under templates/ unscanned). On the still-flat repo the `foundation` pathspec/dir simply matches
+# nothing (no error); B-4 later tightens the union to `foundation instance users templates` once the
+# move has landed.
+SCOPES="$REGISTRY_ROOTS foundation instance users templates"
 
 MODE="tracked"
 ROOT=""
@@ -150,22 +175,21 @@ list_files() {
   fi
 }
 
-# GAP-4a (docs/known-issues.md): every TOP-LEVEL directory that carries the SV4
-# registry-root marker (a co-located `<dir>/_schema.yaml`). The caller uses this to catch
-# an UNKNOWN registry root — one outside the REGISTRY_ROOTS whitelist, hence outside $SCOPES
-# and NEVER scanned by list_files above. Emits candidate `<dir>/_schema.yaml` paths (git
-# `*` spans '/', so nested markers appear too; the caller filters to depth-1). Honors --mode
-# exactly like list_files — tracked = committed markers only (a local uncommitted scratch
-# dir never false-positives), all = markers on disk.
+# GAP-4a (docs/known-issues.md): every directory that carries the SV4 registry-root marker (a
+# co-located `<dir>/_schema.yaml`), at ANY depth. The caller uses this to catch an UNKNOWN registry
+# root — a flat top-level one outside the REGISTRY_ROOTS whitelist, OR a `foundation/`-shaped one
+# outside FOUNDATION_REGISTRY_DIRS — hence outside the vetted scan and NEVER consciously whitelisted.
+# Emits candidate `**/_schema.yaml` paths (git `*` spans '/', so nested markers appear too; the caller
+# filters by the `foundation/`-anchored `case` below). Honors --mode exactly like list_files — tracked
+# = committed markers only (a local uncommitted scratch dir never false-positives), all = markers on
+# disk. NOTE: --mode all uses `find .` (recursive), so it MUST emit depth ≥2 markers too — the old
+# `*/_schema.yaml` glob only saw depth-1 and would MISS every `foundation/**/_schema.yaml`; the caller
+# strips a leading `./` before matching so the `foundation/`-anchored patterns line up.
 list_schema_roots() {
   if [ "$MODE" = "tracked" ]; then
     git ls-files -- '*/_schema.yaml'
   else
-    for s in */_schema.yaml; do
-      if [ -f "$s" ]; then
-        printf '%s\n' "$s"
-      fi
-    done
+    find . -name _schema.yaml -type f
   fi
 }
 
@@ -175,27 +199,46 @@ leak() { # $1=class  $2=path  $3=message
   fail=1
 }
 
-# GAP-4a — REGISTRY-ROOT COVERAGE CHECK (docs/known-issues.md GAP-4): the file scan below
-# only covers $SCOPES (the hardcoded REGISTRY_ROOTS whitelist + instance/ + users/ + templates/). A
-# brand-new top-level registry root OUTSIDE that whitelist would therefore pass UNSCANNED —
-# a silent client-content leak surface (e.g. a future `lexicons/` holding a corporate
-# lexicon). Fail LOUDLY on any top-level directory that has REGISTRY SHAPE (the SV4 marker: a
-# co-located `<dir>/_schema.yaml`) yet is not already a scanned scope, so no new registry
-# root can ship without a CONSCIOUS decision to whitelist (and thus scan) it here. This is an
-# ADDITIVE structural check — it never alters the content scan of the existing roots.
+# GAP-4a — REGISTRY-ROOT COVERAGE CHECK (docs/known-issues.md GAP-4): the file scan below only covers
+# $SCOPES (REGISTRY_ROOTS + `foundation` + instance/ + users/ + templates/). A registry root OUTSIDE
+# the vetted whitelists would pass UNSCANNED / unvetted — a silent client-content leak surface (e.g. a
+# future `lexicons/` holding a corporate lexicon, or an unlisted `foundation/**` registry). Fail LOUDLY
+# on any directory that has REGISTRY SHAPE (the SV4 marker: a co-located `<dir>/_schema.yaml`) yet is
+# not a consciously-whitelisted registry, so no new registry root can ship without a deliberate
+# whitelist edit. This is an ADDITIVE structural check — it never alters the content scan of the
+# existing roots.
+#
+# The `case` is FIRST-MATCH and anchored to the LITERAL `foundation/` prefix (no leading `*/`), so a
+# marker whose path merely CONTAINS "foundation" further down (e.g. a `.venv/**/foundation/_schema.yaml`
+# or a `tests/fixtures/**/foundation/…` fixture) does NOT match the foundation arm — it falls through
+# to the deep-skip. The leading `./` that `find .` prints in --mode all is stripped first so the
+# anchored patterns line up (a top-level `./topics/_schema.yaml` would otherwise carry two slashes and
+# be misread as deep).
 while IFS= read -r schema; do
   [ -n "$schema" ] || continue
+  schema="${schema#./}"                      # normalize the `find .` leading `./` (tracked mode has none)
   case "$schema" in
-    */*/*) continue ;;            # deeper than <dir>/_schema.yaml — not a top-level root marker
-    */_schema.yaml) : ;;
+    foundation/*/_schema.yaml | foundation/*/*/_schema.yaml)
+      # A `foundation/`-anchored registry marker (depth-2 singleton like `foundation/lexicons`, or the
+      # binned depth-3 like `foundation/dimensions/topics`). Its registry dir must be a whitelisted
+      # FOUNDATION_REGISTRY_DIRS home; anything else is an unlisted foundation registry shipping unvetted.
+      reg_dir="${schema%/_schema.yaml}"
+      case " $FOUNDATION_REGISTRY_DIRS " in
+        *" $reg_dir "*) continue ;;          # a known, whitelisted foundation registry
+      esac
+      leak unknown-registry-root "$reg_dir" \
+        "foundation registry-shaped directory (SV4 marker: a co-located ${reg_dir}/_schema.yaml) is NOT in FOUNDATION_REGISTRY_DIRS, so it ships unvetted — add '${reg_dir}' to FOUNDATION_REGISTRY_DIRS in scripts/check-no-content.sh (and its token to pipeline.layout.REGISTRY_BASE) so the public-boundary scan vets it (GAP-4a)" ;;
+    */*/*) continue ;;                       # a deep NON-foundation marker (tests/fixtures/**, .venv/**) — ignored
+    */_schema.yaml)
+      # A depth-1 top-level flat registry root (PRESERVED original protection): `<dir>/_schema.yaml`.
+      root_dir="${schema%/_schema.yaml}"
+      case " $SCOPES " in
+        *" $root_dir "*) continue ;;         # already scanned (a whitelisted flat root, or foundation/instance/users/templates)
+      esac
+      leak unknown-registry-root "$root_dir" \
+        "registry-shaped directory (SV4 marker: a co-located ${root_dir}/_schema.yaml) is NOT in REGISTRY_ROOTS, so its contents are NEVER scanned by this guard — add '${root_dir}' to REGISTRY_ROOTS in scripts/check-no-content.sh so the public-boundary scan covers it (GAP-4a)" ;;
     *) continue ;;
   esac
-  root_dir="${schema%/_schema.yaml}"
-  case " $SCOPES " in
-    *" $root_dir "*) continue ;;  # already scanned (a whitelisted root, or instance/users/templates)
-  esac
-  leak unknown-registry-root "$root_dir" \
-    "registry-shaped directory (SV4 marker: a co-located ${root_dir}/_schema.yaml) is NOT in REGISTRY_ROOTS, so its contents are NEVER scanned by this guard — add '${root_dir}' to REGISTRY_ROOTS in scripts/check-no-content.sh so the public-boundary scan covers it (GAP-4a)"
 done < <(list_schema_roots)
 
 # S3 — FRAMEWORK ASSET-HOME EMPTINESS ARM (mixed-media increment A1). The top-level `assets/`
@@ -286,18 +329,25 @@ while IFS= read -r f; do
           "template file under templates/ carrying an explicit 'provenance: instance' line — templates are framework mechanism (owner-agnostic, provenance framework), never instance content (design §10 Q15 rule 5)"
       fi ;;
     *)
-      # A registry-root file. The co-located schema manifest is framework mechanism.
-      top="${f%%/*}"
-      if [ "$f" = "$top/_schema.yaml" ]; then
-        continue
-      fi
+      # A registry-root file. SV5 FIRST (RV-1): an `x-*` path segment leaks by PATH, template-named or
+      # not — and this MUST run BEFORE the schema-manifest exemption below. An `x-*` extension registry
+      # is itself registry-shaped and carries a co-located `_schema.yaml` (e.g. `topics/x-acme/_schema.yaml`,
+      # or at B-3 `foundation/dimensions/topics/x-acme/_schema.yaml`); a basename exemption running first
+      # would silently let that reserved instance namespace ship. The framework never ships an `x-*`
+      # path, so a legit framework manifest never has an `x-*` ancestor and stays exempt at the next step.
       case "/$f" in
         */x-*)
-          # SV5 before the template exemption (RV-1): an x-* path segment leaks by
-          # PATH, template-named or not.
           leak x-file "$f" \
             "instance-namespaced 'x-*' path in a registry root — the framework never ships the reserved x- namespace (design §11.4 SV5)"
           continue ;;
+      esac
+      # NOW the co-located schema manifest exemption (framework mechanism, SV4) — by BASENAME and
+      # depth-agnostic (safe here: any `x-*`-ancestor manifest already leaked above), so a genuine
+      # framework `foundation/**/_schema.yaml` (depth ≥2) is exempt exactly like a flat
+      # `<root>/_schema.yaml`. The old position-based check (`[ "$f" = "$top/_schema.yaml" ]`) only
+      # matched depth-1 and would false-positive `missing-provenance` on every foundation manifest.
+      case "$base" in
+        _schema.yaml) continue ;;
       esac
       case "$base" in
         *.template.*)

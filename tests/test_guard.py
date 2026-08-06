@@ -83,6 +83,15 @@ LEAK_CASES = [
         "LEAK[provenance-instance]",
         "topics/fixture-instance-tagged.template.md",
     ),
+    # RV-1 ORDERING LOCK (B-2): an `x-*` EXTENSION registry is registry-shaped and carries a
+    # co-located `_schema.yaml`; the `x-*` PATH check must fire BEFORE the depth-agnostic
+    # `_schema.yaml` basename exemption, else the reserved instance namespace ships UNFLAGGED
+    # (design §11.4 SV5). Fires exactly one leak (x-file) — depth-2, so GAP-4a's `*/*/*` skips it.
+    (
+        "x-schema-registry",
+        "LEAK[x-file]",
+        "topics/x-acme/_schema.yaml",
+    ),
 ]
 
 
@@ -542,6 +551,104 @@ def test_framework_asset_home_stray_file_leaks(tmp_path):
     # README.md is the ONLY permitted resident: the stray binary is the sole finding.
     leaks = [line for line in proc.stdout.splitlines() if line.startswith("LEAK[")]
     assert len(leaks) == 1, proc.stdout
+
+
+# -----------------------------------------------------------------------------------
+# B-2: the foundation/-anchored GAP-4a arm (dual-safe reorg prep)
+# -----------------------------------------------------------------------------------
+
+
+def test_foundation_clean_tree_passes(tmp_path):
+    """B-2 (i): a clean `foundation/`-shaped registry tree (foundation/dimensions/topics/
+    with a co-located _schema.yaml + a `provenance: framework` entry) is GREEN. Exercises the
+    foundation arm end to end — the registry IS in FOUNDATION_REGISTRY_DIRS (the GAP-4a
+    coverage check passes it), the DEEP _schema.yaml is exempt BY BASENAME (the B-2 fix; the
+    old position-based check only exempted flat depth-1 `<root>/_schema.yaml` and would have
+    flagged this one missing-provenance), and the framework entry passes the content scan."""
+    proc = guard_on_fixture(tmp_path, "foundation-clean")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK:" in proc.stdout
+    assert "LEAK[" not in proc.stdout
+
+
+def test_foundation_unknown_registry_root_fails_loudly(tmp_path):
+    """B-2 (ii): a `foundation/`-shaped registry whose token is NOT in
+    pipeline.layout.REGISTRY_BASE / FOUNDATION_REGISTRY_DIRS (here foundation/dimensions/gadgets/)
+    must FAIL — an unlisted foundation registry would otherwise ship UNVETTED. This is the
+    foundation-anchored counterpart of the flat `glossaries/` unknown-root case, and fires
+    exactly one leak (the structural coverage check) just like it."""
+    proc = guard_on_fixture(tmp_path, "foundation-unknown-root")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LEAK[unknown-registry-root] foundation/dimensions/gadgets" in proc.stdout
+    # The message must name the dir AND instruct the maintainer to whitelist it.
+    assert "FOUNDATION_REGISTRY_DIRS" in proc.stdout
+    leaks = [line for line in proc.stdout.splitlines() if line.startswith("LEAK[")]
+    assert len(leaks) == 1, proc.stdout
+
+
+def test_x_namespaced_schema_registry_still_leaks_x_file(tmp_path):
+    """RV-1 ORDERING LOCK (B-2 blocker fix): the depth-agnostic `_schema.yaml` basename exemption
+    must run AFTER the `x-*` PATH check, never before. An `x-*` reserved-namespace (§11.4 SV5)
+    EXTENSION registry is registry-shaped and carries a co-located `_schema.yaml`
+    (`topics/x-acme/_schema.yaml`); if the basename exemption ran first it would silently ship that
+    instance namespace. The `x-*` path must leak by PATH first — exactly the base guard's behavior
+    for `formats/x-fixture-format.md`, now locked for the `_schema.yaml` basename too. Also asserts
+    the B-3-shape (`foundation/**/x-*/_schema.yaml`) leaks."""
+    # Flat root form (the exact regression the review reproduced).
+    root = tmp_path / "x-schema"
+    (root / "topics" / "x-acme").mkdir(parents=True)
+    (root / "topics" / "x-acme" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LEAK[x-file] topics/x-acme/_schema.yaml" in proc.stdout
+    # depth-2 → GAP-4a's `*/*/*` skips it; only the content-scan x-file fires (exactly one leak).
+    leaks = [line for line in proc.stdout.splitlines() if line.startswith("LEAK[")]
+    assert len(leaks) == 1, proc.stdout
+
+    # B-3-shape: an `x-*` extension registry nested under a foundation dimension still leaks.
+    froot = tmp_path / "x-schema-foundation"
+    (froot / "foundation" / "dimensions" / "topics" / "x-acme").mkdir(parents=True)
+    (froot / "foundation" / "dimensions" / "topics" / "x-acme" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(froot), "--mode", "all")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LEAK[x-file] foundation/dimensions/topics/x-acme/_schema.yaml" in proc.stdout
+
+
+def test_foundation_schema_manifest_is_exempt_by_basename(tmp_path):
+    """B-2 basename exemption, isolated: a deep `foundation/**/_schema.yaml` (which carries no
+    `provenance:` line) is exempt like any co-located SV4 manifest — the reworked guard must not
+    default-deny it `missing-provenance`. The OLD position-based exemption
+    (`[ "$f" = "$top/_schema.yaml" ]`) only matched flat depth-1 and would false-positive here."""
+    root = tmp_path / "found-schema"
+    (root / "foundation" / "dimensions" / "topics").mkdir(parents=True)
+    (root / "foundation" / "dimensions" / "topics" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "LEAK[" not in proc.stdout
+
+
+def test_foundation_arm_is_inert_on_a_flat_tree(tmp_path):
+    """DUAL-SAFE: with no `foundation/` dir present the foundation arm no-ops — a flat
+    `provenance: framework` registry tree stays green exactly as before the B-2 rework (the union
+    SCOPES still scans the flat registries; `git ls-files -- foundation` / `[ -d foundation ]`
+    simply match nothing)."""
+    root = tmp_path / "flat-tree"
+    (root / "topics").mkdir(parents=True)
+    (root / "topics" / "_schema.yaml").write_text(
+        "schema_version: 1\nattributes: {}\n", encoding="utf-8"
+    )
+    (root / "topics" / "framework-topic.md").write_text(
+        "---\nprovenance: framework\n---\n# synthetic framework topic\n", encoding="utf-8"
+    )
+    proc = run_guard("--root", str(root), "--mode", "all")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK:" in proc.stdout
 
 
 # -----------------------------------------------------------------------------------

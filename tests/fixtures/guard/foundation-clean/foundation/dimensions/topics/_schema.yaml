@@ -1,0 +1,7 @@
+# Synthetic guard fixture (tests/fixtures/guard/foundation-clean): a co-located SV4 schema
+# manifest under the `foundation/`-reorg layout (foundation/dimensions/topics/). It is
+# framework mechanism and is exempt from the provenance requirement BY BASENAME at this
+# depth — the reworked guard must not flag it `missing-provenance` (the B-2 basename-exemption
+# fix; the old position-based check only exempted flat depth-1 `<root>/_schema.yaml`).
+schema_version: 1
+attributes: {}
