@@ -27,6 +27,7 @@ from pipeline.folios import (
     plan_typed_run,
     validate_skeleton,
 )
+from pipeline.layout import registry_dir
 from pipeline.schema import load_schema
 from pipeline.store import WorkspaceStore
 from pipeline.yamlio import load_frontmatter
@@ -53,7 +54,7 @@ class TestWhitelistSource:
     def test_recipe_slots_equal_the_live_recipe_schema_attributes(self):
         # The hardcoded RECIPE_SLOTS must not drift from recipes/_schema.yaml — a slot added
         # upstream fails HERE rather than silently widening/narrowing the skeleton whitelist.
-        schema = load_schema(_REPO_ROOT / "recipes" / "_schema.yaml")
+        schema = load_schema(registry_dir(_REPO_ROOT, "recipes") / "_schema.yaml")
         assert RECIPE_SLOTS == set(schema.attributes)
 
     def test_whitelist_is_recipe_slots_plus_topic_slot(self):
@@ -112,7 +113,8 @@ class TestPlanTypedRun:
         assert by_role["getting-started"] == ("readme", "architecture")
 
     def test_shipped_repo_docs_entry_plans_clean(self):
-        meta, _ = load_frontmatter((_REPO_ROOT / "folio-types" / "repo-docs.md").read_text())
+        repo_docs = registry_dir(_REPO_ROOT, "folio-types") / "repo-docs.md"
+        meta, _ = load_frontmatter(repo_docs.read_text())
         plan = plan_typed_run(meta["roles"], folio_type="repo-docs")
         assert plan.roster == ("readme", "getting-started", "architecture")
 

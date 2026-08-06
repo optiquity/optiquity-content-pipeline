@@ -1120,7 +1120,7 @@ def test_L2_global_lexicon_is_refused_F4a(tmp_path: Path) -> None:
 # DR-3 build COMMIT 3: the framework `outline` Format entry - a pure §5.4 one-file add
 # ------------------------------------------------------------------------------------
 
-FORMATS_DIR = REPO_ROOT / "formats"
+FORMATS_DIR = registry_dir(REPO_ROOT, "formats")
 
 
 def test_outline_format_resolves_via_the_cascade(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ variables:
   fontsize: 10pt
   linestretch: 1.4
 highlight_style: kate
-csl: presentations/assets/csl/author-date.csl
+csl: foundation/dimensions/presentations/assets/csl/author-date.csl
 ---
 
 # journal-structured-look — Presentation entry (framework default)
@@ -26,7 +26,7 @@ Levers set (all ride inside `variables` per PD2, plus the one dedicated highligh
   into the serialize-inputs preimage (§17 FR7.1).
 - **`highlight_style: kate`** — a higher-contrast highlighting palette, legible in the dense
   method/results listings this venue's articles tend to carry.
-- **`csl: presentations/assets/csl/author-date.csl`** — the per-venue citation STYLE (DR-5
+- **`csl: foundation/dimensions/presentations/assets/csl/author-date.csl`** — the per-venue citation STYLE (DR-5
   C7/C11): this structured, method-heavy venue cites in the scholarly AUTHOR-DATE convention (the
   source label parenthetically in-text, `(source)`, with an un-numbered bibliography). `csl` is a
   citation STYLE override, NOT a citeproc toggle: `--citeproc` is CONTENT-driven (it fires whenever

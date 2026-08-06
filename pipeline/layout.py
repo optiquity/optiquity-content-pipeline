@@ -12,11 +12,13 @@ registry under a new parent (the `foundation/` grouping) would have been a many-
 knowledge to ONE place: callers pass the bare collection TOKEN (`"voices"`, `"recipes"`, …) —
 unchanged everywhere — and `registry_dir(root, token)` resolves the physical prefix.
 
-**B-1 ships the map EMPTY (this file).** With `REGISTRY_BASE == {}`, `registry_dir(root, t)` is
-exactly `root / t` — the current FLAT layout — so introducing this seam is a provable IDENTITY
-no-op: no file moves, byte-identical behavior. A later increment (B-3) fills `REGISTRY_BASE` with
-the `foundation/`-prefixed values, and because every framework path-builder already routes through
-`registry_dir`, that flip is a single-file change here.
+**B-1 shipped the map EMPTY, B-3 filled it.** In B-1 `REGISTRY_BASE == {}`, so
+`registry_dir(root, t)` was exactly `root / t` (the old FLAT layout) — a provable IDENTITY no-op
+that introduced this seam with no file moves. B-3 THEN filled `REGISTRY_BASE` with the
+`foundation/`-prefixed values and moved the 17 registries on disk
+(`scripts/migrate-to-foundation-layout.sh`); because every framework path-builder already routed
+through `registry_dir`, that flip was a single-file edit here. An unmapped token (a synthetic/test
+token like `gadgets`) still resolves FLAT via the fallback below.
 
 **The `.get(token, token)` fallback is load-bearing.** A token with no map entry resolves flat
 (`root / token`). That keeps synthetic / test tokens (e.g. `gadgets`) and any not-yet-mapped
@@ -38,15 +40,51 @@ __all__ = [
 ]
 
 #: The grouping directory the B-3 flip re-homes the framework registries under. Named here as the
-#: single home for the literal; UNUSED while `REGISTRY_BASE` is empty (B-1 is behavior-neutral
-#: prep).
+#: single home for the literal (every `REGISTRY_BASE` value is anchored under it); exported for
+#: callers that need the grouping name without parsing a mapped path.
 FOUNDATION_DIRNAME = "foundation"
 
-#: `collection token → physical prefix` for the FRAMEWORK registry layer. EMPTY in B-1 — every token
-#: resolves flat (`root / token`) via the `registry_dir` fallback, so this whole increment is an
-#: identity no-op. B-3 fills the 17 foundation values; because every framework path-builder already
-#: routes through `registry_dir`, that flip is a one-file change here.
-REGISTRY_BASE: dict[str, str] = {}
+#: `collection token → physical prefix` for the FRAMEWORK registry layer. FILLED at B-3 — the 17
+#: framework registries now live `foundation/`-anchored on disk, so each token resolves to its
+#: `foundation/…` home via `registry_dir`. Because every framework path-builder already routes
+#: through `registry_dir` (B-1), this ONE map is the whole physical-layout SSOT: moving a registry
+#: is a one-line edit here (plus the on-disk `mv`, scripted in
+#: `scripts/migrate-to-foundation-layout.sh`).
+#:
+#: These values are VERBATIM the guard's `FOUNDATION_REGISTRY_DIRS` whitelist (the bash mirror in
+#: `scripts/check-no-content.sh`) — the parity test
+#: `tests/test_layout_guard_parity.py::test_foundation_dirs_match_registry_base_once_populated`
+#: locks the two together, and its keys are EXACTLY `pipeline.lint.REGISTRY_ROOTS`. The
+#: authoritative Option-3 binning (reconciled design of record): the nine §3/§4 dimension axes home
+#: under `foundation/dimensions/<axis>`; grounding (`sources`, `content-kinds`) under
+#: `foundation/grounding/`; composition (`recipes`, `selections`, `folio-types`) under
+#: `foundation/composition/`; render-config (`render-targets`, `diagram-styles`) under
+#: `foundation/render-config/`; and `lexicons` sits flat at `foundation/lexicons` (the sole depth-2
+#: singleton).
+REGISTRY_BASE: dict[str, str] = {
+    # dimensions — the nine §3/§4 axes
+    "topics": "foundation/dimensions/topics",
+    "personas": "foundation/dimensions/personas",
+    "formats": "foundation/dimensions/formats",
+    "voices": "foundation/dimensions/voices",
+    "goals": "foundation/dimensions/goals",
+    "platforms": "foundation/dimensions/platforms",
+    "languages": "foundation/dimensions/languages",
+    "output-types": "foundation/dimensions/output-types",
+    "presentations": "foundation/dimensions/presentations",
+    # grounding
+    "sources": "foundation/grounding/sources",
+    "content-kinds": "foundation/grounding/content-kinds",
+    # composition
+    "recipes": "foundation/composition/recipes",
+    "selections": "foundation/composition/selections",
+    "folio-types": "foundation/composition/folio-types",
+    # render-config
+    "render-targets": "foundation/render-config/render-targets",
+    "diagram-styles": "foundation/render-config/diagram-styles",
+    # lexicons — the sole depth-2 singleton
+    "lexicons": "foundation/lexicons",
+}
 
 #: The §3/§4 dimension axes — the MEMBERSHIP set + canonical order (folded in from the former
 #: `pipeline.api.discovery._AXIS_DIRS`). This is a VOCABULARY tuple, NOT a set of paths: the

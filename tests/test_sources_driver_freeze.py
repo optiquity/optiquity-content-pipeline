@@ -53,6 +53,7 @@ from pipeline.ids import (
     build_artifact_preimage,
     mint_artifact_id,
 )
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.m3 import resolve_selection
 from pipeline.plan import Plan, PlanItem
@@ -446,9 +447,11 @@ class TestSessionProductionFreeze:
         root = tmp_path / "root"
         root.mkdir(parents=True)
         for reg in REGISTRY_ROOTS:
-            src = repo_root / reg
+            src = registry_dir(repo_root, reg)
             if src.is_dir():
-                shutil.copytree(src, root / reg)
+                dst = registry_dir(root, reg)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(src, dst)
         (root / "instance").mkdir()
         (root / "instance" / "defaults.yaml").write_text(self.L2, encoding="utf-8")
         ws_dir = root / "users" / self.USER / "workspaces" / self.WS

@@ -25,6 +25,7 @@ from pipeline import ir, reconcile, serialize
 from pipeline.api import fetch, render
 from pipeline.api.invoke import KNOWN_VERBS, invoke
 from pipeline.ids import parse_id
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.outline import normalize_outline, outline_digest
 from pipeline.outline_store import get_outline, outline_path
@@ -68,9 +69,11 @@ def build_root(tmp_path: Path, *, l2: str = BASE_L2) -> Path:
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
     topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
@@ -135,7 +138,8 @@ def _one(out: dict) -> dict:
 
 
 def _registry_side(output_type: str) -> str:
-    text = (REPO_ROOT / "render-targets" / f"{output_type}.md").read_text(encoding="utf-8")
+    rt = registry_dir(REPO_ROOT, "render-targets") / f"{output_type}.md"
+    text = rt.read_text(encoding="utf-8")
     frontmatter, _ = load_frontmatter(text)
     return frontmatter["side"]
 

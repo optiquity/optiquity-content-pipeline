@@ -30,6 +30,7 @@ import pytest
 
 from pipeline.canonical import canonical_json_bytes
 from pipeline.entries import load_entry
+from pipeline.layout import registry_dir
 from pipeline.outline import normalize_outline
 from pipeline.reconcile import (
     RECONCILE_INPUT_COMPONENTS,
@@ -51,7 +52,7 @@ from pipeline.sections import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PLATFORMS_DIR = REPO_ROOT / "platforms"
+PLATFORMS_DIR = registry_dir(REPO_ROOT, "platforms")
 REGISTRY_ROOTS = ("topics", "personas", "platforms", "formats", "presentations", "output-types")
 
 
@@ -97,7 +98,7 @@ def test_no_schema_version_bump_keeps_the_version_equality_lint_green() -> None:
     assert _platforms_schema().schema_version == 1
     versions = set()
     for root in REGISTRY_ROOTS:
-        schema_path = REPO_ROOT / root / SCHEMA_FILENAME
+        schema_path = registry_dir(REPO_ROOT, root) / SCHEMA_FILENAME
         if schema_path.exists():
             versions.add(load_schema(schema_path).schema_version)
     # The ONE global number, copied across every co-located _schema.yaml (SV2 §11.2).

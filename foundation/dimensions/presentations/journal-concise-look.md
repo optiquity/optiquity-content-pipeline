@@ -7,7 +7,7 @@ variables:
   fontsize: 9.5pt
   linestretch: 1.1
 highlight_style: tango
-csl: presentations/assets/csl/note.csl
+csl: foundation/dimensions/presentations/assets/csl/note.csl
 ---
 
 # journal-concise-look — Presentation entry (framework default)
@@ -25,7 +25,7 @@ Levers set (all ride inside `variables` per PD2, plus the one dedicated highligh
   `--variable=key=value` flag and is snapshotted into the serialize-inputs preimage (§17 FR7.1).
 - **`highlight_style: tango`** — a light, low-contrast highlighting palette that stays quiet on a
   small, dense page.
-- **`csl: presentations/assets/csl/note.csl`** — the per-venue citation STYLE (DR-5 C7/C11): this
+- **`csl: foundation/dimensions/presentations/assets/csl/note.csl`** — the per-venue citation STYLE (DR-5 C7/C11): this
   compact, scannable venue cites in a NOTE style, so each citation becomes a small superscript
   FOOTNOTE marker (the citation detail moves to an end note), keeping the short running text
   uncluttered. `csl` is a citation STYLE override, NOT a citeproc toggle: `--citeproc` is

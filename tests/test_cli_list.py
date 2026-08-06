@@ -29,6 +29,7 @@ from pipeline import __main__ as cli
 from pipeline import outline_store
 from pipeline.api import discovery, results
 from pipeline.api.invoke import KNOWN_VERBS
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.store import WorkspaceStore
 
@@ -43,9 +44,11 @@ def build_root(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     WorkspaceStore.at(root, USER, WS).ensure_layout()
     return root
 

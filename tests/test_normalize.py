@@ -29,6 +29,7 @@ from pipeline.api.normalize import (
 )
 from pipeline.attrtypes import CombineOperatorError, ValueValidationError
 from pipeline.cascade import CascadeEnv
+from pipeline.layout import registry_dir
 from pipeline.overrides import OverrideError
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "normalize_spec.json"
@@ -292,7 +293,7 @@ def test_normalize_is_a_leaf_no_pipeline_imports() -> None:
 def test_default_recipe_entry_exists() -> None:
     """The interactive default (`explainer-post`) must resolve to a real shipped recipe."""
     repo_root = Path(__file__).resolve().parents[1]
-    assert (repo_root / "recipes" / f"{DEFAULT_RECIPE}.md").is_file()
+    assert (registry_dir(repo_root, "recipes") / f"{DEFAULT_RECIPE}.md").is_file()
 
 
 def test_target_folio_sentinels_match_session() -> None:

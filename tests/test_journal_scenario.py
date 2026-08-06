@@ -4,7 +4,7 @@ Design authority: `docs/design.md` §5.2/§5.3/§12.7/§16/§17 and the FINAL RE
 plan, COMMIT C10 (materialize the driving example with per-venue enforcement LIVE).
 
 C1–C9 built the machinery; C10 ships the three framework venue-PROFILES (`platforms/journal-*.md`)
-and their looks (`presentations/journal-*-look.md`) and proves, over the REAL
+and their looks (`foundation/dimensions/presentations/journal-*-look.md`) and proves, over the REAL
 compose -> reconcile -> serialize path with the SHIPPED registry entries:
 
 - **One composed `academic-paper` IR reconciled against THREE journals** that each TIGHTEN the base
@@ -22,7 +22,8 @@ compose -> reconcile -> serialize path with the SHIPPED registry entries:
 
 DR-5 COMMIT C11 closes the DR-5 driving example ON TOP of this DR-4 structure: the three journal
 looks now each declare a per-venue `csl` citation STYLE (strict → numeric `[1]`, structured →
-author-date `(source)`, concise → note/footnote), shipped under `presentations/assets/csl/*.csl`.
+author-date `(source)`, concise → note/footnote), shipped under
+`foundation/dimensions/presentations/assets/csl/*.csl`.
 `test_one_ast_three_venues_differ_by_citation_style_only` composes ONE citing `academic-paper` IR
 (references PROJECTED from a two-source grounding ledger, C2/C4 — no fabrication) and renders it to
 the three journal deliverables FROM ONE AST, asserting their bibliographies differ by STYLE only,
@@ -88,11 +89,12 @@ _PANDOC_AVAILABLE = pandoc_available()
 #: DR-5 C11 — the SHIPPED per-venue citation STYLE each journal look declares (its `csl` frontmatter
 #: path, repo-root-relative). The venue→style map: strict → numeric (`[1]`), structured →
 #: author-date (`(source)`), concise → note (footnote). Generic framework `.csl` files under
-#: `presentations/assets/csl/` (no real-journal impersonation, no client content).
+#: `foundation/dimensions/presentations/assets/csl/` (the B-3 foundation-anchored home; no
+#: real-journal impersonation, no client content).
 LOOK_CSL = {
-    "journal-strict-look": "presentations/assets/csl/numeric.csl",
-    "journal-structured-look": "presentations/assets/csl/author-date.csl",
-    "journal-concise-look": "presentations/assets/csl/note.csl",
+    "journal-strict-look": "foundation/dimensions/presentations/assets/csl/numeric.csl",
+    "journal-structured-look": "foundation/dimensions/presentations/assets/csl/author-date.csl",
+    "journal-concise-look": "foundation/dimensions/presentations/assets/csl/note.csl",
 }
 
 

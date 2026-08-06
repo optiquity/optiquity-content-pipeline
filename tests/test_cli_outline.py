@@ -38,6 +38,7 @@ from pipeline import __main__ as cli
 from pipeline.api.invoke import KNOWN_VERBS
 from pipeline.driver import DriverError
 from pipeline.ids import parse_id
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.store import WorkspaceStore, is_done
 
@@ -60,9 +61,11 @@ def build_root(
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
     topics_dir = root / "users" / USER / "workspaces" / WS / "topics"

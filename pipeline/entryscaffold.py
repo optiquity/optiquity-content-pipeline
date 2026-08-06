@@ -170,7 +170,7 @@ def load_dimension_schema(root: str | Path, collection: str) -> Schema:
     root, so the scaffold conforms by construction (lints green UNEDITED). A root missing the
     schema is a loud refusal (never a bare traceback) — the caller is not a framework checkout.
     """
-    schema_path = Path(root) / collection / SCHEMA_FILENAME
+    schema_path = registry_dir(root, collection) / SCHEMA_FILENAME
     try:
         return load_schema(schema_path)
     except FileNotFoundError as exc:

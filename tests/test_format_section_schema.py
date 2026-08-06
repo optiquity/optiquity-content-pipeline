@@ -31,6 +31,7 @@ from pipeline.ids import (
     delta_vs_floor,
     mint_artifact_id,
 )
+from pipeline.layout import registry_dir
 from pipeline.outline import normalize_outline
 from pipeline.schema import SCHEMA_FILENAME, load_schema
 from pipeline.sections import (
@@ -48,7 +49,7 @@ from pipeline.sections import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FORMATS_DIR = REPO_ROOT / "formats"
+FORMATS_DIR = registry_dir(REPO_ROOT, "formats")
 
 
 # ---------------------------------------------------------------------------

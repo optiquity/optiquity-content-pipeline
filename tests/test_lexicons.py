@@ -24,6 +24,7 @@ from pathlib import Path
 
 from pipeline.entries import PROVENANCE_FRAMEWORK, load_entry
 from pipeline.ids import delta_vs_floor
+from pipeline.layout import registry_dir
 from pipeline.m1 import (
     CONTENT_DIMENSION_TOKENS,
     DIMENSION_COLLECTIONS,
@@ -33,7 +34,7 @@ from pipeline.m1 import (
 from pipeline.schema import load_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LEXICONS = REPO_ROOT / "lexicons"
+LEXICONS = registry_dir(REPO_ROOT, "lexicons")
 
 #: The class-(ii) house-style attributes the C1 schema declares (all floor-empty).
 LEXICON_ATTRIBUTES = {
@@ -186,7 +187,7 @@ def test_all_registry_schemas_share_the_global_schema_version():
     `_schema.yaml`. `lexicons` + increment C's `diagram-styles` + authoring C5a's
     `selections` make SEVENTEEN files, and version-equality holds — all at v1 — so the skew
     lint stays green with zero id churn."""
-    schema_files = sorted(REPO_ROOT.glob("*/_schema.yaml"))
+    schema_files = sorted(REPO_ROOT.glob("foundation/**/_schema.yaml"))
     versions = {p.parent.name: load_schema(p).schema_version for p in schema_files}
     assert versions["lexicons"] == 1
     assert versions["diagram-styles"] == 1

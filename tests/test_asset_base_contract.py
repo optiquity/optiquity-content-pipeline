@@ -43,6 +43,7 @@ import pytest
 from pipeline import asset_ref, compose
 from pipeline import dispatch as dispatch_mod
 from pipeline.api.render import DefaultRenderEngine, SerializeLeg
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.reconcile import build_fit_binding
 from pipeline.serialize import is_ci, pandoc_available, pandoc_gate
@@ -68,9 +69,11 @@ def _build_root(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     root.mkdir()
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
     (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)

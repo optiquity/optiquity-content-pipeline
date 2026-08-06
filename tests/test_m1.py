@@ -20,6 +20,7 @@ import pytest
 from pipeline.attrtypes import CombineOperatorError, ValueValidationError
 from pipeline.drift import iter_entry_files
 from pipeline.entries import Entry
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.m1 import (
     CODE_DRIFT_BLOCK,
@@ -286,7 +287,7 @@ attributes:
 
 
 def write_schema(root: Path, collection: str, text: str) -> None:
-    coll = root / collection
+    coll = registry_dir(root, collection)
     coll.mkdir(parents=True, exist_ok=True)
     (coll / SCHEMA_FILENAME).write_text(text, encoding="utf-8")
 
@@ -305,7 +306,7 @@ def write_entry(
     if provenance is None:
         provenance = "instance" if entry_id.startswith("x-") else "framework"
     if workspace is None:
-        dirpath = root / collection
+        dirpath = registry_dir(root, collection)
     else:
         dirpath = root / "users" / USER / "workspaces" / workspace / collection
     dirpath.mkdir(parents=True, exist_ok=True)
@@ -366,7 +367,7 @@ def test_every_shipped_registry_entry_resolves_dangling_free() -> None:
     resolver = Resolver(REPO_ROOT)
     resolved = 0
     for name in REGISTRY_ROOTS:
-        coll = REPO_ROOT / name
+        coll = registry_dir(REPO_ROOT, name)
         if not (coll / SCHEMA_FILENAME).is_file():
             continue
         for path in iter_entry_files(coll):

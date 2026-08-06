@@ -33,6 +33,7 @@ from pipeline.fanout import (
     pairing_advisory,
     render_coordinates,
 )
+from pipeline.layout import registry_dir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -280,7 +281,7 @@ def test_catalog_rows_never_key_a_folio_type_id() -> None:
     # in either slot (read-only scan of the real registry).
     folio_type_ids = {
         path.stem
-        for path in (REPO_ROOT / "folio-types").glob("*.md")
+        for path in registry_dir(REPO_ROOT, "folio-types").glob("*.md")
         if not path.name.startswith("_")
     }
     assert folio_type_ids  # the registry ships at least repo-docs

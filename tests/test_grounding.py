@@ -252,10 +252,10 @@ class TestMockAdapter:
 
 class TestSourceInstance:
     def test_floor_mirrors_pin_against_the_shipped_schemas(self):
-        sources = load_schema(REPO_ROOT / "sources" / "_schema.yaml")
+        sources = load_schema(registry_dir(REPO_ROOT, "sources") / "_schema.yaml")
         for score, floor in INSTANCE_SCORE_FLOORS.items():
             assert sources.attributes[score].default == floor, score
-        kinds = load_schema(REPO_ROOT / "content-kinds" / "_schema.yaml")
+        kinds = load_schema(registry_dir(REPO_ROOT, "content-kinds") / "_schema.yaml")
         for score, floor in KIND_SCORE_FLOORS.items():
             assert kinds.attributes[score].default == floor, score
 
@@ -1351,7 +1351,7 @@ class TestReuseRights:
     def test_schema_enum_and_floor_match_the_ordinal(self):
         # The content-kinds schema declares the SAME closed member set + the `full` floor;
         # the RANK order of record is the grounding tuple (the schema list is documentation).
-        kinds = load_schema(REPO_ROOT / "content-kinds" / "_schema.yaml")
+        kinds = load_schema(registry_dir(REPO_ROOT, "content-kinds") / "_schema.yaml")
         spec = kinds.attributes["reuse_rights"]
         assert set(spec.type.values) == set(REUSE_RIGHTS)
         assert spec.default == REUSE_RIGHTS_FLOOR == "full"

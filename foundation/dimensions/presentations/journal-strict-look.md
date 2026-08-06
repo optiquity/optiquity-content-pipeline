@@ -7,7 +7,7 @@ variables:
   fontsize: 11pt
   linestretch: 1.15
 highlight_style: pygments
-csl: presentations/assets/csl/numeric.csl
+csl: foundation/dimensions/presentations/assets/csl/numeric.csl
 ---
 
 # journal-strict-look — Presentation entry (framework default)
@@ -25,7 +25,7 @@ Levers set (all ride inside `variables` per PD2, plus the one dedicated highligh
   `--variable=key=value` flag and is snapshotted into the serialize-inputs preimage (§17 FR7.1).
 - **`highlight_style: pygments`** — Pandoc's default syntax-highlighting palette, a neutral
   choice for the occasional code or data listing.
-- **`csl: presentations/assets/csl/numeric.csl`** — the per-venue citation STYLE (DR-5 C7/C11):
+- **`csl: foundation/dimensions/presentations/assets/csl/numeric.csl`** — the per-venue citation STYLE (DR-5 C7/C11):
   this strict, print-journal venue numbers its references (`[1]`, `[2]`, …) with a numbered
   bibliography — the compact, rigid Vancouver/IEEE convention that suits it. `csl` is a citation
   STYLE override, NOT a citeproc toggle: `--citeproc` is CONTENT-driven (it fires whenever the AST

@@ -32,6 +32,7 @@ from pipeline.api.invoke import invoke
 from pipeline.claims import ClaimRegistry
 from pipeline.filters.provenance_strip import has_provenance
 from pipeline.ids import parse_id
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.serialize import is_ci, pandoc_available, pandoc_gate
 from pipeline.store import WorkspaceStore
@@ -364,9 +365,11 @@ def _c6_world(tmp_path):
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = repo_root / reg
+        src = registry_dir(repo_root, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(
         "voice: clear-explainer\nlanguage: en\noutput_type: md\n", encoding="utf-8"

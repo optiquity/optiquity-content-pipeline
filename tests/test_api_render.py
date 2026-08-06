@@ -26,6 +26,7 @@ from pipeline.api import render
 from pipeline.api.invoke import invoke
 from pipeline.compose import build_outline_ir
 from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id
+from pipeline.layout import registry_dir
 from pipeline.outline import normalize_outline, outline_digest
 from pipeline.store import WorkspaceStore
 from pipeline.yamlio import load_frontmatter
@@ -72,7 +73,8 @@ def _outline_preimage(md: str) -> dict:
 def _registry_side(output_type: str) -> str:
     """The `side:` the REAL framework render-target registry declares for `output_type` — the
     ground truth the injected engine mirrors (keeps the internal/external assertions honest)."""
-    text = (REPO_ROOT / "render-targets" / f"{output_type}.md").read_text(encoding="utf-8")
+    rt = registry_dir(REPO_ROOT, "render-targets") / f"{output_type}.md"
+    text = rt.read_text(encoding="utf-8")
     frontmatter, _ = load_frontmatter(text)
     return frontmatter["side"]
 

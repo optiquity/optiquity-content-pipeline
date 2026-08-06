@@ -25,6 +25,7 @@ import pipeline.api.invoke as invoke_mod
 from pipeline import __main__ as cli
 from pipeline.authoring import RECIPE_COLLECTION, VALUES_SLOT, bundle_from_entry
 from pipeline.entries import PROVENANCE_FRAMEWORK, PROVENANCE_INSTANCE, load_entry
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS, lint_tree, render_report
 from pipeline.schema import SCHEMA_FILENAME, load_schema
 
@@ -42,10 +43,10 @@ TOPIC = "---\nid: {tid}\nprovenance: instance\nschema_version: 1\nwhy: {why}\n--
 def _recipe_root(tmp_path: Path) -> Path:
     """A minimal lintable/loadable root carrying only the real recipe schema — enough for the
     write → lint → re-parse round-trips (lint resolves no cross-registry refs, C2a precedent)."""
-    dst = tmp_path / RECIPE_COLLECTION / SCHEMA_FILENAME
+    dst = registry_dir(tmp_path, RECIPE_COLLECTION) / SCHEMA_FILENAME
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(
-        (REPO_ROOT / RECIPE_COLLECTION / SCHEMA_FILENAME).read_text(encoding="utf-8"),
+        (registry_dir(REPO_ROOT, RECIPE_COLLECTION) / SCHEMA_FILENAME).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     return tmp_path
@@ -53,14 +54,15 @@ def _recipe_root(tmp_path: Path) -> Path:
 
 def _seed_recipe(root: Path, name: str) -> None:
     """Copy a shipped framework recipe into a root's `recipes/` so `--from` can seed from it."""
-    (root / RECIPE_COLLECTION).mkdir(parents=True, exist_ok=True)
+    registry_dir(root, RECIPE_COLLECTION).mkdir(parents=True, exist_ok=True)
     shutil.copy2(
-        REPO_ROOT / RECIPE_COLLECTION / f"{name}.md", root / RECIPE_COLLECTION / f"{name}.md"
+        registry_dir(REPO_ROOT, RECIPE_COLLECTION) / f"{name}.md",
+        registry_dir(root, RECIPE_COLLECTION) / f"{name}.md",
     )
 
 
 def _recipe_schema(root: Path):
-    return load_schema(root / RECIPE_COLLECTION / SCHEMA_FILENAME)
+    return load_schema(registry_dir(root, RECIPE_COLLECTION) / SCHEMA_FILENAME)
 
 
 def _reparsed_bundle(root: Path, path: Path) -> dict:
@@ -80,9 +82,11 @@ def build_root(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
     topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
@@ -118,7 +122,7 @@ def test_recipe_new_writes_public_file_prints_id_and_lints(tmp_path, capsys):
     )
     assert code == 0
     out = capsys.readouterr().out
-    written = root / RECIPE_COLLECTION / "my-brief.md"
+    written = registry_dir(root, RECIPE_COLLECTION) / "my-brief.md"
     assert "my-brief" in out and str(written) in out  # prints the exact id + path
 
     report = lint_tree(root, now=NOW, baseline=None)
@@ -134,10 +138,10 @@ def test_recipe_new_writes_public_file_prints_id_and_lints(tmp_path, capsys):
 def test_recipe_new_writes_exactly_one_file(tmp_path):
     """The §5.4 one-file-add: authoring a recipe adds EXACTLY one file to the root."""
     root = _recipe_root(tmp_path)
-    before = {p for p in (root / RECIPE_COLLECTION).iterdir()}
+    before = {p for p in (registry_dir(root, RECIPE_COLLECTION)).iterdir()}
     assert _run("new", "solo", "--persona", "technical-evaluator", "--root", str(root)) == 0
-    after = {p for p in (root / RECIPE_COLLECTION).iterdir()}
-    assert after - before == {root / RECIPE_COLLECTION / "solo.md"}
+    after = {p for p in (registry_dir(root, RECIPE_COLLECTION)).iterdir()}
+    assert after - before == {registry_dir(root, RECIPE_COLLECTION) / "solo.md"}
 
 
 def test_pick_writes_only_stated_slots(tmp_path):
@@ -147,7 +151,7 @@ def test_pick_writes_only_stated_slots(tmp_path):
         "new", "x", "--persona", "technical-evaluator", "--format", "short-opinion-post",
         "--root", str(root),
     ) == 0
-    bundle = _reparsed_bundle(root, root / RECIPE_COLLECTION / "x.md")
+    bundle = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "x.md")
     assert bundle == {"persona": "technical-evaluator", "format": "short-opinion-post"}
 
 
@@ -155,7 +159,7 @@ def test_repeated_goal_flag_stacks_the_set(tmp_path):
     """A repeated `--goals` accumulates into the ONE goal-set the recipe binds (§8)."""
     root = _recipe_root(tmp_path)
     assert _run("new", "g", "--goals", "explain", "--goals", "convince", "--root", str(root)) == 0
-    bundle = _reparsed_bundle(root, root / RECIPE_COLLECTION / "g.md")
+    bundle = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "g.md")
     assert set(bundle["goals"]) == {"explain", "convince"}
 
 
@@ -171,7 +175,7 @@ def test_derive_seeds_base_and_swaps_a_pick(tmp_path, capsys):
         "new", "v2", "--from", "explainer-post", "--persona", "product-manager", "--root", str(root)
     ) == 0
     assert "derived from 'explainer-post'" in capsys.readouterr().out
-    bundle = _reparsed_bundle(root, root / RECIPE_COLLECTION / "v2.md")
+    bundle = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "v2.md")
     # base persona (technical-evaluator) is REPLACED; base format + goals are inherited.
     assert bundle["persona"] == "product-manager"
     assert bundle["format"] == "short-opinion-post"
@@ -188,7 +192,8 @@ def test_derive_replaces_a_set_axis(tmp_path):
         "new", "social", "--from", "plat-base", "--platform", "github", "--platform", "linkedin",
         "--root", str(root),
     ) == 0
-    platforms = _reparsed_bundle(root, root / RECIPE_COLLECTION / "social.md")["platforms"]
+    social = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "social.md")
+    platforms = social["platforms"]
     assert set(platforms) == {"github", "linkedin"}  # REPLACED
     assert "medium-post" not in platforms  # the base pin did NOT survive (no append)
 
@@ -198,7 +203,7 @@ def test_derive_unset_drops_a_base_pin(tmp_path):
     root = _recipe_root(tmp_path)
     assert _run("new", "vbase", "--voice", "clear-explainer", "--root", str(root)) == 0
     assert _run("new", "vd", "--from", "vbase", "--unset", "voice", "--root", str(root)) == 0
-    assert "voice" not in _reparsed_bundle(root, root / RECIPE_COLLECTION / "vd.md")
+    assert "voice" not in _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "vd.md")
 
 
 def test_derive_set_and_unset_together(tmp_path):
@@ -209,7 +214,7 @@ def test_derive_set_and_unset_together(tmp_path):
         "new", "formal-brief", "--from", "explainer-post", "--set", "voice.formality=4",
         "--unset", "diagram_style", "--root", str(root),
     ) == 0
-    bundle = _reparsed_bundle(root, root / RECIPE_COLLECTION / "formal-brief.md")
+    bundle = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "formal-brief.md")
     assert bundle[VALUES_SLOT] == {"voice.formality": 4}
     assert "diagram_style" not in bundle
 
@@ -220,7 +225,7 @@ def test_unknown_base_refused_no_file(tmp_path, capsys):
     code = _run("new", "nope", "--from", "does-not-exist", "--root", str(root))
     assert code == 1
     assert "unknown-entry" in capsys.readouterr().err
-    assert not (root / RECIPE_COLLECTION / "nope.md").exists()
+    assert not (registry_dir(root, RECIPE_COLLECTION) / "nope.md").exists()
 
 
 def test_derive_from_extends_base_refuses_cleanly_no_traceback(tmp_path, capsys):
@@ -230,7 +235,7 @@ def test_derive_from_extends_base_refuses_cleanly_no_traceback(tmp_path, capsys)
     `UndeclaredAttributeError`, a bare `ValueError`, is caught by `_recipe_error_types`, not
     leaked). Safe direction holds: no derived file is written."""
     root = _recipe_root(tmp_path)
-    (root / RECIPE_COLLECTION / "extends-base.md").write_text(
+    (registry_dir(root, RECIPE_COLLECTION) / "extends-base.md").write_text(
         "---\nid: extends-base\nprovenance: framework\nschema_version: 1\n"
         "extends: explainer-post\npersona: product-manager\n---\n\nBody.\n",
         encoding="utf-8",
@@ -240,7 +245,7 @@ def test_derive_from_extends_base_refuses_cleanly_no_traceback(tmp_path, capsys)
     err = capsys.readouterr().err
     assert err.startswith("pipeline recipe new:")  # the clean typed refusal, not a raw trace
     assert "Traceback" not in err
-    assert not (root / RECIPE_COLLECTION / "derived.md").exists()
+    assert not (registry_dir(root, RECIPE_COLLECTION) / "derived.md").exists()
 
 
 # --- provenance boundary (rule 4 / §10): a client binding never lands in public ---------------
@@ -252,7 +257,7 @@ def test_client_binding_refused_from_public_no_file(tmp_path, capsys):
     code = _run("new", "leak-brief", "--topic", "x-secret", "--root", str(root))
     assert code == 1
     assert "never the public repo" in capsys.readouterr().err
-    assert not (root / RECIPE_COLLECTION / "leak-brief.md").exists()
+    assert not (registry_dir(root, RECIPE_COLLECTION) / "leak-brief.md").exists()
 
 
 def test_client_binding_homes_under_workspace(tmp_path):
@@ -265,7 +270,7 @@ def test_client_binding_homes_under_workspace(tmp_path):
     ) == 0
     written = root / "users" / USER / "workspaces" / "demo" / RECIPE_COLLECTION / "x-brief.md"
     assert written.is_file()
-    assert not (root / RECIPE_COLLECTION / "x-brief.md").exists()  # NOT in public
+    assert not (registry_dir(root, RECIPE_COLLECTION) / "x-brief.md").exists()  # NOT in public
     entry = load_entry(written, _recipe_schema(root))
     assert entry.provenance == PROVENANCE_INSTANCE
     assert entry.attributes["topic"] == "x-secret"
@@ -275,7 +280,7 @@ def test_framework_recipe_is_framework_provenance(tmp_path):
     """A framework-only binding homes public with framework provenance."""
     root = _recipe_root(tmp_path)
     assert _run("new", "fw", "--persona", "technical-evaluator", "--root", str(root)) == 0
-    entry = load_entry(root / RECIPE_COLLECTION / "fw.md", _recipe_schema(root))
+    entry = load_entry(registry_dir(root, RECIPE_COLLECTION) / "fw.md", _recipe_schema(root))
     assert entry.provenance == PROVENANCE_FRAMEWORK
 
 
@@ -343,7 +348,7 @@ def test_overwrite_refused_headless_then_force(tmp_path, capsys):
     assert _run(
         "new", "once", "--persona", "product-manager", "--root", str(root), "--force"
     ) == 0
-    reparsed = _reparsed_bundle(root, root / RECIPE_COLLECTION / "once.md")
+    reparsed = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "once.md")
     assert reparsed["persona"] == "product-manager"
 
 

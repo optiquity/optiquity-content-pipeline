@@ -67,7 +67,7 @@ def _run(*argv: str) -> int:
 
 
 def _framework_schema(collection: str):
-    return load_schema(REPO_ROOT / collection / SCHEMA_FILENAME)
+    return load_schema(registry_dir(REPO_ROOT, collection) / SCHEMA_FILENAME)
 
 
 @pytest.fixture(autouse=True)

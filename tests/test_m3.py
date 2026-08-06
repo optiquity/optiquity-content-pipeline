@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from pipeline import opgrammar
+from pipeline.layout import registry_dir
 from pipeline.m3 import (
     CATEGORICAL_MEMBERS,
     CONTENT_KIND,
@@ -115,7 +116,7 @@ class TestScoreVocabulary:
         # here. The ORDER of ORDINAL_MEMBERS is m3's own semantic low→high rank
         # declaration (the schemas author §6.2's table order, e.g. `primary |
         # secondary | tertiary`), so order is asserted as m3's, not the schema's.
-        sources = load_schema(REPO_ROOT / "sources" / "_schema.yaml")
+        sources = load_schema(registry_dir(REPO_ROOT, "sources") / "_schema.yaml")
         assert set(sources.attributes["independence"].type.values) == set(
             ORDINAL_MEMBERS["independence"]
         )
@@ -124,7 +125,7 @@ class TestScoreVocabulary:
         )
         assert ORDINAL_MEMBERS["independence"] == ("first-party", "affiliated", "independent")
         assert ORDINAL_MEMBERS["primariness"] == ("tertiary", "secondary", "primary")
-        kinds = load_schema(REPO_ROOT / "content-kinds" / "_schema.yaml")
+        kinds = load_schema(registry_dir(REPO_ROOT, "content-kinds") / "_schema.yaml")
         assert tuple(kinds.attributes["review_status"].type.values) == CATEGORICAL_MEMBERS[
             "review_status"
         ]
@@ -350,7 +351,7 @@ class TestPreferParsing:
 
     def test_yaml_plus_two_loads_as_int_two(self):
         # The step-15 note: YAML 1.2 loads `+2` as int 2 — straight from the shipped file.
-        text = (REPO_ROOT / "goals" / "convince.md").read_text(encoding="utf-8")
+        text = (registry_dir(REPO_ROOT, "goals") / "convince.md").read_text(encoding="utf-8")
         frontmatter, _ = load_frontmatter(text)
         weight = frontmatter["source_selection"]["prefer"][0]["authoritative"]
         assert weight == 2 and isinstance(weight, int)
@@ -621,7 +622,7 @@ class TestFold:
 
 class TestShippedConvinceGoal:
     def test_clauses_parse_from_the_shipped_file(self):
-        text = (REPO_ROOT / "goals" / "convince.md").read_text(encoding="utf-8")
+        text = (registry_dir(REPO_ROOT, "goals") / "convince.md").read_text(encoding="utf-8")
         frontmatter, _ = load_frontmatter(text)
         sel = resolve_selection(goals=[("convince", frontmatter["source_selection"])])
         assert [render_clause(c) for c in sel.require] == ["traceability is true"]

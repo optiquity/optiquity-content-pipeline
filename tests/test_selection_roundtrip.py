@@ -38,6 +38,7 @@ from pipeline.fanout import (
     coordinate_from_payload,
     render_coordinate_from_payload,
 )
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.plan import Plan, resolve_plan
 from pipeline.store import WorkspaceStore
@@ -57,9 +58,11 @@ def build_root(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
     topics = root / "users" / USER / "workspaces" / WS / "topics"

@@ -4,7 +4,8 @@ C1 covers the F3 fence (CLAUDE.md rule 2 — client isolation): the presentation
 a repo-root-relative path against `resolve_base` and REFUSES anything that lands outside
 `contain_root` (wired to `<root>/presentations`) — an absolute path, a `..` traversal, or a
 cross-client `workspaces/<other>/…` reach-in — reading NO bytes. A contained `presentations/…` asset
-(and every shipped `presentations/assets/csl/*.csl`) reads OK.
+(and every shipped `.csl` under the B-3 home `foundation/dimensions/presentations/assets/csl/`)
+reads OK.
 
 C2 covers `hash_embedded_assets` — the F1 render-time FULL gate + the identity fold: for an EMBED
 writer it re-runs A's compose gate on the persisted AST (raw-markup refusal + containment over ALL
@@ -27,11 +28,13 @@ from pipeline.presentation import PresentationError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: The three generic framework citation styles shipped under the `presentations/` fence.
+#: The three generic framework citation styles shipped under the presentations fence — now the
+#: B-3 foundation-anchored home `foundation/dimensions/presentations/` (the repo-root-relative
+#: `csl` paths the C11 journal looks declare).
 SHIPPED_CSL = (
-    "presentations/assets/csl/author-date.csl",
-    "presentations/assets/csl/numeric.csl",
-    "presentations/assets/csl/note.csl",
+    "foundation/dimensions/presentations/assets/csl/author-date.csl",
+    "foundation/dimensions/presentations/assets/csl/numeric.csl",
+    "foundation/dimensions/presentations/assets/csl/note.csl",
 )
 
 
@@ -60,14 +63,14 @@ def _loader(root: Path):
 def test_reads_a_contained_presentation_asset(tmp_path):
     root = _fenced_root(tmp_path)
     load = _loader(root)
-    assert load("presentations/assets/csl/house.csl") == b"<style/>house"
+    assert load("foundation/dimensions/presentations/assets/csl/house.csl") == b"<style/>house"
 
 
 def test_reads_every_shipped_csl_off_the_real_repo_fence(tmp_path):
     """The real shipped styles resolve + read through the production loader against the REAL repo
     root (the C11 journal looks declare exactly these repo-root-relative `csl` paths)."""
     load = filesystem_asset_loader(
-        resolve_base=REPO_ROOT, contain_root=REPO_ROOT / "presentations"
+        resolve_base=REPO_ROOT, contain_root=registry_dir(REPO_ROOT, "presentations")
     )
     for rel in SHIPPED_CSL:
         assert load(rel) == (REPO_ROOT / rel).read_bytes()
@@ -93,7 +96,7 @@ def test_refuses_a_parent_traversal_path(tmp_path):
         load("../workspaces/other/secret.csl")
     # a `..` that would re-enter the fence after escaping is ALSO refused (explicit `..` ban):
     with pytest.raises(PresentationError):
-        load("presentations/../workspaces/other/secret.csl")
+        load("foundation/dimensions/presentations/../workspaces/other/secret.csl")
 
 
 def test_refuses_an_absolute_path(tmp_path):
@@ -111,7 +114,7 @@ def test_refuses_a_missing_asset_inside_the_fence(tmp_path):
     root = _fenced_root(tmp_path)
     load = _loader(root)
     with pytest.raises(PresentationError):
-        load("presentations/assets/csl/does-not-exist.csl")
+        load("foundation/dimensions/presentations/assets/csl/does-not-exist.csl")
 
 
 # --- C2: hash_embedded_assets — the F1 gate + the identity fold ------------------------------

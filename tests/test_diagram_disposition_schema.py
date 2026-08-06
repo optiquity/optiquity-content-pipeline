@@ -29,11 +29,12 @@ from pipeline.ids import (
     delta_vs_floor,
     mint_artifact_id,
 )
+from pipeline.layout import registry_dir
 from pipeline.overrides import OverrideError, collect_overrides, validate_override_against_schema
 from pipeline.schema import load_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FORMATS_SCHEMA = load_schema(REPO_ROOT / "formats" / "_schema.yaml")
+FORMATS_SCHEMA = load_schema(registry_dir(REPO_ROOT, "formats") / "_schema.yaml")
 
 _ATTR = "diagram_disposition"
 

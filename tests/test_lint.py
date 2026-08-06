@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.layout import REGISTRY_BASE
 from pipeline.lint import (
     CODE_CHANGE_WITHOUT_BUMP,
     CODE_DEFINITION_VERSION_REGRESSION,
@@ -107,9 +108,18 @@ steps:
 """
 
 
+def _physical(rel: str) -> str:
+    """Map a registry-relative fixture path (`topics/x.md`) to its on-disk `foundation/` home
+    (`foundation/dimensions/topics/x.md`) via the layout SSOT, so the fixture tree lands exactly
+    where lint reads it (B-3). A non-registry prefix (`instance/…`, `users/…`) stays flat."""
+    head, sep, tail = rel.partition("/")
+    home = REGISTRY_BASE.get(head, head)
+    return f"{home}{sep}{tail}"
+
+
 def build_tree(base: Path, files: dict[str, str]) -> Path:
     for rel, text in files.items():
-        p = base / rel
+        p = base / _physical(rel)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
     return base
@@ -862,7 +872,10 @@ def test_repo_root_lints_clean_and_fixtures_are_out_of_scope():
     gadgets = REPO_ROOT / "tests" / "fixtures" / "registries" / "gadgets"
     assert (gadgets / "_schema.yaml").is_file()  # exists, yet out of scope
     assert gadgets not in scanned
-    in_scope_tops = set(REGISTRY_ROOTS) | {"instance", "users"}
+    # B-3: framework registries now live under `foundation/`; instance/users collections keep their
+    # own top-level home. So every scanned collection's top-level dir is one of these three
+    # surfaces.
+    in_scope_tops = {"foundation", "instance", "users"}
     for coll in scanned:
         parts = coll.relative_to(REPO_ROOT).parts
         assert "tests" not in parts  # PA-1b: fixtures can never self-flag
@@ -890,7 +903,13 @@ def test_scope_is_registry_roots_plus_instance_and_users(tmp_path):
         },
     )
     colls = {str(c.relative_to(root)) for c in iter_lint_collections(root)}
-    assert colls == {"topics", "users/acme/workspaces/proj/topics", "instance/things"}
+    # B-3: the framework `topics` registry resolves to its `foundation/`-anchored home; the §23
+    # client + instance collections keep their flat homes.
+    assert colls == {
+        "foundation/dimensions/topics",
+        "users/acme/workspaces/proj/topics",
+        "instance/things",
+    }
     assert lint_tree(root, now=NOW).ok
 
 

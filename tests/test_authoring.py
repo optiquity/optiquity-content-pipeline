@@ -38,6 +38,7 @@ from pipeline.authoring import (
 )
 from pipeline.entries import PROVENANCE_FRAMEWORK, PROVENANCE_INSTANCE, load_entry
 from pipeline.fanout import CONTENT_AXES, RENDERING_AXES
+from pipeline.layout import registry_dir
 from pipeline.lint import lint_tree, render_report
 from pipeline.schema import SCHEMA_FILENAME, load_schema
 
@@ -47,10 +48,10 @@ NOW = date(2026, 7, 30)
 
 def _recipe_root(tmp_path: Path) -> Path:
     """A tmp registry root carrying the real recipe schema (a lintable, loadable tree)."""
-    dst = tmp_path / RECIPE_COLLECTION / SCHEMA_FILENAME
+    dst = registry_dir(tmp_path, RECIPE_COLLECTION) / SCHEMA_FILENAME
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(
-        (REPO_ROOT / RECIPE_COLLECTION / SCHEMA_FILENAME).read_text(encoding="utf-8"),
+        (registry_dir(REPO_ROOT, RECIPE_COLLECTION) / SCHEMA_FILENAME).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     return tmp_path
@@ -266,7 +267,7 @@ def test_infer_provenance_framework_and_instance() -> None:
 def test_framework_only_homes_public(tmp_path: Path) -> None:
     target = resolve_recipe_target(tmp_path, "explainer-brief", {"persona": "technical-evaluator"})
     assert target.provenance == PROVENANCE_FRAMEWORK
-    assert target.path == tmp_path / RECIPE_COLLECTION / "explainer-brief.md"
+    assert target.path == registry_dir(tmp_path, RECIPE_COLLECTION) / "explainer-brief.md"
     assert target.workspace is None
 
 
@@ -352,7 +353,7 @@ def test_serializer_round_trips_and_lints_green(tmp_path: Path) -> None:
     report = lint_tree(root, now=NOW, baseline=None)
     assert report.ok, render_report(report)  # lints GREEN — zero findings
 
-    schema = load_schema(root / RECIPE_COLLECTION / SCHEMA_FILENAME)
+    schema = load_schema(registry_dir(root, RECIPE_COLLECTION) / SCHEMA_FILENAME)
     reparsed = bundle_from_entry(load_entry(target.path, schema))
     assert reparsed == bundle  # re-parses to the SAME bindings (byte-round-trip of config)
 
@@ -368,7 +369,7 @@ def test_serialized_recipe_bundle_equals_inline_flags(tmp_path: Path) -> None:
     inline_bundle = merge_bundle({}, edits)
     target = write_recipe(root, "inline-eq", inline_bundle, force=True)
 
-    schema = load_schema(root / RECIPE_COLLECTION / SCHEMA_FILENAME)
+    schema = load_schema(registry_dir(root, RECIPE_COLLECTION) / SCHEMA_FILENAME)
     from_file = bundle_from_entry(load_entry(target.path, schema))
     assert from_file == inline_bundle
 
@@ -427,5 +428,5 @@ def test_write_recipe_writes_one_file_and_guards_reruns(tmp_path: Path) -> None:
     write_recipe(
         root, "once", {"persona": "technical-evaluator", "format": "short-opinion-post"}, force=True
     )
-    schema = load_schema(root / RECIPE_COLLECTION / SCHEMA_FILENAME)
+    schema = load_schema(registry_dir(root, RECIPE_COLLECTION) / SCHEMA_FILENAME)
     assert "format" in load_entry(target.path, schema).attributes

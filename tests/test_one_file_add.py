@@ -39,6 +39,7 @@ import pytest
 
 from pipeline.drift import iter_entry_files
 from pipeline.entries import load_entry
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS, lint_tree, render_report
 from pipeline.migration import MIGRATION_REGISTRY_RELPATH
 from pipeline.schema import SCHEMA_FILENAME, load_schema
@@ -73,9 +74,11 @@ def copy_scan_scope(dst: Path) -> None:
     exists) into `dst`. Tests write probes into the COPY only — the repo is read-only
     toward this suite."""
     for name in REGISTRY_ROOTS:
-        src = REPO_ROOT / name
+        src = registry_dir(REPO_ROOT, name)
         if src.is_dir():
-            shutil.copytree(src, dst / name)
+            dst_dir = registry_dir(dst, name)
+            dst_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst_dir)
     registry = REPO_ROOT / MIGRATION_REGISTRY_RELPATH
     if registry.is_file():
         (dst / MIGRATION_REGISTRY_RELPATH).parent.mkdir(parents=True, exist_ok=True)
@@ -129,7 +132,7 @@ def test_every_registry_exists_with_colocated_schema(root_name: str):
     """SV10 uniform coverage (§11.7): every named registry root exists in the repo and
     carries its co-located `_schema.yaml` (SV4) — one identical mechanism, no special
     cases. (Also guarantees the drop-a-file tests below exercise every registry.)"""
-    coll = REPO_ROOT / root_name
+    coll = registry_dir(REPO_ROOT, root_name)
     assert coll.is_dir(), f"registry root {root_name}/ missing (§5.4 one-file-add surface)"
     assert (coll / SCHEMA_FILENAME).is_file(), f"{root_name}/{SCHEMA_FILENAME} missing (SV4)"
 
@@ -142,7 +145,7 @@ def test_every_registry_exists_with_colocated_schema(root_name: str):
 @pytest.mark.parametrize("root_name", REGISTRY_ROOTS)
 def test_one_file_add(root_name: str, tmp_path: Path):
     copy_scan_scope(tmp_path)
-    coll = tmp_path / root_name
+    coll = registry_dir(tmp_path, root_name)
 
     before = lint_tree(tmp_path, now=NOW, baseline=None)
     assert before.ok, render_report(before)
@@ -205,7 +208,7 @@ def test_nonconforming_file_fails_lint(
     root_name: str, case: str, make_text, expected_code: str, tmp_path: Path
 ):
     copy_scan_scope(tmp_path)
-    coll = tmp_path / root_name
+    coll = registry_dir(tmp_path, root_name)
     schema = load_schema(coll / SCHEMA_FILENAME)
 
     probe = coll / f"{PROBE_ID}.md"
@@ -213,7 +216,8 @@ def test_nonconforming_file_fails_lint(
 
     report = lint_tree(tmp_path, now=NOW, baseline=None)
     assert not report.ok, f"{root_name}/{case}: a nonconforming file must fail lint (§11.7)"
-    findings = [f for f in report.findings if f.path == f"{root_name}/{PROBE_ID}.md"]
+    rel = coll.relative_to(tmp_path)
+    findings = [f for f in report.findings if f.path == f"{rel}/{PROBE_ID}.md"]
     assert [f.code for f in findings] == [expected_code], render_report(report)
 
 
@@ -226,7 +230,7 @@ def test_nonconforming_file_fails_lint(
 #: L0 floor is never a stale pin (step-14 adjudication d).
 PIN_ATTRIBUTES = ("pandoc_version", "pandoc_api_version", "reader")
 
-RENDER_TARGETS_DIR = REPO_ROOT / "render-targets"
+RENDER_TARGETS_DIR = registry_dir(REPO_ROOT, "render-targets")
 RENDER_TARGET_ENTRY_PATHS = sorted(iter_entry_files(RENDER_TARGETS_DIR))
 
 
