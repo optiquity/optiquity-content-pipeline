@@ -41,6 +41,7 @@ The rhythm, then, is always the same: **preview → dry-run → read the count �
 | `pipeline outline emit` / `drive` | realize, then drive, an editable outline | emit never; drive only with `--go` |
 | `pipeline list` / `get` | read-only discovery | never |
 | `pipeline docs attributes` | regenerate the attribute reference | never |
+| `pipeline sources ingest` | fetch + cache grounding sources (feeds: RSS/EDGAR/GDELT + Common Crawl; + an agentic `research` loop) | feeds never; `research` only with `--go` |
 
 Everything below walks these in the order you would actually use them. Run any of them with
 `--help` for the authoritative flag list — the CLI's own help is the source of truth, and these

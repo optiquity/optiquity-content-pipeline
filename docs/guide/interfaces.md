@@ -22,6 +22,7 @@ Locally, the friendly way in is `scripts/pipeline` (also `uv run pipeline`) — 
 - **`pipeline outline emit` / `drive`** — realize an editable outline, then drive it (same as `generate --outline`).
 - **`pipeline list` / `get`** — read-only discovery over a workspace.
 - **`pipeline docs attributes`** — regenerate the [attribute reference](../reference/attributes.md).
+- **`pipeline sources ingest`** — fetch + cache grounding **sources** into a workspace (feeds — RSS/Atom, SEC EDGAR, GDELT — and a Common Crawl web source, plus an agentic `research` loop). Feeds are **free** (out-of-band, no spend); the `research` kind **spends** and is therefore dry-run until `--go`, subscription-only. Acquired content is cached under the workspace (gitignored) as INFERRED leads or, for characterized primary sources like EDGAR, publishable facts.
 
 Full walkthrough with runnable examples: the [Authoring and running guide](authoring.md).
 

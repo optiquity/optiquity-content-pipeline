@@ -13,8 +13,9 @@
 build delivered at `5f58d63` (final verification PASSED; cross-reference audit **DELIVERABLE**; Gate G2
 CLOSED, the §21.7-code HARD GATE CLOSED at step 39, the §21.9 gate correctly OPEN/honored). The prepared
 CLAUDE.md diff was applied post-delivery (`5b1c584`). Since then a series of ratified design-record
-increments + the friendly CLI surface + the authoring layer + the users/-namespace restructure landed.
-**Current HEAD `783b57d`.** Detailed per-increment records live in the commit history + `ops-handoff/`;
+increments + the friendly CLI surface + the authoring layer + the users/-namespace restructure + the
+**sources subsystem** landed. **Current HEAD `6f016f2`.** Detailed per-increment records live in the
+commit history + `ops-handoff/`;
 the summary below is orientation only.
 
 **Post-build increments (each planned + coder→reviewer→commit):**
@@ -84,6 +85,39 @@ the summary below is orientation only.
   friendly path (quickstart, getting-started, bootstrap, operating-model, architecture, design §23 repo-map,
   the blueprint readme) + the new commands added to the `interfaces.md` CLI door list; the manual `cp -R`
   is kept only as an "equivalent by hand" note. **Current HEAD `783b57d`.**
+- **★ SOURCES SUBSYSTEM — pluggable acquire→cache→ground grounding sources (`d9cf98f`..`6f016f2`;
+  7 increments P0–P3b, each research→design→adversarial→reconciliation up front, then
+  coder→reviewer→commit).** Extends the source-adapter layer with new grounding-source CLASSES behind
+  the stable `Fact` contract (the narrow waist), governed by a benefit/cost θ + a publish-vs-lead gate.
+  - **P0 (`d9cf98f`)** the `reuse_rights`/`republishable` publish-vs-lead gate: `publishable`(=tier,
+    §6.5 invariant, UNTOUCHED) AND a NEW `republishable` (a 5-value content-kind ordinal
+    forbidden<internal-only<lead-only<attribution<full, floor `full` ⇒ byte-identical backward-compat)
+    ANDed at `driver.py`. Orthogonal to confidence (a license-restricted quote stays certain, just not
+    publishable). NOT selectable (no dimension blur).
+  - **P1 (`df844af`)** a sealed, content-addressed, append-only slice CACHE + read-only
+    `CacheReaderAdapter` (`"cache"`); the slice digest is the §7.2 commit-pin (never None); CF-1 +
+    N2 by content-addressed immutability. + the CLAUDE.md rule-1 CARVE-OUT (may cache acquired
+    third-party content under the workspace, gitignored, never committed).
+  - **P2a (`dc2d18c`)** the HEAD-freeze (full N2 for HEAD-mode cache configs) at BOTH the driver AND
+    the production `session._generate_next` seam; GAP-12 fixed→Resolved.
+  - **P2b-core (`41bb01f`)** the acquisition skeleton + `pipeline sources ingest` (out-of-band Tier-A)
+    + **SEC EDGAR** — the FIRST non-code source that PUBLISHES (characterized primary → EXTRACTED +
+    attribution). temporality (archival|snapshot|live) as an identity-neutral §15-ledger provenance
+    label. Host-pinned so EXTRACTED is self-verifying by code.
+  - **P2b-feeds (`7eda83d`)** `feedparser` (2nd dep, BSD-2) + generic RSS/Atom + GDELT — INFERRED leads
+    only (EXTRACTED stays EDGAR-class).
+  - **P3a (`104b977`)** `trafilatura` (3rd dep, Apache-2.0) + Common Crawl lead-source + the pluggable
+    SearchBackend interface (SearXNG stubbed/deferred). + `THIRD_PARTY-LICENSES.md` (tld/certifi
+    weak-copyleft accepted, never vendored).
+  - **P3b (`6f016f2`)** the agentic RESEARCH loop — the FIRST paid acquisition: plan→search→extract→
+    synthesize→corroborate→gap→θ-stop, INFERRED page-anchored leads. Money-safe by construction: the
+    paid LLM seam is injected ONLY from the CLI on the `--go` branch (sources/ imports no paid
+    machinery); dry-run spends nothing; subscription-only (F10 key-strip); the disclosed `acquire-scope`
+    is the true worst-case ceiling; θ-bounded.
+  Deps grew 1→3 (ruamel.yaml, feedparser, trafilatura; all permissive/MIT-compatible, recorded in
+  THIRD_PARTY-LICENSES.md). **Current HEAD `6f016f2`.** Follow-ons open: SearXNG live backend; the
+  keystore for paid sources (FRED key, paid APIs) — shared with the deferred transport-selection design;
+  design.md §sources canonical writeup (design-of-record captured off-repo).
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
