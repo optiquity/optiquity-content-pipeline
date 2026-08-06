@@ -59,6 +59,7 @@ __all__ = [
     "default_http_get",
     "ingest_feed",
     "ingest_workspace",
+    "resolve_workspace_feeds",
 ]
 
 #: The default θ cost budget when a feed descriptor sets none — a conservative per-run novel-fact
@@ -310,13 +311,18 @@ def _feeds_dir(store: Any) -> Path:
     return Path(store.root) / "sources" / "feeds"
 
 
-def ingest_workspace(
-    store: Any, *, source: str | None = None, http_get: HttpGet
-) -> list[IngestReport]:
-    """Resolve the workspace's feed descriptor(s) and ingest each; return the reports in id order.
+def resolve_workspace_feeds(
+    store: Any, *, source: str | None = None
+) -> list[FeedConfig]:
+    """Resolve the workspace's feed descriptor(s) into validated `FeedConfig`s — the READ half of
+    `ingest_workspace`, split out so a caller can INSPECT each descriptor's kind BEFORE running (the
+    money-safety gate: a paid research source must dry-run by default, so the CLI needs the resolved
+    kinds before it decides what — if anything — to run).
 
     Reads `sources/feeds/*.yaml` DIRECTLY (never the M1 grounding registry), so feed descriptors
-    never enter the grounding pool. `--source <id>` restricts to one descriptor; absent = all.
+    never enter the grounding pool. `source` restricts to one descriptor (id = the file stem);
+    absent = all, sorted by id. A named-but-absent `source` fails LOUD. This performs NO fetch and
+    NO spend — it is pure descriptor resolution.
     """
     from pipeline.yamlio import load_yaml
 
@@ -331,7 +337,7 @@ def ingest_workspace(
                 f"sources-feed-error: no feed descriptor {source!r} under {feeds_dir} "
                 "(expected sources/feeds/<source>.yaml)"
             )
-    reports: list[IngestReport] = []
+    configs: list[FeedConfig] = []
     for path in paths:
         try:
             data = load_yaml(path.read_text(encoding="utf-8"))
@@ -339,6 +345,23 @@ def ingest_workspace(
             raise FeedError(
                 f"sources-feed-error: cannot read feed descriptor {path}: {exc}"
             ) from exc
-        config = FeedConfig.from_mapping(path.stem, data)
-        reports.append(ingest_feed(config, store, http_get=http_get))
-    return reports
+        configs.append(FeedConfig.from_mapping(path.stem, data))
+    return configs
+
+
+def ingest_workspace(
+    store: Any, *, source: str | None = None, http_get: HttpGet
+) -> list[IngestReport]:
+    """Resolve the workspace's FREE feed descriptor(s) and ingest each; return the reports in id
+    order. A thin driver over `resolve_workspace_feeds` + `ingest_feed`.
+
+    NOTE (§21.9 money-safety): this drives every resolved descriptor through the FREE `ingest_feed`
+    path unconditionally — it is the right entry ONLY for feed (free HTTP, $0 model spend) sources.
+    A PAID research source spends subscription LLM tokens and MUST route through the gated CLI path
+    instead (`run_research`); the CLI splits paid from free via `feed_spends(kind)` before choosing
+    an entry, so a research source never reaches here silently.
+    """
+    return [
+        ingest_feed(config, store, http_get=http_get)
+        for config in resolve_workspace_feeds(store, source=source)
+    ]

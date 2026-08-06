@@ -2539,16 +2539,87 @@ def _cmd_user(argv: list[str]) -> int:
     return 0
 
 
-def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
-    """Sources P2: `pipeline sources ingest <workspace> --user <u>` — the OUT-OF-BAND acquisition
+def _transport_llm_call(
+    *,
+    model: "str | None" = None,
+    timeout_seconds: "float | None" = None,
+    runner: "object | None" = None,
+    base_env: "object | None" = None,
+    env_overrides: "object | None" = None,
+):
+    """Build the DEFAULT research LLM seam: the SUBSCRIPTION transport chokepoint (F10, §21.9).
+
+    Every planning / synthesis / gap-find call routes through `transport.invoke_headless`
+    (`build_child_env` STRIPS `ANTHROPIC_API_KEY`; headless `claude -p --output-format json`; the
+    per-call `budget` becomes the `--max-budget-usd` cap). NEVER an API key. A non-`ok` outcome
+    (timeout / backpressure / budget cutoff / malformed) becomes a loud `FeedError` so the loop
+    stops cleanly rather than fabricating a partial. `runner`/`base_env`/`env_overrides` are TEST
+    seams (a fake `Runner` proves no real model/network call and the F10 key-strip); production
+    leaves them `None` (real subprocess, ambient env stripped). This factory — NOT the sources feed
+    code — is the single place the transport is imported, so sources stays paid-path-free."""
+    from pipeline.sources.acquire import FeedError
+    from pipeline.transport import invoke_headless
+
+    def _call(prompt: str, *, budget: float) -> str:
+        extra = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
+        result = invoke_headless(
+            prompt,
+            max_budget_usd=budget,
+            model=model,
+            runner=runner,
+            base_env=base_env,
+            env_overrides=env_overrides,
+            **extra,
+        )
+        if result.status != "ok" or result.text is None:
+            raise FeedError(
+                f"sources-feed-error: the research LLM call did not succeed ({result.code}) — the "
+                "subscription transport returned no usable result; the loop stops (never a silent "
+                "partial)"
+            )
+        return result.text
+
+    return _call
+
+
+def _research_dry_run_lines(config: "object", budget: "object") -> list[str]:
+    """The DRY-RUN disclosure for a PAID research source: the resolved plan header + the
+    `acquire-scope` ceiling, spending NOTHING (the LLM seam is never even built). Honest by design —
+    a bounded CEILING, not an exact bill (§21.9 money-safety default)."""
+    conn = config.connection
+    question = str(conn.get("question") or "")
+    backend = str(conn.get("backend") or "commoncrawl")
+    return [
+        f"research {config.source_id!r} (research) → namespace {config.namespace!r}  [DRY-RUN]",
+        f"  question     : {question}",
+        f"  backend      : {backend}  temporality: {config.temporality or '(none)'}",
+        f"  {budget.acquire_scope()}",
+        "  disclosure   : a bounded CEILING covering plan + synthesis + gap-find (the true",
+        "                 worst-case total, never undershot), not an exact bill — the θ stop-rule",
+        "                 usually halts earlier. NOTHING was spent (the LLM seam was not even",
+        "                 built). Re-run with --go to approve the ceiling and drive the paid loop.",
+    ]
+
+
+def _cmd_sources(
+    argv: list[str],
+    *,
+    http_get: "object | None" = None,
+    llm_call: "object | None" = None,
+) -> int:
+    """Sources P2/P3: `pipeline sources ingest <workspace> --user <u>` — the OUT-OF-BAND acquisition
     maintenance door (design §6).
 
-    An OUT-OF-BAND, Tier-A maintenance verb in the `migrate.sh` / `workspace new` family: it fetches
-    FREE HTTP and writes the LOCAL sealed cache, and NEVER touches the paid job path — no paid
-    transport layer, no paid-drive flag, no session/external-actor door, no token, $0 model spend
-    (§21.9 preserved). The `http_get` fetch seam is INJECTABLE (default: `acquire.default_http_get`)
-    so a test drives the whole command with a fixture fn and NEVER hits the live network. Exit 0 ok;
-    1 refusal (bad name / unknown feed / busy namespace); 2 usage (no subcommand / missing --user).
+    FREE feed sources (edgar/rss/gdelt/commoncrawl) fetch FREE HTTP and write the LOCAL sealed
+    cache — no paid quota, no token, $0 model spend (§21.9). The PAID `research` source (P3b) SPENDS
+    subscription LLM tokens in an agentic loop, so it is TRANSPORT-AWARE and money-safe by
+    construction: WITHOUT `--go` it DRY-RUNS (prints the `acquire-scope` ceiling and spends nothing,
+    never even building the LLM seam); WITH `--go` it drives the loop through the subscription
+    transport (no API key, a per-call `--max-budget-usd` cap, a hard round/fan-out ceiling +
+    θ-stop). Feed sources ignore `--go` (always free). Both fetch seams are INJECTABLE (`http_get`,
+    `llm_call`) so a test drives the whole command with fixtures and NEVER hits the network or a
+    real model. Exit 0 ok; 1 refusal (bad name / unknown feed / busy namespace / paid failure); 2
+    usage.
     """
     import argparse
 
@@ -2559,23 +2630,26 @@ def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pipeline sources",
         description=(
-            "The out-of-band acquisition maintenance door (design §6; sources P2): fetch a "
-            "workspace's feed source(s), normalize + dedup + θ-gate, and SEAL into the local "
-            "sealed cache. LOCAL Tier-A — free HTTP + a local cache write, never paid quota / a "
-            "token / the external-actor door (§21.9). Subcommand: ingest."
+            "The out-of-band acquisition maintenance door (design §6; sources P2/P3): fetch a "
+            "workspace's source(s), normalize + dedup + θ-gate, and SEAL into the local sealed "
+            "cache. Feed kinds are LOCAL Tier-A (free HTTP, $0 model spend); the `research` kind "
+            "SPENDS subscription LLM tokens and is dry-run by default (needs --go). Subcommand: "
+            "ingest."
         ),
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
     ingest = sub.add_parser(
         "ingest",
-        help="acquire a workspace's feed source(s) into the sealed cache (Tier-A, no spend)",
+        help="acquire a workspace's source(s) (feeds free; the research kind spends, needs --go)",
         description=(
-            "Resolve the workspace's feed descriptor(s) under sources/feeds/<id>.yaml and run each "
+            "Resolve the workspace's descriptor(s) under sources/feeds/<id>.yaml and run each "
             "through fetch → normalize → dedup + θ-gate → SEAL (advancing the namespace HEAD). "
-            "Idempotent: a re-ingest of unchanged content is a content-addressed no-op. Writes "
-            "only the gitignored sealed cache under the workspace (rule-1 carve-out); reads every "
-            "source read-only. Spends NOTHING (free HTTP; $0 model spend). "
-            f"Known feed kinds: {known_kinds}."
+            "Idempotent: a re-ingest of unchanged feed content is a content-addressed no-op. "
+            "Writes only the gitignored sealed cache under the workspace (rule-1 carve-out); reads "
+            "every source read-only. Feed kinds spend NOTHING (free HTTP; $0 model spend). The "
+            "`research` kind SPENDS subscription LLM tokens: WITHOUT --go it DRY-RUNS (prints "
+            "acquire-scope, spends nothing); WITH --go it drives the paid loop under a hard cost "
+            f"ceiling + θ-stop. Known kinds: {known_kinds} (research is the paid one)."
         ),
     )
     ingest.add_argument("workspace", help="the workspace to acquire into (§21.1)")
@@ -2586,10 +2660,19 @@ def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
         "--source",
         default=None,
         metavar="ID",
-        help="a single feed id under sources/feeds/ (default: every feed descriptor)",
+        help="a single source id under sources/feeds/ (default: every descriptor)",
     )
     ingest.add_argument(
         "--root", default=".", help="framework repo root → users/<user>/workspaces/<ws>/ (def: cwd)"
+    )
+    ingest.add_argument(
+        "--go",
+        action="store_true",
+        help=(
+            "approve the PAID research loop's cost ceiling and DRIVE it (research sources only; "
+            "feeds are always free and ignore --go). Omit for a dry-run acquire-scope estimate "
+            "that SPENDS NOTHING."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -2600,6 +2683,9 @@ def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
 
     from pipeline.sources import acquire
     from pipeline.sources.cache import CacheError
+    from pipeline.sources.control import ControlError, ResearchBudget
+    from pipeline.sources.feeds import feed_spends
+    from pipeline.sources.feeds import research as research_mod
     from pipeline.store import WorkspaceStore
     from pipeline.workspace_name import WorkspaceNameError, validate_workspace_path
 
@@ -2612,14 +2698,15 @@ def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
     store = WorkspaceStore.at(args.root, args.user, args.workspace)
     fetch = http_get if http_get is not None else acquire.default_http_get
     try:
-        # A malformed feed `namespace:` surfaces from the cache-store gate as a typed CacheError —
-        # catch it alongside FeedError so a bad slug is a clean exit-1 refusal, never a traceback.
-        reports = acquire.ingest_workspace(store, source=args.source, http_get=fetch)
-    except (acquire.FeedError, CacheError) as exc:
+        # Resolve descriptors FIRST (no fetch, no spend) so the paid gate can inspect each kind
+        # before deciding what — if anything — to run. A malformed `namespace:`/`budget:` surfaces
+        # as a typed CacheError/ControlError; catch alongside FeedError → clean exit-1 refusal.
+        configs = acquire.resolve_workspace_feeds(store, source=args.source)
+    except (acquire.FeedError, CacheError, ControlError) as exc:
         print(f"pipeline sources ingest: {exc}", file=sys.stderr)
         return 1
 
-    if not reports:
+    if not configs:
         print(
             "pipeline sources ingest: no feed sources found under "
             f"users/{args.user}/workspaces/{args.workspace}/sources/feeds/ — add a "
@@ -2628,13 +2715,34 @@ def _cmd_sources(argv: list[str], *, http_get: "object | None" = None) -> int:
         )
         return 1
 
+    lines: list[str] = []
+    try:
+        for config in configs:
+            if feed_spends(config.kind):
+                # PAID research source: dry-run by DEFAULT (money-safety); --go is the only spend
+                # path. The LLM seam is built ONLY on the --go branch — a dry-run never touches it.
+                budget = ResearchBudget.from_mapping(config.connection.get("budget"))
+                if not args.go:
+                    lines.extend(_research_dry_run_lines(config, budget))
+                    continue
+                seam = llm_call if llm_call is not None else _transport_llm_call()
+                report = research_mod.run_research(config, store, http_get=fetch, llm_call=seam)
+                lines.extend(report.summary_lines())
+            else:
+                lines.extend(
+                    acquire.ingest_feed(config, store, http_get=fetch).summary_lines()
+                )
+    except (acquire.FeedError, CacheError, ControlError) as exc:
+        print(f"pipeline sources ingest: {exc}", file=sys.stderr)
+        return 1
+
+    mode = "--go: paid loop driven" if args.go else "dry-run for paid sources"
     print(
         f"=== sources ingest: user={args.user} workspace={args.workspace} "
-        f"feeds={len(reports)} ==="
+        f"sources={len(configs)} ({mode}) ==="
     )
-    for report in reports:
-        for line in report.summary_lines():
-            print(line)
+    for line in lines:
+        print(line)
     return 0
 
 
