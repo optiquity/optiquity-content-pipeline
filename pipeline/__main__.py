@@ -1893,6 +1893,7 @@ def _load_base_bundle(
 
     from pipeline import authoring, entries, m1
     from pipeline.attrtypes import AttrTypeSpec, ValueValidationError, validate_value
+    from pipeline.layout import registry_dir
     from pipeline.workspace_name import workspace_path
 
     try:  # the SSOT §7.4 slug validator (the one `_require_slug` wraps) — blocks a traversal id
@@ -1914,7 +1915,7 @@ def _load_base_bundle(
         )
     root_path = Path(root)
     filename = f"{base_id}{entries.ENTRY_SUFFIX}"
-    shared = root_path / authoring.RECIPE_COLLECTION / filename
+    shared = registry_dir(root_path, authoring.RECIPE_COLLECTION) / filename
     local = (
         workspace_path(root_path, user, workspace, authoring.RECIPE_COLLECTION, filename)
         if workspace is not None

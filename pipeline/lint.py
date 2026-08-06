@@ -90,6 +90,7 @@ from pipeline.drift import (
     meaning_changed_attributes,
 )
 from pipeline.entries import PROVENANCE_FRAMEWORK, load_entry
+from pipeline.layout import registry_dir
 from pipeline.migration import (
     MIGRATION_REGISTRY_RELPATH,
     WINDOW_DAYS,
@@ -358,7 +359,7 @@ def iter_lint_collections(root: str | Path) -> Iterator[Path]:
     is exempt automatically, no by-name skip)."""
     root = Path(root)
     for name in REGISTRY_ROOTS:
-        coll = root / name
+        coll = registry_dir(root, name)
         if (coll / SCHEMA_FILENAME).is_file():
             yield coll
     for scope in EXTRA_SCOPE_DIRS:
@@ -431,7 +432,7 @@ def _lint_missing_schemas(report: LintReport, root: Path) -> None:
     """A named registry root holding entry files but no co-located `_schema.yaml` —
     entries that can never be validated are default-denied (SV4/§11.7)."""
     for name in REGISTRY_ROOTS:
-        coll = root / name
+        coll = registry_dir(root, name)
         if not coll.is_dir() or (coll / SCHEMA_FILENAME).is_file():
             continue
         entries = [p.name for p in iter_entry_files(coll)]

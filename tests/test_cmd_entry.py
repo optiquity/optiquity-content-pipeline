@@ -28,6 +28,7 @@ from pipeline.entries import (
     PROVENANCE_INSTANCE,
     load_entry,
 )
+from pipeline.layout import registry_dir
 from pipeline.lint import lint_tree, render_report
 from pipeline.m1 import DIMENSION_COLLECTIONS
 from pipeline.schema import SCHEMA_FILENAME, load_schema
@@ -43,10 +44,11 @@ USER = "acme"
 def _copy_schema(root: Path, collection: str, *, at: Path | None = None) -> None:
     """Copy the real framework `<collection>/_schema.yaml` into `root` (or `at`) so the scaffold
     generates from — and lint validates against — the SAME schema."""
-    dst = (at or (root / collection)) / SCHEMA_FILENAME
+    dst = (at or registry_dir(root, collection)) / SCHEMA_FILENAME
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(
-        (REPO_ROOT / collection / SCHEMA_FILENAME).read_text(encoding="utf-8"), encoding="utf-8"
+        (registry_dir(REPO_ROOT, collection) / SCHEMA_FILENAME).read_text(encoding="utf-8"),
+        encoding="utf-8",
     )
 
 
@@ -91,7 +93,7 @@ def test_scaffold_lints_green_unedited(tmp_path, capsys):
     code = _run("new", "persona", "my-eval", "--root", str(root))
     assert code == 0
     out = capsys.readouterr().out
-    written = root / "personas" / "my-eval.md"
+    written = registry_dir(root, "personas") / "my-eval.md"
     assert written.is_file()
     assert "my-eval" in out and str(written) in out  # prints the exact id + path
 
@@ -114,7 +116,7 @@ def test_scaffold_carries_definition_prose_as_comments(tmp_path):
     text the C1 reference surfaces) — carried IN the file, invisible to the parsed values."""
     root = _dim_root(tmp_path, "persona")
     assert _run("new", "persona", "guide", "--root", str(root)) == 0
-    text = (root / "personas" / "guide.md").read_text(encoding="utf-8")
+    text = (registry_dir(root, "personas") / "guide.md").read_text(encoding="utf-8")
     comment_lines = [ln[2:] for ln in text.splitlines() if ln.startswith("# ")]
     joined = " ".join(comment_lines)
     schema = _framework_schema("personas")
@@ -128,7 +130,7 @@ def test_zero_attribute_dimension_scaffolds_and_lints(tmp_path):
     'no attributes' envelope — never a crash — and lints green (C1 zero-attr precedent)."""
     root = _dim_root(tmp_path, "output-type")
     assert _run("new", "output-type", "my-fmt", "--root", str(root)) == 0
-    written = root / "output-types" / "my-fmt.md"
+    written = registry_dir(root, "output-types") / "my-fmt.md"
     text = written.read_text(encoding="utf-8")
     assert "no attributes" in text
     report = lint_tree(root, now=NOW, baseline=None)
@@ -153,7 +155,7 @@ def test_workspace_gives_x_prefixed_instance_file(tmp_path, capsys):
     assert code == 0
     written = root / "users" / USER / "workspaces" / "demo" / "personas" / "x-my-eval.md"
     assert written.is_file()
-    assert not (root / "personas" / "x-my-eval.md").exists()  # NOT public
+    assert not (registry_dir(root, "personas") / "x-my-eval.md").exists()  # NOT public
     out = capsys.readouterr().out
     assert "x-my-eval" in out and str(written) in out
 
@@ -193,7 +195,7 @@ def test_entry_new_topic_requires_workspace(tmp_path, capsys):
     assert code == 1
     err = capsys.readouterr().err
     assert "requires --workspace" in err
-    assert not (root / "topics" / "foo.md").exists()
+    assert not (registry_dir(root, "topics") / "foo.md").exists()
 
 
 def test_entry_new_topic_with_workspace_ok(tmp_path):
@@ -231,7 +233,7 @@ def test_slug_invalid_id_refused(tmp_path, capsys):
     root = _dim_root(tmp_path, "persona")
     assert _run("new", "persona", "Bad Id!", "--root", str(root)) == 1
     assert "slug" in capsys.readouterr().err
-    assert not (root / "personas" / "Bad Id!.md").exists()
+    assert not (registry_dir(root, "personas") / "Bad Id!.md").exists()
 
 
 def test_framework_x_prefix_refused(tmp_path, capsys):
@@ -240,7 +242,7 @@ def test_framework_x_prefix_refused(tmp_path, capsys):
     code = _run("new", "persona", "x-leak", "--root", str(root))
     assert code == 1
     assert INSTANCE_ID_PREFIX in capsys.readouterr().err
-    assert not (root / "personas" / "x-leak.md").exists()
+    assert not (registry_dir(root, "personas") / "x-leak.md").exists()
 
 
 def test_entry_requires_subcommand_is_usage_error():
@@ -278,10 +280,10 @@ def test_overwrite_refused_headless_then_force(tmp_path, capsys):
 def test_entry_new_writes_exactly_one_file(tmp_path):
     """Authoring an entry adds EXACTLY one file to the collection (§5.4 one-file-add)."""
     root = _dim_root(tmp_path, "voice")
-    before = {p for p in (root / "voices").iterdir()}
+    before = {p for p in registry_dir(root, "voices").iterdir()}
     assert _run("new", "voice", "solo", "--root", str(root)) == 0
-    after = {p for p in (root / "voices").iterdir()}
-    assert after - before == {root / "voices" / "solo.md"}
+    after = {p for p in registry_dir(root, "voices").iterdir()}
+    assert after - before == {registry_dir(root, "voices") / "solo.md"}
 
 
 # --- §21.9 money-safety: a LOCAL Tier-A write never touches the invoke door --------------------

@@ -27,6 +27,7 @@ from pathlib import Path
 
 from pipeline import lint
 from pipeline.attrtypes import AttrTypeSpec
+from pipeline.layout import registry_dir
 from pipeline.schema import SCHEMA_FILENAME, AttributeSpec, Schema, load_schema
 
 __all__ = [
@@ -60,7 +61,7 @@ def iter_documented_schemas(root: str | Path | None = None) -> list[tuple[str, S
     base = Path(root) if root is not None else framework_root()
     loaded: list[tuple[str, Schema]] = []
     for name in sorted(lint.REGISTRY_ROOTS):
-        schema_path = base / name / SCHEMA_FILENAME
+        schema_path = registry_dir(base, name) / SCHEMA_FILENAME
         if not schema_path.is_file():
             raise FileNotFoundError(
                 f"attrdoc: registry root {name!r} has no co-located {SCHEMA_FILENAME} at "

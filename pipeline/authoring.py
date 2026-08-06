@@ -51,6 +51,7 @@ from pipeline.entries import (
     load_entry,
 )
 from pipeline.fanout import CONTENT_AXES, RENDERING_AXES
+from pipeline.layout import registry_dir
 from pipeline.m1 import DIMENSION_COLLECTIONS
 from pipeline.overrides import collect_overrides
 from pipeline.schema import (
@@ -473,7 +474,7 @@ def resolve_recipe_target(
         )
         return RecipeTarget(recipe_id, provenance, home, workspace)
 
-    home = root / RECIPE_COLLECTION / f"{recipe_id}.md"
+    home = registry_dir(root, RECIPE_COLLECTION) / f"{recipe_id}.md"
     return RecipeTarget(recipe_id, provenance, home, None)
 
 
@@ -487,7 +488,7 @@ def _framework_root() -> Path:
 
 def load_recipe_schema() -> Schema:
     """Load the framework recipe schema (`recipes/_schema.yaml`) — the serializer's SSOT."""
-    return load_schema(_framework_root() / RECIPE_COLLECTION / SCHEMA_FILENAME)
+    return load_schema(registry_dir(_framework_root(), RECIPE_COLLECTION) / SCHEMA_FILENAME)
 
 
 def _dump_yaml(data: Mapping[str, Any]) -> str:
@@ -663,7 +664,7 @@ _VARIANT_KEYS = frozenset(("coordinate", "render", VALUES_SLOT))
 
 def load_selection_schema() -> Schema:
     """Load the framework selections schema (`selections/_schema.yaml`) — the serializer's SSOT."""
-    return load_schema(_framework_root() / SELECTION_COLLECTION / SCHEMA_FILENAME)
+    return load_schema(registry_dir(_framework_root(), SELECTION_COLLECTION) / SCHEMA_FILENAME)
 
 
 def _validate_variant(variant: Any, index: int) -> dict[str, Any]:
@@ -846,7 +847,7 @@ def resolve_selection_target(
         home = ws_dir / SELECTION_COLLECTION / f"{selection_id}.md"
         return SelectionTarget(selection_id, provenance, home, workspace)
 
-    home = root / SELECTION_COLLECTION / f"{selection_id}.md"
+    home = registry_dir(root, SELECTION_COLLECTION) / f"{selection_id}.md"
     return SelectionTarget(selection_id, provenance, home, None)
 
 
@@ -985,7 +986,7 @@ def _selection_home(
             )
         ws_dir = validate_workspace_path(root, user, workspace)
         return ws_dir / SELECTION_COLLECTION / f"{selection_id}.md"
-    return root / SELECTION_COLLECTION / f"{selection_id}.md"
+    return registry_dir(root, SELECTION_COLLECTION) / f"{selection_id}.md"
 
 
 def _edit_set_from_coordinate(coordinate: Mapping[str, Any]) -> EditSet:

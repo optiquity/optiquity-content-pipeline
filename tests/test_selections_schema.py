@@ -22,6 +22,7 @@ from pathlib import Path
 from pipeline import lint
 from pipeline.drift import iter_entry_files
 from pipeline.entries import load_entry
+from pipeline.layout import registry_dir
 from pipeline.lint import lint_tree, render_report
 from pipeline.schema import SCHEMA_FILENAME, load_schema
 
@@ -52,10 +53,10 @@ def test_selections_schema_loads_at_v1_envelope_floor_rides(tmp_path: Path) -> N
     both attributes ride their empty floor (`base` `""`, `variants` `[]`), so §5.4 one-file-add
     holds for this root exactly as it does for every sibling. selections ships at v1 (nothing
     bumped, the chosen lint-improvement path), so version-equality holds with zero id churn."""
-    coll = tmp_path / "selections"
+    coll = registry_dir(tmp_path, "selections")
     coll.mkdir()
     (coll / SCHEMA_FILENAME).write_text(
-        (REPO_ROOT / "selections" / SCHEMA_FILENAME).read_text(encoding="utf-8"),
+        (registry_dir(REPO_ROOT, "selections") / SCHEMA_FILENAME).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
 

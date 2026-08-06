@@ -32,6 +32,7 @@ from pipeline import reconcile, serialize
 from pipeline.api import discovery, results
 from pipeline.api.invoke import KNOWN_VERBS, invoke
 from pipeline.folios import add_to_folio, create_folio
+from pipeline.layout import registry_dir
 from pipeline.store import WorkspaceStore
 
 WS = "wsA"
@@ -521,12 +522,14 @@ def registry_store(tmp_path):
     controlled fixture root carrying `voices/` + `lexicons/` registry dirs — so `list voices` /
     `list lexicons` read real entries, off the shared repo tree."""
     root = tmp_path / "root"
-    _write_registry(root / "voices" / "clear-explainer.md", "framework")
-    _write_registry(root / "voices" / "confident-advocate.md", "framework")
-    _write_registry(root / "voices" / "house-voice.md", "instance")
-    _write_registry(root / "voices" / "_schema.yaml", "framework")  # skipped (leading _)
-    _write_registry(root / "voices" / "voice.template.md", "framework")  # skipped (.template.)
-    _write_registry(root / "lexicons" / "house-standard.md", "framework")
+    voices = registry_dir(root, "voices")
+    lexicons = registry_dir(root, "lexicons")
+    _write_registry(voices / "clear-explainer.md", "framework")
+    _write_registry(voices / "confident-advocate.md", "framework")
+    _write_registry(voices / "house-voice.md", "instance")
+    _write_registry(voices / "_schema.yaml", "framework")  # skipped (leading _)
+    _write_registry(voices / "voice.template.md", "framework")  # skipped (.template.)
+    _write_registry(lexicons / "house-standard.md", "framework")
     store = WorkspaceStore.at(root, USER, WS)
     store.ensure_layout()
     return store
@@ -583,7 +586,7 @@ class TestC3cNewListTypes:
     def test_recipes_and_codes_are_unchanged(self, registry_store):
         # C3c must not perturb the pre-existing registry/meta list types.
         root = registry_store.framework_root
-        _write_registry(root / "recipes" / "explainer-post.md", "framework")
+        _write_registry(registry_dir(root, "recipes") / "explainer-post.md", "framework")
         recipes = _list(registry_store, "recipes")
         assert {i["item"] for i in _items(recipes)} == {"explainer-post"}
         assert set(_items(recipes)[0]["context"]) == {"id", "provenance", "path"}

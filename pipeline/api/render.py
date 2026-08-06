@@ -52,6 +52,7 @@ from pipeline.fit_resolution import (
     FitResolution,
 )
 from pipeline.ids import IdError, parse_id
+from pipeline.layout import registry_dir
 from pipeline.serialize import (
     DISPOSITION_REVISION as SERIALIZE_DISPOSITION_REVISION,
 )
@@ -732,7 +733,7 @@ def _lower_for_leg(env: Any, leg: SerializeLeg, target: RenderTarget) -> RenderI
         # `<root>/presentations` (F3, CLAUDE.md rule 2) — resolves the asset path against `leg.root`
         # and refuses anything outside `presentations/` (no client `workspaces/…` reach-in).
         load_asset=filesystem_asset_loader(
-            resolve_base=leg.root, contain_root=leg.root / "presentations"
+            resolve_base=leg.root, contain_root=registry_dir(leg.root, "presentations")
         ),
         defaults=entry.defaults(),
     )

@@ -39,6 +39,7 @@ from pipeline.adapters.mock import MockAdapter
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import session
 from pipeline.api.render import DefaultRenderEngine
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.mvpdemo import (
     M3_RUN_SELECTION,
@@ -281,14 +282,18 @@ def build_world(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
-    (root / "presentations" / "documentation.md").write_text(_DOCUMENTATION_PRES, encoding="utf-8")
-    (root / "platforms" / "github.md").write_text(_GITHUB_PASS, encoding="utf-8")
-    (root / "platforms" / "tiny-limit.md").write_text(_TINY_LIMIT, encoding="utf-8")
+    (registry_dir(root, "presentations") / "documentation.md").write_text(
+        _DOCUMENTATION_PRES, encoding="utf-8"
+    )
+    (registry_dir(root, "platforms") / "github.md").write_text(_GITHUB_PASS, encoding="utf-8")
+    (registry_dir(root, "platforms") / "tiny-limit.md").write_text(_TINY_LIMIT, encoding="utf-8")
 
     topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)

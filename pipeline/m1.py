@@ -89,6 +89,7 @@ from pipeline.drift import (
     load_entry_lenient,
 )
 from pipeline.entries import ENTRY_SUFFIX, PROVENANCE_FRAMEWORK, Entry
+from pipeline.layout import registry_dir
 from pipeline.opgrammar import (
     OperatorGrammarError,
     parse_frontmatter_binding,
@@ -501,7 +502,7 @@ class Resolver:
         if cached is not None:
             return cached
         _require_slug(collection, "collection")
-        path = self._root / collection / SCHEMA_FILENAME
+        path = registry_dir(self._root, collection) / SCHEMA_FILENAME
         if not path.is_file():
             raise UnknownCollectionError(
                 f"unknown-collection: no {collection}/{SCHEMA_FILENAME} under {self._root} "
@@ -565,7 +566,7 @@ class Resolver:
         directory may shadow it (structurally only inside the `x-` namespace, §11.4)."""
         filename = f"{entry_id}{ENTRY_SUFFIX}"
         candidates: list[tuple[Path, str]] = []
-        shared = self._root / collection / filename
+        shared = registry_dir(self._root, collection) / filename
         if shared.is_file():
             candidates.append((shared, "shared"))
         if self._workspace is not None:
@@ -582,7 +583,7 @@ class Resolver:
     def _load_layers(self, collection: str, entry_id: str, schema: Schema) -> list[_Layer]:
         candidates = self._layer_candidates(collection, entry_id)
         if not candidates:
-            looked = [str(self._root / collection / f"{entry_id}{ENTRY_SUFFIX}")]
+            looked = [str(registry_dir(self._root, collection) / f"{entry_id}{ENTRY_SUFFIX}")]
             if self._workspace is not None:
                 looked.append(
                     str(

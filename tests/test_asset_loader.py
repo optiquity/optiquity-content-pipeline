@@ -22,6 +22,7 @@ import pytest
 from pipeline.asset_loader import AssetEmbedError, filesystem_asset_loader, hash_embedded_assets
 from pipeline.asset_ref import AssetRefError
 from pipeline.canonical import sha256_hex
+from pipeline.layout import registry_dir
 from pipeline.presentation import PresentationError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -39,15 +40,18 @@ def _fenced_root(tmp_path: Path) -> Path:
     `workspaces/other/` file that EXISTS on disk (so a refusal proves the fence blocks BEFORE any
     read, not merely that the file is absent)."""
     root = tmp_path / "root"
-    (root / "presentations" / "assets" / "csl").mkdir(parents=True)
-    (root / "presentations" / "assets" / "csl" / "house.csl").write_bytes(b"<style/>house")
+    pres = registry_dir(root, "presentations")
+    (pres / "assets" / "csl").mkdir(parents=True)
+    (pres / "assets" / "csl" / "house.csl").write_bytes(b"<style/>house")
     (root / "workspaces" / "other").mkdir(parents=True)
     (root / "workspaces" / "other" / "secret.csl").write_bytes(b"<style/>OTHER-CLIENT-SECRET")
     return root
 
 
 def _loader(root: Path):
-    return filesystem_asset_loader(resolve_base=root, contain_root=root / "presentations")
+    return filesystem_asset_loader(
+        resolve_base=root, contain_root=registry_dir(root, "presentations")
+    )
 
 
 # --- contained reads ---------------------------------------------------------

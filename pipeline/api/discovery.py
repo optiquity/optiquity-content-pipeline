@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from pipeline import outline_store, reconcile, serialize
+from pipeline import layout, outline_store, reconcile, serialize
 from pipeline.api import invoke as invoke_mod
 from pipeline.api import results
 from pipeline.api import token as token_mod
@@ -53,6 +53,7 @@ from pipeline.folios import (
     list_folio_members,
 )
 from pipeline.ids import IdError, parse_id
+from pipeline.layout import registry_dir
 from pipeline.store import WorkspaceStore, is_temp_name
 
 __all__ = [
@@ -101,31 +102,21 @@ META_TYPES = ("verbs", "actions", "types", "codes")
 #: The complete closed `list <type>` vocabulary — `list types` reports exactly this.
 TYPES = (*DATA_TYPES, *META_TYPES)
 
-#: The §5 registries that back the config data-types (one file per value — the matrix, §3/§4).
-#: `<type> → (framework-root subdir, glob)`; entries are one markdown/yaml file each.
-_REGISTRY_DIRS: dict[str, tuple[str, str]] = {
-    "dimensions": ("", ""),  # handled specially (the axis directories themselves)
-    "dimension-entries": ("", ""),  # handled specially (entries across all axis dirs)
-    "recipes": ("recipes", "*.md"),
-    "voices": ("voices", "*.md"),  # a §3/§4 axis dir, also directly listable by name (C3c)
-    "lexicons": ("lexicons", "*.md"),  # the §5 lexicon registry (C3c)
-    "folio-types": ("folio-types", "*.md"),
-    "content-kinds": ("content-kinds", "*.md"),
-    "render-targets": ("render-targets", "*.md"),
-    "schemas": ("", "_schema.yaml"),  # the co-located per-collection schemas
-}
-
-#: The dimension axis registries (one directory per axis — the §3/§4 matrix).
-_AXIS_DIRS = (
-    "personas",
-    "platforms",
-    "formats",
-    "topics",
-    "voices",
-    "goals",
-    "languages",
-    "output-types",
-    "presentations",
+#: The §5 registries `list <type>` enumerates one-file-per-value (`*.md`) entries from. Each token's
+#: physical directory is resolved through `pipeline.layout.registry_dir` (the single home for
+#: framework-registry location), and the dimension-axis membership + order live in
+#: `layout.DIMENSION_AXES` — the former `_REGISTRY_DIRS`/`_AXIS_DIRS` path tables folded into
+#: `layout` so registry location has ONE source. `schemas`/any other data-type list empty (below).
+_ENTRY_LIST_TYPES = frozenset(
+    {
+        "sources",
+        "recipes",
+        "voices",  # a §3/§4 axis dir, also directly listable by name (C3c)
+        "lexicons",  # the §5 lexicon registry (C3c)
+        "folio-types",
+        "content-kinds",
+        "render-targets",
+    }
 )
 
 
@@ -614,24 +605,22 @@ def _list_folio_members(store: WorkspaceStore, folio_id: str | None) -> list[dic
 
 def _list_registry(root: Path, type_name: str) -> list[dict[str, Any]]:
     """Enumerate a §5 registry data-type (one file per value — the matrix, §3/§4). Reads the
-    framework-root registry dirs; each entry surfaces `{id, provenance, path}` from frontmatter."""
+    framework-root registry dirs through `registry_dir` (the single home for framework-registry
+    physical location); each entry surfaces `{id, provenance, path}` from frontmatter."""
     if type_name == "dimensions":
         return [
             {"id": axis, "provenance": "framework"}
-            for axis in _AXIS_DIRS
-            if (root / axis).is_dir()
+            for axis in layout.DIMENSION_AXES
+            if registry_dir(root, axis).is_dir()
         ]
     if type_name == "dimension-entries":
         out: list[dict[str, Any]] = []
-        for axis in _AXIS_DIRS:
-            out.extend(_scan_dir(root / axis, "*.md", axis=axis))
+        for axis in layout.DIMENSION_AXES:
+            out.extend(_scan_dir(registry_dir(root, axis), "*.md", axis=axis))
         return out
-    if type_name == "sources":
-        return _scan_dir(root / "sources", "*.md")
-    subdir, glob = _REGISTRY_DIRS.get(type_name, ("", ""))
-    if not subdir:
-        return []
-    return _scan_dir(root / subdir, glob)
+    if type_name in _ENTRY_LIST_TYPES:
+        return _scan_dir(registry_dir(root, type_name), "*.md")
+    return []
 
 
 def _scan_dir(directory: Path, glob: str, *, axis: str | None = None) -> list[dict[str, Any]]:

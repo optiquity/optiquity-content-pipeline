@@ -64,6 +64,7 @@ from pipeline.grounding import (
     register_conflict_strategy,
     reuse_rights_rank,
 )
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.m1 import DanglingRefError
 from pipeline.m3 import (
@@ -1170,9 +1171,11 @@ def e2e_root(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     root.mkdir()
     for name in REGISTRY_ROOTS:
-        src = REPO_ROOT / name
+        src = registry_dir(REPO_ROOT, name)
         if src.is_dir():
-            shutil.copytree(src, root / name)
+            dst = registry_dir(root, name)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
     ws = root / "users" / USER / "workspaces" / WS

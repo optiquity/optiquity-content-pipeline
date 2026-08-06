@@ -27,6 +27,7 @@ from pipeline.canonical import canonical_json_str, digest_full
 from pipeline.cascade import CascadeEnv, RunSelection, resolve_compose
 from pipeline.fanout import ContentCombination, FanoutError, SelectionRequest
 from pipeline.ids import PreimageError, parse_id
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.m1 import UnknownEntryError
 from pipeline.outline import outline_digest
@@ -70,11 +71,13 @@ def build_root(
     root = tmp_path / name
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     if schema_append is not None:
-        schema_path = root / "voices" / "_schema.yaml"
+        schema_path = registry_dir(root, "voices") / "_schema.yaml"
         schema_path.write_text(
             schema_path.read_text(encoding="utf-8") + schema_append, encoding="utf-8"
         )
@@ -779,8 +782,10 @@ def test_outline_less_plan_is_byte_identical_to_no_outlines_arg(tmp_path: Path) 
 
 def _copy_lexicons(root: Path) -> None:
     """Copy the real `lexicons/` registry into the test root (class-(ii), not a matrix axis)."""
-    if not (root / "lexicons").exists():
-        shutil.copytree(REPO_ROOT / "lexicons", root / "lexicons")
+    lexdir = registry_dir(root, "lexicons")
+    if not lexdir.exists():
+        lexdir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(registry_dir(REPO_ROOT, "lexicons"), lexdir)
 
 
 def test_plan_item_carries_the_lexicon_and_it_matches_the_preimage(tmp_path: Path) -> None:

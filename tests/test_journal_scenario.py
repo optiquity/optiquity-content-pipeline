@@ -55,6 +55,7 @@ from pipeline.compose import ComposeRequest, compose_artifact
 from pipeline.dispatch import dispatch, render_target_from_entry
 from pipeline.grounding import Anchor, GroundedFact
 from pipeline.ids import EntryBinding, build_artifact_preimage, mint_artifact_id
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.presentation import lower, presentation_from_entry, render_inputs_to_mapping
 from pipeline.reconcile import (
@@ -127,9 +128,11 @@ def _build_root(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     root.mkdir()
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
     (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)
@@ -497,7 +500,7 @@ def _serialize_html(env: CascadeEnv, fitted_ir: dict, presentation: str, *, load
     target = render_target_from_entry(target_values)
     pentry = env.resolver.resolve("presentations", presentation)
     loader = load_asset or filesystem_asset_loader(
-        resolve_base=env.root, contain_root=env.root / "presentations"
+        resolve_base=env.root, contain_root=registry_dir(env.root, "presentations")
     )
     pres = presentation_from_entry(
         {**pentry.defaults(), **pentry.effective, "id": pentry.id},
@@ -879,7 +882,7 @@ def test_journal_looks_load_and_lower_to_valid_render_inputs(tmp_path, look):
         # B/C1: load the `csl` STYLE asset through the REAL production loader (fenced to
         # `<root>/presentations`) — the tmp world copies the shipped `.csl` under that fence.
         load_asset=filesystem_asset_loader(
-            resolve_base=root, contain_root=root / "presentations"
+            resolve_base=root, contain_root=registry_dir(root, "presentations")
         ),
         defaults=pentry.defaults(),
     )

@@ -31,6 +31,7 @@ from pipeline import authoring
 from pipeline.cascade import CascadeEnv
 from pipeline.entries import load_entry
 from pipeline.fanout import SelectionRequest
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.plan import Plan, plan_payload, resolve_plan
 from pipeline.store import WorkspaceStore
@@ -56,9 +57,11 @@ def build_root(tmp_path: Path) -> Path:
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for reg in REGISTRY_ROOTS:
-        src = REPO_ROOT / reg
+        src = registry_dir(REPO_ROOT, reg)
         if src.is_dir():
-            shutil.copytree(src, root / reg)
+            dst = registry_dir(root, reg)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
     topics = root / "users" / USER / "workspaces" / WS / "topics"
@@ -202,7 +205,7 @@ def test_generate_save_selection_writes_n_variants_no_cartesian(tmp_path: Path, 
     # instance provenance (x- topics) → homed under the workspace, NEVER the public root
     path = root / "users" / USER / "workspaces" / WS / "selections" / "x-launch-set.md"
     assert path.exists()
-    assert not list((root / "selections").glob("x-launch-set.md"))
+    assert not list(registry_dir(root, "selections").glob("x-launch-set.md"))
     text = path.read_text(encoding="utf-8")
     # the `grep -c '^- '` variant-count assertion == the planned deliverable count (2)
     assert sum(1 for line in text.splitlines() if line.startswith("- ")) == 2
@@ -251,7 +254,7 @@ def test_client_binding_refused_from_public(tmp_path: Path, capsys) -> None:
     err = capsys.readouterr().err
     assert code == 1
     assert "not an instance id" in err or "client/instance" in err
-    assert not (root / "selections" / "public-leak.md").exists()
+    assert not (registry_dir(root, "selections") / "public-leak.md").exists()
     leak = root / "users" / USER / "workspaces" / WS / "selections" / "public-leak.md"
     assert not leak.exists()
 
@@ -316,14 +319,16 @@ def test_public_framework_only_selection_via_serializer(tmp_path: Path) -> None:
     round-trips through the C5a schema — the envelope floors ride (base text, variants list)."""
     root = tmp_path / "root"
     root.mkdir()
-    shutil.copytree(REPO_ROOT / "selections", root / "selections")
+    _sel_dst = registry_dir(root, "selections")
+    _sel_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(registry_dir(REPO_ROOT, "selections"), _sel_dst)
     variants = [
         {"coordinate": {"persona": "technical-evaluator", "format": "short-opinion-post"},
          "render": {"platform": "github"}}
     ]
     target = authoring.write_selection(root, "launch-set", "explainer-post", variants)
     assert target.provenance == "framework"
-    assert target.path == root / "selections" / "launch-set.md"
+    assert target.path == registry_dir(root, "selections") / "launch-set.md"
     reparsed = selection_variants(target.path)
     assert reparsed == variants  # byte-round-trip of the delta interior
 
@@ -332,7 +337,9 @@ def test_client_binding_homes_under_workspace_via_serializer(tmp_path: Path) -> 
     """An `x-`-id selection with a client binding homes under `workspaces/<ws>/selections/`."""
     root = tmp_path / "root"
     root.mkdir()
-    shutil.copytree(REPO_ROOT / "selections", root / "selections")
+    _sel_dst = registry_dir(root, "selections")
+    _sel_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(registry_dir(REPO_ROOT, "selections"), _sel_dst)
     (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)
     variants = [{"coordinate": {"topic": "x-t-alpha"}, "render": {"platform": "github"}}]
     target = authoring.write_selection(
@@ -346,7 +353,9 @@ def test_overwrite_guard_headless_then_force(tmp_path: Path) -> None:
     """Refuse-if-exists headless; `--force` overrides (D8, reused from C2a)."""
     root = tmp_path / "root"
     root.mkdir()
-    shutil.copytree(REPO_ROOT / "selections", root / "selections")
+    _sel_dst = registry_dir(root, "selections")
+    _sel_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(registry_dir(REPO_ROOT, "selections"), _sel_dst)
     variants = [FW_VARIANT]
     authoring.write_selection(root, "dup", "explainer-post", variants, isatty=lambda: False)
     with pytest.raises(authoring.AuthoringError, match="already exists"):
@@ -360,7 +369,9 @@ def test_non_slug_selection_id_refused_loud(tmp_path: Path) -> None:
     """A non-§7.4 selection id is a loud typed refusal (never a silent repair, §3.1)."""
     root = tmp_path / "root"
     root.mkdir()
-    shutil.copytree(REPO_ROOT / "selections", root / "selections")
+    _sel_dst = registry_dir(root, "selections")
+    _sel_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(registry_dir(REPO_ROOT, "selections"), _sel_dst)
     variants = [FW_VARIANT]
     with pytest.raises(authoring.AuthoringError, match="slug"):
         authoring.write_selection(root, "Not A Slug", "explainer-post", variants)
@@ -370,7 +381,9 @@ def test_variant_missing_platform_refused(tmp_path: Path) -> None:
     """A variant without a concrete `platform` is refused (§7.4: a deliverable requires routing)."""
     root = tmp_path / "root"
     root.mkdir()
-    shutil.copytree(REPO_ROOT / "selections", root / "selections")
+    _sel_dst = registry_dir(root, "selections")
+    _sel_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(registry_dir(REPO_ROOT, "selections"), _sel_dst)
     with pytest.raises(authoring.AuthoringError, match="platform"):
         authoring.write_selection(
             root, "bad", "explainer-post",

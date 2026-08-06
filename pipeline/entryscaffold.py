@@ -54,6 +54,7 @@ from pipeline.entries import (
     PROVENANCE_FRAMEWORK,
     PROVENANCE_INSTANCE,
 )
+from pipeline.layout import registry_dir
 from pipeline.m1 import DIMENSION_COLLECTIONS
 from pipeline.schema import SCHEMA_FILENAME, Schema, load_schema
 from pipeline.workspace_name import validate_workspace_path
@@ -158,7 +159,7 @@ def resolve_entry_target(
             "or drop the prefix for a framework default candidate"
         )
     _require_slug(entry_id, "entry id")
-    home = root / collection / f"{entry_id}{ENTRY_SUFFIX}"
+    home = registry_dir(root, collection) / f"{entry_id}{ENTRY_SUFFIX}"
     return EntryTarget(dimension, collection, entry_id, PROVENANCE_FRAMEWORK, home, None)
 
 

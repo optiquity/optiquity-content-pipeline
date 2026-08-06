@@ -45,6 +45,7 @@ from pipeline.cascade import (
 )
 from pipeline.drift import iter_entry_files
 from pipeline.entries import load_entry
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.m1 import DanglingRefError, Resolver, StaleEntryError, UnknownEntryError
 from pipeline.overrides import OverrideError, collect_overrides
@@ -89,10 +90,12 @@ def build_root(tmp_path: Path, *, l2: str | None = BASE_L2, l3: str | None = Non
     root = tmp_path / "root"
     root.mkdir(parents=True)
     for name in REGISTRY_ROOTS:
-        src = REPO_ROOT / name
+        src = registry_dir(REPO_ROOT, name)
         if src.is_dir():
-            shutil.copytree(src, root / name)
-    schema_path = root / "voices" / "_schema.yaml"
+            dst = registry_dir(root, name)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
+    schema_path = registry_dir(root, "voices") / "_schema.yaml"
     schema_path.write_text(
         schema_path.read_text(encoding="utf-8") + VOICES_SCHEMA_APPEND, encoding="utf-8"
     )
@@ -122,7 +125,7 @@ def write_entry(
     dirpath = (
         root / "users" / USER / "workspaces" / workspace / collection
         if workspace
-        else root / collection
+        else registry_dir(root, collection)
     )
     dirpath.mkdir(parents=True, exist_ok=True)
     path = dirpath / f"{entry_id}.md"
@@ -852,7 +855,7 @@ def test_m3_lanes_stay_separate(tmp_path: Path) -> None:
 
 def test_stale_entry_blocks_compose(tmp_path: Path) -> None:
     root = build_root(tmp_path)
-    schema_path = root / "topics" / "_schema.yaml"
+    schema_path = registry_dir(root, "topics") / "_schema.yaml"
     text = schema_path.read_text(encoding="utf-8")
     text = text.replace("schema_version: 1", "schema_version: 2")
     text = text.replace("definition_version: 1", "definition_version: 2")
@@ -965,9 +968,10 @@ def copy_lexicons(root: Path) -> Path:
     """Copy the real `lexicons/` registry (schema + `house-standard`) into the test root.
     `lexicons` is a class-(ii) registry, NOT a matrix REGISTRY_ROOTS axis (C1), so
     `build_root` does not copy it — a lexicon-driven test opts in explicitly."""
-    lexdir = root / "lexicons"
+    lexdir = registry_dir(root, "lexicons")
     if not lexdir.exists():
-        shutil.copytree(REPO_ROOT / "lexicons", lexdir)
+        lexdir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(registry_dir(REPO_ROOT, "lexicons"), lexdir)
     return lexdir
 
 
@@ -976,7 +980,7 @@ def write_lexicon(
 ) -> None:
     copy_lexicons(root)
     provenance = "instance" if entry_id.startswith("x-") else "framework"
-    (root / "lexicons" / f"{entry_id}.md").write_text(
+    (registry_dir(root, "lexicons") / f"{entry_id}.md").write_text(
         f"---\nid: {entry_id}\nprovenance: {provenance}\nschema_version: 1\n"
         f"{frontmatter}---\n\n{body}\n",
         encoding="utf-8",

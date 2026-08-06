@@ -30,6 +30,7 @@ import pytest
 from pipeline import compose, diagram
 from pipeline.canonical import sha256_hex
 from pipeline.compose import ComposeRequest
+from pipeline.layout import registry_dir
 from pipeline.lint import REGISTRY_ROOTS
 from pipeline.m1 import (
     REF_ATTRIBUTE_TARGETS,
@@ -41,7 +42,7 @@ from pipeline.schema import SCHEMA_FILENAME, load_schema
 from pipeline.store import WorkspaceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DIAGRAM_STYLES = REPO_ROOT / "diagram-styles"
+DIAGRAM_STYLES = registry_dir(REPO_ROOT, "diagram-styles")
 GUARD = REPO_ROOT / "scripts" / "check-no-content.sh"
 
 #: A well-formed GROUNDED diagram flat body citing the single EXTRACTED fact `f1`.
@@ -105,14 +106,14 @@ def test_default_style_is_framework_provenance():
 def test_adding_a_style_is_one_file(tmp_path: Path):
     # The matrix promise (§5.4): a new diagram-style — e.g. a `d2`-selecting one — is ONE conforming
     # file, immediately selectable via the standard resolver, with zero second edits.
-    shutil.copytree(DIAGRAM_STYLES, tmp_path / "diagram-styles")
-    before = {p.name for p in (tmp_path / "diagram-styles").iterdir()}
-    (tmp_path / "diagram-styles" / "grouped.md").write_text(
+    shutil.copytree(DIAGRAM_STYLES, registry_dir(tmp_path, "diagram-styles"))
+    before = {p.name for p in (registry_dir(tmp_path, "diagram-styles")).iterdir()}
+    (registry_dir(tmp_path, "diagram-styles") / "grouped.md").write_text(
         "---\nid: grouped\nprovenance: framework\nschema_version: 1\ntool: d2\n---\n"
         "# grouped — a d2-drawn style (test fixture)\n",
         encoding="utf-8",
     )
-    after = {p.name for p in (tmp_path / "diagram-styles").iterdir()}
+    after = {p.name for p in (registry_dir(tmp_path, "diagram-styles")).iterdir()}
     assert after - before == {"grouped.md"}  # exactly ONE new file
     entry = Resolver(tmp_path).resolve("diagram-styles", "grouped")
     assert entry.effective["tool"] == "d2"  # selectable, validated, immediately
@@ -120,8 +121,8 @@ def test_adding_a_style_is_one_file(tmp_path: Path):
 
 def test_envelope_only_style_rides_the_dot_floor(tmp_path: Path):
     # §5.4 L0: an attribute-free style (no `tool:`) rides the schema floor — honest `dot`.
-    shutil.copytree(DIAGRAM_STYLES, tmp_path / "diagram-styles")
-    (tmp_path / "diagram-styles" / "bare.md").write_text(
+    shutil.copytree(DIAGRAM_STYLES, registry_dir(tmp_path, "diagram-styles"))
+    (registry_dir(tmp_path, "diagram-styles") / "bare.md").write_text(
         "---\nid: bare\nprovenance: framework\nschema_version: 1\n---\n# bare style\n",
         encoding="utf-8",
     )
@@ -256,14 +257,19 @@ def test_real_recipe_leaves_diagram_style_at_the_empty_floor():
 
 def _recipe_scan_tree(tmp_path: Path, diagram_style: str) -> Path:
     root = tmp_path / f"tree-{diagram_style}"
-    shutil.copytree(DIAGRAM_STYLES, root / "diagram-styles")
-    (root / "diagram-styles" / "grouped.md").write_text(
+    dstyles = registry_dir(root, "diagram-styles")
+    dstyles.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(DIAGRAM_STYLES, dstyles)
+    (dstyles / "grouped.md").write_text(
         "---\nid: grouped\nprovenance: framework\nschema_version: 1\ntool: d2\n---\n# grouped\n",
         encoding="utf-8",
     )
-    (root / "recipes").mkdir()
-    shutil.copyfile(REPO_ROOT / "recipes" / SCHEMA_FILENAME, root / "recipes" / SCHEMA_FILENAME)
-    (root / "recipes" / "r-test.md").write_text(
+    recipes_dir = registry_dir(root, "recipes")
+    recipes_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        registry_dir(REPO_ROOT, "recipes") / SCHEMA_FILENAME, recipes_dir / SCHEMA_FILENAME
+    )
+    (recipes_dir / "r-test.md").write_text(
         "---\nid: r-test\nprovenance: framework\nschema_version: 1\n"
         f"diagram_style: {diagram_style}\n---\n# r-test recipe\n",
         encoding="utf-8",

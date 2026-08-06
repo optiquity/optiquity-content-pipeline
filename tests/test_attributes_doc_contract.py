@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 from pipeline import attrdoc, lint
+from pipeline.layout import registry_dir
 from pipeline.schema import SCHEMA_FILENAME
 
 _DOC = attrdoc.framework_root() / attrdoc.DOC_RELPATH
@@ -34,10 +35,11 @@ def _mirror_framework_schemas(dst: Path) -> None:
     """Copy every framework registry `_schema.yaml` into `dst` (a full generatable root)."""
     src_root = attrdoc.framework_root()
     for name in lint.REGISTRY_ROOTS:
-        target = dst / name / SCHEMA_FILENAME
+        target = registry_dir(dst, name) / SCHEMA_FILENAME
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
-            (src_root / name / SCHEMA_FILENAME).read_text(encoding="utf-8"), encoding="utf-8"
+            (registry_dir(src_root, name) / SCHEMA_FILENAME).read_text(encoding="utf-8"),
+            encoding="utf-8",
         )
 
 
@@ -88,9 +90,11 @@ def test_generator_ignores_instance_and_workspace_schemas(tmp_path, monkeypatch)
     the generator even though `iter_lint_collections` surfaces it — proving the framework-only
     walk is structural."""
     # One real registry root (a non-empty generatable set under the narrowed REGISTRY_ROOTS).
-    (tmp_path / "formats").mkdir()
-    (tmp_path / "formats" / SCHEMA_FILENAME).write_text(
-        (attrdoc.framework_root() / "formats" / SCHEMA_FILENAME).read_text(encoding="utf-8"),
+    registry_dir(tmp_path, "formats").mkdir()
+    (registry_dir(tmp_path, "formats") / SCHEMA_FILENAME).write_text(
+        (registry_dir(attrdoc.framework_root(), "formats") / SCHEMA_FILENAME).read_text(
+            encoding="utf-8"
+        ),
         encoding="utf-8",
     )
     # The exact leak surface: registry-shaped dirs under instance/ and the §23 client re-home
@@ -139,7 +143,7 @@ def test_unregenerated_definition_edit_fails(tmp_path) -> None:
     baseline = attrdoc.render_attributes_doc(tmp_path)
     assert attrdoc.render_attributes_doc(tmp_path) == baseline  # round-trips against its source
 
-    fmt = tmp_path / "formats" / SCHEMA_FILENAME
+    fmt = registry_dir(tmp_path, "formats") / SCHEMA_FILENAME
     original = fmt.read_text(encoding="utf-8")
     anchor = "Optional ORDERED list of named intra-genre sub-outputs"
     assert anchor in original, "fixture anchor drifted from formats/_schema.yaml — update the test"

@@ -73,6 +73,7 @@ from pipeline.dispatch import (
 from pipeline.fanout import SelectionRequest
 from pipeline.grounding import GroundingOutcome, SourceInstance, build_pool, ground_item
 from pipeline.ids import mint_artifact_id
+from pipeline.layout import registry_dir
 from pipeline.outline_store import get_outline
 from pipeline.plan import DeliverableItem, Plan, PlanItem, resolve_plan
 from pipeline.reconcile import ReconcileRequest, reconcile
@@ -603,7 +604,7 @@ def _run_deliverable(
         # `<root>/presentations` (F3, CLAUDE.md rule 2) — a css/csl/template path resolves against
         # `env.root` and must land inside `presentations/`, never a client `workspaces/…`.
         load_asset=filesystem_asset_loader(
-            resolve_base=env.root, contain_root=env.root / "presentations"
+            resolve_base=env.root, contain_root=registry_dir(env.root, "presentations")
         ),
         defaults=render.presentation.entry.defaults(),
     )
