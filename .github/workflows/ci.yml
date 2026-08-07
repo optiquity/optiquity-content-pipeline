@@ -33,6 +33,23 @@ jobs:
             | sha256sum -c -
           sudo dpkg -i /tmp/pandoc.deb
           pandoc --version | head -2
+      - name: Install pinned diagram tools (dot/graphviz + d2 0.7.1) — the diagram tests HARD-require them
+        # PA-12 pattern (same as pandoc): the diagram tests shell to the pinned `dot`/`d2` binaries and
+        # turn an absent binary + CI=true into a LOUD failure (never a silent skip), so both MUST be
+        # installed here or ~42 diagram tests fail with DiagramToolUnavailableError. The diagram tests
+        # are version-TOLERANT (SVG bytes are never golden-pinned; the tool version is recorded
+        # provenance, NOT identity-bearing — §O3), so the distro `graphviz` package satisfies `dot`;
+        # `d2` is pinned to 0.7.1 from its official versioned release asset (immutable, re-obtainable).
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y graphviz
+          dot -V
+          curl -fsSL -o /tmp/d2.tar.gz \
+            https://github.com/terrastruct/d2/releases/download/v0.7.1/d2-v0.7.1-linux-amd64.tar.gz
+          tar -xzf /tmp/d2.tar.gz -C /tmp
+          sudo install "$(find /tmp -type f -path '*/bin/d2' | head -1)" /usr/local/bin/d2
+          d2 --version
       - name: Sync project venv from the lockfile
         run: uv sync --locked
       - name: Run tests (live-marked tests deselected by pyproject addopts)
