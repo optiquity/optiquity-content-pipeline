@@ -1,8 +1,10 @@
 """Increment C, Commit C1+C2+C3 tests: `pipeline/diagram.py` — the INERT {type=diagram} node/edge
 grammar + parser (C1), the HARD grounding gate (C2), and the dot/d2 compiler (C3).
 
-C1+C2 are pure (no LLM/subprocess/network); C3 shells to the REAL `dot`/`d2` (both installed:
-dot 15.1.0, d2 0.7.1) — no LLM, no network. The suite pins:
+C1+C2 are pure (no LLM/subprocess/network); C3 shells to the REAL `dot`/`d2` when they are installed
+(no LLM, no network) — but both are OPTIONAL, so each generation test SKIPS when its tool is absent
+(`requires_dot`/`requires_d2`), never failing a tool-less CI (the ratified "works without graphviz"
+contract; tool-ABSENCE degrades to the text-alt, proven in `test_diagram_styles.py`). Pins:
 
 - a valid grounded list parses (nodes, edges, fail-closed posture) — the plan's literal
   verification (`2 1 grounded '[routes]{.EXTRACTED data-fact="f1"}'`);
@@ -42,6 +44,14 @@ import re
 import subprocess
 
 import pytest
+
+# The C3 compiler tests SHELL to the real `dot`/`d2`. Both binaries are OPTIONAL (a tool-less host
+# degrades a requested diagram to its text-alt — the ratified "works without graphviz" contract), so
+# a generation test SKIPS when its tool is absent rather than failing CI; the tool-ABSENCE behavior
+# itself is proven tool-lessly by `test_missing_binary_raises_tool_unavailable` + the compose
+# degradation tests in `test_diagram_styles.py`. The skip markers are the SINGLE canonical copy in
+# `tests/conftest.py` (imported here and in every other tool-driving module).
+from conftest import requires_d2, requires_dot  # noqa: E402
 
 from pipeline import diagram, ir, sections
 from pipeline.canonical import sha256_hex
@@ -469,6 +479,12 @@ def test_diagram_type_is_now_a_live_section_type():
 # --------------------------------------------------------------------------- #
 
 TOOLS = ["dot", "d2"]
+#: Per-tool parametrization that SKIPS the leg whose binary is absent (each tool is independently
+#: optional), so a host with only `dot` still runs the `dot` legs and skips the `d2` ones.
+TOOL_PARAMS = [
+    pytest.param("dot", marks=requires_dot),
+    pytest.param("d2", marks=requires_d2),
+]
 
 
 def _dot_plain_counts(spec: DiagramSpec) -> tuple[int, int]:
@@ -493,7 +509,7 @@ def _d2_shape_count(svg: bytes) -> int:
 # ---- deterministic compile + tool switch ----
 
 
-@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("tool", TOOL_PARAMS)
 def test_grounded_spec_compiles_to_byte_deterministic_svg(tool):
     spec = parse_diagram(GROUNDED)
     first = compile_diagram(spec, tool=tool)
@@ -504,14 +520,20 @@ def test_grounded_spec_compiles_to_byte_deterministic_svg(tool):
     assert first.tool == tool
 
 
+@requires_dot
+@requires_d2
 def test_compile_records_tool_and_version_provenance():
     dot = compile_diagram(parse_diagram(GROUNDED), tool="dot")
     d2 = compile_diagram(parse_diagram(GROUNDED), tool="d2")
-    # (tool, version) is author-time provenance (NOT identity-bearing): both tools self-report.
-    assert dot.tool == "dot" and dot.version.startswith("15.")
-    assert d2.tool == "d2" and d2.version.startswith("0.7")
+    # (tool, version) is author-time provenance (NOT identity-bearing, §O3): assert a REAL version
+    # string was recorded, robustly across environments — NOT a hard pin on `15.`/`0.7` (which would
+    # break on any other distro `dot`/`d2`). The version churns the SVG content hash, never an id.
+    assert dot.tool == "dot" and dot.version[:1].isdigit() and "." in dot.version
+    assert d2.tool == "d2" and d2.version[:1].isdigit() and "." in d2.version
 
 
+@requires_dot
+@requires_d2
 def test_tool_switch_changes_bytes_hence_hash():
     spec = parse_diagram(GROUNDED)
     dot = compile_diagram(spec, tool="dot")
@@ -520,6 +542,7 @@ def test_tool_switch_changes_bytes_hence_hash():
     assert sha256_hex(dot.svg) != sha256_hex(d2.svg)  # -> different content hash (identity)
 
 
+@requires_dot
 def test_compile_defaults_to_dot():
     assert compile_diagram(parse_diagram(GROUNDED)).tool == "dot"  # amendment pin
 
@@ -553,6 +576,7 @@ def _hostile_spec() -> DiagramSpec:
     )
 
 
+@requires_dot
 def test_injection_dot_keeps_exact_node_edge_count():
     # BLOCKER-2 (dot): the escaped source renders every metacharacter as literal label text; the
     # canonical graph has EXACTLY 2 nodes + 1 edge — no injected node, no injected edge.
@@ -569,6 +593,7 @@ def test_injection_dot_keeps_exact_node_edge_count():
     assert node_names == {"n0", "n1"}
 
 
+@requires_d2
 def test_injection_d2_keeps_exact_shape_count():
     # BLOCKER-2 (d2): the escaped source renders as literal text; the SVG has EXACTLY 2 shapes
     # (one per real node) — no injected shape/connection.
@@ -578,6 +603,8 @@ def test_injection_d2_keeps_exact_shape_count():
     assert b"pwned" in svg  # the hostile text survives as literal label content
 
 
+@requires_dot
+@requires_d2
 def test_injection_via_parsed_body_dot_and_d2():
     # The plan's literal-verification vector, parsed from a real body: a node label carrying
     # `"`, `]`, `;`, `->`, `[label="` renders as text; both tools keep exactly 2 nodes / 1 edge.
@@ -612,7 +639,7 @@ def _illustrative_spec() -> DiagramSpec:
     return parse_diagram("posture: illustrative\nnodes:\n- a: A\n- b: B\nedges:\n- a -> b\n")
 
 
-@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("tool", TOOL_PARAMS)
 def test_illustrative_spec_bakes_stamp_into_svg(tool):
     # SERIOUS-1(a): an illustrative diagram's SVG carries the reader-visible marker. (Asserted on
     # robust ASCII fragments — dot entity-encodes the hyphen as `not source&#45;checked`.)
@@ -621,7 +648,7 @@ def test_illustrative_spec_bakes_stamp_into_svg(tool):
         assert fragment in svg, f"{tool} SVG missing stamp fragment {fragment!r}"
 
 
-@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("tool", TOOL_PARAMS)
 def test_grounded_spec_carries_no_stamp(tool):
     # A grounded diagram makes a source claim and must NOT wear the illustrative marker.
     svg = compile_diagram(parse_diagram(GROUNDED), tool=tool).svg
@@ -638,6 +665,7 @@ def test_illustrative_source_cannot_be_emitted_without_the_stamp():
 # ---- malformed source + missing binary + unknown tool ----
 
 
+@requires_dot
 def test_broken_source_is_caught_by_canon(monkeypatch):
     # The pre-store `-Tcanon` catch (malformed-source ONLY): a directly-broken source refuses. In
     # practice the escaped emitter never produces one — this is defense-in-depth, forced here.
@@ -665,6 +693,7 @@ def test_unknown_tool_refuses():
 # ---- the store contract: SVG bytes land under assets/diagrams/<hash>.svg (C4 uses this) ----
 
 
+@requires_dot
 def test_compiled_svg_stores_content_addressed_under_assets_diagrams(tmp_path):
     spec = parse_diagram(GROUNDED)
     artifact = compile_diagram(spec, tool="dot")
@@ -680,6 +709,7 @@ def test_compiled_svg_stores_content_addressed_under_assets_diagrams(tmp_path):
     assert ws.commit_asset(artifact.svg, subdir="diagrams", extension="svg") == path
 
 
+@requires_dot
 def test_same_spec_recompiles_to_the_same_hash():
     # Determinism -> stable identity: a re-compile of the same spec yields the same content hash.
     spec = parse_diagram(GROUNDED)

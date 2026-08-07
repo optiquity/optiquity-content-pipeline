@@ -44,6 +44,12 @@ _PANDOC_AVAILABLE = pandoc_available()
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# The diagram-SVG embed tests below build a REAL `dot`-compiled SVG (optional tool) and, for docx,
+# rasterize it via `rsvg-convert` (optional). Both are OPTIONAL — a tool-less host degrades (the SVG
+# is never generated at compose; a docx SVG embed → alt text), so these SKIP when absent. The skip
+# markers are the SINGLE canonical copy in `tests/conftest.py`.
+from conftest import requires_dot, requires_rsvg  # noqa: E402
+
 #: A tiny valid 1x1 PNG (the figure-A bytes) and a DIFFERENT 2x1 PNG (the edited figure) — distinct
 #: content so the content-hash fold visibly re-mints on an edit.
 _PNG_A = base64.b64decode(
@@ -308,6 +314,7 @@ def _diagram_figure_ast(digest: str) -> dict:
     return serialize_fitted({"grounding": {}, "body": body})[0].ast
 
 
+@requires_dot
 def test_diagram_svg_embeds_on_html5_as_a_data_uri(tmp_path):
     root, digest = _store_with_diagram_svg(tmp_path)
     dout, embedded, _ = _render_leg(_diagram_figure_ast(digest), "html5", root)
@@ -316,9 +323,12 @@ def test_diagram_svg_embeds_on_html5_as_a_data_uri(tmp_path):
     assert f"assets/diagrams/{digest}.svg".encode() not in dout.output_bytes  # path gone (embedded)
 
 
+@requires_dot
+@requires_rsvg
 def test_diagram_svg_docx_carries_a_native_media_part(tmp_path):
-    # C0 guarantees a docx SVG embed refuses when rsvg-convert is absent; here it IS installed, so
-    # the diagram rides into a real word/media/ part (with the rsvg PNG fallback).
+    # When rsvg-convert IS installed the diagram rides into a real word/media/ part (with the rsvg
+    # PNG fallback). When it is ABSENT the docx embed DEGRADES to alt text (test_dispatch.py) — so
+    # this embed-present test SKIPS on a tool-less host rather than failing (rsvg is optional).
     root, digest = _store_with_diagram_svg(tmp_path)
     dout, _, _ = _render_leg(_diagram_figure_ast(digest), "docx", root)
     assert dout.assets_embedded is True
@@ -327,6 +337,7 @@ def test_diagram_svg_docx_carries_a_native_media_part(tmp_path):
     assert media, "docx must carry the embedded diagram as a word/media/ part"
 
 
+@requires_dot
 def test_diagram_svg_markdown_keeps_it_by_reference(tmp_path):
     root, digest = _store_with_diagram_svg(tmp_path)
     dout, embedded, resource_paths = _render_leg(_diagram_figure_ast(digest), "markdown", root)
@@ -334,8 +345,53 @@ def test_diagram_svg_markdown_keeps_it_by_reference(tmp_path):
     assert f"assets/diagrams/{digest}.svg".encode() in dout.output_bytes  # md points at the file
 
 
+@requires_dot
 def test_diagram_svg_plain_shows_the_alt_only(tmp_path):
     root, digest = _store_with_diagram_svg(tmp_path)
     dout, _, _ = _render_leg(_diagram_figure_ast(digest), "plain", root)
     text = dout.output_bytes.decode("utf-8")
     assert "architecture" in text and f"assets/diagrams/{digest}.svg" not in text
+
+
+# --- FR7.3: the driver's rsvg-aware fold — no silent same-id/different-bytes when rsvg absent ---
+
+_RT_DOCX = {"writer": "docx", "engine": "", "reference_doc": ""}
+
+
+def _docx_svg_preimage(embedded_assets: tuple) -> dict:
+    """The docx serialize preimage for a given (post-fold) embedded-asset set."""
+    return serialize_inputs_preimage(
+        render_target=_RT_DOCX,
+        render_inputs=_RI_PLAIN,
+        assets_embedded=bool(embedded_assets),
+        embedded_assets=embedded_assets,
+    )
+
+
+@requires_dot
+def test_driver_rsvg_absent_docx_fold_differs_from_rsvg_present_no_silent_collision(tmp_path):
+    # FR7.3 DRIVER-LEVEL regression on the exact `driver._rsvg_aware_embed_fold` seam the render leg
+    # uses. A docx deliverable whose body carries a real SVG diagram: when `rsvg-convert` is ABSENT
+    # the driver DROPS the `.svg` fold → the RECORDED preimage folds NO diagram asset → serialize
+    # DIGEST DIFFERS from the rsvg-PRESENT render. Same deliverable-id, DIFFERENT recorded
+    # preimage ⇒ NO silent same-id/different-bytes: the record honestly matches the produced bytes,
+    # and a cross-env conflict is caught by the S0 preimage-check (never a silent reuse).
+    from pipeline import driver
+
+    root, digest = _store_with_diagram_svg(tmp_path)
+    fold = hash_embedded_assets(_diagram_figure_ast(digest), "docx", store_root=root)
+    assert fold and fold[0][0].endswith(".svg")  # the docx WOULD embed the diagram SVG
+
+    present = driver._rsvg_aware_embed_fold(fold, "docx", rsvg_present=True)
+    absent = driver._rsvg_aware_embed_fold(fold, "docx", rsvg_present=False)
+    assert present == fold  # rsvg present → the fold is byte-identical (the svg embeds)
+    assert absent == ()  # rsvg absent → the svg is dropped (the docx degrades to alt text)
+
+    pre_present, pre_absent = _docx_svg_preimage(present), _docx_svg_preimage(absent)
+    assert "asset_embed_version" in pre_present["tool_bundle"]  # embed CLAIMED only when embedding
+    assert "asset_embed_version" not in pre_absent["tool_bundle"]  # degraded → no embed claimed
+    assert serialize_digest(pre_present) != serialize_digest(pre_absent)  # no same-id/diff-bytes
+
+    # A non-docx writer (html5) is UNAFFECTED — its SVG data-URI embed needs no rsvg, so the fold
+    # (and thus the recorded identity) is byte-identical regardless of rsvg presence.
+    assert driver._rsvg_aware_embed_fold(fold, "html5", rsvg_present=False) == fold

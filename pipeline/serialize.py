@@ -132,8 +132,10 @@ PANDOC_BINARY_DEFAULT = "pandoc"
 #: The default `rsvg-convert` executable (increment C). pandoc SHELLS OUT to this helper to
 #: rasterize an embedded SVG into the docx PNG fallback; when it is ABSENT pandoc still exits 0 and
 #: ships a docx with the raw SVG media part but no PNG (blank/broken in Word). The dispatcher probes
-#: for it up front (`rsvg_available`) and REFUSES a docx SVG-embed loudly rather than degrade
-#: silently. Injectable like `PANDOC_BINARY_DEFAULT` so a test can point at a bad path.
+#: for it up front (`rsvg_available`) and — per the ratified reversal for the tool-ABSENCE case —
+#: GRACEFULLY DEGRADES a docx SVG-embed (drops the figure to its alt text, VISIBLE warning) rather
+#: than hard-refuse; a PRESENT-but-FAILING rsvg is still caught by the stderr backstop.
+#: Injectable like `PANDOC_BINARY_DEFAULT` so a test can point at a bad path.
 RSVG_BINARY_DEFAULT = "rsvg-convert"
 
 #: The pinned version of the body-figure EMBED behavior (increment B). Bumped only when the embed

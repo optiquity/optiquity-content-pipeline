@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from conftest import requires_dot  # noqa: E402
 
 # Reuse the mocked-transport harness + builders from the compose test module (prepend import mode
 # puts `tests/` on the path — the SAME cross-import pattern test_parallel_plan/test_normalize use).
@@ -244,6 +245,7 @@ def test_require_with_no_diagram_refuses(store, claims):
     assert "`require`->`prefer`" in reask  # the budget-exhaustion relax escape surfaced
 
 
+@requires_dot  # real `dot` compile of the grounded diagram; a tool-less host degrades to text-alt
 def test_require_with_grounded_proceeds(store, claims):
     # A `require` artifact carrying a GROUNDED diagram passes the gate first try and ships.
     _requires_pandoc()
@@ -276,6 +278,7 @@ def test_suppress_reasks_then_blocks_no_dropped_fact(store, claims):
     assert "`suppress`->`resist`" in reask  # the relax escape surfaced
 
 
+@requires_dot  # real `dot` compile of the grounded diagram part (degrades to text-alt when absent)
 def test_multipart_require_satisfied_by_one_grounded_part(store, claims):
     # For a multi-part artifact, ONE grounded diagram part satisfies `require`.
     _requires_pandoc()

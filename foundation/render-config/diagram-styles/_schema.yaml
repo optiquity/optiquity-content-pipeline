@@ -33,8 +33,11 @@ attributes:
       byte-deterministic per machine). `auto` is an EXPLICIT opt-in probe that picks the
       first installed of (`dot`, `d2`) — it is NEVER the default because it keys the picture
       on the ambient install-set (environment-dependent identity), so it is for locked/known
-      environments ONLY. A chosen-but-missing tool at compile time is a LOUD
-      `DiagramToolUnavailableError` (never a silent half-diagram). It is a COMPILE TARGET,
+      environments ONLY. The diagram tools are OPTIONAL: a chosen-but-missing tool at compile
+      time degrades gracefully — the diagram is dropped, its text alt substituted, and a warning
+      recorded (never a silent half-diagram), so a host without the tools still renders. The
+      degrade is scoped to a MISSING tool ONLY — an ungrounded or malformed diagram still refuses
+      loudly. It is a COMPILE TARGET,
       not an edge source: `to_dot`/`to_d2` both emit from the identical spec, so a tool swap
       can only change the SVG bytes/hash, never the grounded structure (honesty-safe, §2.F).
     definition_version: 1

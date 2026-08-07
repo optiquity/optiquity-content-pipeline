@@ -80,6 +80,7 @@ from pipeline.reconcile import ReconcileRequest, reconcile
 from pipeline.serialize import (
     build_render_binding,
     extension_for,
+    rsvg_available,
     serialize_fitted,
     serialize_inputs_preimage,
 )
@@ -469,6 +470,23 @@ def _platform_format_structural(
 # --- The one-deliverable render leg (reconcile → serialize → persist) ----------------------
 
 
+def _rsvg_aware_embed_fold(
+    embedded_assets: tuple[tuple[str, str], ...], writer: str, *, rsvg_present: bool
+) -> tuple[tuple[str, str], ...]:
+    """Drop the `.svg` fold entries a docx render will NOT embed when `rsvg-convert` is absent.
+
+    GRACEFUL DEGRADATION identity-honesty (FR7.3): when `dispatch` degrades a docx SVG embed (rsvg
+    absent → the figure drops to its alt text), the RECORDED serialize preimage must fold NO diagram
+    asset (no `asset_embed_version`/`embedded_assets`), else it would claim an embed the produced
+    bytes lack — a silent same-id/different-bytes hazard. This drops the `.svg` entries in exactly
+    that case (docx writer + rsvg absent); a non-docx writer, or a present rsvg, returns the fold
+    BYTE-IDENTICAL. PURE — the single testable seam for the render leg's rsvg-aware fold.
+    """
+    if writer == "docx" and not rsvg_present:
+        return tuple((rel, hex_) for rel, hex_ in embedded_assets if not rel.endswith(".svg"))
+    return embedded_assets
+
+
 def _run_deliverable(
     *,
     env: CascadeEnv,
@@ -621,6 +639,14 @@ def _run_deliverable(
     # render feeds.
     base = store.root
     embedded_assets = hash_embedded_assets(ast, target.writer, store_root=base)
+    # GRACEFUL DEGRADATION identity-honesty (FR7.3): when `dispatch` degrades a docx SVG embed
+    # (rsvg-convert absent → the figure drops to its alt text), the RECORDED serialize preimage must
+    # fold NO diagram asset, else it would claim an embed the bytes lack — a silent
+    # same-id/different-bytes hazard. `_rsvg_aware_embed_fold` drops the `.svg` fold entries in that
+    # case (pure, unit-tested); a non-docx writer or a present rsvg leaves the fold byte-identical.
+    embedded_assets = _rsvg_aware_embed_fold(
+        embedded_assets, target.writer, rsvg_present=rsvg_available()
+    )
     resource_paths = (str(base), str(env.root)) if embedded_assets else ()
     # C3 (S5 drift-catcher, asset_ref.py:13-19): pin guard base == hash base == resource_paths[0]
     # == store.root. A refactor that drifts B's base off `store.root` (e.g. to `store.root/assets`)

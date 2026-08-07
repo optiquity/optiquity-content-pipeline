@@ -7,7 +7,10 @@ Covers the plan's C5 verification (planner-C-final.md §C5) and the amendment's 
   ONE-FILE add (the matrix promise, §5.4);
 * the `tool` knob resolves: `dot` (pinned default) / `d2` (selectable) / `auto` (opt-in probe);
 * `auto` is honored ONLY as an explicit opt-in — never the framework default;
-* a chosen-but-missing tool is a LOUD `DiagramToolUnavailableError` (no silent degrade);
+* the low-level `_select_diagram_tool` resolver stays LOUD (`auto` with none installed →
+  `DiagramToolUnavailableError`); the compose transform CALL SITE catches tool-ABSENCE and
+  GRACEFULLY DEGRADES the section to its text-alt (a recorded warning) — the ratified reversal of
+  §17 PA-12 for the tool-ABSENCE case ONLY (a malformed source with the tool present stays hard);
 * END-TO-END through the compose transform: the default draws with `dot`; a `d2`-selecting style
   draws with `d2` (byte-differs → new content hash); an `auto` style is honored;
 * the `diagram-styles/` root is COVERED by the public-boundary guard (a stray client-content style
@@ -44,6 +47,12 @@ from pipeline.store import WorkspaceStore
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DIAGRAM_STYLES = registry_dir(REPO_ROOT, "diagram-styles")
 GUARD = REPO_ROOT / "scripts" / "check-no-content.sh"
+
+# Diagram GENERATION shells to the real `dot`/`d2`; both are OPTIONAL (a tool-less host degrades to
+# the text-alt), so a test requiring them SKIPS when absent rather than failing CI (the ratified
+# "works without graphviz" contract). The degradation tests below simulate absence and run anyway.
+# The skip markers are the SINGLE canonical copy in `tests/conftest.py`.
+from conftest import requires_d2, requires_dot  # noqa: E402
 
 #: A well-formed GROUNDED diagram flat body citing the single EXTRACTED fact `f1`.
 DIAGRAM_BODY = (
@@ -161,9 +170,15 @@ def test_select_tool_unknown_is_loud():
         compose._select_diagram_tool("mermaid")  # outside the enum — fail-closed backstop
 
 
-def test_tool_installed_probe_uses_path():
-    # The real presence probe (`shutil.which`) — `dot`/`d2` are pinned CI deps, so both are present.
+def test_tool_installed_probe_uses_path_reflects_which():
+    # The presence probe is exactly `shutil.which` — robust in ANY environment (present OR absent).
     assert compose._diagram_tool_installed("dot") is (shutil.which("dot") is not None)
+    assert compose._diagram_tool_installed("d2") is (shutil.which("d2") is not None)
+
+
+@requires_dot
+def test_tool_installed_probe_true_when_dot_present():
+    # When `dot` IS on PATH the probe reports True (skipped on a tool-less host — dot is optional).
     assert compose._diagram_tool_installed("dot") is True
 
 
@@ -188,12 +203,15 @@ def test_compose_request_diagram_tool_defaults_to_dot():
 # --------------------------------------------------------------------------- #
 
 
+@requires_dot
 def test_default_no_ref_compiles_via_dot(tmp_path: Path):
     store = WorkspaceStore(tmp_path / "ws")
     svg = _stored_svg(store, _transform(DIAGRAM_BODY, store, diagram.TOOL_DOT))
     assert b"graphviz" in svg and b"d2-version" not in svg  # drawn by dot
 
 
+@requires_dot
+@requires_d2
 def test_d2_selecting_style_compiles_via_d2_and_byte_differs(tmp_path: Path):
     dot_store = WorkspaceStore(tmp_path / "dot")
     d2_store = WorkspaceStore(tmp_path / "d2")
@@ -205,6 +223,7 @@ def test_d2_selecting_style_compiles_via_d2_and_byte_differs(tmp_path: Path):
     assert sha256_hex(d2_svg) != sha256_hex(dot_svg)
 
 
+@requires_dot
 def test_auto_style_is_honored_end_to_end(tmp_path: Path, monkeypatch):
     # An explicit `auto` style compiles (both tools installed → the deterministic `dot` preference);
     # the transform's lazy `auto` resolution happens only because a diagram section is present.
@@ -225,14 +244,43 @@ def test_diagram_free_body_never_probes_tools(tmp_path: Path, monkeypatch):
     assert _transform(prose, store, "auto") == prose
 
 
-def test_missing_selected_tool_is_loud(tmp_path: Path, monkeypatch):
-    # A chosen-but-missing tool at compile time REFUSES loudly (never a silent half-diagram): the
-    # style selects `d2`, but its binary is absent. PA-12 install-signal, surfaced end-to-end.
+def test_missing_selected_tool_degrades_to_text_alt(tmp_path: Path, monkeypatch, caplog):
+    # RATIFIED REVERSAL of PA-12 for the tool-ABSENCE case: a chosen-but-missing tool at compile
+    # time GRACEFULLY DEGRADES — the diagram is SKIPPED, its text-alt substituted, a VISIBLE warning
+    # emitted AND recorded (never silent, never a half-diagram, never a hard crash). Simulates
+    # absence by pointing `d2` at a bogus path, so it runs REGARDLESS of what is installed — this
+    # is the CI-visible "works without a diagram tool" proof for the compose transform.
     monkeypatch.setitem(diagram._TOOL_BINARY, diagram.TOOL_D2, "no-such-d2-binary-xyz")
     store = WorkspaceStore(tmp_path / "ws")
-    with pytest.raises(diagram.DiagramToolUnavailableError) as exc:
-        _transform(DIAGRAM_BODY, store, diagram.TOOL_D2)
-    assert exc.value.code == "diagram-tool-unavailable"
+    degraded: list[str] = []
+    with caplog.at_level("WARNING", logger="pipeline.compose"):
+        body = compose._apply_diagram_transform(
+            {"body": DIAGRAM_BODY}, LEDGER, store, diagram.TOOL_D2, degraded=degraded
+        )["body"]
+    # NO SVG was compiled or stored — the pipeline generated nothing that requires the tool.
+    assert not FIGURE_RE.search(body)
+    assert not (store.root / "assets" / "diagrams").exists()
+    # The reader still gets a readable text-alt (the heading is kept; the body is fallback prose).
+    assert "System architecture" in body
+    assert "Diagram unavailable" in body
+    # The skip is RECORDED (traceable) AND logged — never silent.
+    assert degraded and "diagram-tool-unavailable" in degraded[0]
+    assert any("diagram skipped" in r.message for r in caplog.records)
+
+
+def test_missing_tool_still_refuses_an_ungrounded_diagram(tmp_path: Path, monkeypatch):
+    # The HARD grounding gate is UNAFFECTED by degradation: an UNGROUNDED diagram is REFUSED even
+    # when the tool is absent (the gate runs BEFORE compile). We never emit an ungrounded picture —
+    # degraded or not. The edge cites nothing, so `gate_diagram` raises before the tool-absence.
+    monkeypatch.setitem(diagram._TOOL_BINARY, diagram.TOOL_D2, "no-such-d2-binary-xyz")
+    ungrounded = (
+        "## Architecture {type=diagram}\n\n"
+        "nodes:\n- gw: Gateway\n- auth: Auth\n"
+        "edges:\n- gw -> auth\n"  # no citation → ungrounded → HARD refusal (tool absence unreached)
+    )
+    store = WorkspaceStore(tmp_path / "ws")
+    with pytest.raises(diagram.DiagramGroundingError):
+        compose._apply_diagram_transform({"body": ungrounded}, LEDGER, store, diagram.TOOL_D2)
 
 
 # --------------------------------------------------------------------------- #

@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -135,6 +136,12 @@ __all__ = [
     "parse_writer_output",
     "project_references",
 ]
+
+#: Module logger — the VISIBLE channel for a diagram GRACEFUL-DEGRADATION warning (a requested
+#: diagram whose tool binary is absent is skipped, its text-alt substituted; §17 PA-12 is REVERSED
+#: for the tool-ABSENCE case only — never a silent drop, so the operator sees it in the log AND the
+#: skip is recorded in the compose outcome's `warnings`).
+_LOG = logging.getLogger("pipeline.compose")
 
 #: The writer prompt-template name (`pipeline/prompts/writer.md`, §15 contract; T9).
 WRITER_TEMPLATE = "writer"
@@ -251,6 +258,12 @@ class ComposeOutcome:
     is the last transport outcome (None on the idempotent path). `review` is the §19 artifact
     review (Review 1) outcome when the caller wired review in (None when review is disabled —
     the default; the review is ADVISORY and never changes `status`/`code`, §19).
+
+    `warnings` records non-fatal GRACEFUL-DEGRADATION notes from the successful attempt — today
+    exactly the diagram tool-ABSENCE skips (a requested `{type=diagram}` whose `dot`/`d2` binary was
+    absent was rendered as its text-alt, never a hard error). It is the TRACEABLE, ledger-facing
+    twin of the `_LOG` warning: empty `()` on every ordinary compose, so a caller that ignores it is
+    byte-unaffected. A degradation is NEVER silent — it rides here AND the log.
     """
 
     status: Literal["ok", "error"]
@@ -262,6 +275,7 @@ class ComposeOutcome:
     spine_result: SpineResult | None
     transport_result: TransportResult | None
     review: ReviewOutcome | None = None
+    warnings: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -639,8 +653,9 @@ _DIAGRAM_TOOL_BINARY = {
 
 def _diagram_tool_installed(tool: str) -> bool:
     """Is `tool`'s pinned binary on PATH? A cheap, no-subprocess presence probe (`shutil.which`)
-    for the `auto` opt-in; the real compile still raises the loud `DiagramToolUnavailableError` if a
-    picked binary vanishes between probe and exec (no silent degrade)."""
+    for the `auto` opt-in. If a picked binary is absent at exec the compile raises
+    `DiagramToolUnavailableError`, which the compose transform catches and degrades to the
+    diagram's text alt (a visible, recorded degrade — the diagram tools are optional)."""
     return shutil.which(_DIAGRAM_TOOL_BINARY[tool]) is not None
 
 
@@ -650,9 +665,10 @@ def _select_diagram_tool(tool: str, *, installed: Callable[[str], bool] | None =
     `dot`/`d2` pass through unchanged. `auto` (the explicit opt-in ONLY — never the framework
     default) probes the installed tools in `_DIAGRAM_AUTO_PREFERENCE` order and returns the first
     present, keying the picture on the ambient install-set (env-dependent identity, accepted
-    knowingly); none installed -> a LOUD `DiagramToolUnavailableError` (never a silent no-op). Any
-    other value is an unknown tool -> `DiagramCompileError` (a fail-closed backstop over the schema
-    enum, which already restricts a style's `tool` to dot/d2/auto)."""
+    knowingly); none installed -> `DiagramToolUnavailableError`, which the compose transform catches
+    and degrades to the text alt (the tools are optional; the degrade is visible and recorded, never
+    silent). Any other value is an unknown tool -> `DiagramCompileError` (a fail-closed backstop
+    over the schema enum, which already restricts a style's `tool` to dot/d2/auto)."""
     if tool in (diagram.TOOL_DOT, diagram.TOOL_D2):
         return tool
     if tool == _DIAGRAM_TOOL_AUTO:
@@ -690,8 +706,30 @@ def _diagram_alt(section: Section, spec: diagram.DiagramSpec) -> str:
     return caption
 
 
+def _diagram_degraded_body(section: Section, spec: diagram.DiagramSpec) -> str:
+    """The GRACEFUL-DEGRADATION text-alt body a `{type=diagram}` section falls back to when its
+    `dot`/`d2` binary is ABSENT (the ratified reversal of §17 PA-12 for the tool-ABSENCE case): the
+    diagram is SKIPPED — no SVG is compiled or stored — and the reader gets a plain, non-empty
+    paragraph instead of a broken figure. The section HEADING is kept by the splice (so the caption
+    still shows); this is the body prose beneath it. An `illustrative` spec still carries its
+    reader-visible marker (SERIOUS-1(b) survives degradation). Carries NO `data-fact` span, so the
+    substituted prose can never be re-gated as a citation by `_assemble_ir`; no leading Markdown
+    metacharacter, so it parses as a plain paragraph (never a stray link/figure)."""
+    if spec.posture == diagram.POSTURE_ILLUSTRATIVE:
+        return (
+            f"Diagram unavailable ({diagram.ILLUSTRATIVE_STAMP}) — install a diagram tool "
+            "(dot/d2) to render it."
+        )
+    return "Diagram unavailable — install a diagram tool (dot/d2) to render it."
+
+
 def _transform_leaf_body(
-    body: str, ledger: Mapping[str, Any], store: WorkspaceStore, tool: str
+    body: str,
+    ledger: Mapping[str, Any],
+    store: WorkspaceStore,
+    tool: str,
+    *,
+    degraded: list[str] | None = None,
 ) -> str:
     """Normalize-then-splice one leaf body's `{type=diagram}` sections into contained figures.
 
@@ -706,8 +744,11 @@ def _transform_leaf_body(
     `![<alt>](assets/diagrams/<hash>.svg)` (the raw node/edge list is GONE). Sections are spliced
     LAST-to-FIRST so each rewrite leaves the earlier sections' spans valid. Raises the diagram
     REFUSALS (`ir.IRError` from parse/gate — grammar / grounding / the reused tier errors / the
-    fail-closed `extract_fact_refs` backstop) and the LOUD tool/compile errors for the caller to
-    route; a `SectionGrammarError` (an unknown section `type=`) also propagates for the re-ask."""
+    fail-closed `extract_fact_refs` backstop) and the LOUD `DiagramCompileError` (a malformed source
+    with the tool PRESENT) for the caller to route; a `SectionGrammarError` (an unknown section
+    `type=`) also propagates for the re-ask. A tool-ABSENCE `DiagramToolUnavailableError` does NOT
+    propagate — it is caught HERE and the section DEGRADES to its text-alt (a `_LOG.warning` + a
+    `degraded` note; the optional `degraded` list collects the per-section skip strings)."""
     normalized = normalize_outline(body)  # PURE — no subprocess (nor does parse_sections below)
     sections = parse_sections(normalized)
     if not any(section.type == _DIAGRAM_SECTION_TYPE for section in sections):
@@ -720,11 +761,35 @@ def _transform_leaf_body(
         diagram.gate_diagram(spec, ledger)  # HARD gate BEFORE a single SVG byte is stored (C2/C4)
         # C5: the style-driven `tool` (C4's hard-pin is gone). `auto` resolves to a concrete
         # installed tool HERE — lazily, only now that a diagram section is confirmed present.
-        artifact = diagram.compile_diagram(spec, tool=_select_diagram_tool(tool))
+        #
+        # GRACEFUL DEGRADATION (ratified reversal of §17 PA-12 for the tool-ABSENCE case ONLY): if
+        # the resolved `dot`/`d2` binary is ABSENT (`DiagramToolUnavailableError` — raised either by
+        # `_select_diagram_tool`'s `auto` probe or by `compile_diagram`'s real subprocess seam), the
+        # diagram is SKIPPED and its text-alt substituted (never a hard crash — many hosts lack a
+        # diagram tool). NEVER silent: a VISIBLE `_LOG.warning` fires AND the skip is recorded in
+        # `degraded` (→ the compose outcome's `warnings`). The HARD errors stay HARD: `gate_diagram`
+        # above still REFUSES an ungrounded diagram (never emitted, degraded or not), and a
+        # `DiagramCompileError` (a malformed source with the tool PRESENT) propagates — ONLY a
+        # missing binary degrades. Identity-safe: the body is never in the §7.2 artifact preimage
+        # (`ids.build_artifact_preimage`), so the text-alt changes NO artifact-id; and no
+        # SVG is stored, so an html5/docx render folds no diagram asset (its serialize preimage
+        # honestly reflects no embed — §17 FR7.1).
+        start, end = section.span
+        try:
+            artifact = diagram.compile_diagram(spec, tool=_select_diagram_tool(tool))
+        except diagram.DiagramToolUnavailableError as exc:
+            _LOG.warning(
+                "diagram skipped (tool unavailable) — substituting text-alt for section %r: %s",
+                section.heading,
+                exc,
+            )
+            if degraded is not None:
+                degraded.append(str(exc))
+            lines[start + 1 : end] = ["", _diagram_degraded_body(section, spec), ""]
+            continue
         asset_path = store.commit_asset(artifact.svg, subdir="diagrams", extension="svg")
         rel = asset_path.relative_to(store.root).as_posix()  # assets/diagrams/<hash>.svg
         figure = f"![{_diagram_alt(section, spec)}]({rel})"
-        start, end = section.span
         lines[start + 1 : end] = ["", figure, ""]  # heading kept; body -> the contained figure
     while lines and lines[-1] == "":  # trim the trailing blank a last-section splice leaves
         lines.pop()
@@ -732,7 +797,12 @@ def _transform_leaf_body(
 
 
 def _apply_diagram_transform(
-    writer_out: Mapping[str, Any], ledger: Mapping[str, Any], store: WorkspaceStore, tool: str
+    writer_out: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    store: WorkspaceStore,
+    tool: str,
+    *,
+    degraded: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run the C4 diagram transform over the writer's parts-DICT (a flat `body` OR a `{role: body}`
     map — SERIOUS-3: the DICT shape, NOT the assembled-IR list), returning a NEW `writer_out` whose
@@ -740,12 +810,19 @@ def _apply_diagram_transform(
     byte-identical (no section is rewritten). Runs BEFORE `_assemble_ir` in its OWN try/except.
 
     `tool` (C5) is the resolved diagram-style knob (`dot`/`d2`/`auto`) threaded from
-    `ComposeRequest.diagram_tool`; it drives EVERY diagram section in this envelope identically."""
+    `ComposeRequest.diagram_tool`; it drives EVERY diagram section in this envelope identically.
+
+    `degraded` (optional) is a caller-owned list the transform APPENDS to when a section's diagram
+    tool is ABSENT and the section degrades to its text-alt (the graceful-degradation record; see
+    `_transform_leaf_body`). `None` means "don't collect" — the `_LOG.warning` still fires, so a
+    degradation is never silent even when the caller passes no collector."""
     if "body" in writer_out:
-        return {"body": _transform_leaf_body(writer_out["body"], ledger, store, tool)}
+        return {
+            "body": _transform_leaf_body(writer_out["body"], ledger, store, tool, degraded=degraded)
+        }
     return {
         "parts": {
-            role: _transform_leaf_body(part_body, ledger, store, tool)
+            role: _transform_leaf_body(part_body, ledger, store, tool, degraded=degraded)
             for role, part_body in writer_out["parts"].items()
         }
     }
@@ -1591,16 +1668,18 @@ def compose_artifact(
             # `ir.UnknownFactError`/`ir.TierViolation` types a PROSE citation does in `_assemble_ir`
             # — only a scoped try can route the diagram refusals to their own code without
             # mislabeling a prose refusal.
+            diagram_warnings: list[str] = []  # per-attempt graceful-degradation skips (tool absent)
             try:
                 writer_out = _apply_diagram_transform(
-                    writer_out, ledger, store, request.diagram_tool
+                    writer_out, ledger, store, request.diagram_tool, degraded=diagram_warnings
                 )
-            except (diagram.DiagramToolUnavailableError, diagram.DiagramCompileError):
-                # A host/tooling failure (a missing pinned `dot`, or a broken compile) is NOT a
-                # writer content defect and NEVER a re-ask: it is LOUD, per the diagram module's
-                # PA-12 install-signal contract (the `DiagramToolUnavailableError` docstring). Let
-                # it propagate like a `ComposeError` wiring defect (the `finally` still cleans up
-                # the scratch cwd). C5's `tool` knob keeps this loud posture.
+            except diagram.DiagramCompileError:
+                # A malformed diagram SOURCE with the tool PRESENT (`dot -Tcanon`/d2 self-compile
+                # rejected it) is a host/tooling failure, NOT a writer content defect and NEVER a
+                # re-ask: it stays LOUD (the `finally` still cleans up the scratch cwd). This is the
+                # NON-absence half of PA-12 that the ratified reversal KEEPS hard — only a MISSING
+                # binary degrades, and that `DiagramToolUnavailableError` is caught INSIDE the
+                # transform (→ text-alt + `diagram_warnings`), so it never reaches this handler.
                 raise
             except ir.IRError as exc:
                 # SERIOUS-4: route EVERY diagram REFUSAL — which is EXACTLY an `ir.IRError` raised
@@ -1702,6 +1781,7 @@ def compose_artifact(
                 spine_result=result,
                 transport_result=transport,
                 review=maybe_review(doc),  # §19: Review 1, post-mint, on the fresh IR
+                warnings=tuple(diagram_warnings),  # graceful-degradation skips (tool absent)
             )
         # Re-ask bound exhausted: caught, and NEVER persisted (§21.9). The exhaustion CODE is the
         # LAST derail's kind — an asset gate code (DR-7 A: `asset-ref-uncontained` /

@@ -1036,6 +1036,16 @@ dimension-values; gates > everything); the §6.5 floor precedence (the DR-4×DR-
     whitelisted in the content guard the same commit) + C0's loud rsvg-convert docx gate. Suite 3102→3310;
     each commit coder → reviewer → (fix) → CLEAN. **`rsvg-convert` is a docx-SVG render prerequisite**
     (loudly enforced). **D remains designed-not-built; E deferred.**
+    **SUPERSEDED (2026-08, tool-optional degradation):** the LOUD tool-absence refusals above — the
+    `auto`/chosen-but-missing `DiagramToolUnavailableError` (C3/C5) and C0's `rsvg-convert` docx-SVG
+    gate — were REVERSED for the MISSING-TOOL case ONLY. The diagram tools (`dot`/`d2`/`rsvg-convert`)
+    are now OPTIONAL: a requested diagram whose tool is absent degrades gracefully — the diagram is
+    dropped, its text alt substituted, and a warning RECORDED (`ComposeOutcome.warnings` /
+    `DispatchOutcome.warnings`), never a silent drop. The HARD grounding gate and malformed-source
+    errors still refuse loudly; identity stays honest (compose stores no SVG; the docx fold is made
+    rsvg-aware so no same-id/different-bytes collision). CI now runs TOOL-LESS. So the "REFUSES
+    loudly" / "prerequisite (loudly enforced)" phrasing in the C entries above is historical, not
+    current.
   - **D — Honest BADGE grouping (fast-follow, behind its own small spike):** each node carries a small
     **badge** naming its cited subsystem — a **grounded group name + grounded membership**, both run
     through the existing existence+tier gate — plus a **mandatory plain-text legend** ("a badge marks a

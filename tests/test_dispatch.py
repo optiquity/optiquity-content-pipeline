@@ -449,10 +449,12 @@ def test_csl_style_override_changes_the_resolved_bytes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# C0 (increment C, BLOCKER-3): the docx SVG-embed CAPABILITY GATE. A docx render that would embed an
-# SVG needs `rsvg-convert` to rasterize the PNG fallback; when it is absent pandoc exits 0 and ships
-# a blank-in-Word docx. The dispatcher REFUSES up front (precheck) and reads the stderr backstop the
-# exit code hides. Scoped to docx-over-SVG: raster docx, html5-SVG and md-SVG are untouched.
+# C0 (increment C, BLOCKER-3) → GRACEFUL DEGRADATION (ratified reversal for the tool-ABSENCE case).
+# A docx render that would embed an SVG needs `rsvg-convert` to rasterize the PNG fallback; when it
+# is absent pandoc exits 0 and ships a blank-in-Word docx. Rather than REFUSE, the dispatcher
+# DEGRADES: it strips the SVG figure to its alt text and renders the docx without it (a VISIBLE
+# warning; never a hard error). A PRESENT-but-FAILING rsvg is still caught by the stderr backstop.
+# Scoped to docx-over-SVG: raster docx, html5-SVG and md-SVG are untouched.
 # ---------------------------------------------------------------------------
 
 
@@ -484,18 +486,32 @@ def _stub_bytes(monkeypatch, *, returncode=0, stdout=b"DOCXBYTES", stderr=""):
     return calls
 
 
-def test_docx_svg_embed_refuses_when_rsvg_absent(monkeypatch):
-    # (1) docx writer + an `assets/…svg` target + rsvg absent ⇒ CapabilityInfeasibleError, and the
-    # render NEVER reaches pandoc → no silently-degraded (blank-in-Word) docx bytes.
+def test_docx_svg_embed_degrades_to_alt_when_rsvg_absent(monkeypatch):
+    # (1) RATIFIED REVERSAL: docx + an `assets/…svg` target + rsvg absent ⇒ GRACEFUL DEGRADATION —
+    # the SVG figure is stripped to its alt text and the docx renders WITHOUT it (never a hard
+    # error, never a blank doc). The render REACHES pandoc with the SVG-free payload and reports NO
+    # embed (identity honest — a degraded docx folds no diagram asset). A VISIBLE warning fires.
+    from pipeline.serialize import PandocBytesOutcome
+
     monkeypatch.setattr(D, "rsvg_available", lambda: False)
-    calls = _stub_bytes(monkeypatch)
-    with pytest.raises(D.CapabilityInfeasibleError) as exc:
-        D.dispatch(
-            D.RenderTarget(writer="docx", side="internal"),
-            _image_ast("assets/diagrams/abc123.svg"),
-        )
-    assert exc.value.code == "capability-infeasible"
-    assert calls == []  # refused BEFORE the writer ran
+    seen: list[bytes] = []
+
+    def _stub(args, stdin_bytes, *, binary=D.PANDOC_BINARY_DEFAULT):
+        seen.append(stdin_bytes)
+        return PandocBytesOutcome(0, b"DOCXBYTES", "")
+
+    monkeypatch.setattr(D, "run_pandoc_bytes", _stub)
+    out = D.dispatch(
+        D.RenderTarget(writer="docx", side="internal"),
+        _image_ast("assets/diagrams/abc123.svg"),
+    )
+    assert out.output_bytes == b"DOCXBYTES"  # rendered (degraded), NOT refused
+    assert out.assets_embedded is False  # the SVG did not embed — identity honest
+    assert len(seen) == 1  # the writer ran exactly once
+    assert b"assets/diagrams/abc123.svg" not in seen[0]  # the SVG target is GONE from the payload
+    assert b"cap" in seen[0]  # …its alt text survives (the reader still gets the caption)
+    # The skip is CALLER-RECORDED (traceable, the ComposeOutcome.warnings twin), never silent.
+    assert out.warnings and "rsvg-convert absent" in out.warnings[0]
 
 
 def test_docx_svg_embed_renders_when_rsvg_present(monkeypatch):

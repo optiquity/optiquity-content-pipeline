@@ -29,6 +29,10 @@ from pathlib import Path
 
 import pytest
 
+# `tests/conftest.py` is the single home for the optional-diagram-tool skip markers (prepend import
+# mode puts `tests/` on the path — the same cross-import pattern the sibling test modules use).
+from conftest import requires_dot  # noqa: E402
+
 from pipeline.adapters.base import Anchor
 from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.claims import ClaimRegistry
@@ -1801,6 +1805,7 @@ class TestDiagramComposeTransform:
 
     # -- the grounded end-to-end path ------------------------------------------------------
 
+    @requires_dot  # real `dot` compile (degrades to text-alt when absent — covered separately)
     def test_grounded_diagram_mints_svg_rewrites_body_and_persists(self, store, claims):
         _requires_pandoc()  # the rewritten `![…]` figure parses through the A-gate pinned reader
         request = make_request()
@@ -1827,6 +1832,7 @@ class TestDiagramComposeTransform:
         outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
         assert outcome.status == "ok" and outcome.code == "ok"
 
+    @requires_dot  # real `dot` compile (degrades to text-alt when absent — covered separately)
     def test_schemaless_format_still_fires_the_transform(self, store, claims):
         # MINOR-5: `make_request` declares NO `section_schema`, yet the transform must fire (it is
         # gated on the type marker, NOT under the base-schema branch) — else a schema-less format
@@ -1840,6 +1846,7 @@ class TestDiagramComposeTransform:
         body = json.loads(store.output_path(request.artifact_id).read_bytes())["body"]
         assert DIAGRAM_FIGURE_RE.search(body) and "->" not in body
 
+    @requires_dot  # real `dot` compile (degrades to text-alt when absent — covered separately)
     def test_diagram_in_a_part_body_is_transformed(self, store, claims):
         # SERIOUS-3: the transform runs over the parts-DICT leaf directly. Only the diagram part is
         # rewritten; a diagram-free part is returned byte-identical.
@@ -1857,6 +1864,7 @@ class TestDiagramComposeTransform:
         assert DIAGRAM_FIGURE_RE.search(slides) and "->" not in slides
         assert notes == "Speaker notes, ungrounded prose."  # untouched (byte-identical)
 
+    @requires_dot  # real `dot` compile (degrades to text-alt when absent — covered separately)
     def test_diagram_and_a_brought_figure_both_pass_the_asset_gate(self, store, claims):
         _requires_pandoc()
         (store.root / "assets").mkdir(parents=True, exist_ok=True)
@@ -1922,6 +1930,7 @@ class TestDiagramComposeTransform:
         outcome = compose_artifact(request, store=store, claims=claims, runner=runner)
         self._assert_refused(outcome, store, request, marker="diagram-grammar-invalid")
 
+    @requires_dot  # real `dot` compile (degrades to text-alt when absent — covered separately)
     def test_injection_label_is_escaped_end_to_end(self, store, claims):
         # BLOCKER-2 end-to-end: an LLM-authored node label full of `"`, `->`, `{`, `;` renders as
         # LITERAL text — the compiled SVG keeps EXACTLY the gated node/edge count, no injected graph
@@ -1995,6 +2004,7 @@ class TestDiagramComposeTransform:
 
     # -- SERIOUS-3 splice correctness + determinism ----------------------------------------
 
+    @requires_dot  # real `dot` compile (degrades to text-alt when absent — covered separately)
     def test_no_residual_list_with_odd_blank_prose(self, store, claims):
         # SERIOUS-3: normalize-then-splice must leave a CLEAN figure with the raw list fully gone,
         # even when the non-diagram prose has odd blank runs (raw offsets would mis-slice).
@@ -2016,6 +2026,7 @@ class TestDiagramComposeTransform:
             assert residue not in persisted, f"residual {residue!r} in {persisted!r}"
         assert "Intro paragraph." in persisted and "Wrap up" in persisted  # prose survived
 
+    @requires_dot  # real `dot` compile (degrades to text-alt when absent — covered separately)
     def test_diagram_svg_is_byte_deterministic_across_stores(self, store, claims, tmp_path):
         # Determinism: the SAME grounded body compiles to the SAME `<hash>.svg` in a fresh store
         # (idempotent `commit_asset`), so the figure reference is reproducible.
@@ -2039,6 +2050,7 @@ class TestDiagramComposeTransform:
 
     # -- SERIOUS-1(b): the illustrative marker in BOTH the alt/caption AND the SVG ----------
 
+    @requires_dot  # real `dot` compile (degrades to text-alt when absent — covered separately)
     def test_illustrative_diagram_stamps_alt_and_svg_and_survives_plain(self, store, claims):
         _requires_pandoc()
         request = make_request()

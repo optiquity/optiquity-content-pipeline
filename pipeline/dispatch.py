@@ -36,6 +36,7 @@ No SSOT import (INV-CORRECTNESS, §22.7): this module advances the SSOT only via
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -74,6 +75,11 @@ __all__ = [
     "review_deliverable",
 ]
 
+#: Module logger — the VISIBLE channel for the docx SVG-embed GRACEFUL DEGRADATION (when
+#: `rsvg-convert` is absent the SVG figure is dropped to its alt text rather than hard-refused;
+#: never silent — the operator sees this warning).
+_LOG = logging.getLogger("pipeline.dispatch")
+
 #: The pinned in-system writer set (gate step 3: md→markdown, html→html5, docx→docx, plus the
 #: plain-text→plain writer — all ship in the pinned binary). `json` is raw-AST passthrough.
 INTERNAL_WRITERS = frozenset({"markdown", "html5", "docx", "plain"})
@@ -107,6 +113,34 @@ def embeddable_image_targets(ast: dict[str, Any], writer: str) -> tuple[str, ...
         return ()
     prefix = f"{asset_ref.ASSETS_DIRNAME}/"
     return tuple(sorted({t for t in asset_ref.iter_image_targets(ast) if t.startswith(prefix)}))
+
+
+def _strip_svg_images(node: object) -> Any:
+    """Return a COPY of the pandoc AST with every `.svg` `Image` inline replaced by a `Span` that
+    carries the image's ALT inlines — the graceful docx degradation when `rsvg-convert` is absent.
+
+    The figure is dropped and its alt text kept, so the docx renders readable text instead of a
+    blank-in-Word media part. PURE (never mutates the input); a non-svg `Image` (png/jpg) and every
+    other node are copied through untouched. Mirrors `asset_ref.iter_image_targets`' defensive walk
+    (an `Image` is `{"t":"Image","c":[attr, alt-inlines, [url, title]]}`), so a malformed node is
+    left as-is rather than raising."""
+    if isinstance(node, dict):
+        if node.get("t") == "Image":
+            content = node.get("c")
+            if (
+                isinstance(content, list)
+                and len(content) >= 3
+                and isinstance(content[2], list)
+                and content[2]
+                and isinstance(content[2][0], str)
+                and content[2][0].endswith(".svg")
+            ):
+                alt = content[1] if len(content) >= 2 and isinstance(content[1], list) else []
+                return {"t": "Span", "c": [["", [], []], _strip_svg_images(alt)]}
+        return {key: _strip_svg_images(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_strip_svg_images(value) for value in node]
+    return node
 
 
 class CapabilityInfeasibleError(SerializeError):
@@ -210,7 +244,13 @@ class DispatchOutcome:
     True only for an html5/docx writer handed a non-empty `resource_paths` (an `assets/…` figure was
     inlined). It is the dispatch-level twin of the driver/render legs' `bool(embedded_assets)` and
     keys the serialize preimage's OMIT-WHEN-ABSENT `asset_embed_version`; False for md/plain, an
-    image-less html/docx, the json passthrough, and every external target."""
+    image-less html/docx, the json passthrough, and every external target.
+
+    `warnings` records non-fatal GRACEFUL-DEGRADATION notes for this render — today exactly the
+    docx SVG-embed skip when `rsvg-convert` is absent (the figure was dropped to its alt text). It
+    is the caller-facing, TRACEABLE twin of the `_LOG` warning (the symmetric counterpart of
+    `ComposeOutcome.warnings`): empty `()` on every ordinary render, so a caller that ignores it is
+    byte-unaffected. A degradation is NEVER silent — it rides here AND the log."""
 
     side: str
     writer: str
@@ -221,6 +261,7 @@ class DispatchOutcome:
     output_bytes: bytes | None = None
     payload_ast: dict[str, Any] | None = None
     assets_embedded: bool = False
+    warnings: tuple[str, ...] = ()
 
 
 def dispatch(
@@ -309,6 +350,34 @@ def dispatch(
             output_bytes=canonical_json_bytes(render_ast),
         )
 
+    # C0 → GRACEFUL DEGRADATION (ratified reversal of the PA-12 mirror for the tool-ABSENCE case).
+    # pandoc rasterizes an embedded SVG into a docx PNG fallback by shelling out to `rsvg-convert`;
+    # when it is ABSENT pandoc still exits 0 and ships a docx carrying the raw SVG part but NO PNG
+    # (blank/broken in Word). Rather than REFUSE (`CapabilityInfeasibleError`), DEGRADE: drop the
+    # SVG figure(s) to their alt text (`_strip_svg_images`) and render the docx WITHOUT them —
+    # never a blank-in-Word doc, never a hard error. NEVER silent: a `_LOG.warning` fires AND the
+    # skip is recorded on `DispatchOutcome.warnings` (the caller-facing twin of ComposeOutcome).
+    # Scoped to a docx writer over an `assets/…svg` target (the `and` short-circuits; a raster never
+    # probes rsvg → byte-identical; html5 SVG data-URI and markdown SVG by-path are untouched). The
+    # strip runs FIRST so the SVG-free AST is what pandoc renders. Identity stays HONEST at the
+    # caller (the driver drops the `.svg` fold when rsvg is absent → no `--resource-path`, no embed
+    # claimed), so a degraded docx folds NO diagram asset (no same-id/different-bytes; §17 FR7.1). A
+    # PRESENT-but-FAILING rsvg is still caught by the stderr backstop below (returncode-0
+    # `Could not convert image`).
+    render_warnings: tuple[str, ...] = ()  # caller-facing degradation record (docx SVG skip)
+    if (
+        target.writer == "docx"
+        and any(t.endswith(".svg") for t in embeddable_image_targets(render_ast, target.writer))
+        and not rsvg_available()
+    ):
+        note = (
+            "docx SVG diagram skipped — rsvg-convert absent — substituted text-alt (install "
+            "rsvg-convert, or route the SVG to html5/markdown, to embed it)"
+        )
+        _LOG.warning("%s", note)  # VISIBLE log …
+        render_warnings = (note,)  # … AND a caller-facing record on the outcome (never silent)
+        render_ast = _strip_svg_images(render_ast)
+
     args = ("-f", "json", "-t", target.writer, *inputs.flags)
     if citeproc_enabled:  # C6: content-driven — the resolution ARG rides here, not in inputs.flags
         args = (*args, "--citeproc")
@@ -318,29 +387,15 @@ def dispatch(
     # over a gated `assets/…` figure (F5 order: store-root FIRST, repo-root SECOND). Append a single
     # os.pathsep-joined `--resource-path` (pandoc searches it in order → the client figure wins over
     # a same-named framework asset) and, for html5 ONLY, `--embed-resources --standalone` (data-URI
-    # inline in a standalone document; docx embeds natively via `--resource-path` alone).
+    # inline in a standalone document; docx embeds natively via `--resource-path` alone). The docx
+    # SVG degrade above keeps identity HONEST at the CALLER: the driver drops the `.svg` fold when
+    # rsvg is absent, so `resource_paths` is empty for a stripped-only figure → `assets_embedded`
+    # False (a mixed png+svg docx keeps the png fold → the png still embeds, the svg is alt text).
     assets_embedded = bool(resource_paths) and target.writer in EMBED_WRITERS
     if assets_embedded:
         args = (*args, f"--resource-path={os.pathsep.join(resource_paths)}")
         if target.writer == "html5":
             args = (*args, "--embed-resources", "--standalone")
-    # C0 (increment C, BLOCKER-3): the docx SVG-embed CAPABILITY PRECHECK (the PA-12 mirror). pandoc
-    # rasterizes an embedded SVG into a docx PNG fallback by shelling out to `rsvg-convert`; when it
-    # is ABSENT pandoc STILL exits 0 and ships a docx carrying the raw SVG media part but NO PNG
-    # (blank/broken in Word), warning only on the stderr the returncode check below never reads. So
-    # when a docx render embeds an `.svg` and `rsvg-convert` is missing, REFUSE loudly up front —
-    # never a silently-degraded document. Scoped to a docx writer over an `.svg` target: the `and`
-    # short-circuits so a raster-only docx (png/jpg) never even probes rsvg → byte-identical; html5
-    # (SVG data-URI, no rsvg) and markdown (SVG by-path, no embed) are untouched.
-    if (
-        target.writer == "docx"
-        and any(t.endswith(".svg") for t in embeddable_image_targets(render_ast, target.writer))
-        and not rsvg_available()
-    ):
-        raise CapabilityInfeasibleError(
-            "capability-infeasible: a docx diagram embed requires rsvg-convert on the render host; "
-            "install it or route the SVG to html5/markdown"
-        )
     try:
         outcome = run_pandoc_bytes(args, canonical_json_bytes(render_ast), binary=binary)
     except PandocUnavailableError:
@@ -367,6 +422,7 @@ def dispatch(
         citeproc_enabled=citeproc_enabled,
         output_bytes=outcome.stdout,
         assets_embedded=assets_embedded,
+        warnings=render_warnings,
     )
 
 
