@@ -14,7 +14,7 @@ build delivered at `5f58d63` (final verification PASSED; cross-reference audit *
 CLOSED, the §21.7-code HARD GATE CLOSED at step 39, the §21.9 gate correctly OPEN/honored). The prepared
 CLAUDE.md diff was applied post-delivery (`5b1c584`). Since then a series of ratified design-record
 increments + the friendly CLI surface + the authoring layer + the users/-namespace restructure + the
-**sources subsystem** landed. **Current HEAD `6f016f2`.** Detailed per-increment records live in the
+**sources subsystem**, the **foundation/ reorg**, and the **diagram-tools-optional** change landed. **Current HEAD `51a8735`.** Detailed per-increment records live in the
 commit history + `ops-handoff/`;
 the summary below is orientation only.
 
@@ -118,6 +118,27 @@ the summary below is orientation only.
   THIRD_PARTY-LICENSES.md). **Current HEAD `6f016f2`.** Follow-ons open: SearXNG live backend; the
   keystore for paid sources (FRED key, paid APIs) — shared with the deferred transport-selection design;
   design.md §sources canonical writeup (design-of-record captured off-repo).
+
+- **★ foundation/ reorg + CI hardening + diagram-tools-OPTIONAL (`1bdd4a2`..`51a8735`; 2026-08-06 → 08-08;
+  each coder→reviewer→commit).** Two arcs on top of sources:
+  - **foundation/ reorg (B-1 `1bdd4a2` / B-2 `89a268c` / B-3 `bd18f86`)** — the 17 framework registries
+    regrouped under one `foundation/` parent (`dimensions/`, `grounding/`, `composition/`, `render-config/`,
+    `lexicons/`) via a physical base-path MAP (`pipeline/layout.py` `REGISTRY_BASE` + `registry_dir`). A
+    RELOCATION, not a cascade/identity change: the collection token stays bare; only framework path-builders
+    reroute; the instance/per-user layer stays flat. Identity-preserving (no artifact-id churn; only the 3
+    journal `csl:` values re-mint their deliverable-id). Guard `check-no-content.sh` re-anchored to
+    `foundation/`; tracked `git mv` migration (`scripts/migrate-to-foundation-layout.sh`, run once downstream).
+  - **diagram tools OPTIONAL + tool-less CI (`51a8735`; 2026-08-08).** A requested `{type=diagram}` whose tool
+    (`dot`/`d2`/`rsvg-convert`) is ABSENT now degrades GRACEFULLY — the diagram is dropped, its text alt
+    substituted, and a warning RECORDED (`ComposeOutcome.warnings` / `DispatchOutcome.warnings`), never a
+    silent drop. This REVERSES the PA-12 loud-fail for the MISSING-TOOL case ONLY; the HARD grounding gate and
+    malformed-source errors still refuse loudly. Identity stays honest (compose stores no SVG; the docx fold is
+    made rsvg-aware ⇒ no same-id/different-bytes collision, FR7.3). CI now runs **TOOL-LESS** (mirrors the
+    common user who never installs graphviz) so a missing tool can never set it red; also pins
+    `.python-version` 3.12.13 (fixes 3 unrelated `ipaddress` CI failures). Verified 3853 tool-full /
+    3819+34-skipped tool-less; **CI green** on GitHub's runner. Supersession note in `docs/known-issues.md`;
+    `diagram-styles` schema `tool` definition + generated `attributes.md` + `concepts.md` swept. **Current
+    HEAD `51a8735`.**
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
