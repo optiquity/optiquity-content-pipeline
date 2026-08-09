@@ -39,9 +39,11 @@ import re
 from pathlib import Path
 
 __all__ = [
+    "DEFAULT_ZONE",
     "USERS_DIRNAME",
     "WORKSPACES_DIRNAME",
     "WorkspaceNameError",
+    "ZONES_DIRNAME",
     "validate_user_segment",
     "validate_workspace_path",
     "workspace_path",
@@ -58,6 +60,15 @@ WORKSPACES_DIRNAME = "workspaces"
 #: single source for the layout literals; consumed by the later re-home increments (it is NOT
 #: yet referenced by any path-building code — B1/B2 are behavior-neutral prep).
 USERS_DIRNAME = "users"
+
+#: The zone directory literals. A zone groups a user's workspaces — they live under
+#: `users/<user>/zones/<zone>/workspaces/` — so a zone sits BETWEEN user and workspace.
+#: `ZONES_DIRNAME` is the directory the zones live under and `DEFAULT_ZONE` is the zone used when
+#: a request names none. Defined here alongside `USERS_DIRNAME` / `WORKSPACES_DIRNAME` as the
+#: single source for the layout literals; consumed by the later zone-restructure increments (they
+#: are NOT yet referenced by any path-building code — Z1 is behavior-neutral prep).
+ZONES_DIRNAME = "zones"
+DEFAULT_ZONE = "default"
 
 #: A valid workspace name is one safe path segment. The charset is DERIVED from the existing
 #: corpus so nothing legitimate breaks: every real workspace dir (`mvp-demo`,
