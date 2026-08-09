@@ -101,7 +101,7 @@ from typing import Any
 
 from pipeline.canonical import canonical_json_str, sha256_hex
 from pipeline.ids import output_filename, parse_id
-from pipeline.workspace_name import USERS_DIRNAME, WORKSPACES_DIRNAME
+from pipeline.workspace_name import USERS_DIRNAME, WORKSPACES_DIRNAME, ZONES_DIRNAME
 
 __all__ = [
     "STORE_SUBDIRS",
@@ -235,6 +235,11 @@ class WorkspaceStore:
     _framework_root: Path | None = None
     _user: str | None = None
     _workspace: str | None = None
+    #: The zone this workspace lives under (Z2) — `users/<user>/zones/<zone>/workspaces/<ws>`.
+    #: Set ONLY by `WorkspaceStore.at(..., zone=<zone>)`; `None` on the legacy 3-level `.at`
+    #: (`zone=None`) and on a bare store. Appended AFTER `_workspace` so bare positional
+    #: `WorkspaceStore(root)` and `.at(...)` with no zone stay byte-identical (default `None`).
+    _zone: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", Path(self.root))
@@ -243,21 +248,43 @@ class WorkspaceStore:
 
     @classmethod
     def at(
-        cls, framework_root: str | Path, user: str, workspace: str
+        cls,
+        framework_root: str | Path,
+        user: str,
+        workspace: str,
+        *,
+        zone: str | None = None,
     ) -> WorkspaceStore:
-        """Build the store for `users/<user>/workspaces/<workspace>/` AND record its identity.
+        """Build the store for a workspace AND record its identity (increment B3; zone since Z2).
 
-        THE ONLY constructor that knows the layout depth (increment B3): it composes
-        `root = framework_root / USERS_DIRNAME / user / WORKSPACES_DIRNAME / workspace` from the
-        two layout literals (imported from `pipeline.workspace_name`, their single home) and
-        stores `framework_root`/`user`/`workspace` so the accessors return recorded facts, never
+        THE ONLY constructor that knows the layout depth: it composes `root` from the layout
+        literals (imported from `pipeline.workspace_name`, their single home) and stores
+        `framework_root`/`user`/`workspace`/`zone` so the accessors return recorded facts, never
         positional guesses. `framework_root` is coerced to `Path` (parity with `root`). Callers
         that already hold a full root keep using bare `WorkspaceStore(root)`; this factory is for
         callers that hold the framework root + identity and want depth-robust accessors.
+
+        `zone` is KEYWORD-ONLY (a positional 4th arg is a `TypeError`) with two shapes:
+
+        - **`zone is None` (default)** — the legacy 3-level root
+          `framework_root / USERS_DIRNAME / user / WORKSPACES_DIRNAME / workspace`, BYTE-IDENTICAL
+          to this factory's pre-Z2 output (`_zone=None`, so `.zone` raises like `.workspace` on a
+          bare store). This is a compatibility scaffold every existing caller relies on (none pass
+          `zone` yet); Z4 removes it once the zone becomes required.
+        - **`zone` is a `str`** — the 4-level root
+          `framework_root / USERS_DIRNAME / user / ZONES_DIRNAME / zone / WORKSPACES_DIRNAME /
+          workspace` (a zone sits BETWEEN user and workspace), recording `_zone=zone`.
+
+        This factory does NOT validate `zone` — the `validate_zone_segment` hygiene/containment
+        gate lands in Z3; `.at` only constructs the path (mirroring how it never re-validates
+        `user`/`workspace`). `user_root` and every other method are unchanged.
         """
         fr = Path(framework_root)
-        root = fr / USERS_DIRNAME / user / WORKSPACES_DIRNAME / workspace
-        return cls(root, fr, user, workspace)
+        if zone is None:
+            root = fr / USERS_DIRNAME / user / WORKSPACES_DIRNAME / workspace
+        else:
+            root = fr / USERS_DIRNAME / user / ZONES_DIRNAME / zone / WORKSPACES_DIRNAME / workspace
+        return cls(root, fr, user, workspace, zone)
 
     # -- identity accessors (§23 re-home; raise-loud, never silent-None) ----
 
@@ -299,6 +326,22 @@ class WorkspaceStore:
                 "use WorkspaceStore.at(framework_root, user, workspace)"
             )
         return self._workspace
+
+    @property
+    def zone(self) -> str:
+        """This workspace's zone — raise-loud if absent (never silent-`None`).
+
+        Recorded ONLY by `WorkspaceStore.at(..., zone=<zone>)`. A store built with `zone=None`
+        (the legacy 3-level compatibility scaffold) or a bare `WorkspaceStore(root)` records NO
+        zone: reading `.zone` raises `WorkspaceStoreIdentityError` rather than returning `None`,
+        exactly as `user`/`workspace` do — "no zone recorded" is refused loudly, never guessed.
+        """
+        if self._zone is None:
+            raise WorkspaceStoreIdentityError(
+                "zone unavailable — this store was constructed without a zone; "
+                "use WorkspaceStore.at(framework_root, user, workspace, zone=<zone>)"
+            )
+        return self._zone
 
     @property
     def user_root(self) -> Path:

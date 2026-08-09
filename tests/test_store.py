@@ -737,12 +737,13 @@ class TestStoreIdentity:
         assert s.claim_path(FIT) == s.root / "claims" / FIT
 
     def test_identity_fields_are_appended_after_root_optional_defaulting_none(self):
-        # The additive shape: `root` stays the first (and only required) field; the three identity
+        # The additive shape: `root` stays the first (and only required) field; the identity
         # fields follow it, each optional (default None) — this is what keeps every existing bare
-        # positional construction across production + tests byte-for-byte valid.
+        # positional construction across production + tests byte-for-byte valid. `_zone` (Z2) is
+        # the newest, appended AFTER `_workspace` so the pre-zone positional shape is preserved.
         flds = dataclasses.fields(WorkspaceStore)
         assert flds[0].name == "root"
-        assert [f.name for f in flds[1:]] == ["_framework_root", "_user", "_workspace"]
+        assert [f.name for f in flds[1:]] == ["_framework_root", "_user", "_workspace", "_zone"]
         assert all(f.default is None for f in flds[1:])
 
 
