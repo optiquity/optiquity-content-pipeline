@@ -39,7 +39,7 @@ Treat the tracker, not this summary, as the authority.
 
 Before the concepts, it helps to know how you would actually run the framework. There are two operating models — both covered in `docs/operating-model.md`, both with a QuickStart section.
 
-- **Solo.** Clone the repo, add a workspace, and run it on your own repos. This is the fastest path; `quickstart.md` §A walks it end to end. (Your own repo is a client too — by convention you are `users/<you>/workspaces/self`.)
+- **Solo.** Clone the repo, add a workspace, and run it on your own repos. This is the fastest path; `quickstart.md` §A walks it end to end. (Your own repo is a client too — by convention you are `users/<you>/zones/default/workspaces/self`.)
 - **Framework + private instances.** You maintain this public framework repo, and each user — including you — keeps a *private instance* that pulls your framework improvements non-destructively via `scripts/update-from-upstream.sh`. Because framework files and instance content never share a file, those updates merge cleanly and leave your content untouched, while the public repo stays content-free (enforced in CI, not by willpower). `quickstart.md` §B covers the maintainer setup.
 
 Your own instance is simply the first private instance; others clone the public repo to make their own. Either way there is only ever one pipeline repo with many workspaces — never a separate repo per client.
@@ -51,7 +51,7 @@ However you deploy it, there are two doors onto the same operations. Locally you
 Five invariants hold across every session and every instance, and the rest of this manual assumes them. They are stated in full in `CLAUDE.md` and elaborated throughout the [glossary](docs/guide/concepts.md#glossary) — this is the short authoritative summary.
 
 1. **Read-only, always.** Source and client repos are never written, edited, moved, or committed to. The pipeline only reads a client's Graphify graph by path.
-2. **A workspace per client — never a repo per client.** Each client repo gets one `users/<user>/workspaces/<workspace>/` directory (the `users/<user>/` segment is an isolation/addressing prefix); there is one pipeline repo with many workspaces, and one client's content can never leak into another's.
+2. **A workspace per client — never a repo per client.** Each client repo gets one `users/<user>/zones/<zone>/workspaces/<workspace>/` directory (the `users/<user>/` and `zones/<zone>/` segments are both isolation/addressing prefixes — a **zone** groups a user's workspaces and defaults to `default`); there is one pipeline repo with many workspaces, and one client's content can never leak into another's. Same-named workspaces in different zones are distinct, store-isolated workspaces.
 3. **The tracking spreadsheet is the single source of truth** for status and progress. `state.md` is a derived mirror of it — if they disagree, the spreadsheet wins and `state.md` is updated to match, never the reverse.
 4. **The public framework repo stays empty of client content.** Generic `provenance: framework` defaults are welcome (they are the deliverable); an instance profile, any `provenance: instance` entry, and real client workspaces never appear there.
 5. **Instances extend by adding files; they never edit framework files.** Downstream adds populated registries, workspaces, and a profile; framework improvements come from upstream, so updates stay conflict-free.

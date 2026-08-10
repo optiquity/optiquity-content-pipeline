@@ -38,9 +38,12 @@ X-API-Key: <secret>
 ```
 
 `pipeline serve` is **fail-closed**: it refuses to start with no secret, binds to loopback by
-default, and serves only allow-listed `user/workspace` pairs (§23 — each allow-list entry is a
-`user/workspace` string, or a `user/*` wildcard admitting every workspace under one user). A
-missing/invalid secret is `401` (`unauthorized`).
+default, and serves only allow-listed workspaces (§23 — each allow-list entry is a
+`user/zone/workspace` triple, a `user/zone/*` wildcard admitting every workspace under one zone, or a
+`user/*` wildcard admitting every zone+workspace under one user). **BREAKING (config format):** this
+key changed from the pre-zone `user/workspace` form — a deployed `instance/shim.yaml` must migrate
+its `workspaces.allowed` entries to the zoned form (or a `user/*` wildcard). A missing/invalid secret
+is `401` (`unauthorized`).
 
 ### 1.2 The invoke request
 
@@ -51,6 +54,7 @@ missing/invalid secret is `401` (`unauthorized`).
   "verb": "render",
   "workspace": "acme",
   "user": "acme-corp",
+  "zone": "default",
   "params": { "item": "deck-intro", "platform": "linkedin",
               "language": "en", "output_type": "post" },
   "token": null,
@@ -59,8 +63,12 @@ missing/invalid secret is `401` (`unauthorized`).
 ```
 
 - `verb`, `workspace`, and `user` are top-level and required. `user` is the §23 isolation prefix
-  (the pair addresses `users/<user>/workspaces/<workspace>/`) — a missing/empty `user` is a
-  `400 bad-request`, exactly like a missing workspace, and is **never** defaulted.
+  (the triple addresses `users/<user>/zones/<zone>/workspaces/<workspace>/`) — a missing/empty `user`
+  is a `400 bad-request`, exactly like a missing workspace, and is **never** defaulted.
+- `zone` is the **optional** §23 zone segment between `user` and `workspace`. When present it MUST be
+  a non-empty string; when omitted the door materializes `default`. It is ECHOED in the reply so a
+  caller can confirm which zone the call ran in (read it back with `echoed_zone`, §2.2a). Same-named
+  workspaces in different zones are DISTINCT, store-isolated workspaces.
 - `params` carries the per-verb inputs. **`idempotency_key` and `callback_url`, when used, live
   inside `params`** (not at the top level) — `generate-next` requires a non-empty
   `params.idempotency_key`; `render` is content-addressed so its key is optional.
@@ -127,8 +135,9 @@ it will get `200` or `202`, so it must handle both.
 ### 1.5 The poll states
 
 `POST /poll` takes `{ "workspace", "user", "key", "target_ids" }` (the `user` prefix is required
-here too, §23; the rest come from the 202 `job` + `poll.needs`). Its reply carries a `status`
-field; the full set of async status values is:
+here too, §23; the rest come from the 202 `job` + `poll.needs`). Pass the optional `zone` to poll in
+the SAME zone the submit ran in — the 202 `job` block echoes it, so a client threads it straight
+through. Its reply carries a `status` field; the full set of async status values is:
 
 <!-- wire-tokens:async-status:begin -->
 ```text
@@ -238,33 +247,54 @@ Config is env, identically across languages: `OPTIQUITY_SHIM_URL` + `OPTIQUITY_S
 ### 2.2 The raw layer (1:1 with the wire)
 
 ```text
-invoke(verb, workspace, user, params, token = null, pins = null) -> Response
-poll(workspace, user, key, target_ids)                           -> Response
-list(type, workspace, user, filters = null)                      -> Response
-get(type, id, workspace, user)                                   -> Response
+invoke(verb, workspace, user, params, token = null, pins = null, zone = "default") -> Response
+poll(workspace, user, key, target_ids, zone = "default")                           -> Response
+list(type, workspace, user, filters = null, zone = "default")                      -> Response
+get(type, id, workspace, user, zone = "default")                                   -> Response
 ```
 
 The generic `invoke(verb, ...)` forwards any verb, so the raw layer covers the whole startup-wired
 surface with no per-verb code. `user` is the §23 isolation prefix and is **required** on every call
 (it rides in the request body beside `workspace`); `Response` is the normalized value type below.
 
+### 2.2a The zone argument (§23)
+
+Every method carries an optional **`zone`** argument — the §23 addressing segment between `user` and
+`workspace` (`users/<user>/zones/<zone>/workspaces/<workspace>/`) that groups a user's workspaces. It
+**defaults to `default`**, so a single-zone deployment never sets it; a multi-zone caller passes the
+zone it wants (there is no client-side S4 refusal — the programmatic default is always `default`, so
+a multi-zone caller MUST name the zone). It rides the request body next to `workspace` on every door
+and is **echoed** back in the reply. Read the echoed zone with the pure helper:
+
+```text
+echoed_zone(body) -> string | null   // the zone the door resolved (envelope.zone, else a flat zone); null if none echoed
+```
+
+Same-named workspaces in different zones are DISTINCT, store-isolated workspaces — the fully-qualifying
+key is the `(user, zone, workspace)` triple. (This is store isolation only; per-zone *spend* isolation
+is a transport-build item, not delivered here.)
+
 ### 2.3 The ergonomic async layer + the poll state machine
 
 ```text
 begin_session(workspace, user, selection, overrides=null, pins=null,
-              generate="none", idempotency_key=null)  -> SessionHandle
+              generate="none", idempotency_key=null, zone="default")  -> SessionHandle
         // generate MUST be "none": the one-call begin-session{generate!=none} is a 501
         // deferred convenience. The supported path is two calls.
 
 generate_and_wait(workspace, user, token, idempotency_key,   // idempotency_key REQUIRED
-                  batch_size=null, only=null, callback_url=null, ...)  -> Result
+                  batch_size=null, only=null, callback_url=null, zone="default", ...)  -> Result
         // drives the served continue-session{generate-next} door.
 
 render_and_wait(workspace, user, item, platform, language, output_type,
                 presentation=null, force_reconcile=false,
-                idempotency_key=null, callback_url=null)  -> Result
+                idempotency_key=null, callback_url=null, zone="default")  -> Result
         // render is content-addressed + token-free; idempotency_key OPTIONAL.
 ```
+
+Each `zone` defaults to `default` and rides the body next to `workspace` (see §2.2a); a poll resolves
+in the SAME zone the submit ran in, and the wakeup event carries the zone so a callback fetch lands in
+the right zone.
 
 The `_and_wait` methods **resolve at the terminal outcome or the deadline**. Every wrapper runs this
 identical state machine:

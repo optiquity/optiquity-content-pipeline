@@ -46,12 +46,32 @@ deviations from mission §6.2 in `state.md` (feeds decision D4). (P0.3)
 Create a workspace (your own repos are clients too):
 
 ```bash
-uv run pipeline workspace new self --user <user>   # scaffolds users/<user>/workspaces/self (use any <workspace-name>)
+uv run pipeline workspace new self --user <user>   # scaffolds users/<user>/zones/default/workspaces/self (use any <workspace-name>)
 ```
 
 (`workspace new` creates the user namespace on first use and seeds the workspace from
-`templates/workspace/`; the equivalent by hand is `mkdir -p users/<user>/workspaces && cp -R
-templates/workspace users/<user>/workspaces/self`.)
+`templates/workspace/`; the equivalent by hand is `mkdir -p users/<user>/zones/default/workspaces &&
+cp -R templates/workspace users/<user>/zones/default/workspaces/self`.)
+
+**Zones (grouping a user's workspaces).** A workspace lives at
+`users/<user>/zones/<zone>/workspaces/<workspace>/` — a **zone** sits between the user and the
+workspace and groups a user's workspaces (e.g. `work` vs. `personal`). It defaults to `default`, so a
+single-zone setup never types it; when you want a second grouping, add `--zone <zone>` to
+`workspace new`/`list`/`delete` (a brand-new zone is auto-created and announced), or create it
+first with `pipeline zone new <zone> --user <user>`. Zones give **store isolation** (same-named
+workspaces in different zones are distinct); per-zone spend/key isolation is a later transport-build
+feature. Full per-door detail: the [Interfaces guide → Zones](guide/interfaces.md#zones-grouping-a-users-workspaces).
+
+> **Upgrading an EXISTING instance to the zoned layout — pull → migrate → use.** A pre-zone instance
+> (`users/<user>/workspaces/<workspace>/`) migrates in a fixed order: **(1) pull** the framework
+> (`scripts/update-from-upstream.sh`) — this brings the zoned code and the additive `.gitignore`
+> BEFORE any data moves; **(2) migrate** by running `scripts/migrate-to-zones-layout.sh` ONCE (it
+> re-homes every user's workspaces under `zones/default/`, is idempotent, and never deletes data);
+> **(3) use** — post-migration commands resolve zone `default` and land on the moved homes. Neither
+> half is destructive alone. A deployed HTTP shim also needs its `instance/shim.yaml` allow-list keys
+> migrated from `user/workspace` to `user/zone/workspace` (a BREAKING config change — see the
+> [Operating model → Zone migration](operating-model.md#migrating-the-on-disk-layout-users-then-zones)).
+> A brand-new Phase-0 install skips all of this — `workspace new` writes the zoned layout directly.
 
 Each client repo is checked out locally. Build its Graphify graph **in that checkout** — the
 `graphify-out/` is gitignored inside the client repo, so it never dirties it. The pipeline stores
@@ -65,7 +85,7 @@ graphify export wiki              # optional agent-crawlable wiki snapshot (need
 ```
 
 Record the client-repo checkout path + its `graphify-out/graph.json` path in
-`users/<user>/workspaces/self/source.md`. (P0.4/P0.5)
+`users/<user>/zones/default/workspaces/self/source.md`. (P0.4/P0.5)
 
 ---
 

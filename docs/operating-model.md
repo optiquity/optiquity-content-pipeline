@@ -22,9 +22,10 @@ clone the public repo to make their own private instances.
 (`provenance: framework | instance`) — is a **metadata tag**; **scope** — where it applies — is
 **location**. Shared registry directories hold framework-shipped defaults and instance-global
 additions side by side, distinguished by the tag, never by the directory. Client scope is still
-structural: `users/<user>/workspaces/<workspace>/` entries apply to that client only. (The
-`users/<user>/` segment is an isolation/addressing prefix — it changes *where* a workspace lives,
-not the value cascade; `docs/design.md` §10/§23.)
+structural: `users/<user>/zones/<zone>/workspaces/<workspace>/` entries apply to that client only.
+(The `users/<user>/` and `zones/<zone>/` segments are both isolation/addressing prefixes — a **zone**
+groups a user's workspaces and changes only *where* a workspace lives, not the value cascade;
+`docs/design.md` §10/§23.)
 
 Updates stay clean because framework and instance content never share a **file** (git merges at
 file granularity, so a merge only conflicts when *both* sides edit the *same* file):
@@ -58,6 +59,43 @@ scripts/update-from-upstream.sh      # fetch upstream, show framework diff, conf
 Because your content lives in separate files, the merge applies framework improvements and leaves
 your content untouched. If you ever did edit a framework file locally (don't), that's the only
 place a conflict can arise — resolve by moving your change into an instance-owned file or upstream.
+
+## Migrating the on-disk layout (users, then zones)
+
+A handful of framework releases have **re-homed** where workspaces live on disk. These are the one
+class of framework change that also moves your (gitignored, instance-owned) *data*, so each ships a
+**one-shot, idempotent, never-destructive** migration script you run once, in a fixed **pull →
+migrate → use** order. The script only ever `mv`s a workspace directory and `rmdir`s a proven-empty
+parent — it edits no file contents and deletes no data; a re-run after a complete move is a clean
+no-op.
+
+- `scripts/migrate-to-users-layout.sh` — the earlier flat → per-owner re-home (into `users/<user>/`).
+- `scripts/migrate-to-zones-layout.sh` — the **zones** re-home: every workspace moves from
+  `users/<user>/workspaces/<workspace>/` to `users/<user>/zones/default/workspaces/<workspace>/`, so
+  a **zone** (a grouping of a user's workspaces) sits between the user and the workspace. See the
+  [Interfaces guide → Zones](guide/interfaces.md#zones-grouping-a-users-workspaces) for the concept.
+
+**The pull → migrate → use order (why it is safe).** The two halves are non-destructive *only in
+this order*:
+
+1. **Pull** the framework — `scripts/update-from-upstream.sh`. This brings the zoned CODE (which now
+   resolves every workspace through the 5-level path) **and** the additive `.gitignore` for the
+   zoned tree, BEFORE any data moves.
+2. **Migrate** — run `scripts/migrate-to-zones-layout.sh` ONCE (all users in one sweep; `--dry-run`
+   first if you want to preview the moves). It re-homes the on-disk data the new code expects under
+   `zones/default/`.
+3. **Use** — post-migration, un-flagged commands resolve zone `default` and land on the moved homes.
+
+Neither half is destructive alone: pulling the code before migrating just means un-migrated
+workspaces are not yet found (a loud "not found", never a silent wrong-zone write); migrating without
+first pulling would move data the old code cannot address. Running them in order closes the window.
+
+**BREAKING — the HTTP-shim allow-list config format.** If you run the `pipeline serve` shim, the
+served-workspace allow-list key in `instance/shim.yaml` (`workspaces.allowed`) changed from the
+pre-zone **`user/workspace`** form to **`user/zone/workspace`** (plus the `user/zone/*` and `user/*`
+wildcards). A deployed shim must migrate its entries to the zoned form or a `user/*` wildcard;
+`instance/shim.yaml` is instance-owned, so this is a manual config edit the pull does not make for
+you. (Unlike the data re-home, this is a *configuration* break, not a data move.)
 
 ## Keeping the public repo empty of client content
 

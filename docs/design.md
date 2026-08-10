@@ -1021,10 +1021,14 @@ it, Appendix B):
   shared directories are **mixed-provenance**: framework defaults and instance-global additions
   live side by side, distinguished by the tag, never by location.
 - **Scope** — where it applies: encoded by **location**. Shared `<dimension>/` directories =
-  global; `users/<user>/workspaces/<workspace>/<dimension>/` = that client only. Client isolation
-  is structural. The `users/<user>/` segment is an isolation/addressing **prefix**, orthogonal to
-  the value cascade (§12/§23): it changes *where* a workspace lives, not which rung a value binds
-  to — the cascade stays framework → instance-global → workspace (L1/L2/L3), never a `user` rung.
+  global; `users/<user>/zones/<zone>/workspaces/<workspace>/<dimension>/` = that client only. Client
+  isolation is structural. The `users/<user>/` **and** the `zones/<zone>/` segments are both
+  isolation/addressing **prefixes**, orthogonal to the value cascade (§12/§23): they change *where* a
+  workspace lives, not which rung a value binds to — the cascade stays framework → instance-global →
+  workspace (L1/L2/L3), never a `user` rung and **never a `zone` rung**. A zone GROUPS a user's
+  workspaces (§23) and gives them store isolation; the separate **transport-credential zone rung**
+  (per-zone keys/weekly-caps, and therefore spend-bucket isolation between same-named zones) is a
+  **transport-build item**, not delivered by the restructure (§12.6).
 
 The five interlocking rules (Q15, all normative):
 
@@ -1287,7 +1291,9 @@ L6  run                 (ephemeral session; the override layer — §12.5)
 Higher rung wins, type-driven, only for the attributes it declares. **There is no folio rung for
 any dimension** (DIRECTIVE): a folio is not a value-binding scope. The label L4 is retired with
 the deleted rung — remaining rungs are deliberately **not** renumbered, so rung citations stay
-stable; no other section may reintroduce a folio scope.
+stable; no other section may reintroduce a folio scope. **A zone is likewise NOT a content cascade
+rung** (§10/§23): it is an addressing prefix that groups a user's workspaces, so it changes *where* a
+value binds, never *which value* binds — this spine has no `zone` rung.
 
 L0–L5 are persistent workspace state; **L6 is ephemeral session state the system never persists**
 (§20). This is why run bindings can only bind values (M2) and can never redefine entries (M1) —
@@ -2749,7 +2755,7 @@ sources/                               # adapters + source-instance entries (§6
 render-targets/                         # writer + side + pins entries (§17)
 recipes/ folio-types/                   # §8, §9.6
 templates/workspace/                    # the shared workspace scaffold in public (framework; §23)
-users/<user>/workspaces/<workspace>/    # instance-side only (gitignored in public)
+users/<user>/zones/<zone>/workspaces/<workspace>/   # instance-side only (gitignored in public)
   topics/ <dimension>/ …                #   client-scoped entries + extends: partials (§10)
   folios/<folio-id>/members/<artifact-id>   # marker-per-member records (§13.3)
   artifacts/ deliverables/              #   IR-canonical/fitted/AST/bytes + render-bindings (§18)
@@ -2764,16 +2770,43 @@ scripts/                                # incl. migrate.sh (§11.6), guards (§1
 .claude/{agents,skills}/                # framework-ops plane (product plane open, §27.4)
 ```
 
-The **`users/<user>/` level is an isolation/addressing prefix, not a new scope rung** (§10): it
-changes only *where* a workspace lives, leaving the value cascade framework → instance-global →
-workspace (L1/L2/L3, §12) untouched. `users/` and `workspaces/` are plural REST collection nouns,
-so the on-disk tree maps 1:1 to a future `/users/{user}/workspaces/{workspace}` REST path; the
-shared scaffold at `templates/workspace/` is the framework copy every new workspace is stamped from
-by `pipeline workspace new <workspace> --user <user>` (equivalently `cp -R templates/workspace
-users/<user>/workspaces/<workspace>`). The workspace lifecycle is CRUD-complete on that CLI —
-`workspace new` / `workspace list` / `workspace delete` (+ `user new`), all local Tier-A file ops
-that never spend (§21.9); `delete` is safe-by-default (confirmation, plus a `--force` gate over any
-workspace holding generated output) and self-contained (no global index to orphan).
+**The 5-level zoned store root.** A workspace store root is `users/<user>/zones/<zone>/workspaces/
+<workspace>/`: a **zone** sits BETWEEN user and workspace and **groups a user's workspaces** (e.g.
+`work` vs. `personal`). Both the **`users/<user>/`** and the **`zones/<zone>/`** levels are
+isolation/addressing **prefixes, not new scope rungs** (§10): they change only *where* a workspace
+lives, leaving the value cascade framework → instance-global → workspace (L1/L2/L3, §12) untouched —
+there is no `user` rung and **no `zone` rung** in the cascade. `users/`, `zones/`, and `workspaces/`
+are plural REST collection nouns, so the on-disk tree maps 1:1 to a future
+`/users/{user}/zones/{zone}/workspaces/{workspace}` REST path; the shared scaffold at
+`templates/workspace/` is the framework copy every new workspace is stamped from by `pipeline
+workspace new <workspace> --user <user> [--zone <zone>]` (equivalently `cp -R templates/workspace
+users/<user>/zones/<zone>/workspaces/<workspace>`). **Zone selection** rides the same rails as
+`--user` at every door, defaults to `default` (a single-zone user never types it), and the RESOLVED
+zone is ECHOED back (the result envelope's `zone` field + the friendly preview header). The
+per-door zone-selection map and the same-name policy below are enumerated for operators in the
+[Interfaces guide → Zones](guide/interfaces.md#zones-grouping-a-users-workspaces).
+
+Both the workspace and the zone lifecycles are CRUD-complete on the friendly CLI —
+`workspace new` / `list` / `delete` (with a `--zone` selector) and `zone new` / `list` / `delete`,
+plus `user new`, all local Tier-A file ops that never spend (§21.9). `delete` is safe-by-default
+(confirmation, plus a `--force` gate over any workspace holding generated output) and self-contained
+(no global index to orphan); `zone delete` is the recursive two-tier form (it removes the zone AND
+every workspace under it, stricter because recursive, and NEVER through a symlink). One **spend
+guard** (S4, §21.9) rides the spend verbs only: a user who owns MORE THAN ONE zone must name one
+explicitly on a spend verb (`preview`/`generate`/`outline drive`) — the door refuses-and-lists
+rather than silently pick `default` and spend in the wrong zone; a single-zone user and every
+(non-spending) Tier-A verb keep the friendly default, and an explicit `--zone` (even `default`) is
+always honored.
+
+**Same workspace name across zones is ALLOWED.** `users/dave/zones/work/workspaces/acme` and
+`users/dave/zones/personal/workspaces/acme` are two DISTINCT, store-isolated workspaces. Workspace
+ids are **store-scoped** — resolved within one `(user, zone, workspace)` store, never against a
+global name index — so there is no collision to reject; the fully-qualifying key is the
+`(user, zone, workspace)` triple. The zone is **identity-neutral**: it is in no id preimage (§7.2),
+so relocating a workspace into a zone keeps every artifact/deliverable id (the migration is a pure
+relocation). Today this restructure buys **STORE isolation only** — per-zone spend/key isolation
+(same-named zones drawing on distinct transport keys and weekly caps) is a **transport-build item**,
+NOT delivered here (§10, §12.6).
 
 The **mechanism-public / data-instance split** (§10) governs every new store: the claim table,
 presence-lease registry, telemetry log, and the DR-1 `jobs/` record store are framework

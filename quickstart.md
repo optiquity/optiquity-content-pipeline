@@ -30,12 +30,18 @@ graphify --help                # confirm current subcommands/flags
 **3. Create a workspace** (your own repo is a client too)
 
 ```bash
-uv run pipeline workspace new self --user <you>   # scaffolds users/<you>/workspaces/self from the blueprint (§23)
+uv run pipeline workspace new self --user <you>   # scaffolds users/<you>/zones/default/workspaces/self from the blueprint (§23)
 ```
 
 (That one command creates the user namespace on first use and seeds the workspace from
-`templates/workspace/`. The equivalent by hand is `mkdir -p users/<you>/workspaces && cp -R
-templates/workspace users/<you>/workspaces/self`.)
+`templates/workspace/`. The equivalent by hand is `mkdir -p users/<you>/zones/default/workspaces &&
+cp -R templates/workspace users/<you>/zones/default/workspaces/self`.)
+
+A workspace lives at `users/<user>/zones/<zone>/workspaces/<workspace>/` — a **zone** groups a user's
+workspaces (e.g. `work` vs. `personal`) and defaults to `default`, so single-zone users never type it.
+Add `--zone <zone>` to `workspace new`/`list`/`delete` for a second grouping; same-named workspaces in
+different zones are distinct, store-isolated workspaces. (Full per-door detail: the
+[Interfaces guide → Zones](docs/guide/interfaces.md#zones-grouping-a-users-workspaces).)
 
 **4. Build the graph in your checked-out client repo (gitignored there)**
 
@@ -45,7 +51,7 @@ graphify extract .                # builds graphify-out/ here; gitignored in tha
 graphify export wiki              # optional agent-crawlable wiki snapshot (needs the extract first)
 ```
 
-Record the checkout path + its `graphify-out/graph.json` path in `users/<you>/workspaces/self/source.md`.
+Record the checkout path + its `graphify-out/graph.json` path in `users/<you>/zones/default/workspaces/self/source.md`.
 The pipeline reads the graph by that path; it stores no graphs itself.
 
 **5. Smoke test the grounding (read-only)**
@@ -76,7 +82,7 @@ shipped entry. Start from the templates for the axes you customize most:
 cp personas/persona.template.md   personas/x-hiring-manager.md      # per audience
 cp platforms/platform.template.md platforms/x-company-blog.md       # per platform
 cp formats/format.template.md     formats/x-launch-note.md          # per format
-cp topics/topic.template.md       users/<you>/workspaces/self/topics/<id>.md  # per topic (client-scoped)
+cp topics/topic.template.md       users/<you>/zones/default/workspaces/self/topics/<id>.md  # per topic (client-scoped)
 ```
 
 Private, instance-only entries take the reserved `x-` filename prefix and `provenance: instance`
@@ -108,15 +114,21 @@ uv run pipeline preview --user <you> --topic <your-topic> --workspace self
 # Same plan as a free dry-run, then --go to actually compose (Claude SUBSCRIPTION quota, never an API key):
 uv run pipeline generate --user <you> --topic <your-topic> --workspace self          # dry-run
 uv run pipeline generate --user <you> --topic <your-topic> --workspace self --go     # spends
+
+# Multi-zone? add --zone (single-zone users can omit it — it defaults to `default`):
+uv run pipeline generate --user <you> --zone work --topic <your-topic> --workspace self --go
 ```
 
 `preview`/`generate` default to the `explainer-post` recipe; add `--persona/--format/--voice/--goals`
 to pick content axes and `--platform/--language/--output-type/--presentation` to route the output.
-Review the deliverable in `users/<you>/workspaces/self/output/`. The full authoring surface — recipes, saved
+`--zone` is optional and defaults to `default`, **but** once you own more than one zone a spending
+verb (`preview`/`generate`/`outline drive`) REFUSES until you name a `--zone` (it lists your zones and
+spends nothing rather than silently pick `default`). Review the deliverable in
+`users/<you>/zones/default/workspaces/self/output/`. The full authoring surface — recipes, saved
 selections, entries, outlines, discovery — lives in `docs/guide/authoring.md`.
 
 (Prefer to drive it from a Claude Code session instead? Open the repo and ask it to preview then
-generate one thread for `users/<you>/workspaces/self` — it runs the very same commands, and still spends nothing
+generate one thread for `users/<you>/zones/default/workspaces/self` — it runs the very same commands, and still spends nothing
 until you approve `--go`.)
 
 ---
