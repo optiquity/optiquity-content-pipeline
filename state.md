@@ -14,7 +14,7 @@ build delivered at `5f58d63` (final verification PASSED; cross-reference audit *
 CLOSED, the §21.7-code HARD GATE CLOSED at step 39, the §21.9 gate correctly OPEN/honored). The prepared
 CLAUDE.md diff was applied post-delivery (`5b1c584`). Since then a series of ratified design-record
 increments + the friendly CLI surface + the authoring layer + the users/-namespace restructure + the
-**sources subsystem**, the **foundation/ reorg**, and the **diagram-tools-optional** change landed. **Current HEAD `51a8735`.** Detailed per-increment records live in the
+**sources subsystem**, the **foundation/ reorg**, the **diagram-tools-optional** change, and the **zone restructure** landed. **Current HEAD `9b13e61`.** Detailed per-increment records live in the
 commit history + `ops-handoff/`;
 the summary below is orientation only.
 
@@ -139,6 +139,37 @@ the summary below is orientation only.
     3819+34-skipped tool-less; **CI green** on GitHub's runner. Supersession note in `docs/known-issues.md`;
     `diagram-styles` schema `tool` definition + generated `attributes.md` + `concepts.md` swept. **Current
     HEAD `51a8735`.**
+
+- **★ ZONE restructure — a `zone` rung between user and workspace (`395516d`..`9b13e61`; 2026-08-09 → 08-10;
+  9 gates Z1–Z9 + the S4 spend guard, each coder→reviewer→commit; research→design→adversarial→reconciliation
+  then plan→adversarial→reconciliation up front).** Moves `users/<user>/workspaces/<ws>/` →
+  `users/<user>/zones/<zone>/workspaces/<ws>/` — a zone GROUPS a user's workspaces (personal/work) under one
+  subscription-holder (the ToS single-user-subscription constraint drove it). Mirrors the users/ restructure.
+  - **Z1–Z3** literals + `WorkspaceStore.at(zone=)` + the 5-level resolve-and-contain validator (both new
+    fixed joins RE-RESOLVE their base; 69-case containment matrix). Identity-NEUTRAL: zone ∉ any id preimage —
+    a relocated workspace keeps every id (proven).
+  - **Z4** atomic cutover — zone threaded through every caller of the 3 path functions, flipped to REQUIRED
+    (a forgotten zone is loud, never a silent path); the http-shim ACL keyed `user/zone/workspace` (isolation
+    fix); 3 positional-math bugs fixed; id-neutrality + same-name store-isolation + ACL proofs.
+  - **Z5** additive `.gitignore` (`users/*/workspaces/` KEPT + `users/*/zones/` ADDED — no un-ignore window).
+  - **Z6** `migrate-to-zones-layout.sh` (all-users, idempotent, never-delete-`users/<u>/`; **3 data-safety
+    review cycles** found + closed 2 HIGH + a deeper HIGH out-of-root move, via a generic `pwd -P` containment
+    guard). **RUN on the local demo data:** the 2 optiquity workspaces relocated to `zones/default/`, all 24
+    files byte-identical, verified.
+  - **Z7** `zone new/list/delete` (delete safe-by-default, recursive, never-through-symlink; a review found +
+    fixed 2 delete BLOCKERs — `zone delete` now runs the full L1+L2+L3 containment) + `--zone` on
+    workspace/entry. GAP-13: `recipe`/`select` still default-zone only (a tracked follow-up).
+  - **Z8** client lib + C++/n8n examples + callback zone-aware; the resolved zone now ECHOED end-to-end
+    (`results.Envelope.zone` + the preview header) — honoring the Q1 promise.
+  - **S4 guard** a multi-zone user must pass explicit `--zone` on SPEND verbs (refuse-and-list; single-zone +
+    Tier-A keep the friendly default) — **CLI door only** (the programmatic shim/client doors still default an
+    omitted zone; uniform chokepoint enforcement is a transport-build item).
+  - **Z9** docs sweep (design §10/§12/§23 + the guides + the pull→migrate→use runbook + the shim allow-list
+    config-format BREAKING change + mission §12 `0.3.2`) + a PREPARED-not-applied CLAUDE.md rule-2 diff
+    (`docs/zone-claude-md-rule2.patch`; the maintainer applies it).
+  DEFERRED to the transport build: the transport-credential zone RUNG (per-zone keys/weekly-caps + spend-bucket
+  isolation between same-named zones) — the restructure gives STORE isolation only. Suite 3853→3994.
+  **Current HEAD `9b13e61`.**
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
