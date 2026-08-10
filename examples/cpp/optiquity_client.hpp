@@ -43,14 +43,18 @@ struct Response {
 // --- The Tier-A begin-session handle (clients.md §2.3) ---------------------------------------
 struct SessionHandle {
     std::string workspace;
-    Json token;        // the session cursor the next generate_and_wait consumes (null if absent)
-    Response response; // the raw envelope (plan ids / context / warnings)
+    Json token;         // the session cursor the next generate_and_wait consumes (null if absent)
+    Response response;  // the raw envelope (plan ids / context / warnings)
+    std::string zone;   // §23/Z4: the isolation zone the session began IN — ECHOED so the resume
+                        // (generate_and_wait) carries the SAME zone; never a silent cross-zone hop
 };
 
 // --- A parsed webhook WAKEUP (clients.md §2.7) — wakeup-only, never the result itself ---------
 struct CallbackEvent {
     std::string event;                  // one of {job.done, job.failed}
     std::string workspace;
+    std::string zone;   // §23/Z4: the zone the job ran in, read off the wakeup's job block next to
+                        // workspace — so the fetch polls in the SAME zone (empty on a pre-zone wakeup)
     std::string key;
     std::vector<std::string> target_ids;
     Json code;        // present only on a failure wakeup (raw, null otherwise)
@@ -140,27 +144,35 @@ public:
     // shim REQUIRES it and 400s a missing/empty one, so it is a required argument right after
     // `workspace` — never defaulted, never silently omitted — and it rides the JSON body next to
     // `workspace` (1:1 with the wire the shim enforces).
+    // `zone` (§23/Z4) is the isolation zone between user and workspace; it rides the SAME body next
+    // to user/workspace and DEFAULTS to "default" (the door materializes the same literal when it is
+    // omitted), so an un-zoned caller is unchanged while a zoned one passes its zone explicitly.
     Response invoke(const std::string& verb, const std::string& workspace, const std::string& user,
-                    const Json& params, const Json& token = nullptr, const Json& pins = nullptr);
+                    const Json& params, const Json& token = nullptr, const Json& pins = nullptr,
+                    const std::string& zone = "default");
     Response poll(const std::string& workspace, const std::string& user, const std::string& key,
-                  const std::vector<std::string>& target_ids);
+                  const std::vector<std::string>& target_ids, const std::string& zone = "default");
     Response list(const std::string& type, const std::string& workspace, const std::string& user,
-                  const Json& filters = nullptr);
+                  const Json& filters = nullptr, const std::string& zone = "default");
     Response get(const std::string& type, const std::string& id, const std::string& workspace,
-                 const std::string& user);
+                 const std::string& user, const std::string& zone = "default");
 
     // --- The ergonomic async layer + poll state machine (clients.md §2.3) --------------------
     // `generate` is accepted for surface parity but FORCED to "none" (the one-call
     // begin-session{generate!=none} is a deferred 501; the supported path is two calls).
+    // `zone` (§23/Z4, default "default") rides the submit and every poll so the whole traversal stays
+    // in one zone; on begin_session it is ECHOED on SessionHandle.zone for the paired resume.
     SessionHandle begin_session(const std::string& workspace, const std::string& user,
                                 const Json& selection, const Json& overrides = nullptr,
                                 const Json& pins = nullptr, const std::string& generate = "none",
-                                const std::string& idempotency_key = "");
+                                const std::string& idempotency_key = "",
+                                const std::string& zone = "default");
     // idempotency_key REQUIRED (empty throws std::invalid_argument fast, before any network).
     Result generate_and_wait(const std::string& workspace, const std::string& user,
                              const Json& token, const std::string& idempotency_key,
                              const Json& batch_size = nullptr, const Json& only = nullptr,
-                             const std::string& callback_url = "", const Json& extra = nullptr);
+                             const std::string& callback_url = "", const Json& extra = nullptr,
+                             const std::string& zone = "default");
     // render is content-addressed + token-free, so idempotency_key is OPTIONAL. A cache-hit 200 at
     // submit collapses into the SAME Result as the 202-then-poll path (§2.8 no-invent).
     Result render_and_wait(const std::string& workspace, const std::string& user,
@@ -168,18 +180,24 @@ public:
                            const std::string& language, const std::string& output_type,
                            const Json& presentation = nullptr, bool force_reconcile = false,
                            const std::string& idempotency_key = "",
-                           const std::string& callback_url = "");
+                           const std::string& callback_url = "",
+                           const std::string& zone = "default");
 
     // --- The webhook fetch (clients.md §2.7) — no receiver server -----------------------------
     // `user` is supplied by the caller (the §23 isolation prefix the poll REQUIRES): the wakeup
     // payload carries `workspace` but not `user`, so the woken client passes its owning user.
-    Result fetch_after_callback(const CallbackEvent& event, const std::string& user);
+    // `zone` (§23/Z4) resolves to the SAME zone the job ran in: an EMPTY `zone` (the default) derives
+    // it from the wakeup's own `event.zone`, so the fetch polls in the job's real zone with no guess;
+    // a non-empty `zone` overrides; only a pre-zone wakeup that named none falls back to "default".
+    Result fetch_after_callback(const CallbackEvent& event, const std::string& user,
+                                const std::string& zone = "");
 
 private:
     Response request(const std::string& path, const Json& payload);
     double retry_after_seconds(const std::map<std::string, std::string>& headers, double fallback);
     Result await_terminal(const std::string& workspace, const std::string& user,
-                          const std::function<Response()>& submit);
+                          const std::function<Response()>& submit,
+                          const std::string& zone = "default");
 
     std::string base_url_;
     long timeout_;

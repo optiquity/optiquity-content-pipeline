@@ -174,7 +174,14 @@ class TestDoneDelivery:
         # artifact/result content, no failure fields).
         assert set(payload) == {"event", "job", "poll"}
         assert payload["event"] == EVENT_DONE  # "job.done"
-        assert payload["job"] == {"key": KEY, "workspace": "wsA", "target_ids": [A, B]}
+        # §23/Z4: the job block NAMES the zone next to `workspace` (the isolation pair), so a woken
+        # client fetches in the SAME zone the job ran in (`_spec()` runs in the `default` zone).
+        assert payload["job"] == {
+            "key": KEY,
+            "workspace": "wsA",
+            "zone": "default",
+            "target_ids": [A, B],
+        }
         assert payload["poll"] == {
             "path": "/poll",
             "method": "POST",

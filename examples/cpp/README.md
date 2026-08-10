@@ -13,7 +13,9 @@ language-reality: the error channel is `throw` (on C++17 grounds) and the transp
 **libcurl + nlohmann/json**. Nothing else differs from Python.
 
 These are **generic** examples: every deployment-specific value is a placeholder — `acme`
-(`<WORKSPACE>`), `deck-intro` (`<ARTIFACT_ID>`), `http://127.0.0.1:8787` (the shim's loopback
+(`<WORKSPACE>`), `acme-user` (`<USER>`, the §23 isolation prefix), `default` (`<ZONE>`, the §23/Z4
+isolation zone between user and workspace — every request body now carries it next to
+user/workspace), `deck-intro` (`<ARTIFACT_ID>`), `http://127.0.0.1:8787` (the shim's loopback
 default), `<SHIM_SECRET>` (your bearer token, from env only). **No client content.**
 
 | File | What it is |

@@ -275,3 +275,15 @@ class TestEnvelope:
         assert wire["ok"] is False
         assert wire["code"] == "unknown-verb"
         assert wire["message"].startswith("verb")
+
+    def test_zone_is_echoed_when_set_and_omitted_when_none(self):
+        # §23/Z4: the resolved zone is ECHOED next to verb/workspace/user; additive — a zone-less
+        # envelope omits the key entirely (a client ignoring `zone` is unaffected).
+        assert Envelope(ok=True, verb="list", workspace="wsA", user="acme").as_dict() == {
+            "ok": True, "verb": "list", "workspace": "wsA", "user": "acme"
+        }
+        assert Envelope(
+            ok=True, verb="list", workspace="wsA", user="acme", zone="work"
+        ).as_dict() == {
+            "ok": True, "verb": "list", "workspace": "wsA", "user": "acme", "zone": "work"
+        }

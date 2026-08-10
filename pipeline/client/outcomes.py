@@ -55,11 +55,18 @@ class Result:
 class SessionHandle:
     """The Tier-A ``begin-session`` handle (`clients.md` §2.3). ``token`` is the session cursor the
     next :meth:`Client.generate_and_wait` consumes; ``response`` is the raw envelope (plan ids /
-    context / warnings)."""
+    context / warnings).
+
+    ``zone`` is the §23/Z4 isolation zone the session was begun IN, ECHOED back on the handle just
+    as ``workspace`` is — so a caller resuming the session (`generate_and_wait`) carries the SAME
+    zone it began with and can never silently cross zones. It defaults to the wire default
+    ``"default"`` (mirrors ``client.DEFAULT_ZONE``; the value-types module imports nothing from the
+    client, so the literal is repeated here with this note rather than creating an import cycle)."""
 
     workspace: Any
     token: Any
     response: Response
+    zone: Any = "default"
 
 
 @dataclass(frozen=True)
@@ -67,7 +74,12 @@ class CallbackEvent:
     """A parsed webhook WAKEUP (`clients.md` §2.7) — wakeup-only, never the result itself. The two
     event names are ``job.done`` / ``job.failed``; ``code`` / ``redrivable`` are present only on a
     failure wakeup. A woken client still FETCHES the finished output through the authenticated poll
-    (:meth:`Client.fetch_after_callback`)."""
+    (:meth:`Client.fetch_after_callback`).
+
+    ``zone`` is the §23/Z4 isolation zone the job ran in, read off the wakeup's ``job`` block next
+    to ``workspace`` (the callback delivery names it there). It lets the woken client fetch in the
+    SAME zone the job ran in without guessing; ``None`` when a (pre-zone) wakeup carried no zone, so
+    :meth:`Client.fetch_after_callback` falls back to the default only then."""
 
     event: str
     workspace: Any
@@ -75,6 +87,7 @@ class CallbackEvent:
     target_ids: list[Any] = field(default_factory=list)
     code: Any = None
     redrivable: Any = None
+    zone: Any = None
 
 
 class ClientError(Exception):

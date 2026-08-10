@@ -34,8 +34,9 @@ from typing import Any
 from pipeline.client import Client, ClientError
 
 # The env config keys are the client's SSOT (identical across languages); import them so the CLI
-# never drifts from the library's names (an anti-drift test pins the equality too).
-from pipeline.client.client import _ENV_SECRET, _ENV_URL
+# never drifts from the library's names (an anti-drift test pins the equality too). DEFAULT_ZONE is
+# the wire default the library owns (§23/Z4) — imported so `--zone` never diverges from it.
+from pipeline.client.client import _ENV_SECRET, _ENV_URL, DEFAULT_ZONE
 
 # The pinned four-verb surface (F-F): NO generic `invoke`, no operator verbs.
 VERBS = ("generate", "render", "list", "get")
@@ -117,6 +118,7 @@ def _cmd_render(client: Client, args: argparse.Namespace) -> int:
             force_reconcile=args.force_reconcile,
             idempotency_key=args.idempotency_key,
             callback_url=args.callback_url,
+            zone=args.zone,
         ),
     )
 
@@ -127,7 +129,12 @@ def _cmd_generate(client: Client, args: argparse.Namespace) -> int:
     one (the one-call ``begin-session{generate!=none}`` is a deferred 501)."""
     try:
         handle = client.begin_session(
-            args.workspace, args.user, args.selection, overrides=args.overrides, pins=args.pins
+            args.workspace,
+            args.user,
+            args.selection,
+            overrides=args.overrides,
+            pins=args.pins,
+            zone=args.zone,
         )
     except (urllib.error.URLError, OSError) as exc:
         print(f"pipeline.client generate: transport error: {exc}", file=sys.stderr)
@@ -150,6 +157,7 @@ def _cmd_generate(client: Client, args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             only=args.only,
             callback_url=args.callback_url,
+            zone=args.zone,
         ),
     )
 
@@ -158,13 +166,16 @@ def _cmd_list(client: Client, args: argparse.Namespace) -> int:
     """`list` → :meth:`Client.list` (a Tier-A discovery verb): enumerate registry values of a
     type."""
     return _run_sync(
-        "list", lambda: client.list(args.type, args.workspace, args.user, args.filters)
+        "list",
+        lambda: client.list(args.type, args.workspace, args.user, args.filters, zone=args.zone),
     )
 
 
 def _cmd_get(client: Client, args: argparse.Namespace) -> int:
     """`get` → :meth:`Client.get` (a Tier-A discovery verb): fetch one registry value by id."""
-    return _run_sync("get", lambda: client.get(args.type, args.id, args.workspace, args.user))
+    return _run_sync(
+        "get", lambda: client.get(args.type, args.id, args.workspace, args.user, zone=args.zone)
+    )
 
 
 # ---------------------------------------------------------------------------------------------
@@ -192,6 +203,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             f"shim base URL (default: ${_ENV_URL}); the secret is ALWAYS read from "
             f"${_ENV_SECRET} (env-only, never a flag)"
+        ),
+    )
+    common.add_argument(
+        "--zone",
+        default=DEFAULT_ZONE,
+        metavar="ZONE",
+        help=(
+            f"the §23/Z4 isolation zone between user and workspace (default: {DEFAULT_ZONE!r}); it "
+            "rides every request body next to --user/--workspace, 1:1 with the wire"
         ),
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>", required=True)

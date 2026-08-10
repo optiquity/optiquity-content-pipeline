@@ -122,7 +122,8 @@ def _code_is_redrivable(code: object) -> bool:
 
 def build_callback_payload(spec: JobSpec, outcome: RunOutcome) -> dict[str, Any]:
     """The WAKEUP-ONLY JSON body (design §2.1) — NO artifact content, ever. Carries the `event`, the
-    `job` identity (key/workspace/predictable target-ids), and the `poll` pointer the woken client
+    `job` identity (key/workspace/zone/predictable target-ids — §23/Z4: the zone rides next to the
+    workspace so the woken client fetches in the SAME zone), and the `poll` pointer the woken client
     uses to FETCH the result; on failure it adds the terminal `code` + whether it is `redrivable`.
     Pure — a unit test asserts the exact shape with no network."""
     done = outcome.disposition in _DONE_DISPOSITIONS
@@ -131,6 +132,10 @@ def build_callback_payload(spec: JobSpec, outcome: RunOutcome) -> dict[str, Any]
         "job": {
             "key": spec.key,
             "workspace": spec.workspace,
+            # §23/Z4: the wakeup NAMES the zone next to `workspace` (they are the isolation pair),
+            # so a woken client fetches in the SAME zone the job ran in. `zone` is a MANDATORY
+            # JobSpec field (jobrunner), so this is always a concrete value, never None.
+            "zone": spec.zone,
             "target_ids": list(spec.target_ids),
         },
         "poll": {"path": _POLL_PATH, "method": "POST", "needs": list(_POLL_NEEDS)},

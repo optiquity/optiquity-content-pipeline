@@ -13,7 +13,7 @@ Config is env-only, identical across languages (§2.1): ``OPTIQUITY_SHIM_URL`` +
 
 from __future__ import annotations
 
-from pipeline.client.client import Client, parse_callback
+from pipeline.client.client import DEFAULT_ZONE, Client, echoed_zone, parse_callback
 from pipeline.client.outcomes import (
     CallbackEvent,
     ClientError,
@@ -27,6 +27,7 @@ from pipeline.client.outcomes import (
 )
 
 __all__ = [
+    "DEFAULT_ZONE",
     "CallbackEvent",
     "Client",
     "ClientError",
@@ -37,5 +38,6 @@ __all__ = [
     "Response",
     "Result",
     "SessionHandle",
+    "echoed_zone",
     "parse_callback",
 ]

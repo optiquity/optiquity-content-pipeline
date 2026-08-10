@@ -543,18 +543,19 @@ def _default_spawn(spec: Any, *, spawn_dir: Path) -> Any:
 
 
 def _accepted_body(
-    key: str, target_ids: Sequence[str], *, callback_registered: bool = False
+    key: str, target_ids: Sequence[str], *, zone: str = "default", callback_registered: bool = False
 ) -> dict[str, Any]:
     """The N-3 202 ACK — a NEW wire shape, deliberately NOT an `invoke()` envelope (the
     "same-envelope" §21.7 invariant is amended in Commit 11). Carries everything the caller needs
-    to poll: the run-family job `key` + the predictable `target_ids`, and the poll endpoint.
+    to poll: the run-family job `key` + the resolved `zone` (§23/Z4, echoed in the job block next to
+    the key) + the predictable `target_ids`, and the poll endpoint.
 
     W3c: when a webhook `callback_url` was accepted, a small `"callback": {"registered": true}` note
     tells the client to EXPECT a completion POST — but the `poll` block still ships, so the poll
     stays the always-available floor (a client can ignore the note and just poll)."""
     body: dict[str, Any] = {
         "status": "accepted",
-        "job": {"key": key, "target_ids": list(target_ids)},
+        "job": {"key": key, "zone": zone, "target_ids": list(target_ids)},
         "poll": {
             "path": POLL_PATH,
             "method": "POST",
@@ -1115,7 +1116,9 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         # registered callback adds the W3c `callback: {registered: true}` note; poll floor stays.
         self._respond(
             _HTTP_ACCEPTED,
-            _accepted_body(outcome.key, target_ids, callback_registered=callback_url is not None),
+            _accepted_body(
+                outcome.key, target_ids, zone=zone, callback_registered=callback_url is not None
+            ),
         )
 
     def _submit_render(
@@ -1300,7 +1303,9 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         # gets the webhook). A registered callback adds the W3c note; the poll floor always ships.
         self._respond(
             _HTTP_ACCEPTED,
-            _accepted_body(outcome.key, target_ids, callback_registered=callback_url is not None),
+            _accepted_body(
+                outcome.key, target_ids, zone=zone, callback_registered=callback_url is not None
+            ),
         )
 
     def _render_wait_for_done(
@@ -1477,10 +1482,11 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         key: str,
         target_ids: Sequence[str],
     ) -> dict[str, Any]:
-        """The 200 DONE body — the job's key/target-ids + the fetched output items."""
+        """The 200 DONE body — the job's key/zone/target-ids + the fetched output items. §23/Z4: the
+        job block NAMES the resolved zone next to the key so the async result path echoes it too."""
         return {
             "status": "done",
-            "job": {"key": key, "target_ids": list(target_ids)},
+            "job": {"key": key, "zone": zone, "target_ids": list(target_ids)},
             "results": self._fetch_outputs(server, workspace, user, zone, target_ids),
         }
 

@@ -41,8 +41,12 @@ namespace {
 // content: these are the same framework defaults the n8n example and the doc's curl slice use.
 // `kUser` is the §23 isolation prefix (parallel to the workspace) the shim REQUIRES on every
 // request — a missing/empty one 400s, so it is threaded into every call below next to kWorkspace.
+// `kZone` (§23/Z4) is the isolation zone between user and workspace; it rides the SAME body and
+// DEFAULTS to "default" (the door's own default when omitted) — shown explicitly here so the example
+// exercises the zone surface. Swap in a carved zone if your `pipeline serve` allow-lists one.
 constexpr const char* kWorkspace = "acme";
 constexpr const char* kUser = "acme-user";
+constexpr const char* kZone = "default";
 constexpr const char* kItem = "deck-intro";
 constexpr const char* kPlatform = "linkedin";
 constexpr const char* kLanguage = "en";
@@ -90,7 +94,7 @@ int main() {
     // 2. The raw layer (§2.2): a discovery `list` (a Tier-A verb). 1:1 with the wire.
     std::cout << "[1] raw list(platform):\n";
     try {
-        const auto response = client.list("platform", kWorkspace, kUser);
+        const auto response = client.list("platform", kWorkspace, kUser, /*filters=*/nullptr, kZone);
         std::cout << "  -> HTTP " << response.status << "\n";
     } catch (const TransportError& e) {
         std::cerr << "  -> transport error: " << e.what() << "\n";
@@ -102,7 +106,8 @@ int main() {
     try {
         const Result result = client.render_and_wait(
             kWorkspace, kUser, kItem, kPlatform, kLanguage, kOutputType, /*presentation=*/nullptr,
-            /*force_reconcile=*/true, /*idempotency_key=*/fresh_idempotency_key());
+            /*force_reconcile=*/true, /*idempotency_key=*/fresh_idempotency_key(),
+            /*callback_url=*/"", kZone);
         print_result(result);
     } catch (const RenderBlocked& e) {
         std::cout << "  -> RenderBlocked: block=" << e.block.dump() << "\n";
@@ -124,7 +129,8 @@ int main() {
     try {
         const Result result = client.render_and_wait(
             kWorkspace, kUser, "does-not-exist-" + fresh_idempotency_key(), kPlatform, kLanguage,
-            kOutputType);
+            kOutputType, /*presentation=*/nullptr, /*force_reconcile=*/false,
+            /*idempotency_key=*/"", /*callback_url=*/"", kZone);
         // Reaching here would be surprising; still honor the no-invent Result contract.
         std::cout << "  -> unexpectedly succeeded; ";
         print_result(result);
@@ -146,22 +152,33 @@ int main() {
     //    finished output through the authenticated poll (shown here as a comment to avoid polling a
     //    synthetic key).
     std::cout << "[4] parse_callback (pure):\n";
+    // §23/Z4: the wakeup's job block NAMES the zone next to workspace, so parse_callback surfaces it
+    // on event.zone and fetch_after_callback fetches in the SAME zone (no argument needed).
     const Json wakeup = {
         {"event", "job.done"},
-        {"job", {{"workspace", kWorkspace}, {"key", "r-0123456789abcdef"}, {"target_ids", {"t-1"}}}},
+        {"job",
+         {{"workspace", kWorkspace}, {"zone", kZone}, {"key", "r-0123456789abcdef"},
+          {"target_ids", {"t-1"}}}},
     };
     try {
         const CallbackEvent event = optiquity::parse_callback(wakeup);
         std::cout << "  -> event=" << event.event << " workspace=" << event.workspace
+                  << " zone=" << event.zone
                   << " key=" << event.key << " target_ids[" << event.target_ids.size() << "]\n";
-        // const Result woken = client.fetch_after_callback(event, kUser);  // authenticated fetch-after-wake (user supplied by the caller)
+        // const Result woken = client.fetch_after_callback(event, kUser);  // fetch-after-wake: user
+        // supplied by the caller; the zone is DERIVED from event.zone (fetches in the job's zone)
     } catch (const std::invalid_argument& e) {
         std::cout << "  -> rejected: " << e.what() << "\n";
     }
 
-    // The generate slice needs a served continue-session door + a mandatory idempotency key:
-    //   auto s = client.begin_session(kWorkspace, kUser, /*selection=*/Json::object());  // Tier-A token
-    //   Result r = client.generate_and_wait(kWorkspace, kUser, s.token, fresh_idempotency_key());
+    // The generate slice needs a served continue-session door + a mandatory idempotency key. §23/Z4:
+    // begin_session ECHOES its zone on s.zone; feed it straight back into generate_and_wait so the
+    // resume can never silently cross zones (a wrong zone would 403 isolation-violation at the door):
+    //   auto s = client.begin_session(kWorkspace, kUser, /*selection=*/Json::object(),
+    //                                 /*overrides=*/nullptr, /*pins=*/nullptr, /*generate=*/"none",
+    //                                 /*idempotency_key=*/"", kZone);  // Tier-A token
+    //   Result r = client.generate_and_wait(kWorkspace, kUser, s.token, fresh_idempotency_key(),
+    //                                       nullptr, nullptr, "", nullptr, s.zone);
     // It runs the SAME poll state machine as render_and_wait; omitted from the default run to keep
     // the demo to the render slice (the load-bearing shared algorithm).
 

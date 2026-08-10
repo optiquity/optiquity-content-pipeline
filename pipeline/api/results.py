@@ -519,6 +519,10 @@ class Envelope:
     verb: str
     workspace: str
     user: str
+    #: The §23/Z4 isolation zone this call RESOLVED in — ECHOED so a caller can confirm which zone
+    #: served the request (parallel to `workspace`/`user`). Additive: emitted only when set, so a
+    #: client ignoring it is unaffected; `None` (a directly-built envelope with no zone) omits it.
+    zone: str | None = None
     code: str | None = None
     message: str | None = None
 
@@ -529,6 +533,8 @@ class Envelope:
             "workspace": self.workspace,
             "user": self.user,
         }
+        if self.zone is not None:
+            out["zone"] = self.zone
         if self.code is not None:
             out["code"] = self.code
         if self.message is not None:

@@ -296,10 +296,14 @@ def _fatal(
     items: Sequence[results.ResultItem],
     code: str,
     message: str,
+    *,
+    zone: str = DEFAULT_ZONE,
 ) -> dict[str, Any]:
-    """A whole-invocation failure (§21.7): ok=False, the fatal items, and NO echoed token."""
+    """A whole-invocation failure (§21.7): ok=False, the fatal items, and NO echoed token. `zone`
+    (§23/Z4) is ECHOED on the fatal envelope too, so even a refusal names the zone the caller asked
+    for — parallel to the echoed `verb`/`workspace`/`user`."""
     envelope = results.Envelope(
-        ok=False, verb=verb, workspace=workspace, user=user, code=code, message=message
+        ok=False, verb=verb, workspace=workspace, user=user, zone=zone, code=code, message=message
     )
     return {"envelope": envelope.as_dict(), "results": [i.as_dict() for i in items]}
 
@@ -354,7 +358,9 @@ def invoke(
             item=verb,
             hint=f"verb {verb!r} is not in the closed API verb set {sorted(KNOWN_VERBS)!r}",
         )
-        return _fatal(verb, workspace, user, [item], results.CODE_UNKNOWN_VERB, str(item.item))
+        return _fatal(
+            verb, workspace, user, [item], results.CODE_UNKNOWN_VERB, str(item.item), zone=zone
+        )
 
     # Workspace-root containment (§10/§21.1/§23): when the store is built from the CALLER-SUPPLIED
     # names, the `(user, workspace)` pair must resolve to a contained leaf under
@@ -388,6 +394,7 @@ def invoke(
                 [item],
                 results.CODE_ISOLATION_VIOLATION,
                 exc.detail,
+                zone=zone,
             )
         ws_store = WorkspaceStore.at(root, user, workspace, zone=zone)
 
@@ -403,7 +410,9 @@ def invoke(
                 context={"reason": exc.reason},
                 hint=exc.detail,
             )
-            return _fatal(verb, workspace, user, [item], results.CODE_INVALID_TOKEN, exc.detail)
+            return _fatal(
+                verb, workspace, user, [item], results.CODE_INVALID_TOKEN, exc.detail, zone=zone
+            )
 
     # Gate 3 — workspace isolation on every referenced id (§21.1/§10).
     violations = _isolation_violations(ws_store, workspace, user, referenced_ids(verb, params))
@@ -415,6 +424,7 @@ def invoke(
             violations,
             results.CODE_ISOLATION_VIOLATION,
             f"{len(violations)} id(s) do not resolve inside workspace {workspace!r}",
+            zone=zone,
         )
 
     # Dispatch — the thin real seam (step 32: unwired verbs raise HandlerNotWired).
@@ -433,7 +443,7 @@ def invoke(
             store=ws_store,
         )
     )
-    envelope = results.Envelope(ok=True, verb=verb, workspace=workspace, user=user)
+    envelope = results.Envelope(ok=True, verb=verb, workspace=workspace, user=user, zone=zone)
     out: dict[str, Any] = {
         "envelope": envelope.as_dict(),
         "results": [item.as_dict() for item in result_items],

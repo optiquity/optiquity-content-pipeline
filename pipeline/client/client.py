@@ -47,7 +47,15 @@ from pipeline.client.outcomes import (
     SessionHandle,
 )
 
-__all__ = ["Client", "parse_callback"]
+__all__ = ["DEFAULT_ZONE", "Client", "echoed_zone", "parse_callback"]
+
+# --- The §23/Z4 isolation zone (design.md §23; the clients.md zone section lands in the Z9 sweep) -
+# The zone segment between user and workspace in the store leaf
+# ``users/<user>/zones/<zone>/workspaces/<workspace>/``. It rides EVERY request body next to
+# ``user``/``workspace`` (the wire contract the shim reads); when omitted the door materializes this
+# SAME literal default, so the client sends it explicitly and never diverges. Stdlib-only: the
+# client owns its own copy of the wire default (like ``_INVOKE_PATH``), never a server constant.
+DEFAULT_ZONE = "default"
 
 # --- HTTP statuses the poll state machine branches on (clients.md §2.3) -----------------------
 _HTTP_OK = 200
@@ -137,9 +145,12 @@ def _response_from(obj: Any) -> Response:
 def parse_callback(payload: Any) -> CallbackEvent:
     """PURE (no network): validate + parse a webhook WAKEUP body into a :class:`CallbackEvent`
     (clients.md §2.7). Rejects any ``event`` outside ``{job.done, job.failed}`` with a
-    ``ValueError``. Extracts the ``job`` identity (workspace / key / target_ids) and, on a failure
-    wakeup, the ``code`` / ``redrivable`` fields. It never fetches — the woken client calls
-    :meth:`Client.fetch_after_callback` to retrieve the finished output through the poll."""
+    ``ValueError``. Extracts the ``job`` identity (workspace / zone / key / target_ids) and, on a
+    failure wakeup, the ``code`` / ``redrivable`` fields. The ``zone`` (§23/Z4) is read off the
+    ``job`` block next to ``workspace`` (the callback delivery names it there) so the woken client
+    can fetch in the SAME zone the job ran in; it is ``None`` on a pre-zone wakeup that named none.
+    It never fetches — the woken client calls :meth:`Client.fetch_after_callback` to retrieve the
+    finished output through the poll."""
     if not isinstance(payload, Mapping):
         raise ValueError("callback payload must be a JSON object")
     event = payload.get("event")
@@ -157,7 +168,30 @@ def parse_callback(payload: Any) -> CallbackEvent:
         target_ids=list(target_ids) if isinstance(target_ids, list) else [],
         code=payload.get("code"),
         redrivable=payload.get("redrivable"),
+        zone=job.get("zone"),
     )
+
+
+def echoed_zone(body: Any) -> str | None:
+    """PURE: read the §23/Z4 zone the door ECHOED back in a result body (design.md §23), or
+    ``None`` when it is absent.
+
+    The zone rides the request body next to ``user``/``workspace`` and is ECHOED in the reply so a
+    caller can confirm which zone served the call. This reader surfaces it from any result body the
+    client returns — a raw :attr:`Response.json`, a :attr:`Result.json`, or a
+    :attr:`SessionHandle.response`\\ ``.json`` — checking the Tier-A ``envelope.zone`` first, then a
+    top-level ``zone`` (a 202/200 job body may echo it flat). It NEVER invents a value (§2.8): a
+    body with no echoed zone reads ``None``, so a client can tell "the door did not echo a zone"
+    from "the door echoed ``default``". A returned string is always non-empty."""
+    if not isinstance(body, Mapping):
+        return None
+    envelope = body.get("envelope")
+    if isinstance(envelope, Mapping):
+        zone = envelope.get("zone")
+        if isinstance(zone, str) and zone:
+            return zone
+    zone = body.get("zone")
+    return zone if isinstance(zone, str) and zone else None
 
 
 class Client:
@@ -250,6 +284,8 @@ class Client:
         params: Mapping[str, Any],
         token: Any = None,
         pins: Any = None,
+        *,
+        zone: str = DEFAULT_ZONE,
     ) -> Response:
         """``POST /invoke`` a verb (clients.md §1.2). The generic form forwards ANY verb, so the raw
         layer covers the whole startup-wired surface with no per-verb code.
@@ -257,45 +293,72 @@ class Client:
         ``user`` is MANDATORY (the §23 isolation prefix, parallel to ``workspace``): the shim
         REQUIRES it on every ``/invoke`` body and 400s a missing/empty one, so it is a required
         positional here — never defaulted, never silently omitted. It rides the JSON body alongside
-        ``workspace``, 1:1 with the wire contract the shim enforces."""
+        ``workspace``, 1:1 with the wire contract the shim enforces.
+
+        ``zone`` (§23/Z4) is the isolation zone between ``user`` and ``workspace``; it rides the
+        SAME body next to ``user``/``workspace`` exactly as the shim reads it, and DEFAULTS to
+        ``DEFAULT_ZONE`` (the door materializes the same literal when omitted). The door ECHOES it
+        in the reply — read it back with :func:`echoed_zone`."""
         return self._request(
             _INVOKE_PATH,
             {
                 "verb": verb,
                 "workspace": workspace,
                 "user": user,
+                "zone": zone,
                 "params": dict(params),
                 "token": token,
                 "pins": pins,
             },
         )
 
-    def poll(self, workspace: str, user: str, key: str, target_ids: Sequence[str]) -> Response:
+    def poll(
+        self,
+        workspace: str,
+        user: str,
+        key: str,
+        target_ids: Sequence[str],
+        *,
+        zone: str = DEFAULT_ZONE,
+    ) -> Response:
         """``POST /poll`` a submitted Tier-B job (clients.md §1.5). All four fields come from the
         202 ``job`` + ``poll.needs``.
 
         ``user`` is MANDATORY (the §23 isolation prefix, parallel to ``workspace``): the shim's poll
         handler REQUIRES it and 400s a missing/empty one, so it is a required positional here —
-        never defaulted, never silently omitted."""
+        never defaulted, never silently omitted.
+
+        ``zone`` (§23/Z4) rides the body next to ``user``/``workspace`` exactly as on ``/invoke``,
+        so a poll resolves in the SAME zone the submit ran in; it defaults to ``DEFAULT_ZONE``."""
         return self._request(
             _POLL_PATH,
-            {"workspace": workspace, "user": user, "key": key, "target_ids": list(target_ids)},
+            {
+                "workspace": workspace,
+                "user": user,
+                "zone": zone,
+                "key": key,
+                "target_ids": list(target_ids),
+            },
         )
 
     def list(  # noqa: A002
-        self, type: str, workspace: str, user: str, filters: Any = None
+        self, type: str, workspace: str, user: str, filters: Any = None, *, zone: str = DEFAULT_ZONE
     ) -> Response:
         """Discovery ``list`` (a Tier-A verb): enumerate registry values of ``type``. ``user`` is
-        the MANDATORY §23 isolation prefix (parallel to ``workspace``)."""
+        the MANDATORY §23 isolation prefix (parallel to ``workspace``); ``zone`` (§23/Z4) rides the
+        body alongside it (default ``DEFAULT_ZONE``)."""
         params: dict[str, Any] = {"type": type}
         if filters is not None:
             params["filters"] = filters
-        return self.invoke("list", workspace, user, params)
+        return self.invoke("list", workspace, user, params, zone=zone)
 
-    def get(self, type: str, id: str, workspace: str, user: str) -> Response:  # noqa: A002
+    def get(  # noqa: A002
+        self, type: str, id: str, workspace: str, user: str, *, zone: str = DEFAULT_ZONE
+    ) -> Response:
         """Discovery ``get`` (a Tier-A verb): fetch one registry value of ``type`` by ``id``.
-        ``user`` is the MANDATORY §23 isolation prefix (parallel to ``workspace``)."""
-        return self.invoke("get", workspace, user, {"type": type, "id": id})
+        ``user`` is the MANDATORY §23 isolation prefix (parallel to ``workspace``); ``zone``
+        (§23/Z4) rides the body alongside it (default ``DEFAULT_ZONE``)."""
+        return self.invoke("get", workspace, user, {"type": type, "id": id}, zone=zone)
 
     # --- The ergonomic async layer (clients.md §2.3) -----------------------------------------
     def begin_session(
@@ -307,20 +370,27 @@ class Client:
         pins: Any = None,
         generate: str = "none",  # noqa: ARG002 — accepted for surface parity; FORCED to "none"
         idempotency_key: str | None = None,
+        *,
+        zone: str = DEFAULT_ZONE,
     ) -> SessionHandle:
         """Begin a session and MINT the resumption token (clients.md §2.3). ``generate`` is FORCED
         to ``"none"`` client-side: the one-call ``begin-session{generate!=none}`` is a deferred
         ``501``, so the supported path is two calls (begin, then :meth:`generate_and_wait`). This is
         a Tier-A synchronous call; the returned :class:`SessionHandle` carries the session
-        ``token``. ``user`` is the MANDATORY §23 isolation prefix (parallel to ``workspace``)."""
+        ``token``. ``user`` is the MANDATORY §23 isolation prefix (parallel to ``workspace``).
+
+        ``zone`` (§23/Z4, default ``DEFAULT_ZONE``) selects the isolation zone; it rides the body
+        and is ECHOED back on the returned :attr:`SessionHandle.zone` so the resume
+        (:meth:`generate_and_wait`) carries the SAME zone the session began in — never a silent
+        cross-zone resume."""
         params: dict[str, Any] = {"selection": selection, "generate": "none"}
         if overrides is not None:
             params["overrides"] = overrides
         if idempotency_key is not None:
             params["idempotency_key"] = idempotency_key
-        response = self.invoke("begin-session", workspace, user, params, pins=pins)
+        response = self.invoke("begin-session", workspace, user, params, pins=pins, zone=zone)
         token = response.json.get("token") if isinstance(response.json, Mapping) else None
-        return SessionHandle(workspace=workspace, token=token, response=response)
+        return SessionHandle(workspace=workspace, token=token, response=response, zone=zone)
 
     def generate_and_wait(
         self,
@@ -332,13 +402,19 @@ class Client:
         batch_size: int | None = None,
         only: Any = None,
         callback_url: str | None = None,
+        zone: str = DEFAULT_ZONE,
         **extra: Any,
     ) -> Result:
         """Drive the served ``continue-session{generate-next}`` door to a terminal outcome (clients
         .md §2.3). ``idempotency_key`` is REQUIRED (the shim 400s otherwise, and a 409 re-drive
         reuses the SAME key so a retry is exactly-once) — a missing/empty key raises ``ValueError``
         fast, before any network. ``user`` is the MANDATORY §23 isolation prefix (parallel to
-        ``workspace``)."""
+        ``workspace``).
+
+        ``zone`` (§23/Z4, default ``DEFAULT_ZONE``) MUST be the SAME zone the session began in
+        (:attr:`SessionHandle.zone`); it rides both the submit and every poll of the state machine,
+        so a resume never silently crosses zones (a wrong zone refuses `isolation-violation` at the
+        door — the session's ids do not resolve in the other zone's store)."""
         if not idempotency_key:
             raise ValueError(
                 "generate_and_wait requires a non-empty idempotency_key (clients.md §2.3)"
@@ -357,10 +433,10 @@ class Client:
 
         def submit() -> Response:
             return self.invoke(
-                "continue-session", workspace, user, dict(submit_params), token=token
+                "continue-session", workspace, user, dict(submit_params), token=token, zone=zone
             )
 
-        return self._await_terminal(workspace, user, submit)
+        return self._await_terminal(workspace, user, submit, zone=zone)
 
     def render_and_wait(
         self,
@@ -375,12 +451,14 @@ class Client:
         force_reconcile: bool = False,
         idempotency_key: str | None = None,
         callback_url: str | None = None,
+        zone: str = DEFAULT_ZONE,
     ) -> Result:
         """Render an item and resolve at the terminal outcome (clients.md §2.3). ``render`` is
         content-addressed + token-free, so ``idempotency_key`` is OPTIONAL. A cache hit returns a
         ``200`` at submit and collapses into the SAME :class:`Result` as the 202-then-poll path,
         with NO synthesized cache/cost field (§2.8). ``user`` is the MANDATORY §23 isolation prefix
-        (parallel to ``workspace``)."""
+        (parallel to ``workspace``); ``zone`` (§23/Z4, default ``DEFAULT_ZONE``) rides the submit
+        and every poll so the whole traversal stays in one zone."""
         params: dict[str, Any] = {
             "item": item,
             "platform": platform,
@@ -397,12 +475,14 @@ class Client:
             params["callback_url"] = callback_url
 
         def submit() -> Response:
-            return self.invoke("render", workspace, user, dict(params))
+            return self.invoke("render", workspace, user, dict(params), zone=zone)
 
-        return self._await_terminal(workspace, user, submit)
+        return self._await_terminal(workspace, user, submit, zone=zone)
 
     # --- The webhook fetch (clients.md §2.7) — no receiver server -----------------------------
-    def fetch_after_callback(self, event: CallbackEvent, user: str) -> Result:
+    def fetch_after_callback(
+        self, event: CallbackEvent, user: str, *, zone: str | None = None
+    ) -> Result:
         """Authenticated "you've been woken, now FETCH" (clients.md §2.7). Given a parsed
         :class:`CallbackEvent`, poll the job through the same authenticated door and resolve at the
         terminal outcome. The payload is wakeup-only, so this explicit fetch is honest.
@@ -410,18 +490,26 @@ class Client:
         ``user`` is the MANDATORY §23 isolation prefix (parallel to the ``workspace`` the event
         already carries): the poll REQUIRES it, so the woken client supplies its owning user
         explicitly — never defaulted, never silently omitted. (The wakeup payload does not yet
-        carry ``user``, so it cannot be read off the event.)"""
+        carry ``user``, so it cannot be read off the event.)
+
+        ``zone`` (§23/Z4) resolves to the SAME zone the job ran in: it defaults to the wakeup's own
+        :attr:`CallbackEvent.zone` (the ``job`` block names it), so the fetch polls in the right
+        zone with NO guess. An explicit ``zone`` argument overrides it; only a PRE-zone wakeup that
+        named none falls back to :data:`DEFAULT_ZONE` — so the woken client fetches in the job's
+        real zone, never silently crossing a zone boundary."""
         if not isinstance(event, CallbackEvent):
             raise TypeError("fetch_after_callback expects a CallbackEvent (from parse_callback)")
+        # Prefer an explicit zone; else the wakeup's own zone; else the pre-zone default.
+        eff = zone if zone is not None else (event.zone or DEFAULT_ZONE)
 
         def submit() -> Response:
-            return self.poll(event.workspace, user, event.key, event.target_ids)
+            return self.poll(event.workspace, user, event.key, event.target_ids, zone=eff)
 
-        return self._await_terminal(event.workspace, user, submit)
+        return self._await_terminal(event.workspace, user, submit, zone=eff)
 
     # --- The poll state machine (clients.md §2.3) — identical in every language ---------------
     def _await_terminal(
-        self, workspace: str, user: str, submit: Callable[[], Response]
+        self, workspace: str, user: str, submit: Callable[[], Response], *, zone: str = DEFAULT_ZONE
     ) -> Result:
         """Run the canonical poll state machine to a terminal OUTCOME or the deadline.
 
@@ -517,8 +605,9 @@ class Client:
             time.sleep(delay)
             if time.monotonic() >= deadline:
                 raise JobTimeout(redrivable=True)
-            # With a captured job handle, POLL; a submit-time 429 (no handle yet) RE-SUBMITS.
+            # With a captured job handle, POLL; a submit-time 429 (no handle yet) RE-SUBMITS. The
+            # poll carries the SAME zone the submit ran in, so the machine never crosses zones.
             if key is not None and target_ids is not None:
-                response = self.poll(workspace, user, key, target_ids)
+                response = self.poll(workspace, user, key, target_ids, zone=zone)
             else:
                 response = submit()

@@ -16,7 +16,8 @@ token-free **`render`** verb and collect the result two different ways:
 
 These are **generic** examples: every deployment-specific value is a placeholder —
 `http://127.0.0.1:8787` (the shim's loopback default), `<SHIM_SECRET>` (your bearer token),
-`<WORKSPACE>`, `<ARTIFACT_ID>`. No client content.
+`<WORKSPACE>`, `<USER>`, `<ZONE>` (the §23/Z4 isolation zone between user and workspace — `default`
+if you have not carved zones), `<ARTIFACT_ID>`. No client content.
 
 > **Hand-authored to n8n's export convention.** n8n publishes **no formal schema** for its workflow
 > export files, so this JSON is written to the well-known export shape by hand. **Import it into your
@@ -57,6 +58,8 @@ filled into the **Submit render** node) is:
 {
   "verb": "render",
   "workspace": "<WORKSPACE>",
+  "user": "<USER>",
+  "zone": "<ZONE>",
   "params": {
     "item": "<ARTIFACT_ID>",
     "platform": "linkedin",
@@ -67,7 +70,9 @@ filled into the **Submit render** node) is:
 }
 ```
 
-All five `params` are required. `item` is the artifact id to render; `platform` / `language` /
+`user` (the §23 isolation prefix) and `zone` (§23/Z4, the isolation zone between user and workspace;
+`default` when unset) ride the body next to `workspace`, 1:1 with the wire the shim enforces. All five
+`params` are required. `item` is the artifact id to render; `platform` / `language` /
 `output_type` / `presentation` are registry slugs (the values shown are generic framework defaults —
 swap in the coordinates you want). `output_type` also accepts the spelling `output-type`.
 
@@ -88,7 +93,7 @@ not hard-fail the node):
 - **202 accepted** — a paid reshape is running. The body carries the **job handle** to poll with:
   `body.job.key` and `body.job.target_ids`.
 
-`POST /poll` (body `{workspace, key, target_ids}`) then resolves to:
+`POST /poll` (body `{workspace, user, zone, key, target_ids}`) then resolves to:
 
 | Poll result | Meaning | Workflow does |
 |---|---|---|
@@ -142,8 +147,9 @@ If your n8n is not publicly reachable, **use the poll flow** — it needs none o
 - **Authentication:** `None`. The wake-up carries no secret; the security boundary is the shim's
   *outbound* allow-list + SSRF guard, not this inbound node. (The follow-up `/poll` still presents
   your Header Auth credential.)
-- The wake-up body arrives as `$json.body` — `{ event, job:{key,workspace,target_ids}, poll,
-  [code, redrivable] }`.
+- The wake-up body arrives as `$json.body` — `{ event, job:{key,workspace,zone,target_ids}, poll,
+  [code, redrivable] }` (the `job` block now NAMES the §23/Z4 `zone` next to `workspace`, so the
+  **Fetch result** poll reuses it — `user` still comes from your own config, never the wakeup).
 - **100-second note:** a Wait-on-webhook resume request that doesn't respond within ~100 s fails
   (524). The pipeline's wake-up returns fast (the heavy work already happened server-side), so this
   is fine; the *overall* wait can still be long because the node pauses rather than holding a request

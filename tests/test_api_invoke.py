@@ -188,8 +188,9 @@ class TestDispatchAndEnvelope:
     def test_wired_handler_happy_path_no_token(self, store):
         handler = _ok_handler([results.make_result(results.CODE_RE_RECONCILED, item="x")])
         out = invoke("list", "wsA", USER, {}, store=store, handlers={"list": handler})
+        # §23/Z4: the envelope ECHOES the resolved zone (default here) next to verb/workspace/user.
         assert out["envelope"] == {
-            "ok": True, "verb": "list", "workspace": "wsA", "user": USER
+            "ok": True, "verb": "list", "workspace": "wsA", "user": USER, "zone": "default"
         }
         assert out["results"][0]["code"] == "re-reconciled"
         assert "token" not in out
