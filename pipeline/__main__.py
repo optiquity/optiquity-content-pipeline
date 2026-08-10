@@ -802,10 +802,25 @@ def _add_friendly_generate_args(parser: "object") -> None:
         default=None,
         help="the owning user (§23 isolation prefix; required whenever --workspace is given)",
     )
+    # S4 (§21.9/§23-Z4) zone-required guard: SENTINEL default None = "omitted". An OMITTED --zone
+    # resolves DEFAULT_ZONE for a single-zone user, but REFUSES loudly (listing the zones) for a
+    # user who owns >1 zone — a spend verb never silently picks a zone. An EXPLICIT --zone (even
+    # `default`) is honored verbatim (`resolve_spend_zone`). NOT DEFAULT_ZONE here — the default
+    # must be distinguishable from an explicit `--zone default`.
+    parser.add_argument(
+        "--zone",
+        default=None,
+        metavar="ZONE",
+        help=(
+            "the §23/Z4 zone to spend in (users/<user>/zones/<zone>/workspaces/<W>/). OMIT for the "
+            "friendly default when you own one zone; a user with MORE THAN ONE zone MUST name one "
+            "here (the door refuses-and-lists rather than silently pick `default`, §21.9/S4)"
+        ),
+    )
     parser.add_argument(
         "--root",
         default=".",
-        help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
+        help="framework repo root → users/<user>/zones/<zone>/workspaces/ (default: cwd)",
     )
 
 
@@ -894,6 +909,32 @@ def _normalize_or_usage(friendly: dict, prog: str) -> "tuple[object | None, int]
     return normalized, 0
 
 
+def _resolve_spend_zone_or_refuse(
+    root: str, user: str, zone_arg: "str | None", prog: str
+) -> "tuple[str | None, int]":
+    """S4 (§21.9) zone-required guard for the FRIENDLY SPEND door — the ONE chokepoint `preview`,
+    `generate`, and `outline drive` funnel through (never copy-pasted per verb). Delegates the rule
+    to `workspacescaffold.resolve_spend_zone` (which REUSES the `list_zones` scan): an EXPLICIT
+    `--zone` (even `default`) is honored; an OMITTED `--zone` resolves `DEFAULT_ZONE` for a 0/1-zone
+    user but is a LOUD, PRE-spend refusal for a user who owns >1 zone. On refusal it prints the
+    zone-required message + a copy-paste `--zone <name>` line per available zone and returns
+    `(None, 1)` (nothing composed, nothing spent); on success `(resolved_zone, 0)`."""
+    from pipeline import workspacescaffold
+
+    try:
+        zone = workspacescaffold.resolve_spend_zone(root, user, zone_arg)
+    except workspacescaffold.SpendZoneError as exc:
+        print(f"pipeline {prog}: {exc}", file=sys.stderr)
+        for name in exc.zones:
+            print(f"  --zone {name}", file=sys.stderr)
+        print(
+            f"pipeline {prog}: re-run naming one of the zones above with --zone (nothing spent)",
+            file=sys.stderr,
+        )
+        return None, 1
+    return zone, 0
+
+
 def _print_dim(indent: str, label: str, view: dict) -> None:
     """One bound-dimension line: `entry` + the per-attribute winning cascade rung (provenance),
     so the operator sees WHICH layer set each value (the C1 `_dim_view`: entry/values/prov)."""
@@ -905,11 +946,13 @@ def _print_dim(indent: str, label: str, view: dict) -> None:
 
 
 def _print_plan_preview(
-    workspace: str, user: str, recipe: str, summary: dict, *, header: str
+    workspace: str, user: str, recipe: str, summary: dict, *, header: str, zone: str
 ) -> None:
     """Print the free preview (C3a): the effective compose+render settings (which cascade layer
     set each), the plan (artifact/deliverable ids + advisory warnings), and `spend-scope: N paid
-    artifact(s)`. Reads ONLY the C1 `explain` projection carried on the begin-session summary."""
+    artifact(s)`. Reads ONLY the C1 `explain` projection carried on the begin-session summary. The
+    header ECHOES the RESOLVED `zone` (§23/Z4/S4) so the operator can confirm which zone this run
+    spends in (the friendly `default`, or the one they named with --zone)."""
     ids = summary.get("ids") or {}
     context = summary.get("context") or {}
     effective = context.get("effective_settings") or {}
@@ -918,7 +961,9 @@ def _print_plan_preview(
     warnings = list(context.get("warnings") or [])
     spend_scope = context.get("spend_scope", len(artifact_ids))
 
-    print(f"=== {header}: user={user} workspace={workspace} recipe={recipe} ===")
+    print(
+        f"=== {header}: user={user} workspace={workspace} zone={zone} recipe={recipe} ==="
+    )
     print("effective settings (which cascade layer set each):")
     for aid in artifact_ids:
         print(f"  {aid}")
@@ -958,12 +1003,20 @@ def _print_refusal(prog: str, result: dict) -> None:
 
 
 def _begin_and_preview(
-    normalized: "object", root: str, prog: str, *, header: str, adapters: "object | None"
+    normalized: "object",
+    root: str,
+    prog: str,
+    *,
+    header: str,
+    adapters: "object | None",
+    zone: str,
 ) -> "tuple[dict | None, int]":
     """Run the plan-only begin-session door via the DIRECT-HANDLER pattern and print the free
-    preview. Returns `(begin_result, 0)` when a session began (a token was minted — the plan is
-    real and printable), else `(None, 1)` on a refusal (whole-invocation `ok=False`, or a per-item
-    block that mints no token: not-found / invalid-override / malformed-source / …)."""
+    preview. `zone` is the S4-resolved spend zone (§23/Z4) threaded into `invoke()` so the plan
+    resolves + the store is built in the right zone, and echoed in the preview header. Returns
+    `(begin_result, 0)` when a session began (a token was minted — the plan is real and printable),
+    else `(None, 1)` on a refusal (whole-invocation `ok=False`, or a per-item block that mints no
+    token: not-found / invalid-override / malformed-source / …)."""
     from pipeline.api import invoke as invoke_mod
     from pipeline.api import session
 
@@ -975,6 +1028,7 @@ def _begin_and_preview(
         normalized.params,
         handlers={"begin-session": begin_handler},
         root=root,
+        zone=zone,
     )
     if not result["envelope"]["ok"] or "token" not in result:
         _print_refusal(prog, result)
@@ -987,6 +1041,7 @@ def _begin_and_preview(
         normalized.params.get("recipe", ""),
         result["results"][0],
         header=header,
+        zone=zone,
     )
     return result, 0
 
@@ -998,13 +1053,17 @@ def _drive_generate(
     *,
     adapters: "object | None",
     run_artifact: "object | None",
+    zone: str,
 ) -> int:
     """`generate --go`: drive `continue-session` `generate-next` to completion over the plan cover.
     The per-item generation seam `run_artifact` is INJECTABLE (default `driver._run_artifact`, the
-    LIVE transport) so tests exercise the spend path without spending. Loops with `batch_size=all`
-    until the cursor consumes the whole cover, or a call makes NO progress (e.g. `plan-stale` echoes
-    the token and composes nothing — stop rather than loop forever). A whole-invocation failure
-    mid-drive → exit 1; any per-item generation BLOCK → exit 1 (a `--go` spend failure); else 0."""
+    LIVE transport) so tests exercise the spend path without spending. `zone` is the S4-resolved
+    spend zone (§23/Z4) — the SAME value `_begin_and_preview` used, threaded into every
+    `continue-session` `invoke()` so the drive spends in exactly the plan's zone. Loops
+    with `batch_size=all` until the cursor consumes the whole cover, or a call makes NO progress
+    (e.g. `plan-stale` echoes the token and composes nothing — stop rather than loop forever). A
+    whole-invocation failure mid-drive → exit 1; any per-item generation BLOCK → exit 1 (a `--go`
+    spend failure); else 0."""
     from pipeline.api import invoke as invoke_mod
     from pipeline.api import session
     from pipeline.api import token as token_mod
@@ -1028,6 +1087,7 @@ def _drive_generate(
             token=token,
             handlers={"continue-session": continue_handler},
             root=root,
+            zone=zone,
         )
         if not out["envelope"]["ok"]:
             _print_refusal("generate", out)
@@ -1216,6 +1276,12 @@ def _run_friendly_generate(
     normalized, code = _normalize_or_usage(friendly, prog)
     if normalized is None:
         return code
+    # S4 (§21.9): resolve the spend zone up front — a user who owns >1 zone MUST name --zone, else
+    # a LOUD pre-spend refusal listing the zones (never a silent `default`). Checked BEFORE the
+    # selection/outline attach + begin-session so nothing is composed or spent on refusal.
+    zone, code = _resolve_spend_zone_or_refuse(args.root, normalized.user, args.zone, prog)
+    if zone is None:
+        return code
     selection_id = getattr(args, "selection", None)
     if selection_id is not None and outline_path is not None:
         print(
@@ -1234,7 +1300,9 @@ def _run_friendly_generate(
         if code:
             return code
     header = f"{prog} --go" if go else f"{prog} (dry-run)"
-    result, code = _begin_and_preview(normalized, args.root, prog, header=header, adapters=adapters)
+    result, code = _begin_and_preview(
+        normalized, args.root, prog, header=header, adapters=adapters, zone=zone
+    )
     if result is None:
         return code  # a refusal — nothing to drive
     # C5b: `--save-selection ID` persists the run's OWN fan-out (works WITH and WITHOUT --go — the
@@ -1254,7 +1322,7 @@ def _run_friendly_generate(
         print("\n(dry-run: nothing spent — re-run with --go to drive the plan to completion)")
         return 0
     drive_code = _drive_generate(
-        normalized, result, args.root, adapters=adapters, run_artifact=run_artifact
+        normalized, result, args.root, adapters=adapters, run_artifact=run_artifact, zone=zone
     )
     if drive_code == 0 and save_selection is not None:
         return _save_selection(
@@ -1286,8 +1354,12 @@ def _cmd_preview(argv: list[str], *, adapters: "object | None" = None) -> int:
     normalized, code = _normalize_or_usage(friendly, "preview")
     if normalized is None:
         return code
+    # S4 (§21.9): a multi-zone user must name --zone (else refuse-and-list) before begin-session.
+    zone, code = _resolve_spend_zone_or_refuse(args.root, normalized.user, args.zone, "preview")
+    if zone is None:
+        return code
     _result, code = _begin_and_preview(
-        normalized, args.root, "preview", header="preview", adapters=adapters
+        normalized, args.root, "preview", header="preview", adapters=adapters, zone=zone
     )
     return code
 

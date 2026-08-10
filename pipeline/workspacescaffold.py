@@ -61,6 +61,7 @@ from pipeline.workspace_name import (
 
 __all__ = [
     "WORKSPACE_BLUEPRINT_DIRS",
+    "SpendZoneError",
     "UserNamespace",
     "WorkspaceDeletion",
     "WorkspaceRow",
@@ -73,6 +74,7 @@ __all__ = [
     "delete_zone",
     "list_workspaces",
     "list_zones",
+    "resolve_spend_zone",
     "scaffold_user",
     "scaffold_workspace",
     "scaffold_zone",
@@ -802,3 +804,59 @@ def delete_zone(
         file_count=file_count,
         had_output=had_output,
     )
+
+
+# ===========================================================================
+# S4: the SPEND-verb zone-required guard (§21.9/§23-Z4 money-safety).
+#
+# The ratified rule: once a user owns MORE THAN ONE zone, a SPEND verb MUST carry an explicit
+# `--zone` (refuse-and-list otherwise) — the door NEVER silently picks `default` and spends in the
+# wrong zone. Single-zone users (the post-migration norm) and every Tier-A verb keep the friendly
+# `DEFAULT_ZONE` default unconditionally (Tier-A never spends; §21.9). `resolve_spend_zone` is the
+# ONE reusable chokepoint every SPEND verb funnels through (never copy-pasted per verb); it REUSES
+# `list_zones` (the SAME `users/<user>/zones/*` scan the CRUD uses, which also
+# `validate_user_segment`-hygiene-checks the user) — no scan is re-implemented. A PURE read: it
+# mutates nothing, spends nothing, and registers no invoke verb.
+# ===========================================================================
+
+
+class SpendZoneError(Exception):
+    """The §21.9/S4 zone-required refusal: a SPEND verb was invoked WITHOUT an explicit `--zone`
+    by a user who owns MORE THAN ONE zone. The door REFUSES loudly rather than silently pick
+    `DEFAULT_ZONE` and spend in the wrong zone; `zones` carries the available zone names so the
+    caller can name one with `--zone`. A PRE-spend money-safety refusal — nothing is composed or
+    spent. (0 or 1 zone never raises: the friendly `DEFAULT_ZONE` is materialized unchanged.)"""
+
+    def __init__(self, user: str, zones: tuple[str, ...] | list[str]) -> None:
+        self.user = user
+        self.zones = tuple(zones)
+        super().__init__(
+            f"zone-required: user {user!r} owns {len(self.zones)} zones "
+            f"({', '.join(self.zones)}) — a spend verb must name one explicitly with --zone "
+            f"(refusing to silently pick {DEFAULT_ZONE!r} and spend in the wrong zone)"
+        )
+
+
+def resolve_spend_zone(root: str | Path, user: str, zone_arg: str | None) -> str:
+    """Resolve the zone a SPEND verb runs in, enforcing the §21.9/S4 zone-required rule.
+
+    `zone_arg` is the CLI `--zone` value under a SENTINEL default of `None` = "the caller did NOT
+    pass --zone" (an EXPLICIT `--zone default` arrives as the string ``"default"``, NEVER `None`):
+
+    - `zone_arg is not None` — the caller named a zone EXPLICITLY (even ``"default"``): honor it
+      verbatim, NO refusal, NO scan. The user owns the choice.
+    - `zone_arg is None` (omitted) — COUNT the user's zones by REUSING `list_zones` (the SAME
+      `users/<user>/zones/*` scan the CRUD uses; it also `validate_user_segment`-hygiene-checks
+      `user`). If MORE THAN ONE zone exists, RAISE `SpendZoneError` (refuse loudly, list the zones —
+      never silently pick one). With 0 or 1 zone, materialize `DEFAULT_ZONE` (the friendly default,
+      unchanged — the single-zone / post-migration norm).
+
+    A PURE read (via `list_zones`); mutates nothing, spends nothing. The reusable chokepoint for
+    every SPEND verb (never copy-pasted per verb). Tier-A verbs never call this — they keep
+    defaulting to `DEFAULT_ZONE` unconditionally (they never spend; §21.9)."""
+    if zone_arg is not None:  # explicit choice (even "default") — honor it, never refuse
+        return zone_arg
+    zones = list_zones(root, user=user)  # REUSE the CRUD scan (also validates <user>); pure read
+    if len(zones) > 1:
+        raise SpendZoneError(user, [row.zone for row in zones])
+    return DEFAULT_ZONE  # 0 or 1 zone: the friendly default, unchanged
