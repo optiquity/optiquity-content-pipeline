@@ -293,7 +293,11 @@ class AssignmentStore:
     """
 
     def __init__(
-        self, assignments: Iterable[Assignment] = (), *, entitled_user: str | None = None
+        self,
+        assignments: Iterable[Assignment] = (),
+        *,
+        entitled_user: str | None = None,
+        umbrella_cap_usd: Decimal | None = None,
     ) -> None:
         self._by_scope: dict[ScopeKey, Assignment] = {}
         for assignment in assignments:
@@ -304,6 +308,12 @@ class AssignmentStore:
         # The value is opaque here (a validated user segment); the deep §23 validation + the
         # admin-only write discipline live in `pipeline.spend.entitlement`, the domain owner.
         self._entitled_user: str | None = entitled_user
+        # The install-wide UMBRELLA weekly cap (plan G6, §21.10, §23) — a single positive `Decimal`
+        # or `None` (unset). It rides the SAME config document as the assignments + entitlement (one
+        # store, one renderer), so a set/clear of ANY block never clobbers the others. The value is
+        # opaque here (a positive dollar amount); the admit-time metering that CONSUMES it, plus the
+        # `set-umbrella-cap` admin write, live in `pipeline.spend.meter`, the domain owner.
+        self._umbrella_cap_usd: Decimal | None = umbrella_cap_usd
 
     @property
     def assignments(self) -> list[Assignment]:
@@ -343,6 +353,25 @@ class AssignmentStore:
     def clear_entitled_user(self) -> None:
         """Remove the entitled subscription user (idempotent)."""
         self._entitled_user = None
+
+    @property
+    def umbrella_cap_usd(self) -> Decimal | None:
+        """The install-wide UMBRELLA weekly cap, or `None` if unset (plan G6, §21.10, §23).
+
+        A single positive `Decimal` bounding the WHOLE install's weekly spend on top of every
+        per-bucket cap. The value is opaque to the store (the admit-time metering that consumes it
+        lives in `pipeline.spend.meter`, the domain owner); the store only PERSISTS it in the shared
+        config so a set/clear of one block never drops another. `None` → no umbrella configured (the
+        meter fails closed at admit; the `set-umbrella-cap` verb requires a value)."""
+        return self._umbrella_cap_usd
+
+    def set_umbrella_cap(self, cap: Decimal) -> None:
+        """REPLACE the install-wide umbrella weekly cap (single-valued — never a second entry)."""
+        self._umbrella_cap_usd = cap
+
+    def clear_umbrella_cap(self) -> None:
+        """Remove the umbrella weekly cap (idempotent)."""
+        self._umbrella_cap_usd = None
 
     def cascade_key(
         self, user: str, zone: str, workspace: str | None = None
@@ -435,7 +464,8 @@ def _parse_config(text: str, *, source: str) -> AssignmentStore:
         seen.add(assignment.scope)
         assignments.append(assignment)
     entitled = _parse_entitled_user(data.get("subscription_user"), source=source)
-    return AssignmentStore(assignments, entitled_user=entitled)
+    umbrella = _parse_umbrella_cap(data.get("umbrella_cap_usd"), source=source)
+    return AssignmentStore(assignments, entitled_user=entitled, umbrella_cap_usd=umbrella)
 
 
 def _parse_entitled_user(value: Any, *, source: str) -> str | None:
@@ -453,6 +483,27 @@ def _parse_entitled_user(value: Any, *, source: str) -> str | None:
             f"{type(value).__name__}"
         )
     return value
+
+
+def _parse_umbrella_cap(value: Any, *, source: str) -> Decimal | None:
+    """Validate the OPTIONAL install-wide `umbrella_cap_usd` config value: `None` or a POSITIVE
+    `Decimal` (plan G6). Mirrors `_coerce_cap`'s positivity check but is optional at the top level
+    (an ABSENT umbrella means none configured — the meter fails closed at admit, never a silent
+    default). A present-but-non-numeric / zero / negative / non-finite value is refused loudly."""
+    if value is None:
+        return None
+    try:
+        cap = Decimal(str(value))
+    except InvalidOperation:
+        raise ConfigError(
+            f"assignment-bad-config: {source}: umbrella_cap_usd {value!r} is not a number"
+        ) from None
+    if not cap.is_finite() or cap <= 0:
+        raise ConfigError(
+            f"assignment-bad-config: {source}: umbrella_cap_usd must be a POSITIVE dollar amount, "
+            f"got {value!r} (an install-wide weekly umbrella; a zero/negative cap is not a budget)"
+        )
+    return cap
 
 
 def _parse_row(raw: Any, *, index: int, source: str) -> Assignment:
@@ -522,6 +573,10 @@ def _render_config(store: AssignmentStore) -> str:
         # The single entitled subscription user (G5) lives in the SAME document as the assignments
         # (one store, one renderer) — so neither block clobbers the other on a set/clear.
         doc["subscription_user"] = store.entitled_user
+    if store.umbrella_cap_usd is not None:
+        # The install-wide UMBRELLA weekly cap (G6) rides the SAME document — string → exact Decimal
+        # round-trip. Omitted when unset, so a config with no umbrella renders byte-identically.
+        doc["umbrella_cap_usd"] = str(store.umbrella_cap_usd)
     doc["assignments"] = rows
     return _HEADER + _dump_yaml(doc)
 

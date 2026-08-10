@@ -3205,7 +3205,11 @@ def _cmd_transport(argv: list[str]) -> int:
                                    prior (single-valued, swappable). Set ONLY here — NEVER via a
                                    run/spend verb (I2/I3). A bad §23 user segment → loud refuse.
     - clear-subscription-user      remove the entitled subscription user (idempotent).
-    - show                         READ-ONLY combined view: the entitled user + every assignment.
+    - set-umbrella-cap <amount>    set the install-wide UMBRELLA weekly cap (G6). REQUIRED positive
+                                   amount (S3-style: no uncapped umbrella); REPLACES any prior.
+    - clear-umbrella-cap           remove the install-wide umbrella weekly cap (idempotent).
+    - show                         READ-ONLY combined view: entitled user + umbrella cap + every
+                                   assignment.
 
     Exit 0 ok; 1 refusal (bad scope/handle/cap/user, malformed config); 2 usage (no subcommand /
     missing --weekly-cap / missing --scope / missing <u>)."""
@@ -3326,12 +3330,53 @@ def _cmd_transport(argv: list[str]) -> int:
         help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
     )
 
+    setumb = sub.add_parser(
+        "set-umbrella-cap",
+        help="set the install-wide UMBRELLA weekly cap (a HARD positive dollar amount; NO spend)",
+        description=(
+            "Set the SINGLE install-wide UMBRELLA weekly cap (plan G6): a HARD ceiling bounding "
+            "the WHOLE install's weekly spend on top of every per-bucket cap. The amount is "
+            "REQUIRED and must be a POSITIVE dollar amount — an absent / zero / negative amount is "
+            "a loud refusal with NOTHING written (no uncapped umbrella). Swappable, single-valued; "
+            "preserves the key assignments + entitlement (one shared config). Tier-A admin: "
+            "resolves no transport, spends nothing (the meter that ENFORCES it is pure bookkeeping "
+            "until G7)."
+        ),
+    )
+    setumb.add_argument(
+        "amount",
+        nargs="?",
+        default=None,
+        help="the HARD install-wide weekly umbrella cap, e.g. 200 (REQUIRED; a positive amount)",
+    )
+    setumb.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
+    )
+
+    clrumb = sub.add_parser(
+        "clear-umbrella-cap",
+        help="remove the install-wide umbrella weekly cap (idempotent; NO spend)",
+        description=(
+            "Remove the install-wide umbrella weekly cap (G6). Idempotent: clearing an unset "
+            "umbrella is a clean no-op (exit 0). Preserves the key assignments + entitlement (one "
+            "shared config). Tier-A: spends nothing."
+        ),
+    )
+    clrumb.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
+    )
+
     show = sub.add_parser(
         "show",
-        help="show the entitled subscription user + key assignments (READ-ONLY; NEVER a secret)",
+        help="show the entitled subscription user + umbrella cap + key assignments (READ-ONLY)",
         description=(
-            "READ-ONLY combined view: the SINGLE entitled subscription user (if any) plus every "
-            "key assignment (scope + handle + cap; NEVER a secret). Mutates + spends nothing."
+            "READ-ONLY combined view: the SINGLE entitled subscription user (if any), the "
+            "install-wide umbrella weekly cap (if any), plus every key assignment (scope + handle "
+            "+ cap; NEVER a secret). Mutates + spends nothing."
         ),
     )
     show.add_argument(
@@ -3351,12 +3396,17 @@ def _cmd_transport(argv: list[str]) -> int:
         return _transport_set_subscription_user(args)
     if args.subcommand == "clear-subscription-user":
         return _transport_clear_subscription_user(args)
+    if args.subcommand == "set-umbrella-cap":
+        return _transport_set_umbrella_cap(args)
+    if args.subcommand == "clear-umbrella-cap":
+        return _transport_clear_umbrella_cap(args)
     if args.subcommand == "show":
         return _transport_show(args)
     parser.print_usage(sys.stderr)
     print(
         "pipeline transport: a subcommand is required (known: assign-key, list-keys, clear-key, "
-        "set-subscription-user, clear-subscription-user, show)",
+        "set-subscription-user, clear-subscription-user, set-umbrella-cap, clear-umbrella-cap, "
+        "show)",
         file=sys.stderr,
     )
     return 2
@@ -3499,11 +3549,67 @@ def _transport_clear_subscription_user(args: "object") -> int:
     return 0
 
 
-def _transport_show(args: "object") -> int:
-    """G5: `transport show` — READ-ONLY combined view: the entitled user + the key assignments.
+def _transport_set_umbrella_cap(args: "object") -> int:
+    """G6: `transport set-umbrella-cap <amount>` — set the install-wide UMBRELLA weekly cap.
 
-    Prints the SINGLE entitled subscription user (if any) then every assignment (scope + handle +
-    cap; NEVER a secret). Mutates nothing, spends nothing (§21.9)."""
+    Tier-A admin, NO spend. HARD-REFUSES an ABSENT amount up front (no uncapped umbrella) with a
+    clear message and NO write, BEFORE any parse/load. Then parses the amount as a POSITIVE Decimal
+    (reusing the S3 cap parser) and persists it in the shared transport config (single-valued,
+    swappable). Preserves the key assignments + entitlement (one store, one renderer)."""
+    from pipeline.spend import assignment as A
+    from pipeline.spend import meter as M
+
+    # HARD-refuse an absent amount BEFORE any parse/load/write — no silent default umbrella.
+    if getattr(args, "amount", None) is None:
+        print(
+            "pipeline transport set-umbrella-cap: an amount is REQUIRED — refusing to set an "
+            "UNCAPPED umbrella. State the install-wide weekly dollar cap, e.g. "
+            "`set-umbrella-cap 200`. Nothing was written.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        cap = A.parse_weekly_cap(args.amount)  # POSITIVE Decimal, or a loud InvalidCapError
+        path = M.set_umbrella_cap(args.root, cap)
+    except (A.AssignmentError, M.MeterError) as exc:
+        print(f"pipeline transport set-umbrella-cap: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"pipeline transport set-umbrella-cap: install-wide umbrella weekly cap is now "
+        f"{A.format_cap(cap)} (single-valued — any prior umbrella was replaced) — {path}"
+    )
+    return 0
+
+
+def _transport_clear_umbrella_cap(args: "object") -> int:
+    """G6: `transport clear-umbrella-cap` — remove the install-wide umbrella weekly cap.
+
+    Idempotent. Tier-A admin, NO spend. Preserves the key assignments + entitlement (one config)."""
+    from pipeline.spend import assignment as A
+    from pipeline.spend import meter as M
+
+    try:
+        prior = M.umbrella_cap(args.root)
+        path = M.clear_umbrella_cap(args.root)
+    except A.AssignmentError as exc:
+        print(f"pipeline transport clear-umbrella-cap: {exc}", file=sys.stderr)
+        return 1
+    if prior is None:
+        print("pipeline transport clear-umbrella-cap: no umbrella weekly cap set (no-op)")
+    else:
+        print(
+            f"pipeline transport clear-umbrella-cap: removed the umbrella weekly cap "
+            f"({A.format_cap(prior)}) — {path}"
+        )
+    return 0
+
+
+def _transport_show(args: "object") -> int:
+    """G5/G6: `transport show` — READ-ONLY view: entitled user + umbrella cap + assignments.
+
+    Prints the SINGLE entitled subscription user (if any), the install-wide umbrella weekly cap (if
+    any), then every assignment (scope + handle + cap; NEVER a secret). Mutates + spends nothing."""
     from pipeline.spend import assignment as A
 
     try:
@@ -3517,6 +3623,12 @@ def _transport_show(args: "object") -> int:
         print("subscription user: (none — no user is entitled to the subscription fallback)")
     else:
         print(f"subscription user: {entitled}  (the ONE entitled subscription user)")
+
+    umbrella = store.umbrella_cap_usd
+    if umbrella is None:
+        print("umbrella cap: (none — no install-wide weekly umbrella is set)")
+    else:
+        print(f"umbrella cap: {A.format_cap(umbrella)}  (the install-wide weekly umbrella)")
 
     rows = store.assignments
     if not rows:
