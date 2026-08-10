@@ -303,12 +303,13 @@ while IFS= read -r f; do
       leak instance-file "$f" \
         "tracked non-template file under instance/ (allowlist: direct-child *.template.* only, e.g. instance/profile.template.md, instance/defaults.template.yaml)" ;;
     users/*)
-      # §23 re-home: ALL client content lives under users/<user>/workspaces/<workspace>/, and the
-      # shell `case *` glob spans '/', so this catches any tracked file at any depth beneath users/.
-      # No template exemption (RV-1): the path alone names a user/client. The framework blueprint no
-      # longer lives here — it moved to templates/workspace/ (handled above).
+      # §23 re-home + zone restructure: ALL client content lives under
+      # users/<user>/zones/<zone>/workspaces/<workspace>/, and the shell `case *` glob spans '/', so
+      # this catches any tracked file at any depth beneath users/ (the deeper zone level is already
+      # covered — no structural change needed). No template exemption (RV-1): the path alone names a
+      # user/client. The framework blueprint no longer lives here — it moved to templates/workspace/.
       leak workspace-content "$f" \
-        "tracked client content under users/ — every user/workspace tree (users/<user>/workspaces/<workspace>/) is instance-owned and never ships in the public framework (CLAUDE.md rules 2/4; design §23)" ;;
+        "tracked client content under users/ — every user/zone/workspace tree (users/<user>/zones/<zone>/workspaces/<workspace>/) is instance-owned and never ships in the public framework (CLAUDE.md rules 2/4; design §23)" ;;
     templates/*)
       # [W8] templates/ is FRAMEWORK MECHANISM: owner-agnostic blueprints, the counterpart to the
       # assets/ arm above. The WHOLE subtree flows through here (including templates/workspace/), so no

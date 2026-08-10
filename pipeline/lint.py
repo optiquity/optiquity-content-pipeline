@@ -353,7 +353,9 @@ def _released_ref(root: str | Path) -> str | None:
 def iter_lint_collections(root: str | Path) -> Iterator[Path]:
     """Every in-scope collection directory: the named registry roots carrying a
     co-located `_schema.yaml`, plus `_schema.yaml`-bearing directories under `instance/`
-    and `users/` (the §23 re-home — e.g. `users/<user>/workspaces/<workspace>/<dimension>/`).
+    and `users/` (the §23 re-home + zone restructure — e.g.
+    `users/<user>/zones/<zone>/workspaces/<workspace>/<dimension>/`; the recursive walk already
+    reaches the deeper zone level, so no structural change is needed).
     Nothing else is ever visited — `tests/` fixtures cannot self-flag (PA-1b), and the
     framework blueprint at `templates/workspace/` sits outside these scopes entirely (so it
     is exempt automatically, no by-name skip)."""

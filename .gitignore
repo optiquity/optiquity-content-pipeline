@@ -25,14 +25,20 @@
 # Python bytecode caches (plan step 21; step-7 carry-forward RV-2).
 __pycache__/
 
-# Per-user instance workspaces: EVERYTHING under users/<owner>/workspaces/<ws>/ is client/
-# instance data — topics, sources, defaults, generated artifacts/deliverables/reviews/outlines/
-# assets/ssot, AND the transient claims/lease + async job/idempotency runtime records (design
-# §13.3/§22.3/§22.7/§23). NEVER tracked in the public framework (CLAUDE.md rules 2/4);
+# Per-user instance workspaces: EVERYTHING under users/<owner>/zones/<zone>/workspaces/<ws>/ is
+# client/ instance data — topics, sources, defaults, generated artifacts/deliverables/reviews/
+# outlines/assets/ssot, AND the transient claims/lease + async job/idempotency runtime records
+# (design §13.3/§22.3/§22.7/§23). NEVER tracked in the public framework (CLAUDE.md rules 2/4);
 # check-no-content.sh fails on any tracked users/*/… file — the loud backstop for a force-add.
 # Broadly ignorable now that the shared blueprint lives at templates/workspace/, not among the
 # workspaces (pre-restructure the tracked template forced per-subdir ignores here).
+# BOTH patterns are kept ADDITIVELY (Z5, the zone restructure): `users/*/zones/` covers the
+# post-migration zoned layout, and `users/*/workspaces/` still covers the pre-migration layout —
+# so a downstream that pulls this update BEFORE running migrate-to-zones-layout.sh never has its
+# existing client content un-ignored (there is no un-ignore window; the old pattern is harmless
+# post-migration since nothing matches it once workspaces/ dirs move under zones/).
 users/*/workspaces/
+users/*/zones/
 
 # Instance-scoped ops state (design §22.5/§23; plan step 36): the presence-lease registry
 # and the append-only telemetry JSONL. Framework MECHANISM (pipeline/telemetry.py), instance
