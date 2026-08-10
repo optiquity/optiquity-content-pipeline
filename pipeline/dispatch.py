@@ -56,7 +56,7 @@ from pipeline.serialize import (
     run_pandoc_bytes,
 )
 from pipeline.store import WorkspaceStore
-from pipeline.transport import Runner
+from pipeline.transport import Runner, TransportPlan
 
 __all__ = [
     "EMBED_WRITERS",
@@ -443,6 +443,7 @@ def review_deliverable(
     review_advance: Callable[[str], None] | None = None,
     review_model: str | None = None,
     review_timeout_seconds: float | None = None,
+    plan: TransportPlan | None = None,
 ) -> ReviewOutcome:
     """Run the §19 deliverable review (Review 2) for one deliverable, then advance the
     deliverable SSOT row to `deliverable-reviewed` via the write-only `review_advance` hook.
@@ -465,6 +466,7 @@ def review_deliverable(
         runner=review_runner,
         model=review_model,
         timeout_seconds=review_timeout_seconds,
+        plan=plan,  # plan G1: Review-2 accumulates into the run's shared cost total
     )
     if outcome.persisted and review_advance is not None:
         review_advance(deliverable_id)  # SSOT advance is write-only w.r.t. control flow

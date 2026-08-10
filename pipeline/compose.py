@@ -114,7 +114,7 @@ from pipeline.sections import (
 )
 from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, is_done, write_new
-from pipeline.transport import Runner, TransportResult, invoke_headless
+from pipeline.transport import Runner, TransportPlan, TransportResult, invoke_headless
 
 __all__ = [
     "CODE_ASSET_REF_INVALID",
@@ -1457,12 +1457,14 @@ def _run_artifact_review(
     review_advance: AdvanceHook | None,
     review_model: str | None,
     review_timeout_seconds: float | None,
+    plan: TransportPlan | None = None,
 ) -> ReviewOutcome:
     """Run the §19 artifact review after the IR is materialized, then advance the artifact SSOT
     row to `artifact-reviewed` (via the opaque `review_advance` hook — compose never imports the
     SSOT). `ir_doc` is the fresh envelope on the hot path; None on the idempotent path, where the
     review loads the persisted IR itself. Idempotent by review-record existence (§19): a re-drive
-    never re-runs the LLM. The advance runs only when a record now exists (`persisted`)."""
+    never re-runs the LLM. The advance runs only when a record now exists (`persisted`). `plan`
+    (plan G1) threads the run's shared cost accumulator through to Review-1's chokepoint call."""
     outcome = review.review_artifact(
         store=store,
         artifact_id=request.artifact_id,
@@ -1471,6 +1473,7 @@ def _run_artifact_review(
         runner=review_runner,
         model=review_model,
         timeout_seconds=review_timeout_seconds,
+        plan=plan,
     )
     if outcome.persisted and review_advance is not None:
         review_advance(request.artifact_id)  # SSOT advance is write-only w.r.t. control flow
@@ -1494,6 +1497,7 @@ def compose_artifact(
     pandoc_runner: serialize.PandocRunner | None = None,
     model: str | None = None,
     timeout_seconds: float | None = None,
+    plan: TransportPlan | None = None,
     review_runner: Runner | None = None,
     review_advance: AdvanceHook | None = None,
     review_model: str | None = None,
@@ -1564,6 +1568,7 @@ def compose_artifact(
             review_advance=review_advance,
             review_model=review_model,
             review_timeout_seconds=review_timeout_seconds,
+            plan=plan,  # plan G1: Review-1 accumulates into the run's shared cost total
         )
 
     # §21.8 idempotency floor: an existing artifact is composed exactly once — no LLM.
@@ -1638,7 +1643,9 @@ def compose_artifact(
         for attempt in range(1, max_attempts + 1):
             note = _reask_note(violations, last_failure_code) if violations else None
             prompt = build_writer_prompt(request, entries, ledger, reask_note=note)
-            transport = invoke_headless(prompt, cwd=scratch, runner=runner, model=model, **extra)
+            transport = invoke_headless(
+                prompt, cwd=scratch, runner=runner, model=model, plan=plan, **extra
+            )
             last_transport = transport
             if transport.status != "ok":
                 # A transport-level failure — re-asking cannot fix an account-side condition.

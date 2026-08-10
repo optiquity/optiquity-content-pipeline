@@ -17,6 +17,7 @@ surgical, non-live changes step 33 made:
 from __future__ import annotations
 
 import ast
+import json
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,12 @@ from pipeline.plan import Plan, PlanItem
 from pipeline.spine import registry_for
 from pipeline.ssot import Ssot
 from pipeline.store import WorkspaceStore
+from pipeline.transport import (
+    CostAccumulator,
+    ProcessOutcome,
+    TransportPlan,
+    invoke_headless,
+)
 
 
 class _PinStub:
@@ -479,3 +486,226 @@ class TestReconcileBlockSurfacesBothConcernSets:
         # BOTH concern-sets surface in the message (the early-return refactor's payload).
         assert "acknowledgements" in msg and "structural_violations=" in msg
         assert "blocked_limits=('max_chars',)" in msg
+
+
+# ---------------------------------------------------------------------------
+# plan G1 (the B1 accounting fix): ONE run-scoped CostAccumulator threaded through
+# `_run_artifact` so the artifact's transport cost is the RUN total across writer +
+# Review-1 + reconcile + Review-2 + every re-ask — NOT the writer's last call alone.
+# ---------------------------------------------------------------------------
+
+
+def _ok_cost_outcome(cost: float) -> ProcessOutcome:
+    payload = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "total_cost_usd": cost,
+            "terminal_reason": "completed",
+        }
+    )
+    return ProcessOutcome(timed_out=False, returncode=0, stdout=payload, stderr="")
+
+
+class _ScriptedRunner:
+    """A process seam returning a SCRIPTED per-call cost, in order (zero subprocesses)."""
+
+    def __init__(self, costs: list[float]) -> None:
+        self._costs = list(costs)
+        self.calls = 0
+
+    def __call__(self, request):
+        cost = self._costs[self.calls]
+        self.calls += 1
+        return _ok_cost_outcome(cost)
+
+
+class TestRunTransportCostAccounting:
+    """`_run_artifact` threads ONE `TransportPlan`/`CostAccumulator` so the reported transport
+    cost is the RUN accumulator delta across EVERY chokepoint call it drove — the B1 fix."""
+
+    def _harness(self, tmp_path):
+        store = WorkspaceStore(tmp_path / "ws")
+        store.ensure_layout()
+        claims = registry_for(store)
+        ssot = Ssot(store.root / "ssot.csv")
+        preimage = build_artifact_preimage(
+            topic=EntryBinding("t"),
+            persona=EntryBinding("p"),
+            format=EntryBinding("f"),
+            voice=EntryBinding("v"),
+            goals=[],
+            source_subset=["s"],
+            source_commit={"s": "c0ffee0123ab"},
+        )
+        item = PlanItem(
+            artifact_id=mint_artifact_id(preimage),
+            preimage=preimage,
+            topic="t",
+            persona="p",
+            format="f",
+            voice="v",
+            goals=(),
+            m3=resolve_selection(run=None),
+            deliverables=(SimpleNamespace(deliverable_id="del-1"),),
+            outline_digest=None,
+        )
+        plan = Plan(
+            workspace="ws",
+            recipe="r",
+            source_subset=("s",),
+            source_commit={"s": "c0ffee0123ab"},
+            items=(item,),
+            plan_hash="feedfacefeedface",
+            warnings=(),
+        )
+        return store, claims, ssot, plan, item
+
+    def _patch_stages(self, monkeypatch):
+        fact = SimpleNamespace(republishable=True)
+        monkeypatch.setattr(
+            driver,
+            "ground_item",
+            lambda **kw: SimpleNamespace(
+                status="ok", publishable_facts=(fact,), facts=(fact,), commit_map={}
+            ),
+        )
+        monkeypatch.setattr(
+            driver,
+            "resolve_compose",
+            lambda env, sel: SimpleNamespace(
+                topic=SimpleNamespace(values={}, entry_id="t"),
+                persona=SimpleNamespace(values={}, entry_id="p"),
+                format=SimpleNamespace(values={}, entry_id="f"),
+                voice=SimpleNamespace(values={}, entry_id="v"),
+                goals=(),
+                lexicon=None,
+                recipe=SimpleNamespace(effective={}),
+            ),
+        )
+
+    def _env(self):
+        return SimpleNamespace(
+            workspace="ws",
+            resolver=SimpleNamespace(
+                resolve=lambda coll, eid: SimpleNamespace(effective={"tool": "dot"})
+            ),
+        )
+
+    def test_run_total_is_the_sum_across_every_stage_not_the_last_call(
+        self, tmp_path, monkeypatch
+    ):
+        store, claims, ssot, plan, item = self._harness(tmp_path)
+        self._patch_stages(monkeypatch)
+
+        transport_plan = TransportPlan.subscription(cost_accumulator=CostAccumulator())
+        # writer attempt-1, writer attempt-2 (bounded re-ask), Review-1, reconcile, Review-2.
+        costs = [0.10, 0.02, 0.20, 0.05, 0.30]
+        runner = _ScriptedRunner(costs)
+        received: dict[str, object] = {}
+
+        def _compose_stub(request, **kw):
+            received["compose_plan"] = kw.get("plan")
+            p = kw.get("plan")
+            invoke_headless("writer", runner=runner, plan=p)  # attempt 1
+            invoke_headless("writer", runner=runner, plan=p)  # attempt 2 (re-ask)
+            invoke_headless("review-1", runner=runner, plan=p)  # Review-1
+            return SimpleNamespace(
+                status="ok",
+                code="composed",
+                ir={
+                    "binding": {
+                        "preimage": item.preimage,
+                        "digest": "deadbeef",
+                        "artifact_id": item.artifact_id,
+                    }
+                },
+                attempts=2,
+                violations=("re-ask",),
+                review=SimpleNamespace(code="reviewed", verdict="pass"),
+                transport_result=SimpleNamespace(total_cost_usd=0.20),
+            )
+
+        def _deliverable_stub(**kw):
+            received["deliverable_plan"] = kw.get("transport_plan")
+            p = kw.get("transport_plan")
+            invoke_headless("reconcile", runner=runner, plan=p)  # reconcile
+            invoke_headless("review-2", runner=runner, plan=p)  # Review-2
+            return SimpleNamespace(deliverable_id="del-1")
+
+        monkeypatch.setattr(driver, "compose_artifact", _compose_stub)
+        monkeypatch.setattr(driver, "_run_deliverable", _deliverable_stub)
+
+        result = driver._run_artifact(
+            env=self._env(),
+            store=store,
+            claims=claims,
+            ssot=ssot,
+            plan=plan,
+            item=item,
+            pool=(),
+            adapters={},
+            source_repos={"s": "repo"},
+            now=date.today(),
+            model=None,
+            log=lambda _m: None,
+            transport_plan=transport_plan,
+        )
+
+        # `_run_artifact` threaded the SAME plan object into BOTH stages.
+        assert received["compose_plan"] is transport_plan
+        assert received["deliverable_plan"] is transport_plan
+        # The run accumulator holds the SUM of every chokepoint call — not the last one.
+        assert transport_plan.cost_accumulator.total == pytest.approx(sum(costs))
+        assert transport_plan.cost_accumulator.calls == len(costs)
+        # The artifact's reported cost is that same full total (the accumulator delta), NOT the
+        # writer's last-call value the pre-fix `driver.py:976` read would have surfaced.
+        assert result.transport_cost_usd == pytest.approx(sum(costs))
+        assert result.transport_cost_usd != costs[-1]
+        assert result.transport_cost_usd != 0.20  # not the writer transport_result alone
+
+    def test_without_a_plan_the_cost_falls_back_to_the_writer_result(self, tmp_path, monkeypatch):
+        """Backward-compat: a plan-less `_run_artifact` keeps the pre-plan writer-cost read."""
+        store, claims, ssot, plan, item = self._harness(tmp_path)
+        self._patch_stages(monkeypatch)
+
+        def _compose_stub(request, **kw):
+            assert kw.get("plan") is None
+            return SimpleNamespace(
+                status="ok",
+                code="composed",
+                ir={
+                    "binding": {
+                        "preimage": item.preimage,
+                        "digest": "deadbeef",
+                        "artifact_id": item.artifact_id,
+                    }
+                },
+                attempts=1,
+                violations=(),
+                review=None,
+                transport_result=SimpleNamespace(total_cost_usd=0.42),
+            )
+
+        monkeypatch.setattr(driver, "compose_artifact", _compose_stub)
+        monkeypatch.setattr(
+            driver, "_run_deliverable", lambda **kw: SimpleNamespace(deliverable_id="del-1")
+        )
+
+        result = driver._run_artifact(
+            env=self._env(),
+            store=store,
+            claims=claims,
+            ssot=ssot,
+            plan=plan,
+            item=item,
+            pool=(),
+            adapters={},
+            source_repos={"s": "repo"},
+            now=date.today(),
+            model=None,
+            log=lambda _m: None,
+        )
+        assert result.transport_cost_usd == 0.42

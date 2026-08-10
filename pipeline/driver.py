@@ -84,10 +84,11 @@ from pipeline.serialize import (
     serialize_fitted,
     serialize_inputs_preimage,
 )
+from pipeline.spend.construction import ConstructionBudget
 from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive, registry_for
 from pipeline.ssot import Ssot
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, write_new
-from pipeline.transport import Runner
+from pipeline.transport import CostAccumulator, Runner, TransportPlan
 from pipeline.workspace_name import DEFAULT_ZONE, workspace_path
 
 __all__ = [
@@ -162,7 +163,13 @@ class DeliverableResult:
 @dataclass(frozen=True)
 class ArtifactResult:
     """One composed artifact + its deliverables, plus the composition-binding proof and the §19
-    artifact-review (Review 1) verdict/code (advisory — never gates the thread)."""
+    artifact-review (Review 1) verdict/code (advisory — never gates the thread).
+
+    `transport_cost_usd` (plan G1, the B1 accounting fix) is this artifact's FULL transport
+    spend — the run-accumulator delta across the writer, Review-1, every reconcile, every
+    Review-2, and every bounded re-ask — NOT just the writer's last call. It is None when the
+    run threads no `TransportPlan` (a plan-less direct `_run_artifact` call, e.g. a unit test).
+    """
 
     artifact_id: str
     query: str
@@ -503,6 +510,7 @@ def _run_deliverable(
     model: str | None,
     log: Log,
     review_runner: Runner | None = None,
+    transport_plan: TransportPlan | None = None,
 ) -> DeliverableResult:
     """Thread one deliverable coordinate: reconcile (fit) → serialize (pinned Pandoc) →
     persist the fitted IR + the render-binding + the layer-2 bytes; advance the
@@ -553,7 +561,10 @@ def _run_deliverable(
             advisory_defaults={},
             format_structural=format_structural,
             format_structural_defaults=format_structural_defaults,
-        )
+        ),
+        # plan G1: a `pass` (ZERO-LLM) reconcile never reaches the chokepoint, so it adds
+        # nothing; a spending strategy accumulates into the run's shared cost total.
+        plan=transport_plan,
     )
     if rout.status != "ok" or rout.fitted_ir is None or rout.fit_binding is None:
         # HARD GATE-1 (§21.7): thread the reconcile stage's TRUE taxonomy code — GUARDED to
@@ -753,6 +764,7 @@ def _run_deliverable(
         review_advance=ssot.advance_hook("deliverable-reviewed"),
         review_model=model,
         review_runner=review_runner,
+        plan=transport_plan,  # plan G1: Review-2 accumulates into the run's shared cost total
     )
     log(f"    review: deliverable {review.code} verdict={review.verdict}")
 
@@ -794,6 +806,7 @@ def _run_artifact(
     log: Log,
     runner: Runner | None = None,
     review_runner: Runner | None = None,
+    transport_plan: TransportPlan | None = None,
 ) -> ArtifactResult:
     """Thread one artifact: ground the topic, compose (LIVE LLM), then each deliverable.
 
@@ -930,6 +943,12 @@ def _run_artifact(
         # per-artifact gate acts on the HARD members (`require`/`suppress`) post-mint.
         diagram_disposition=diagram_disposition,
     )
+    # plan G1 (B1 accounting fix): snapshot the run accumulator BEFORE this artifact spends,
+    # so this artifact's FULL transport cost is the delta over writer + Review-1 + every
+    # reconcile + every Review-2 + every re-ask — not the writer's last call alone. `None`
+    # when the run threads no plan (a plan-less direct call), where the pre-plan writer-only
+    # read stands in.
+    cost_before = transport_plan.cost_accumulator.total if transport_plan is not None else None
     log(f"  compose: LIVE writer call ({len(published)} grounded fact(s))...")
     cout = compose_artifact(
         request,
@@ -938,6 +957,7 @@ def _run_artifact(
         runner=runner,  # the writer transport seam (None = real subscription)
         advance=ssot.advance_hook("composed"),
         model=model,
+        plan=transport_plan,  # plan G1: the writer accumulates into the run's shared cost total
         # §19 Review 1: post-mint artifact review, advancing the row to `artifact-reviewed`.
         review_runner=review_runner,  # the Review-1 transport seam (None = real subscription)
         review_advance=ssot.advance_hook("artifact-reviewed"),
@@ -973,7 +993,6 @@ def _run_artifact(
         and binding["digest"] == digest_full(item.preimage)
         and binding["artifact_id"] == item.artifact_id
     )
-    cost = cout.transport_result.total_cost_usd if cout.transport_result else None
     log(
         f"  compose: OK ({cout.code}); binding digest {binding['digest'][:16]}… "
         f"reproduces {item.artifact_id} -> {'VERIFIED' if verified else 'MISMATCH'}"
@@ -1013,9 +1032,20 @@ def _run_artifact(
             model=model,
             log=log,
             review_runner=review_runner,  # Review 2 transport seam (None = real subscription)
+            transport_plan=transport_plan,  # plan G1: reconcile + Review-2 accumulate too
         )
         for d in item.deliverables
     )
+
+    # plan G1 (B1 accounting fix): this artifact's FULL transport cost = the run-accumulator
+    # delta over EVERY chokepoint call it drove (writer + Review-1 + every reconcile + every
+    # Review-2 + every re-ask), captured AFTER the deliverables — never the writer's last call
+    # alone (the pre-fix lossy read). `None` when the run threads no plan (a plan-less direct
+    # `_run_artifact` call, e.g. a unit test), where the pre-plan writer-only read stands in.
+    if transport_plan is not None:
+        cost: float | None = transport_plan.cost_accumulator.total - cost_before
+    else:
+        cost = cout.transport_result.total_cost_usd if cout.transport_result else None
 
     return ArtifactResult(
         artifact_id=item.artifact_id,
@@ -1117,6 +1147,20 @@ def run_thread(
     ssot_csv = store.root / "ssot.csv"
     ssot = Ssot(ssot_csv)
 
+    # -- plan G1: build the ONE run-scoped cost accumulator + the (subscription) TransportPlan,
+    #    threaded through EVERY stage so the run total is the sum across writer + Review-1 +
+    #    every reconcile + every Review-2 + every re-ask (the B1 fix), not the last call. The
+    #    subscription plan carries `per_call_cap=None` (S-1: flat-rate, forces no cap — no
+    #    artifact truncation). A run-start ceiling disclosure discloses the worst-case scope
+    #    (flat-rate subscription today; a finite `≤ $C` once the G7 api-key path sets a cap).
+    transport_plan = TransportPlan.subscription(cost_accumulator=CostAccumulator())
+    construction_budget = ConstructionBudget(
+        per_call_usd=None,  # subscription flat-rate; a finite api-key per-call cap lands at G7
+        n_artifacts=len(plan.items),
+        n_deliverables=len(plan.deliverable_ids()),
+    )
+    log(construction_budget.construction_scope())
+
     artifacts = tuple(
         _run_artifact(
             env=env,
@@ -1131,6 +1175,7 @@ def run_thread(
             now=now,
             model=model,
             log=log,
+            transport_plan=transport_plan,
         )
         for item in plan.items
     )

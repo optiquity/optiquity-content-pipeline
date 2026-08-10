@@ -108,7 +108,7 @@ from pipeline.sections import (
     parse_sections,
     reconstruct_rule,
 )
-from pipeline.transport import Runner, TransportResult, invoke_headless
+from pipeline.transport import Runner, TransportPlan, TransportResult, invoke_headless
 
 __all__ = [
     "CODE_CITATION_NOT_PRESERVED",
@@ -1220,6 +1220,7 @@ def reconcile(
     cwd: Path | str | None = None,
     model: str | None = None,
     timeout_seconds: float | None = None,
+    plan: TransportPlan | None = None,
 ) -> ReconcileOutcome:
     """Fit one IR-canonical artifact to a `(platform, language)` target — PURE fit machinery.
 
@@ -1236,7 +1237,9 @@ def reconcile(
     (preimage, hex12 digest, fitted-id, `minted_ts` [record-only], outcome) is returned
     alongside the reshaped IR; `revision` selects the baseline vs revision fitted-id (step
     26's FR2 decision, this module only mints). NEVER raises for a reconciler defect — those
-    are typed outcomes; only wiring defects raise (`ReconcileError`)."""
+    are typed outcomes; only wiring defects raise (`ReconcileError`). `plan` (plan G1) threads
+    the run's shared cost accumulator through to the reconciler's chokepoint call; a `pass`
+    (ZERO-LLM) reconcile never reaches the chokepoint, so it contributes nothing."""
     _validate_request(request)
     if max_attempts < 1:
         raise ReconcileError(f"reconcile-error: max_attempts must be ≥ 1, got {max_attempts}")
@@ -1269,7 +1272,7 @@ def reconcile(
                 note = _reask_note(violations) if violations else None
                 prompt = build_reconciler_prompt(request, reask_note=note)
                 transport = invoke_headless(
-                    prompt, cwd=scratch, runner=runner, model=model, **extra
+                    prompt, cwd=scratch, runner=runner, model=model, plan=plan, **extra
                 )
                 transport_result = transport
                 if transport.status != "ok":

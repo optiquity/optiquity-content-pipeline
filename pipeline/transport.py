@@ -107,11 +107,14 @@ __all__ = [
     "DISABLE_AUTO_MEMORY_ENV",
     "ApiKeyPresentError",
     "BinaryNotFoundError",
+    "CostAccumulator",
     "ProcessOutcome",
     "ProcessRequest",
     "Remediation",
     "Runner",
     "TransportError",
+    "TransportMode",
+    "TransportPlan",
     "TransportResult",
     "build_child_env",
     "invoke_headless",
@@ -189,6 +192,108 @@ class BinaryNotFoundError(TransportError):
     """The headless binary was not found on the invocation path — never a silent no-op."""
 
     code = "binary-not-found"
+
+
+# ---------------------------------------------------------------------------
+# The chokepoint CONTRACT (plan G1, §21.10): how ONE drive run authenticates + accounts.
+#
+# The plan TYPE lives HERE, in transport.py — the LOWEST shared node the CLI and the served
+# `jobrunner→invoke()` re-entry both traverse — so this module imports NOTHING new (no
+# `pipeline.spend` import, no cycle). `pipeline.spend.resolve` (G7) is the ONLY place a plan
+# is BUILT for a paid run; pre-G7 the ONLY reachable variant is the flat-rate subscription.
+# ---------------------------------------------------------------------------
+
+
+class CostAccumulator:
+    """A simple additive running-$ total threaded through ONE drive run (plan G1, B1 fix).
+
+    The driver is SEQUENTIAL (§21.9: one synchronous invocation per verb; the fan-out over
+    artifacts/deliverables is a plain generator, never a thread pool), so this is a plain
+    additive counter — **NO thread-safety claim is made or needed.** The only real concurrency
+    in the transport-selection design is the G6 inter-process meter lock, a separate mechanism.
+
+    `add(None)` is a NO-OP — a `TransportResult.total_cost_usd` is documented OPTIONAL (absent
+    on a timeout / cli-arg-error, and a subscription call may report no cost), and a missing
+    cost must never be guessed at. Only a real numeric cost moves the total; a non-numeric,
+    non-None value is refused LOUDLY (§3.1 — never silently reinterpret a bad envelope field).
+    This replaces the overwrite-lossy single read at driver.py:976: every call at the
+    chokepoint adds into ONE accumulator, so the RUN total is the sum across writer + Review-1
+    + every reconcile + every Review-2 + every re-ask, never just the last call.
+    """
+
+    __slots__ = ("total", "calls")
+
+    def __init__(self, total: float = 0.0, calls: int = 0) -> None:
+        self.total = float(total)
+        self.calls = int(calls)
+
+    def add(self, cost: float | None) -> None:
+        if cost is None:
+            return
+        if isinstance(cost, bool) or not isinstance(cost, int | float):
+            raise TransportError(
+                f"transport-error: a cost contribution must be a number or None, got "
+                f"{cost!r} ({type(cost).__name__}) — never silently coerce a malformed "
+                "total_cost_usd (§3.1)"
+            )
+        self.total += float(cost)
+        self.calls += 1
+
+    def __repr__(self) -> str:  # pragma: no cover — debug convenience only
+        return f"CostAccumulator(total={self.total!r}, calls={self.calls!r})"
+
+
+#: The closed transport-mode set. `"subscription"` is the ONLY variant any pre-G7 code can
+#: reach; the paid `"apikey"` variant (its finite per-call cap + live-hold disarm) lands at G7.
+TransportMode = Literal["subscription"]
+
+
+@dataclass(frozen=True)
+class TransportPlan:
+    """The chokepoint CONTRACT: how ONE drive run authenticates + accounts (plan G1, §21.10).
+
+    - `mode="subscription"`: today's flat-rate subscription transport. `per_call_cap` is
+      **None** (S-1) — the subscription is flat-rate, so forcing a finite `--max-budget-usd`
+      would TRUNCATE a real artifact for no money reason (a regression + a design divergence).
+      A None cap forces NOTHING at the chokepoint, so the subscription spawn stays byte-for-byte
+      what `plan=None` produces (the widened strip + the F10 assertion still fire, unchanged).
+    - `cost_accumulator`: the ONE run-scoped running-$ total EVERY chokepoint call adds into
+      (the B1 accounting fix — replaces the last-call-only read at driver.py:976).
+
+    `per_call_cap` becomes a FINITE dollar cap ONLY on the G7 `apikey` variant (not built here)
+    — the finite cap that makes loop-caps × cap a true spend bound. Building a `subscription`
+    plan with a finite `per_call_cap` is refused LOUDLY (the S-1 truncation regression).
+    """
+
+    mode: TransportMode
+    cost_accumulator: CostAccumulator
+    per_call_cap: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode == "subscription" and self.per_call_cap is not None:
+            raise TransportError(
+                "transport-error: a subscription TransportPlan MUST carry per_call_cap=None "
+                f"(the subscription is flat-rate; got {self.per_call_cap!r}) — forcing a finite "
+                "--max-budget-usd on the subscription path truncates real artifacts for no money "
+                "reason (S-1: a truncation regression + a design divergence). The finite cap is "
+                "real only on the G7 api-key path."
+            )
+        if not isinstance(self.cost_accumulator, CostAccumulator):
+            raise TransportError(
+                "transport-error: a TransportPlan needs a CostAccumulator, got "
+                f"{type(self.cost_accumulator).__name__}"
+            )
+
+    @classmethod
+    def subscription(cls, *, cost_accumulator: CostAccumulator | None = None) -> TransportPlan:
+        """Build the flat-rate SUBSCRIPTION plan (the only pre-G7 variant): `per_call_cap=None`
+        (S-1). Uses a fresh `CostAccumulator` when the caller supplies none (else the run's shared
+        one)."""
+        return cls(
+            mode="subscription",
+            cost_accumulator=cost_accumulator or CostAccumulator(),
+            per_call_cap=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +690,7 @@ def invoke_headless(
     base_env: Mapping[str, str] | None = None,
     env_overrides: Mapping[str, str] | None = None,
     runner: Runner | None = None,
+    plan: TransportPlan | None = None,
 ) -> TransportResult:
     """One synchronous headless invocation (§21.9): params in, a typed result out.
 
@@ -603,10 +709,32 @@ def invoke_headless(
     when `None` — this module pins nothing on the caller's behalf (§3.1, design
     ambiguity 2 in the module docstring). `runner=None` uses the real subprocess; tests
     inject a fake `Runner` (mirrors `pipeline.adapters.graphify`'s seam).
+
+    `plan` (optional, plan G1) is the chokepoint CONTRACT. `plan is None` OR
+    `plan.mode=="subscription"` is today's behavior EXACTLY: `plan.per_call_cap is None`
+    forces NO `--max-budget-usd` (the subscription is flat-rate — S-1: a finite cap would
+    truncate a real artifact), so the argv + child env + returned result are byte-identical
+    to a `plan=None` call. When a plan IS present its `cost_accumulator` receives
+    `result.total_cost_usd` on EVERY call (both modes) — the B1 accounting fix that replaces
+    the last-call-only read at driver.py:976 with the RUN total. A finite `plan.per_call_cap`
+    (only ever set on the G7 api-key path) forces `--max-budget-usd = min(caller, cap)`.
     """
     child_env = build_child_env(base_env, overrides=env_overrides)  # raises loudly (F10)
+    # The per-call cap MECHANISM (plan G1): a finite `plan.per_call_cap` forces
+    # `--max-budget-usd = min(caller, cap)`; `per_call_cap is None` (the subscription path,
+    # S-1) forces NOTHING, so the caller's value (usually None) rides through unchanged.
+    effective_budget = max_budget_usd
+    if plan is not None and plan.per_call_cap is not None:
+        effective_budget = (
+            plan.per_call_cap
+            if max_budget_usd is None
+            else min(max_budget_usd, plan.per_call_cap)
+        )
     argv = _build_argv(
-        binary=binary, model=model, max_budget_usd=max_budget_usd, fallback_model=fallback_model
+        binary=binary,
+        model=model,
+        max_budget_usd=effective_budget,
+        fallback_model=fallback_model,
     )
     request = ProcessRequest(
         argv=tuple(argv),
@@ -617,4 +745,10 @@ def invoke_headless(
     )
     run = _subprocess_runner if runner is None else runner
     outcome = run(request)
-    return _classify(outcome)
+    result = _classify(outcome)
+    # B1 accounting fix: accumulate this call's cost into the run-scoped total on EVERY call
+    # (both modes). `add(None)` is a no-op, so a costless outcome (timeout / cli-arg-error)
+    # never fabricates a cost.
+    if plan is not None:
+        plan.cost_accumulator.add(result.total_cost_usd)
+    return result

@@ -43,8 +43,11 @@ from pipeline.transport import (
     DISABLE_AUTO_MEMORY_ENV,
     ApiKeyPresentError,
     BinaryNotFoundError,
+    CostAccumulator,
     ProcessOutcome,
     ProcessRequest,
+    TransportError,
+    TransportPlan,
     TransportResult,
     build_child_env,
     invoke_headless,
@@ -401,6 +404,197 @@ def test_binary_not_found_is_a_typed_error():
 
 def test_default_timeout_is_strictly_less_than_the_claim_lease_ttl():
     assert DEFAULT_TIMEOUT_SECONDS < claims_module.DEFAULT_LEASE_TTL_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# The chokepoint CONTRACT: TransportPlan + CostAccumulator (plan G1, B1 fix).
+# ---------------------------------------------------------------------------
+
+
+def outcome_ok_cost(cost: float, *, returncode: int = 0) -> ProcessOutcome:
+    """A success outcome whose parsed envelope carries a specific `total_cost_usd`."""
+    payload = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "total_cost_usd": cost,
+            "terminal_reason": "completed",
+        }
+    )
+    return ProcessOutcome(timed_out=False, returncode=returncode, stdout=payload, stderr="")
+
+
+class SequenceRunner:
+    """A recording process seam that returns a SCRIPTED outcome per call, in order."""
+
+    def __init__(self, outcomes: list[ProcessOutcome]) -> None:
+        self._outcomes = list(outcomes)
+        self.requests: list[ProcessRequest] = []
+
+    def __call__(self, request: ProcessRequest) -> ProcessOutcome:
+        self.requests.append(request)
+        return self._outcomes[len(self.requests) - 1]
+
+
+class _FiniteCapPlan:
+    """A duck-typed stand-in for a FUTURE finite-per-call-cap plan — the G7 api-key variant is
+    NOT built at G1, and a `subscription` `TransportPlan` refuses a finite cap (S-1). This
+    exercises invoke_headless's `min(caller, per_call_cap)` MECHANISM in isolation;
+    invoke_headless reads only `.per_call_cap` and `.cost_accumulator`."""
+
+    def __init__(self, per_call_cap: float, cost_accumulator: CostAccumulator) -> None:
+        self.per_call_cap = per_call_cap
+        self.cost_accumulator = cost_accumulator
+
+
+# --- CostAccumulator ---------------------------------------------------------------------------
+
+
+def test_cost_accumulator_sums_and_skips_none():
+    acc = CostAccumulator()
+    acc.add(1.25)
+    acc.add(None)  # a costless outcome (timeout / cli-arg-error) — never fabricates a cost
+    acc.add(2.75)
+    assert acc.total == 4.0
+    assert acc.calls == 2  # only the two real numeric contributions
+
+
+def test_cost_accumulator_refuses_a_non_numeric_cost_loudly():
+    acc = CostAccumulator()
+    with pytest.raises(TransportError, match="cost contribution must be a number"):
+        acc.add("0.50")  # type: ignore[arg-type]  # never silently coerce a malformed field
+    with pytest.raises(TransportError):
+        acc.add(True)  # type: ignore[arg-type]  # a bool is not a dollar amount
+
+
+# --- TransportPlan (the subscription variant, S-1) ---------------------------------------------
+
+
+def test_subscription_plan_carries_no_per_call_cap():
+    plan = TransportPlan.subscription()
+    assert plan.mode == "subscription"
+    assert plan.per_call_cap is None  # S-1: flat-rate forces NO cap (no truncation)
+    assert isinstance(plan.cost_accumulator, CostAccumulator)
+
+
+def test_subscription_plan_refuses_a_finite_per_call_cap():
+    """S-1: forcing a finite --max-budget-usd on the flat-rate subscription is a truncation
+    regression + a design divergence — refused LOUDLY at construction."""
+    with pytest.raises(TransportError, match="per_call_cap=None"):
+        TransportPlan(mode="subscription", cost_accumulator=CostAccumulator(), per_call_cap=5.0)
+
+
+# --- plan=None and plan=subscription are byte-identical to today (strip + F10) ------------------
+
+
+def test_plan_none_and_subscription_plan_produce_identical_argv_and_env(monkeypatch):
+    """`plan is None` and `plan.mode=="subscription"` (per_call_cap=None) are today's behavior
+    EXACTLY: the spawned argv + child env are byte-for-byte identical (no --max-budget-usd
+    forced), and the returned result is the same. The plan only additionally ACCUMULATES."""
+    monkeypatch.setenv(ANTHROPIC_API_KEY_ENV, "sk-should-be-stripped")
+    none_runner = FakeRunner(outcome_ok(SUCCESS_JSON))
+    plan_runner = FakeRunner(outcome_ok(SUCCESS_JSON))
+    plan = TransportPlan.subscription()
+
+    r_none = invoke_headless("hi", runner=none_runner)
+    r_plan = invoke_headless("hi", runner=plan_runner, plan=plan)
+
+    req_none, req_plan = none_runner.requests[0], plan_runner.requests[0]
+    assert req_plan.argv == req_none.argv
+    assert "--max-budget-usd" not in req_plan.argv  # per_call_cap=None forces NOTHING
+    assert dict(req_plan.env) == dict(req_none.env)
+    # F10 strip fires on the subscription-plan path exactly as with plan=None.
+    assert ANTHROPIC_API_KEY_ENV not in req_plan.env
+    assert req_plan.env[DISABLE_AUTO_MEMORY_ENV] == "1"
+    # The returned result is identical; the plan only additionally accumulates the cost.
+    assert r_plan == r_none
+    assert plan.cost_accumulator.total == r_plan.total_cost_usd
+
+
+def test_subscription_plan_still_refuses_an_injected_api_key():
+    """F10 is unchanged under a plan: an explicit ANTHROPIC_API_KEY override still refuses."""
+    plan = TransportPlan.subscription()
+    fake = FakeRunner(outcome_ok(SUCCESS_JSON))
+    with pytest.raises(ApiKeyPresentError):
+        invoke_headless(
+            "hi", runner=fake, plan=plan, env_overrides={ANTHROPIC_API_KEY_ENV: "sk-x"}
+        )
+    assert fake.call_count == 0  # refused BEFORE any spawn
+    assert plan.cost_accumulator.total == 0.0  # and nothing accumulated
+
+
+# --- accumulate on EVERY call — the run total, not the last call (the B1 fix) -------------------
+
+
+def test_accumulator_captures_the_run_total_across_every_call_not_the_last():
+    """The core B1 fix: threading ONE plan across many calls sums EVERY call's cost — the run
+    total — never the last-call-only value the pre-fix driver read."""
+    plan = TransportPlan.subscription()
+    costs = [0.10, 0.20, 0.05, 0.40]  # writer, Review-1, reconcile, Review-2 (illustrative)
+    runner = SequenceRunner([outcome_ok_cost(c) for c in costs])
+    for _ in costs:
+        invoke_headless("hi", runner=runner, plan=plan)
+    assert plan.cost_accumulator.total == pytest.approx(sum(costs))
+    assert plan.cost_accumulator.total != costs[-1]  # NOT the last call only
+    assert plan.cost_accumulator.calls == len(costs)
+
+
+def test_no_plan_means_no_accumulation_and_todays_behavior():
+    """`plan=None` is untouched: no accumulator to feed, argv/env/result as before."""
+    fake = FakeRunner(outcome_ok(SUCCESS_JSON))
+    result = invoke_headless("hi", runner=fake)
+    assert result.status == "ok"
+    assert "--max-budget-usd" not in fake.requests[0].argv
+
+
+def test_a_costless_outcome_contributes_nothing_but_still_counts_the_call_as_zero():
+    """A timeout / cli-arg-error carries total_cost_usd=None; the accumulator adds nothing and
+    does not fabricate a cost."""
+    plan = TransportPlan.subscription()
+    timeout = ProcessOutcome(timed_out=True, returncode=None, stdout="", stderr="killed")
+    runner = SequenceRunner([timeout, outcome_ok_cost(0.30)])
+    invoke_headless("hi", runner=runner, plan=plan)  # timeout → cost None
+    invoke_headless("hi", runner=runner, plan=plan)  # ok → 0.30
+    assert plan.cost_accumulator.total == pytest.approx(0.30)
+    assert plan.cost_accumulator.calls == 1  # only the real numeric contribution
+
+
+# --- the min(caller, per_call_cap) mechanism (guarded so per_call_cap=None forces nothing) ------
+
+
+def test_per_call_cap_none_forces_no_max_budget_flag():
+    """The subscription path (per_call_cap=None) forces NO --max-budget-usd even when the caller
+    also passes none — no artifact truncation (S-1)."""
+    plan = TransportPlan.subscription()
+    fake = FakeRunner(outcome_ok(SUCCESS_JSON))
+    invoke_headless("hi", runner=fake, plan=plan)
+    assert "--max-budget-usd" not in fake.requests[0].argv
+
+
+def test_finite_cap_forces_the_flag_when_caller_passes_none():
+    plan = _FiniteCapPlan(per_call_cap=5.0, cost_accumulator=CostAccumulator())
+    fake = FakeRunner(outcome_ok(SUCCESS_JSON))
+    invoke_headless("hi", runner=fake, plan=plan)
+    argv = fake.requests[0].argv
+    assert argv[argv.index("--max-budget-usd") + 1] == "5.0"
+
+
+def test_finite_cap_takes_the_min_with_a_larger_caller_budget():
+    plan = _FiniteCapPlan(per_call_cap=5.0, cost_accumulator=CostAccumulator())
+    fake = FakeRunner(outcome_ok(SUCCESS_JSON))
+    invoke_headless("hi", runner=fake, plan=plan, max_budget_usd=10.0)
+    argv = fake.requests[0].argv
+    assert argv[argv.index("--max-budget-usd") + 1] == "5.0"  # min(10.0, 5.0)
+
+
+def test_finite_cap_keeps_a_smaller_caller_budget():
+    plan = _FiniteCapPlan(per_call_cap=5.0, cost_accumulator=CostAccumulator())
+    fake = FakeRunner(outcome_ok(SUCCESS_JSON))
+    invoke_headless("hi", runner=fake, plan=plan, max_budget_usd=3.0)
+    argv = fake.requests[0].argv
+    assert argv[argv.index("--max-budget-usd") + 1] == "3.0"  # min(3.0, 5.0)
 
 
 # ---------------------------------------------------------------------------

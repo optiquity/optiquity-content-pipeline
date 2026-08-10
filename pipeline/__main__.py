@@ -456,7 +456,7 @@ def _print_thread_report(result: object) -> None:
             f"  binding       : digest {art.composition_digest[:16]}… "
             f"verify={'VERIFIED' if art.composition_verified else 'MISMATCH'}"
         )
-        print(f"  writer cost   : {art.transport_cost_usd}")
+        print(f"  transport cost: {art.transport_cost_usd}")
         for dv in art.deliverables:
             print(f"  deliverable-id: {dv.deliverable_id}")
             print(f"    fitted-id   : {dv.fitted_id}")
@@ -2947,6 +2947,7 @@ def _transport_llm_call(
     runner: "object | None" = None,
     base_env: "object | None" = None,
     env_overrides: "object | None" = None,
+    plan: "object | None" = None,
 ):
     """Build the DEFAULT research LLM seam: the SUBSCRIPTION transport chokepoint (F10, §21.9).
 
@@ -2957,7 +2958,10 @@ def _transport_llm_call(
     stops cleanly rather than fabricating a partial. `runner`/`base_env`/`env_overrides` are TEST
     seams (a fake `Runner` proves no real model/network call and the F10 key-strip); production
     leaves them `None` (real subprocess, ambient env stripped). This factory — NOT the sources feed
-    code — is the single place the transport is imported, so sources stays paid-path-free."""
+    code — is the single place the transport is imported, so sources stays paid-path-free. `plan`
+    (plan G1, an opaque `TransportPlan`) threads the run's shared cost accumulator through to the
+    research chokepoint call; a subscription plan's `per_call_cap=None` forces no cap, so the
+    research `budget` still rides `--max-budget-usd` unchanged."""
     from pipeline.sources.acquire import FeedError
     from pipeline.transport import invoke_headless
 
@@ -2970,6 +2974,7 @@ def _transport_llm_call(
             runner=runner,
             base_env=base_env,
             env_overrides=env_overrides,
+            plan=plan,  # type: ignore[arg-type]
             **extra,
         )
         if result.status != "ok" or result.text is None:

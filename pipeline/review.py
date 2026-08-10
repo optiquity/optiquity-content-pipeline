@@ -95,7 +95,7 @@ from pipeline import ir
 from pipeline.canonical import canonical_json_bytes, digest_full
 from pipeline.prompts import load_template
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, write_new
-from pipeline.transport import Runner, TransportResult, invoke_headless
+from pipeline.transport import Runner, TransportPlan, TransportResult, invoke_headless
 
 __all__ = [
     "ARTIFACT_CHECKS",
@@ -605,12 +605,14 @@ def _produce_review(
     cwd: Path | str | None,
     max_attempts: int,
     minted_ts: str | None,
+    plan: TransportPlan | None = None,
 ) -> ReviewOutcome:
     """Run one review LLM pass with a bounded re-ask, build the typed record, and persist it
     immutably. Idempotency is the CALLER's existence pre-check; `write_new` is the final
     authority (a lost race → `already-reviewed`, never an overwrite). Advisory: a transport
     failure or persistent malformed assessment yields a typed `error` outcome, NO record, NO
-    advance — never a block (§19)."""
+    advance — never a block (§19). `plan` (plan G1) threads the run's shared cost accumulator
+    through to the review's chokepoint call (both Review-1 and Review-2 route through here)."""
     if max_attempts < 1:
         raise ReviewError(f"review-error: max_attempts must be ≥ 1, got {max_attempts}")
     own_cwd = cwd is None
@@ -625,7 +627,7 @@ def _produce_review(
                 f"{prompt}\n\n## Correction required (bounded re-ask)\n{note}"
             )
             transport = invoke_headless(
-                full_prompt, cwd=scratch, runner=runner, model=model, **extra
+                full_prompt, cwd=scratch, runner=runner, model=model, plan=plan, **extra
             )
             last_transport = transport
             if transport.status != "ok":
@@ -716,6 +718,7 @@ def review_artifact(
     cwd: Path | str | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     minted_ts: str | None = None,
+    plan: TransportPlan | None = None,
 ) -> ReviewOutcome:
     """Run Review 1 — the artifact review — ONCE per artifact (§19), and persist its record.
 
@@ -756,6 +759,7 @@ def review_artifact(
         cwd=cwd,
         max_attempts=max_attempts,
         minted_ts=minted_ts,
+        plan=plan,
     )
 
 
@@ -778,6 +782,7 @@ def review_deliverable(
     cwd: Path | str | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     minted_ts: str | None = None,
+    plan: TransportPlan | None = None,
 ) -> ReviewOutcome:
     """Run Review 2 — the FULL deliverable review — for one deliverable (§19), and persist its
     record keyed by `deliverable_id`.
@@ -808,4 +813,5 @@ def review_deliverable(
         cwd=cwd,
         max_attempts=max_attempts,
         minted_ts=minted_ts,
+        plan=plan,
     )
