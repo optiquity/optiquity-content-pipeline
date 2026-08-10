@@ -36,6 +36,23 @@ is the source of record):**
   calls sharing a cwd, and that this exact env var closes both the write and the load
   side. **This is what makes per-call statelessness a construction property, not a
   convention.**
+- **F10 was env-only, and env-only is NECESSARY-BUT-INSUFFICIENT (plan G2, S-4).** Stripping
+  `ANTHROPIC_API_KEY` from the child env does NOT, by itself, guarantee a subscription spawn:
+  (a) a `settings.json` `apiKeyHelper` supplies an api key the CLI resolves at auth time —
+  no env var involved; (b) sibling env vars OUTRANK or DIVERT the subscription —
+  `ANTHROPIC_AUTH_TOKEN` (an alternate bearer credential) and the
+  `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` provider switches (which flip the CLI onto a
+  3P provider authenticated on ITS OWN credentials, never the Claude subscription). G2
+  therefore **STRENGTHENS** F10 in two places, so the subscription spawn is now
+  "strengthened — still no key, tighter", **NOT byte-for-byte identical to pre-G2**: (1)
+  `build_child_env` WIDENS the strip to those four sibling vars (below); and (2) every
+  subscription spawn is walled under pipeline-controlled settings that provably define NO
+  `apiKeyHelper` (`build_subscription_wall`: `--settings <controlled-file>` +
+  `--setting-sources ""`, which loads ONLY the controlled file and excludes ambient
+  user/project/local settings — verified on the pinned CLI 2.1.223). An ENTERPRISE/MANAGED
+  `apiKeyHelper` is a SEPARATE policy tier `--setting-sources` cannot exclude (the S-4 hole):
+  the wall DETECTS it and FAILS CLOSED (a typed refusal, never an uncontrolled spawn). **No
+  api-key path is built at G2** — the wall only ever tightens the subscription path.
 - **Timeout:** no CLI flag exists (verified absent from `--help`); the wrapper owns it via
   a `subprocess` timeout, not an external `timeout(1)` wrapper. Default
   `DEFAULT_TIMEOUT_SECONDS` = 20 minutes (the G5 preliminary seed), caller-overridable.
@@ -92,36 +109,73 @@ is the source of record):**
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import shutil
 import subprocess
-from collections.abc import Callable, Mapping
+import sys
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 __all__ = [
     "ANTHROPIC_API_KEY_ENV",
+    "ANTHROPIC_AUTH_TOKEN_ENV",
+    "CLAUDE_CODE_USE_BEDROCK_ENV",
+    "CLAUDE_CODE_USE_FOUNDRY_ENV",
+    "CLAUDE_CODE_USE_VERTEX_ENV",
     "DEFAULT_BINARY",
     "DEFAULT_TIMEOUT_SECONDS",
     "DISABLE_AUTO_MEMORY_ENV",
+    "F10_STRIPPED_ENV_VARS",
+    "SETTING_SOURCES_NONE",
     "ApiKeyPresentError",
     "BinaryNotFoundError",
+    "ControlledSettingsError",
     "CostAccumulator",
+    "ManagedApiKeyHelperError",
     "ProcessOutcome",
     "ProcessRequest",
     "Remediation",
     "Runner",
+    "SubscriptionWall",
+    "SubscriptionWallError",
     "TransportError",
     "TransportMode",
     "TransportPlan",
     "TransportResult",
     "build_child_env",
+    "build_subscription_wall",
     "invoke_headless",
 ]
 
-#: F10's forbidden var: MUST be absent from every child env this module constructs.
+#: F10's forbidden var: MUST be absent from every child env this module constructs. The
+#: hard-refused one — the trailing assertion in `build_child_env` fires only on this var.
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
+
+#: G2's WIDENED F10 strip (S-4): sibling auth/provider vars that OUTRANK or DIVERT the Claude
+#: subscription. `ANTHROPIC_AUTH_TOKEN` is an alternate bearer credential the CLI would honor;
+#: the `CLAUDE_CODE_USE_*` trio flips the CLI onto a 3P provider (Bedrock/Vertex/Foundry) that
+#: authenticates on ITS OWN credentials — either way NOT the subscription (F10). These are
+#: STRIPPED from every child env (no assertion — env-only stripping is necessary but not, on
+#: its own, sufficient; the controlled-settings wall closes the `apiKeyHelper` hole below).
+ANTHROPIC_AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
+CLAUDE_CODE_USE_BEDROCK_ENV = "CLAUDE_CODE_USE_BEDROCK"
+CLAUDE_CODE_USE_VERTEX_ENV = "CLAUDE_CODE_USE_VERTEX"
+CLAUDE_CODE_USE_FOUNDRY_ENV = "CLAUDE_CODE_USE_FOUNDRY"
+
+#: The full ordered set of F10-forbidden env vars `build_child_env` removes from every child
+#: env: the hard-refused api key first, then the G2-widened siblings.
+F10_STRIPPED_ENV_VARS: tuple[str, ...] = (
+    ANTHROPIC_API_KEY_ENV,
+    ANTHROPIC_AUTH_TOKEN_ENV,
+    CLAUDE_CODE_USE_BEDROCK_ENV,
+    CLAUDE_CODE_USE_VERTEX_ENV,
+    CLAUDE_CODE_USE_FOUNDRY_ENV,
+)
 
 #: The per-call-statelessness kill switch (step-04 probe, §21.9). MUST be set to "1".
 DISABLE_AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
@@ -256,7 +310,8 @@ class TransportPlan:
       **None** (S-1) — the subscription is flat-rate, so forcing a finite `--max-budget-usd`
       would TRUNCATE a real artifact for no money reason (a regression + a design divergence).
       A None cap forces NOTHING at the chokepoint, so the subscription spawn stays byte-for-byte
-      what `plan=None` produces (the widened strip + the F10 assertion still fire, unchanged).
+      what `plan=None` produces — the widened F10 strip, the F10 assertion, AND the G2
+      controlled-settings wall fire identically on both (both are strengthened vs pre-G2).
     - `cost_accumulator`: the ONE run-scoped running-$ total EVERY chokepoint call adds into
       (the B1 accounting fix — replaces the last-call-only read at driver.py:976).
 
@@ -319,17 +374,265 @@ def build_child_env(
     assertion is defense-in-depth: by construction it can never fire except via the
     explicit-override path above, but it is the literal "assert + raise" the G5 contract
     calls for, and it survives any future refactor of the strip step.
+
+    **G2 widened strip (S-4):** the strip covers the whole `F10_STRIPPED_ENV_VARS` set —
+    `ANTHROPIC_API_KEY` PLUS `ANTHROPIC_AUTH_TOKEN` and the
+    `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` provider switches — and the strip is
+    re-applied to the WIDENED siblings AFTER `overrides` merge, so an override can neither
+    re-add nor smuggle one back in. Only `ANTHROPIC_API_KEY` hard-refuses on an explicit
+    override (its F10 assertion is unchanged); the siblings are removed silently. Env-only
+    stripping is NECESSARY-BUT-INSUFFICIENT on its own — the `apiKeyHelper` hole is closed
+    by `build_subscription_wall`, applied at every spawn in `invoke_headless`.
     """
     env = dict(os.environ if base_env is None else base_env)
-    env.pop(ANTHROPIC_API_KEY_ENV, None)  # the expected, silent hot-path strip
+    for var in F10_STRIPPED_ENV_VARS:  # the expected, silent hot-path strip (widened at G2)
+        env.pop(var, None)
     if overrides:
         if ANTHROPIC_API_KEY_ENV in overrides:
             raise ApiKeyPresentError("an explicit env_overrides entry")
         env.update(overrides)
+        # Re-strip the WIDENED siblings after the merge so an override cannot re-add one
+        # (the hard-refused ANTHROPIC_API_KEY is handled above; here it is only re-stripped
+        # for symmetry and can never be present via overrides at this point).
+        for var in F10_STRIPPED_ENV_VARS:
+            env.pop(var, None)
     env[DISABLE_AUTO_MEMORY_ENV] = "1"  # per-call statelessness, set unconditionally last
     if ANTHROPIC_API_KEY_ENV in env:  # pragma: no cover — structurally unreachable; belt+suspenders
         raise ApiKeyPresentError("the constructed child env")
     return env
+
+
+# ---------------------------------------------------------------------------
+# The subscription controlled-settings WALL (plan G2, §21.10, S-4). Env-only F10 is
+# necessary-but-INSUFFICIENT: a `settings.json` `apiKeyHelper` supplies an api key at auth
+# time with NO env var involved — a hole `build_child_env` cannot see. This wall pins every
+# subscription spawn under pipeline-controlled settings that provably define NO `apiKeyHelper`
+# — `--settings <controlled-file>` + `--setting-sources ""` (empty => load ZERO ambient
+# user/project/local sources; verified on the pinned CLI 2.1.223: a bogus source errors, the
+# empty list is accepted and loads nothing, and `--settings` then loads ONLY the controlled
+# file). It NEVER uses `--bare` (that is the API-key-only mode — an F10 violation). It is
+# FAIL-CLOSED: any un-provable state (a MANAGED/ENTERPRISE `apiKeyHelper` that
+# `--setting-sources` cannot exclude — the S-4 hole; a controlled file that will not
+# write/read/verify) is a LOUD typed refusal, never an uncontrolled spawn. NO api-key path is
+# built here — the wall only ever TIGHTENS the subscription path.
+#
+# RESIDUAL (named per plan G2 item 3): the managed case is DETECT-and-REFUSE (the maintainer's
+# money-safety-first default), NOT a proof of exclusion. `--setting-sources` cannot exclude the
+# managed tier, so the guarantee rests on detection COMPLETENESS + a TOCTOU window: (a) a
+# managed `apiKeyHelper`/hazard added AFTER detection but BEFORE the child authenticates is not
+# caught (detection re-runs every spawn, shrinking but not closing the window); (b) any managed
+# auth mechanism this scanner does not model (beyond a top-level `apiKeyHelper` and an `env`
+# block re-injecting a stripped var) would not be seen. On a machine with NO managed tier (the
+# ordinary case — this dev machine has none) the wall applies the strongest exclusion and the
+# residual is inert.
+# ---------------------------------------------------------------------------
+
+
+class SubscriptionWallError(TransportError):
+    """The subscription wall hit an un-provable state and FAILS CLOSED — a loud refusal, never
+    an uncontrolled spawn (plan G2, the money-safety-first default; §3.1)."""
+
+    code = "subscription-wall"
+
+
+class ManagedApiKeyHelperError(SubscriptionWallError):
+    """S-4 detect-and-refuse: a MANAGED/ENTERPRISE settings tier that `--setting-sources`
+    (user/project/local) cannot exclude either DEFINES an `apiKeyHelper` (or re-injects a
+    stripped auth/provider var via an `env` block), or exists-but-cannot-be-read to PROVE it is
+    safe, or lives on a platform whose managed path is unknown. Either way the subscription
+    spawn is refused — an api-key auth path could ride the managed tier (F10), and
+    money-safety-first prefers refusal over an unprovable spawn."""
+
+    code = "managed-apikey-helper"
+
+
+class ControlledSettingsError(SubscriptionWallError):
+    """The pipeline-controlled settings file could not be written, read back, or verified to
+    define NO `apiKeyHelper` — the wall refuses rather than fall back to an uncontrolled spawn
+    (plan G2 item 4, fail-closed)."""
+
+    code = "controlled-settings"
+
+
+#: `--setting-sources` value that loads ZERO ambient sources. The empty list excludes
+#: user/project/local (where an ambient `apiKeyHelper` could live) — verified valid (exit 0)
+#: and eagerly parsed on the pinned CLI 2.1.223 (a bogus value errors; the empty string yields
+#: no tokens, so no ambient source loads).
+SETTING_SOURCES_NONE = ""
+
+#: The settings key that would supply an api key at auth time with NO env var involved — the
+#: exact hole env-only F10 cannot see. The controlled file MUST NOT define it; a managed file
+#: that DOES is the S-4 refusal trigger.
+_API_KEY_HELPER_KEY = "apiKeyHelper"
+
+#: The controlled settings CONTENT: an empty settings object — it adds nothing and, crucially,
+#: defines NO `apiKeyHelper`. `--settings` loads it; `--setting-sources ""` loads nothing else.
+_CONTROLLED_SETTINGS_BODY = "{}"
+
+#: The per-PROCESS controlled-settings temp dir (created lazily, removed at interpreter exit).
+_controlled_settings_dir: Path | None = None
+
+
+def _managed_settings_paths() -> tuple[Path, ...]:
+    """The MANAGED/ENTERPRISE settings locations for THIS platform — the policy tier
+    `--setting-sources` (user/project/local) cannot exclude (the S-4 hole). Paths pinned against
+    the actual CLI 2.1.223 binary's own literals (macOS `/Library/Application
+    Support/ClaudeCode`, Linux `/etc/claude-code`, Windows `%PROGRAMDATA%\\ClaudeCode`), each
+    with a `managed-settings.json` file and a `managed-settings.d/` drop-in directory. An
+    UNKNOWN platform, or a drop-in dir that cannot be listed, is an un-provable state and raises
+    `ManagedApiKeyHelperError` (fail-closed: we cannot PROVE the absence of a managed
+    `apiKeyHelper` where we do not know to look)."""
+    plat = sys.platform
+    if plat == "darwin":
+        base = Path("/Library/Application Support/ClaudeCode")
+    elif plat.startswith("linux"):
+        base = Path("/etc/claude-code")
+    elif plat.startswith("win"):
+        base = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "ClaudeCode"
+    else:
+        raise ManagedApiKeyHelperError(
+            f"subscription-wall: cannot locate the MANAGED settings tier on this platform "
+            f"({plat!r}); the wall cannot PROVE there is no managed apiKeyHelper, so it refuses "
+            "the subscription spawn (fail-closed, S-4). Extend `_managed_settings_paths` with "
+            "this platform's managed-settings path to re-enable spawning here."
+        )
+    paths: list[Path] = [base / "managed-settings.json"]
+    dropin = base / "managed-settings.d"
+    try:
+        if dropin.is_dir():
+            paths.extend(sorted(dropin.glob("*.json")))
+    except OSError as exc:
+        raise ManagedApiKeyHelperError(
+            f"subscription-wall: the managed drop-in directory {dropin} exists but cannot be "
+            "listed; the wall cannot PROVE it holds no apiKeyHelper, so it refuses the "
+            "subscription spawn (fail-closed, S-4)."
+        ) from exc
+    return tuple(paths)
+
+
+def _managed_hazard_reason(data: object) -> str | None:
+    """A human reason string if this managed settings object carries an api-key auth HAZARD,
+    else None. Catches BOTH a top-level `apiKeyHelper` AND an `env` block that re-injects any
+    F10-stripped auth/provider var (a managed `env` block is applied by the CLI and would
+    survive `build_child_env`'s process-env strip). A non-object shape is itself un-provable and
+    is treated as a hazard (fail-closed)."""
+    if not isinstance(data, dict):
+        return "a non-object managed settings shape (cannot be proven free of apiKeyHelper)"
+    if _API_KEY_HELPER_KEY in data:
+        return f"a top-level {_API_KEY_HELPER_KEY!r}"
+    env_block = data.get("env")
+    if isinstance(env_block, dict):
+        injected = [var for var in F10_STRIPPED_ENV_VARS if var in env_block]
+        if injected:
+            return f"an env block re-injecting {', '.join(injected)}"
+    return None
+
+
+def _detect_managed_apikey_helper(paths: Sequence[Path] | None = None) -> None:
+    """S-4 detect-and-refuse. Scan each managed settings file; a file that is simply ABSENT is
+    provably safe (skipped), a present-and-hazardous file (`_managed_hazard_reason`) or a
+    present-but-UNREADABLE file both raise `ManagedApiKeyHelperError`. `paths=None` resolves the
+    real platform tier; tests inject an explicit list (an empty list = a known platform with no
+    managed files = provably safe)."""
+    resolved = _managed_settings_paths() if paths is None else tuple(paths)
+    for path in resolved:
+        if not path.exists():
+            continue  # a managed file that is simply absent is provably safe
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ManagedApiKeyHelperError(
+                f"subscription-wall: managed settings at {path} exist but are unreadable/"
+                "unparseable; the wall cannot PROVE they define no apiKeyHelper, so it refuses "
+                "the subscription spawn (fail-closed, S-4)."
+            ) from exc
+        reason = _managed_hazard_reason(data)
+        if reason is not None:
+            raise ManagedApiKeyHelperError(
+                f"subscription-wall: managed settings at {path} define {reason}. This "
+                "ENTERPRISE/MANAGED policy tier CANNOT be excluded by --setting-sources "
+                "(user/project/local), so an api-key auth path could ride it (F10). Refusing the "
+                "subscription spawn (S-4 detect-and-refuse — money-safety-first)."
+            )
+
+
+def _default_controlled_settings_path() -> Path:
+    """A stable, per-PROCESS controlled-settings file path in a private temp dir (created once,
+    removed at interpreter exit). STABLE within a process so two subscription spawns produce a
+    BYTE-IDENTICAL `--settings` argv (the plan=None vs plan=subscription identity the tests pin);
+    per-process (not a fixed shared path) so concurrent pipeline processes never race on it."""
+    global _controlled_settings_dir
+    if _controlled_settings_dir is None:
+        directory = Path(tempfile.mkdtemp(prefix="optiquity-subwall-"))
+        atexit.register(_cleanup_controlled_settings_dir, directory)
+        _controlled_settings_dir = directory
+    return _controlled_settings_dir / "subscription-controlled-settings.json"
+
+
+def _cleanup_controlled_settings_dir(directory: Path) -> None:  # pragma: no cover — atexit only
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def _ensure_controlled_settings_file(path: Path | None = None) -> Path:
+    """Write (idempotently) + VERIFY the pipeline-controlled settings file that defines NO
+    `apiKeyHelper`. Re-written and re-verified on EVERY spawn (cheap; defends against a mid-run
+    deletion/tamper). FAIL-CLOSED: any write/read/parse failure — or a read-back that does not
+    PROVE the absence of `apiKeyHelper` — raises `ControlledSettingsError`, never a fallback to
+    an uncontrolled spawn (plan G2 item 4)."""
+    target = _default_controlled_settings_path() if path is None else path
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_CONTROLLED_SETTINGS_BODY, encoding="utf-8")
+        verify = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ControlledSettingsError(
+            f"subscription-wall: the controlled settings file at {target} could not be written, "
+            "read back, or parsed; the wall cannot PROVE a no-apiKeyHelper settings surface, so "
+            "it refuses the subscription spawn (fail-closed, never an uncontrolled spawn)."
+        ) from exc
+    if not isinstance(verify, dict) or _API_KEY_HELPER_KEY in verify:
+        raise ControlledSettingsError(
+            f"subscription-wall: the controlled settings file at {target} did not read back as an "
+            f"object free of {_API_KEY_HELPER_KEY!r}; refusing the subscription spawn "
+            "(fail-closed)."
+        )
+    return target
+
+
+@dataclass(frozen=True)
+class SubscriptionWall:
+    """The applied wall for ONE subscription spawn: the controlled settings file + the argv the
+    spawn adds. `argv` is `("--settings", <controlled-file>, "--setting-sources", "")` — it loads
+    ONLY the controlled file (which defines no `apiKeyHelper`) and excludes every ambient
+    user/project/local source. It NEVER contains `--bare`."""
+
+    settings_path: Path
+    argv: tuple[str, ...]
+
+
+def build_subscription_wall(
+    *,
+    managed_settings_paths: Sequence[Path] | None = None,
+    controlled_settings_path: Path | None = None,
+) -> SubscriptionWall:
+    """Construct the controlled-settings WALL for ONE subscription spawn (plan G2, S-4).
+
+    FAIL-CLOSED by construction — RAISES rather than ever returning an uncontrolled spawn:
+    `ManagedApiKeyHelperError` when a managed/enterprise `apiKeyHelper` is present, unexcludable,
+    or unprovable (the S-4 detect-and-refuse); `ControlledSettingsError` when the controlled file
+    cannot be written/read/verified. On success returns the `--settings`/`--setting-sources` argv
+    that loads ONLY the controlled (no-`apiKeyHelper`) file and excludes ambient sources — never
+    `--bare`.
+
+    `managed_settings_paths` / `controlled_settings_path` are TEST seams (inject a simulated
+    managed file, or an unwritable controlled path); production passes neither, resolving the real
+    platform managed tier and the per-process controlled file. The managed check runs FIRST so a
+    managed refusal never even writes a controlled file.
+    """
+    _detect_managed_apikey_helper(managed_settings_paths)  # raises → refuse (S-4)
+    settings_path = _ensure_controlled_settings_file(controlled_settings_path)  # raises → refuse
+    argv = ("--settings", str(settings_path), "--setting-sources", SETTING_SOURCES_NONE)
+    return SubscriptionWall(settings_path=settings_path, argv=argv)
 
 
 # ---------------------------------------------------------------------------
@@ -711,10 +1014,13 @@ def invoke_headless(
     inject a fake `Runner` (mirrors `pipeline.adapters.graphify`'s seam).
 
     `plan` (optional, plan G1) is the chokepoint CONTRACT. `plan is None` OR
-    `plan.mode=="subscription"` is today's behavior EXACTLY: `plan.per_call_cap is None`
+    `plan.mode=="subscription"` are IDENTICAL TO EACH OTHER: `plan.per_call_cap is None`
     forces NO `--max-budget-usd` (the subscription is flat-rate — S-1: a finite cap would
-    truncate a real artifact), so the argv + child env + returned result are byte-identical
-    to a `plan=None` call. When a plan IS present its `cost_accumulator` receives
+    truncate a real artifact), and BOTH paths carry the same G2 subscription wall, so the argv
+    + child env + returned result are byte-identical between them. (Both are STRENGTHENED versus
+    pre-G2 — the widened env strip + the controlled-settings wall now ride every subscription
+    spawn — so neither is byte-identical to the pre-G2 spawn.) When a plan IS present its
+    `cost_accumulator` receives
     `result.total_cost_usd` on EVERY call (both modes) — the B1 accounting fix that replaces
     the last-call-only read at driver.py:976 with the RUN total. A finite `plan.per_call_cap`
     (only ever set on the G7 api-key path) forces `--max-budget-usd = min(caller, cap)`.
@@ -736,6 +1042,15 @@ def invoke_headless(
         max_budget_usd=effective_budget,
         fallback_model=fallback_model,
     )
+    # The subscription WALL (plan G2, S-4): EVERY subscription spawn is pinned under
+    # pipeline-controlled settings that provably define NO apiKeyHelper, and no ambient/managed
+    # apiKeyHelper may supply an api key. This is the ONLY transport at G2 (no api-key path is
+    # built), so it fires on every spawn — generation AND the research seam alike, with no
+    # unwalled path. FAIL-CLOSED: build_subscription_wall RAISES (a managed apiKeyHelper, or an
+    # unverifiable controlled file) rather than ever spawning uncontrolled, and the raise happens
+    # BEFORE the runner is called.
+    wall = build_subscription_wall()
+    argv += list(wall.argv)
     request = ProcessRequest(
         argv=tuple(argv),
         env=child_env,

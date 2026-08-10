@@ -39,8 +39,13 @@ import pytest
 import pipeline.claims as claims_module
 from pipeline.transport import (
     ANTHROPIC_API_KEY_ENV,
+    ANTHROPIC_AUTH_TOKEN_ENV,
+    CLAUDE_CODE_USE_BEDROCK_ENV,
+    CLAUDE_CODE_USE_FOUNDRY_ENV,
+    CLAUDE_CODE_USE_VERTEX_ENV,
     DEFAULT_TIMEOUT_SECONDS,
     DISABLE_AUTO_MEMORY_ENV,
+    F10_STRIPPED_ENV_VARS,
     ApiKeyPresentError,
     BinaryNotFoundError,
     CostAccumulator,
@@ -163,6 +168,36 @@ def test_build_child_env_merges_other_overrides():
     env = build_child_env({"PATH": "/usr/bin"}, overrides={"EXTRA": "value"})
     assert env["EXTRA"] == "value"
     assert env["PATH"] == "/usr/bin"
+
+
+def test_build_child_env_strips_the_widened_f10_siblings():
+    """G2 (S-4): the strip is WIDENED beyond ANTHROPIC_API_KEY to the sibling auth/provider vars
+    that outrank or divert the subscription — ANTHROPIC_AUTH_TOKEN + the CLAUDE_CODE_USE_* trio."""
+    base = {
+        "PATH": "/usr/bin",
+        ANTHROPIC_AUTH_TOKEN_ENV: "sk-auth",
+        CLAUDE_CODE_USE_BEDROCK_ENV: "1",
+        CLAUDE_CODE_USE_VERTEX_ENV: "1",
+        CLAUDE_CODE_USE_FOUNDRY_ENV: "1",
+    }
+    env = build_child_env(base)
+    for var in (
+        ANTHROPIC_AUTH_TOKEN_ENV,
+        CLAUDE_CODE_USE_BEDROCK_ENV,
+        CLAUDE_CODE_USE_VERTEX_ENV,
+        CLAUDE_CODE_USE_FOUNDRY_ENV,
+    ):
+        assert var not in env
+    assert env["PATH"] == "/usr/bin"  # unrelated vars pass through
+    assert env[DISABLE_AUTO_MEMORY_ENV] == "1"
+
+
+def test_build_child_env_re_strips_a_widened_sibling_smuggled_via_overrides():
+    """An override cannot re-add a widened sibling: it is stripped again AFTER the merge (the
+    hard-refused ANTHROPIC_API_KEY has its own refusal; the siblings are silently re-stripped)."""
+    env = build_child_env({"PATH": "/usr/bin"}, overrides={CLAUDE_CODE_USE_BEDROCK_ENV: "1"})
+    assert CLAUDE_CODE_USE_BEDROCK_ENV not in env
+    assert ANTHROPIC_API_KEY_ENV in F10_STRIPPED_ENV_VARS  # the whole set is stripped in order
 
 
 # ---------------------------------------------------------------------------
@@ -490,9 +525,10 @@ def test_subscription_plan_refuses_a_finite_per_call_cap():
 
 
 def test_plan_none_and_subscription_plan_produce_identical_argv_and_env(monkeypatch):
-    """`plan is None` and `plan.mode=="subscription"` (per_call_cap=None) are today's behavior
-    EXACTLY: the spawned argv + child env are byte-for-byte identical (no --max-budget-usd
-    forced), and the returned result is the same. The plan only additionally ACCUMULATES."""
+    """`plan is None` and `plan.mode=="subscription"` (per_call_cap=None) are IDENTICAL TO EACH
+    OTHER: the spawned argv + child env are byte-for-byte identical (no --max-budget-usd forced,
+    the SAME G2 controlled-settings wall on both), and the returned result is the same. The plan
+    only additionally ACCUMULATES. (Both are STRENGTHENED vs pre-G2 — see the wall asserts.)"""
     monkeypatch.setenv(ANTHROPIC_API_KEY_ENV, "sk-should-be-stripped")
     none_runner = FakeRunner(outcome_ok(SUCCESS_JSON))
     plan_runner = FakeRunner(outcome_ok(SUCCESS_JSON))
@@ -508,6 +544,10 @@ def test_plan_none_and_subscription_plan_produce_identical_argv_and_env(monkeypa
     # F10 strip fires on the subscription-plan path exactly as with plan=None.
     assert ANTHROPIC_API_KEY_ENV not in req_plan.env
     assert req_plan.env[DISABLE_AUTO_MEMORY_ENV] == "1"
+    # G2: both paths carry the controlled-settings wall identically (strengthened vs pre-G2):
+    # --settings <controlled-file> + --setting-sources "" (excludes ambient sources), no --bare.
+    assert "--settings" in req_plan.argv and "--bare" not in req_plan.argv
+    assert req_plan.argv[req_plan.argv.index("--setting-sources") + 1] == ""
     # The returned result is identical; the plan only additionally accumulates the cost.
     assert r_plan == r_none
     assert plan.cost_accumulator.total == r_plan.total_cost_usd
