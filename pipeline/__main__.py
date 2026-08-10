@@ -249,6 +249,25 @@ commands:
                             bytes/requests ($0 model spend). Options: --user U (required) · --source
                             ID · --root DIR. Exit 0 ok; 1 refusal (bad name / unknown feed / busy
                             namespace); 2 usage (no subcommand / missing --user).
+  transport      the API-KEY assignment admin door (transport-selection plan G4, §21.10). Tier-A
+                 LOCAL file ops over the gitignored instance/ops/transport/config.yaml — never an
+                 invoke verb / HTTP door / spend (§21.9). Each assignment maps an EXPLICIT
+                 (scope-level, scope-id) — parsed from --scope, NEVER derived from a users/ path
+                 (M3) — to a keystore HANDLE (a non-secret reference; the secret lives in the
+                 keystore) + a HARD weekly dollar cap. No secret is ever read/stored/printed; G4
+                 stores assignments + resolves the workspace→zone→user→global cascade only
+                 (transport selection + metering are later gates). Subcommands:
+                   assign-key  assign (or replace) a handle for one scope: --scope <global |
+                            user:<u> | zone:<u>/<z> | workspace:<u>/<z>/<ws>> --handle <ns:name>
+                            --weekly-cap $C. --weekly-cap is HARD-REQUIRED (S3): a missing cap is a
+                            loud refusal and NOTHING is written (no silent default cap). Options:
+                            --scope · --handle · --weekly-cap · --root DIR. Exit 0 ok; 1 refusal
+                            (bad scope/handle/cap / malformed config); 2 (missing --weekly-cap).
+                   list-keys   READ-ONLY: scope + handle + cap per assignment (NEVER a secret). A
+                            missing/empty config prints 'no key assignments'. Options: --root DIR.
+                            Exit 0 ok; 1 malformed config.
+                   clear-key   remove one scope's assignment (idempotent): --scope <…> --root DIR.
+                            Exit 0 ok; 1 refusal (bad scope).
 
 Further subcommands land with their owning plan steps (see docs/design.md and the build
 plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
@@ -3164,6 +3183,202 @@ def _cmd_sources(
     return 0
 
 
+def _cmd_transport(argv: list[str]) -> int:
+    """G4: `pipeline transport <assign-key|list-keys|clear-key> …` — key ASSIGNMENT admin (§21.10).
+
+    Tier-A ADMIN verbs (the `zone`/`workspace` family: LOCAL file ops, NEVER an invoke verb / HTTP
+    door / spend — §21.9). They edit the gitignored handle-assignment config at
+    instance/ops/transport/config.yaml, which maps an EXPLICIT (scope-level, scope-id) to a keystore
+    HANDLE + a HARD weekly dollar cap. No secret is ever read, stored, or printed (the handle is
+    a NON-secret reference; the secret lives in the keystore, G3) and NOTHING spends — G4 stores
+    assignments + resolves the cascade only (transport selection + metering are G6/G7).
+
+    - assign-key --scope <global|user:<u>|zone:<u>/<z>|workspace:<u>/<z>/<ws>> --handle <ns:name>
+                 --weekly-cap $C   assign (or replace) the handle for one scope. --weekly-cap is
+                 HARD-REQUIRED (S3): absent → a loud refusal, NOTHING written (no default cap).
+    - list-keys                    READ-ONLY: scope + handle + cap per assignment (NEVER a secret).
+    - clear-key --scope <…>        remove one scope's assignment (idempotent).
+
+    Exit 0 ok; 1 refusal (bad scope/handle/cap, malformed config); 2 usage (no subcommand / missing
+    --weekly-cap / missing --scope)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline transport",
+        description=(
+            "Key-assignment admin (plan G4, §21.10). Tier-A LOCAL file ops over the gitignored "
+            "instance/ops/transport/config.yaml — never an invoke verb / HTTP door / spend. "
+            "Each assignment maps an EXPLICIT (scope-level, scope-id) to a keystore HANDLE (a "
+            "non-secret reference) + a HARD weekly dollar cap. Subcommands: assign-key, list-keys, "
+            "clear-key."
+        ),
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+
+    assign = sub.add_parser(
+        "assign-key",
+        help="assign (or replace) a keystore handle for one scope, with a HARD weekly cap",
+        description=(
+            "Assign (or replace) a keystore HANDLE for one EXPLICIT scope (global | user:<u> | "
+            "zone:<u>/<z> | workspace:<u>/<z>/<ws>). The scope-id is PARSED from --scope, never "
+            "derived from a users/ path (M3, §23 addressing purity). --weekly-cap is HARD-REQUIRED "
+            "(S3): a missing cap is a loud refusal and NOTHING is written — no silent default cap. "
+            "The handle is a non-secret ref; NO secret is read/stored/printed. Spends nothing."
+        ),
+    )
+    assign.add_argument(
+        "--scope",
+        required=True,
+        help="global | user:<u> | zone:<u>/<z> | workspace:<u>/<z>/<ws> (parsed EXPLICITLY, M3)",
+    )
+    assign.add_argument(
+        "--handle",
+        required=True,
+        help="the keystore handle '<namespace>:<name>' (a NON-secret ref; e.g. anthropic:acme)",
+    )
+    assign.add_argument(
+        "--weekly-cap",
+        default=None,
+        help="the HARD weekly dollar cap, e.g. 50 (S3: REQUIRED — no default; no uncapped key)",
+    )
+    assign.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
+    )
+
+    lst = sub.add_parser(
+        "list-keys",
+        help="list key assignments (scope + handle + cap; NEVER a secret)",
+        description=(
+            "READ-ONLY: list every key assignment as scope + handle + weekly cap. A handle is a "
+            "non-secret reference — no secret is ever printed. A missing/empty config prints "
+            "'no key assignments' (exit 0). Mutates nothing, spends nothing (§21.9)."
+        ),
+    )
+    lst.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
+    )
+
+    clr = sub.add_parser(
+        "clear-key",
+        help="remove one scope's key assignment (idempotent)",
+        description=(
+            "Remove the key assignment for one EXPLICIT scope (same --scope grammar as assign). "
+            "Idempotent: clearing an unassigned scope is a clean no-op (exit 0). NOTHING spends."
+        ),
+    )
+    clr.add_argument(
+        "--scope",
+        required=True,
+        help="global | user:<u> | zone:<u>/<z> | workspace:<u>/<z>/<ws> (parsed EXPLICITLY, M3)",
+    )
+    clr.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
+    )
+
+    args = parser.parse_args(argv)
+    if args.subcommand == "assign-key":
+        return _transport_assign_key(args)
+    if args.subcommand == "list-keys":
+        return _transport_list_keys(args)
+    if args.subcommand == "clear-key":
+        return _transport_clear_key(args)
+    parser.print_usage(sys.stderr)
+    print(
+        "pipeline transport: a subcommand is required (known: assign-key, list-keys, clear-key)",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _transport_assign_key(args: "object") -> int:
+    """G4: `transport assign-key` — assign a handle to a scope with a HARD weekly cap (S3/M3).
+
+    Refuses an ABSENT --weekly-cap up front (S3: no uncapped key) with a clear message and NO write,
+    BEFORE any parse or store load. Then parses the scope EXPLICITLY (M3), validates the handle,
+    and writes the assignment. NOTHING spends; no secret is read or printed."""
+    from pipeline.spend import assignment as A
+
+    # S3: HARD-refuse an absent --weekly-cap BEFORE any parse/load/write — no silent default cap.
+    if args.weekly_cap is None:
+        print(
+            "pipeline transport assign-key: --weekly-cap is REQUIRED — refusing to assign an "
+            "UNCAPPED key (S3). State the weekly dollar budget explicitly, e.g. `--weekly-cap 50`. "
+            "Nothing was written.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        cap = A.parse_weekly_cap(args.weekly_cap)
+        scope = A.parse_scope(args.scope, framework_root=args.root)
+        ref = A.parse_handle(args.handle)
+        store = A.load_store(args.root)
+    except A.AssignmentError as exc:
+        print(f"pipeline transport assign-key: {exc}", file=sys.stderr)
+        return 1
+
+    store.assign(A.Assignment(scope, ref, cap))
+    path = A.save_store(store, args.root)
+    print(
+        f"pipeline transport assign-key: assigned {scope.level}:{scope.scope_id} → "
+        f"{ref.handle} (weekly cap {A.format_cap(cap)}) — {path}"
+    )
+    return 0
+
+
+def _transport_list_keys(args: "object") -> int:
+    """G4: `transport list-keys` — READ-ONLY scope + handle + cap listing (NEVER a secret)."""
+    from pipeline.spend import assignment as A
+
+    try:
+        store = A.load_store(args.root)
+    except A.AssignmentError as exc:
+        print(f"pipeline transport list-keys: {exc}", file=sys.stderr)
+        return 1
+
+    rows = store.assignments
+    if not rows:
+        print("pipeline transport list-keys: no key assignments (subscription is the fallback)")
+        return 0
+    for assignment in rows:
+        # `assignment.handle.handle` is the NON-secret reference; no secret is ever printed.
+        print(
+            f"{assignment.scope.level}:{assignment.scope.scope_id}  →  "
+            f"{assignment.handle.handle}  (weekly cap {A.format_cap(assignment.weekly_cap_usd)})"
+        )
+    return 0
+
+
+def _transport_clear_key(args: "object") -> int:
+    """G4: `transport clear-key` — remove one scope's assignment (idempotent). NOTHING spends."""
+    from pipeline.spend import assignment as A
+
+    try:
+        scope = A.parse_scope(args.scope, framework_root=args.root)
+        store = A.load_store(args.root)
+    except A.AssignmentError as exc:
+        print(f"pipeline transport clear-key: {exc}", file=sys.stderr)
+        return 1
+
+    if store.clear(scope):
+        path = A.save_store(store, args.root)
+        print(
+            f"pipeline transport clear-key: removed {scope.level}:{scope.scope_id} — {path}"
+        )
+    else:
+        print(
+            f"pipeline transport clear-key: no assignment for {scope.level}:{scope.scope_id} "
+            "(no-op)"
+        )
+    return 0
+
+
 _COMMANDS = {
     "drift-report": _cmd_drift_report,
     "ssot": _cmd_ssot,
@@ -3183,6 +3398,7 @@ _COMMANDS = {
     "user": _cmd_user,
     "zone": _cmd_zone,
     "sources": _cmd_sources,
+    "transport": _cmd_transport,
 }
 
 
