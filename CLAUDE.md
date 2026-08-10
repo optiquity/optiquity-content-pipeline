@@ -15,11 +15,13 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
    **gitignored, never committed**, and still read-only toward every upstream source. This is the
    one sanctioned local acquired-content store; it never mutates a source and stores no graphs.
 2. **CLIENT ISOLATION VIA WORKSPACES.** Every client repo gets a workspace:
-   `users/<user>/workspaces/<workspace>/`. A client's docs, topics, metadata, and output live only
-   under its workspace and must never leak into another. There is **one** repo with many
-   workspaces — never a separate repo per client. (This instance's own repos are clients too, e.g.
-   `users/<user>/workspaces/self/`.) The `users/<user>/` segment is an isolation/addressing
-   **prefix** — it changes *where* a workspace lives, not the value cascade (§10/§23).
+   `users/<user>/zones/<zone>/workspaces/<workspace>/`. A client's docs, topics, metadata, and
+   output live only under its workspace and must never leak into another. There is **one** repo with
+   many workspaces — never a separate repo per client. (This instance's own repos are clients too,
+   e.g. `users/<user>/zones/default/workspaces/self/`.) The `users/<user>/` segment **and** the
+   `zones/<zone>/` segment are both isolation/addressing **prefixes** — a **zone** groups a user's
+   workspaces (defaulting to `default`), changing only *where* a workspace lives, not the value
+   cascade (§10/§23). Same-named workspaces in different zones are distinct, store-isolated.
 3. **SINGLE SOURCE OF TRUTH.** The **tracking spreadsheet is the SSOT** for status/progress.
    `state.md` is **always a derived convenience document** — a session-facing mirror of the
    spreadsheet, never an authority. If they disagree, the spreadsheet wins; update `state.md`
