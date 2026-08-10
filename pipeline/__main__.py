@@ -182,23 +182,27 @@ commands:
                             auto-created on demand (a brand-new user home is announced so a mistyped
                             --user is visible). Refuse-if-exists unless --force; --force NEVER
                             overwrites an existing file (non-destructive — tops up MISSING blueprint
-                            files only, never deletes client data). Options: --user U (required) ·
+                            files only, never deletes client data). --zone Z targets one concrete
+                            zone (default: default); a brand-new zone is auto-created + announced (a
+                            mistyped --zone is visible). Options: --user U (required) · --zone Z ·
                             --root DIR · --force. Exit 0 ok; 1 refusal (bad name / refuse-if-exists
                             / missing blueprint); 2 usage (no subcommand / missing --user).
-                   list            READ-ONLY: list workspaces as <user>/<workspace> with a
+                   list            READ-ONLY: list workspaces as <user>/<zone>/<workspace> with a
                             topic-count + has-output summary. With --user, one user's workspaces;
-                            without it, ALL users (scan users/*/workspaces/*). A missing/empty
-                            users/ prints "no workspaces found" (exit 0), never a traceback.
-                            Options: --user U · --root DIR. Exit 0 ok; 1 refusal (bad --user).
+                            without it, ALL users (scan users/*/zones/*/workspaces/*). --zone Z
+                            FILTERS to one zone (default: all zones). A missing/empty users/ prints
+                            "no workspaces found" (exit 0), never a traceback. Options: --user U ·
+                            --zone Z · --root DIR. Exit 0 ok; 1 refusal (bad --user).
                    delete WORKSPACE  DESTRUCTIVE, SAFE-BY-DEFAULT: remove ONE workspace. --user is
-                            REQUIRED. Refuse-by-default — interactive TYPE the workspace name to
-                            confirm (a mismatch aborts); headless pass --yes. A workspace holding
-                            generated output is refused even with --yes unless --force is ALSO
-                            passed. Never deletes through a symlink; removes only the validated
-                            contained dir (users/<user>/ + workspaces/ survive). Options: --user U
-                            (required) · --yes · --force · --root DIR. Exit 0 ok; 1 refusal
-                            (bad name / non-existent / symlink / unconfirmed / has-output);
-                            2 usage (no subcommand / missing --user).
+                            REQUIRED; --zone Z picks the zone (default: default). Refuse-by-default
+                            — interactive TYPE the workspace name to confirm (a mismatch aborts);
+                            headless pass --yes. A workspace holding generated output is refused
+                            even with --yes unless --force is ALSO passed. Never deletes through a
+                            symlink; removes only the validated contained dir (users/<user>/ +
+                            zones/<zone>/workspaces/ survive). Options: --user U (required) · --zone
+                            Z · --yes · --force · --root DIR. Exit 0 ok; 1 refusal (bad name /
+                            non-existent / symlink / unconfirmed / has-output); 2 usage (no
+                            subcommand / missing --user).
   user           the FRIENDLY per-user namespace setup (design §23). LOCAL Tier-A file op — never an
                  invoke verb / HTTP door (§21.9 preserved). Subcommand:
                    new USER   create the empty per-user namespace users/<user>/workspaces/ (the
@@ -206,6 +210,32 @@ commands:
                             lowercase-safe segment. Refuse-if-exists unless --force (a safe no-op;
                             deletes nothing). Options: --root DIR · --force. Exit 0 ok; 1 refusal
                             (bad user / refuse-if-exists); 2 usage.
+  zone           the FRIENDLY per-zone lifecycle (design §23) over users/<user>/zones/<zone>/
+                 workspaces/ — a zone groups a user's workspaces (it sits between user and
+                 workspace). LOCAL Tier-A file ops — never an invoke verb / HTTP door (§21.9
+                 preserved). Subcommands:
+                   new ZONE   create ONE new zone users/<user>/zones/<zone>/workspaces/ (the
+                            per-zone workspace home). --user is REQUIRED (§23 prefix); the user
+                            namespace is auto-created on demand (a brand-new user home is announced
+                            so a mistyped --user is visible). Refuse-if-exists unless --force (a
+                            safe no-op; deletes nothing). Options: --user U (required) · --root DIR
+                            · --force. Exit 0 ok; 1 refusal (bad name / refuse-if-exists); 2 usage
+                            (no subcommand / missing --user).
+                   list            READ-ONLY: list zones as <user>/<zone> with a workspace count.
+                            With --user, one user's zones; without it, ALL users (scan
+                            users/*/zones/*). A missing/empty users/ prints "no zones found"
+                            (exit 0), never a traceback. Options: --user U · --root DIR. Exit 0 ok;
+                            1 refusal (bad --user).
+                   delete ZONE  DESTRUCTIVE, RECURSIVE, SAFE-BY-DEFAULT: remove ONE zone AND every
+                            workspace it contains. --user is REQUIRED. Refuse-by-default —
+                            interactive TYPE the zone name to confirm (a mismatch aborts); headless
+                            pass --yes. STRICTER because recursive: if ANY contained workspace
+                            holds generated output the whole zone is refused even with --yes unless
+                            --force is ALSO passed. Never deletes through a symlink; removes only
+                            the validated contained zone dir (users/<user>/ survives). Options:
+                            --user U (required) · --yes · --force · --root DIR. Exit 0 ok; 1 refusal
+                            (bad name / non-existent / symlink / unconfirmed / has-output); 2 usage
+                            (no subcommand / missing --user).
   sources        the OUT-OF-BAND acquisition maintenance door (design §6; sources P2). LOCAL Tier-A:
                  it fetches FREE HTTP and writes the LOCAL sealed cache; it NEVER spends quota,
                  mints a token, or touches the paid job path (§21.9 preserved; no paid-drive flag /
@@ -2145,6 +2175,8 @@ def _cmd_entry(argv: list[str]) -> int:
     topic-without-workspace / refuse-if-exists); 2 usage."""
     import argparse
 
+    from pipeline.workspace_name import DEFAULT_ZONE
+
     parser = argparse.ArgumentParser(
         prog="pipeline entry",
         description=(
@@ -2187,6 +2219,15 @@ def _cmd_entry(argv: list[str]) -> int:
         help="the owning user (§23) for a client (x-) entry home; required with --workspace",
     )
     new.add_argument(
+        "--zone",
+        default=DEFAULT_ZONE,
+        help=(
+            "the zone the --workspace lives in (§23; "
+            f"users/<user>/zones/<zone>/workspaces/<W>/, default: {DEFAULT_ZONE}). Ignored for a "
+            "framework-default entry (no --workspace)."
+        ),
+    )
+    new.add_argument(
         "--root", default=".", help="framework repo root → <dimension>/<id>.md (default: cwd)"
     )
     new.add_argument(
@@ -2204,7 +2245,7 @@ def _cmd_entry(argv: list[str]) -> int:
     try:
         target = entryscaffold.write_entry(
             args.root, args.dimension, args.id,
-            user=args.user, workspace=args.workspace, force=args.force,
+            user=args.user, workspace=args.workspace, zone=args.zone, force=args.force,
         )
     except _entry_error_types() as exc:
         print(f"pipeline entry new: {exc}", file=sys.stderr)
@@ -2266,6 +2307,8 @@ def _cmd_workspace(argv: list[str]) -> int:
     2 usage (no subcommand / missing required flag)."""
     import argparse
 
+    from pipeline.workspace_name import DEFAULT_ZONE
+
     parser = argparse.ArgumentParser(
         prog="pipeline workspace",
         description=(
@@ -2300,9 +2343,19 @@ def _cmd_workspace(argv: list[str]) -> int:
         help="the owning user (§23 isolation prefix; users/<user>/workspaces/<workspace>/)",
     )
     new.add_argument(
+        "--zone",
+        default=DEFAULT_ZONE,
+        help=(
+            "the zone segment between user and workspace (§23; "
+            f"users/<user>/zones/<zone>/workspaces/<ws>/, default: {DEFAULT_ZONE}). A brand-new "
+            "zone is auto-created and announced so a mistyped --zone is visible."
+        ),
+    )
+    new.add_argument(
         "--root",
         default=".",
-        help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
+        help="framework repo root → users/<user>/zones/<zone>/workspaces/<workspace>/ (default: "
+        "cwd)",
     )
     new.add_argument(
         "--force",
@@ -2327,6 +2380,11 @@ def _cmd_workspace(argv: list[str]) -> int:
         "--user",
         default=None,
         help="restrict to one user's workspaces (§23 lowercase-safe segment; default: all users)",
+    )
+    lst.add_argument(
+        "--zone",
+        default=None,
+        help="restrict to one zone across the selected user(s) (§23; default: ALL zones)",
     )
     lst.add_argument(
         "--root", default=".", help="framework repo root → users/ (default: cwd)"
@@ -2354,6 +2412,14 @@ def _cmd_workspace(argv: list[str]) -> int:
         "--user",
         required=True,
         help="the owning user (§23 isolation prefix; users/<user>/workspaces/<workspace>/)",
+    )
+    dele.add_argument(
+        "--zone",
+        default=DEFAULT_ZONE,
+        help=(
+            "the zone the workspace lives in (§23; "
+            f"users/<user>/zones/<zone>/workspaces/<ws>/, default: {DEFAULT_ZONE})"
+        ),
     )
     dele.add_argument(
         "--yes",
@@ -2394,7 +2460,7 @@ def _workspace_new(args: "object") -> int:
 
     try:
         result = workspacescaffold.scaffold_workspace(
-            args.root, args.workspace, user=args.user, force=args.force
+            args.root, args.workspace, user=args.user, zone=args.zone, force=args.force
         )
     except _workspace_error_types() as exc:
         print(f"pipeline workspace new: {exc}", file=sys.stderr)
@@ -2439,13 +2505,14 @@ def _workspace_list(args: "object") -> int:
     from pipeline import workspacescaffold
 
     try:
-        rows = workspacescaffold.list_workspaces(args.root, user=args.user)
+        rows = workspacescaffold.list_workspaces(args.root, user=args.user, zone=args.zone)
     except _workspace_error_types() as exc:
         print(f"pipeline workspace list: {exc}", file=sys.stderr)
         return 1
 
     if not rows:
         scope = f" for user {args.user!r}" if args.user else ""
+        scope += f" in zone {args.zone!r}" if args.zone else ""
         print(f"pipeline workspace list: no workspaces found{scope}")
         return 0
 
@@ -2472,6 +2539,7 @@ def _workspace_delete(args: "object") -> int:
             args.root,
             args.user,
             args.workspace,
+            zone=args.zone,
             assume_yes=args.yes,
             force=args.force,
         )
@@ -2548,6 +2616,254 @@ def _cmd_user(argv: list[str]) -> int:
     print(f"pipeline user new: created user namespace {result.user!r} — {result.path}")
     print(
         f"  next: `pipeline workspace new <workspace> --user {result.user}` to seed a workspace"
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Z7: `pipeline zone new|list|delete` — the FRIENDLY per-zone lifecycle (one level UP from the
+# workspace CRUD). A zone groups a user's workspaces (§23): `users/<user>/zones/<zone>/workspaces/`.
+#
+# Sibling of `_cmd_workspace`/`_cmd_user`, wiring the thin `pipeline.workspacescaffold` zone leaf
+# (which REUSES the C2a `pipeline.authoring` overwrite guard + the `pipeline.workspace_name`
+# isolation gate — nothing re-implemented). `zone delete` is STRICTER because it is RECURSIVE (it
+# removes every contained workspace at once), so its Tier-2 guard aggregates the has-output oracle.
+#
+# MONEY-SAFETY (§21.9): every verb is a LOCAL Tier-A file op — none registers an invoke verb,
+# touches `_VERB_HANDLERS`, or dispatches through the invoke door, so none can spend quota or mint a
+# token.
+# ---------------------------------------------------------------------------
+
+
+def _cmd_zone(argv: list[str]) -> int:
+    """Z7: `pipeline zone <new|list|delete> …` — the FRIENDLY per-zone lifecycle (design §23).
+
+    Sub-dispatches (mirroring `_cmd_workspace`) over `users/<user>/zones/<zone>/workspaces/`, all
+    LOCAL Tier-A file ops (never an invoke verb / HTTP door; §21.9):
+
+    - `new ZONE --user U [--root DIR] [--force]` — create one new zone (the per-zone home);
+      the user namespace is auto-created on demand.
+    - `list [--user U] [--root DIR]` — READ-ONLY: zones as <user>/<zone> with a workspace count.
+    - `delete ZONE --user U [--yes] [--force] [--root DIR]` — DESTRUCTIVE, RECURSIVE, safe:
+      remove one zone AND every workspace it contains; refuse-by-default (typed-zone-name confirm /
+      --yes), refuse if ANY contained workspace holds generated output unless --force too, never
+      delete through a symlink.
+
+    Exit 0 ok; 1 refusal (bad name / refuse-if-exists / non-existent / symlink / delete refusal);
+    2 usage (no subcommand / missing --user)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pipeline zone",
+        description=(
+            "The friendly per-zone lifecycle (design §23) over users/<user>/zones/<zone>/"
+            "workspaces/. A zone groups a user's workspaces (it sits between user and workspace). "
+            "LOCAL Tier-A file ops — never an invoke verb / HTTP door (§21.9). Subcommands: new, "
+            "list, delete."
+        ),
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+
+    new = sub.add_parser(
+        "new",
+        help="create one new zone (users/<user>/zones/<zone>/workspaces/)",
+        description=(
+            "Create ONE new zone users/<user>/zones/<zone>/workspaces/ — the per-zone workspace "
+            "home (design §23). --user is REQUIRED (the §23 isolation prefix); the user namespace "
+            "is auto-created on demand (a brand-new user home is announced so a mistyped --user is "
+            "visible). Refuse-if-exists unless --force (a safe no-op). NEVER spends "
+            "quota (never an invoke verb; §21.9)."
+        ),
+    )
+    new.add_argument(
+        "zone",
+        help="the zone name to create (§23 lowercase-safe segment; the directory name)",
+    )
+    new.add_argument(
+        "--user",
+        required=True,
+        help="the owning user (§23 isolation prefix; users/<user>/zones/<zone>/workspaces/)",
+    )
+    new.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/zones/<zone>/workspaces/ (default: cwd)",
+    )
+    new.add_argument(
+        "--force",
+        action="store_true",
+        help="proceed if the zone exists — a safe no-op, never deletes (default: refuse)",
+    )
+
+    lst = sub.add_parser(
+        "list",
+        help="list zones (one user, or all users) with a workspace count",
+        description=(
+            "READ-ONLY: list zones under users/. With --user, list that one user's zones; without "
+            "it, scan EVERY user (users/*/zones/*), each row shown as <user>/<zone> with the count "
+            "of workspaces the zone contains. A missing/empty users/ prints 'no zones found' "
+            "(exit 0), never a traceback. Mutates nothing (never an invoke verb; §21.9)."
+        ),
+    )
+    lst.add_argument(
+        "--user",
+        default=None,
+        help="restrict to one user's zones (§23 lowercase-safe segment; default: all users)",
+    )
+    lst.add_argument(
+        "--root", default=".", help="framework repo root → users/ (default: cwd)"
+    )
+
+    dele = sub.add_parser(
+        "delete",
+        help="remove ONE zone + every workspace it holds (destructive, recursive, safe-by-default)",
+        description=(
+            "DESTRUCTIVE, RECURSIVE, SAFE-BY-DEFAULT: remove ONE zone users/<user>/zones/<zone>/ "
+            "AND every workspace it contains. --user is REQUIRED. Validates + resolves + contains "
+            "the zone via the isolation gate, REFUSES a non-existent zone, and NEVER deletes "
+            "through a symlink (removes only the validated contained real zone dir). Tier-1 "
+            "confirmation is ALWAYS required: interactive: TYPE the zone name (a mismatch aborts); "
+            "headless you "
+            "pass --yes. Tier-2 (STRICTER, because recursive): if ANY contained workspace holds "
+            "GENERATED output (spent work/money) the whole zone is refused even with --yes unless "
+            "--force is ALSO passed. On success, users/<user>/ is left in place. LOCAL file op "
+            "(never an invoke verb; §21.9)."
+        ),
+    )
+    dele.add_argument(
+        "zone",
+        help="the zone name to delete (§23 lowercase-safe segment; the directory name)",
+    )
+    dele.add_argument(
+        "--user",
+        required=True,
+        help="the owning user (§23 isolation prefix; users/<user>/zones/<zone>/)",
+    )
+    dele.add_argument(
+        "--yes",
+        action="store_true",
+        help="supply the confirmation non-interactively (skip the type-the-zone-name prompt)",
+    )
+    dele.add_argument(
+        "--force",
+        action="store_true",
+        help="ALSO required (with --yes) to delete a zone whose workspaces hold generated output",
+    )
+    dele.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/zones/<zone>/ (default: cwd)",
+    )
+
+    # `--zone` never appears on this group: the ZONE is the positional subject of new/delete (a zone
+    # verb never defaults its own subject), and the per-zone `workspaces/` home is a fixed literal
+    # (§23).
+    args = parser.parse_args(argv)
+
+    if args.subcommand == "new":
+        return _zone_new(args)
+    if args.subcommand == "list":
+        return _zone_list(args)
+    if args.subcommand == "delete":
+        return _zone_delete(args)
+    parser.print_usage(sys.stderr)
+    print("pipeline zone: a subcommand is required (known: new, list, delete)", file=sys.stderr)
+    return 2
+
+
+def _zone_new(args: "object") -> int:
+    """Z7: `zone new` — create one zone + print the path/next hint. The user namespace is
+    auto-created on demand; a brand-new user/zone is announced so a mistyped --user/--zone shows."""
+    from pathlib import Path
+
+    from pipeline import workspacescaffold
+
+    try:
+        result = workspacescaffold.scaffold_zone(
+            args.root, args.zone, user=args.user, force=args.force
+        )
+    except _workspace_error_types() as exc:
+        print(f"pipeline zone new: {exc}", file=sys.stderr)
+        return 1
+
+    if result.created_user_namespace:
+        # Derive the namespace path from IDENTITY (`result.user`), never positional path math.
+        user_namespace = Path(args.root) / "users" / result.user
+        print(
+            f"pipeline zone new: created new user namespace {user_namespace} "
+            f"(users/{result.user}/)"
+        )
+    if result.created_zone:
+        print(
+            f"pipeline zone new: created zone {result.zone!r} for user {result.user!r} — "
+            f"{result.path}"
+        )
+    else:
+        # A --force no-op over an existing zone: honest about what happened (nothing new created).
+        print(
+            f"pipeline zone new: zone {result.zone!r} for user {result.user!r} already existed "
+            f"(--force: no-op) — {result.path}"
+        )
+    print(
+        f"  next: `pipeline workspace new <workspace> --user {result.user} --zone {result.zone}` "
+        "to seed a workspace in this zone"
+    )
+    return 0
+
+
+def _zone_list(args: "object") -> int:
+    """Z7: `zone list` — READ-ONLY enumeration of zones with a TRUE per-zone workspace count.
+
+    One user (`--user`) or every user (`users/*/zones/*`, rows shown `<user>/<zone>`). A
+    bad/uppercase `--user` is a loud refusal (exit 1); a missing/empty users/ prints a clean
+    'no zones found' (exit 0), never a traceback. Mutates nothing (§21.9)."""
+    from pipeline import workspacescaffold
+
+    try:
+        rows = workspacescaffold.list_zones(args.root, user=args.user)
+    except _workspace_error_types() as exc:
+        print(f"pipeline zone list: {exc}", file=sys.stderr)
+        return 1
+
+    if not rows:
+        scope = f" for user {args.user!r}" if args.user else ""
+        print(f"pipeline zone list: no zones found{scope}")
+        return 0
+
+    for row in rows:
+        print(
+            f"{row.user}/{row.zone}  "
+            f"({row.workspace_count} workspace(s))  — {row.path}"
+        )
+    return 0
+
+
+def _zone_delete(args: "object") -> int:
+    """Z7: `zone delete` — DESTRUCTIVE, RECURSIVE, safe-by-default removal of ONE zone.
+
+    --user is mandatory (argparse). The layered guards (validate/contain, symlink refusal,
+    non-existent refusal, Tier-2 AGGREGATE has-output override, Tier-1 zone-name confirmation) live
+    in `workspacescaffold.delete_zone`; every refusal is a typed exit-1, never a traceback. On
+    success, only the one contained zone dir is removed (users/<user>/ survives). LOCAL file op."""
+    from pipeline import workspacescaffold
+
+    try:
+        result = workspacescaffold.delete_zone(
+            args.root,
+            args.user,
+            args.zone,
+            assume_yes=args.yes,
+            force=args.force,
+        )
+    except _workspace_error_types() as exc:
+        print(f"pipeline zone delete: {exc}", file=sys.stderr)
+        return 1
+
+    forced = " (forced: contained generated output)" if result.had_output else ""
+    print(
+        f"pipeline zone delete: removed zone {result.zone!r} for user {result.user!r} "
+        f"({result.workspace_count} workspace(s), {result.file_count} file(s)){forced} — "
+        f"{result.path}"
     )
     return 0
 
@@ -2788,6 +3104,7 @@ _COMMANDS = {
     "entry": _cmd_entry,
     "workspace": _cmd_workspace,
     "user": _cmd_user,
+    "zone": _cmd_zone,
     "sources": _cmd_sources,
 }
 

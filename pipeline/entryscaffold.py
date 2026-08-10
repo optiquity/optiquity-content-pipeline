@@ -112,15 +112,18 @@ def resolve_entry_target(
     *,
     user: str | None = None,
     workspace: str | None = None,
+    zone: str = DEFAULT_ZONE,
 ) -> EntryTarget:
     """Validate the dimension + id and compute the provenance-homed target path (§10/§11.4).
 
     `--workspace` decides provenance by LOCATION (there are no bindings to infer from): with a
     workspace the entry is an INSTANCE `x-` entry (the prefix is auto-applied if absent) homed
-    under `workspaces/<W>/<collection>/`; without one it is a framework-default candidate under
-    the public `<collection>/`. `entry new topic` without a workspace is refused (topics are
-    workspace editorial data, rule 2/§10); a framework id carrying the `x-` prefix is refused
-    (§11.4). Every final id is §7.4-slug-validated (loud) via C2a's `_require_slug`.
+    under `users/<user>/zones/<zone>/workspaces/<W>/<collection>/`; without one it is a
+    framework-default candidate under the public `<collection>/`. `entry new topic` without a
+    workspace is refused (topics are workspace editorial data, rule 2/§10); a framework id carrying
+    the `x-` prefix is refused (§11.4). Every final id is §7.4-slug-validated (loud) via C2a's
+    `_require_slug`. `zone` (default `DEFAULT_ZONE`) is the §23 zone the workspace lives in — a
+    client entry can be authored into a non-default zone (the `--zone` CLI flag, Z7).
     """
     dimension = _require_dimension(dimension)
     collection = DIMENSION_COLLECTIONS[dimension]
@@ -140,7 +143,7 @@ def resolve_entry_target(
         )
         _require_slug(wanted, "entry id")
         home = (
-            validate_workspace_path(root, user, workspace, zone=DEFAULT_ZONE)
+            validate_workspace_path(root, user, workspace, zone=zone)
             / collection
             / f"{wanted}{ENTRY_SUFFIX}"
         )
@@ -260,6 +263,7 @@ def write_entry(
     *,
     user: str | None = None,
     workspace: str | None = None,
+    zone: str = DEFAULT_ZONE,
     force: bool = False,
     body: str | None = None,
     isatty: Callable[[], bool] | None = None,
@@ -270,10 +274,14 @@ def write_entry(
 
     The ONE composition the `entry new` verb (C3) drives — every hard part (slug validation,
     overwrite guard, the pinned dumper) is REUSED from C2a (`pipeline.authoring`), never
-    re-implemented. Writes exactly one file (§5.4 one-file-add). NEVER registers an invoke verb /
-    hits the invoke door (§21.9).
+    re-implemented. Writes exactly one file (§5.4 one-file-add). `zone` (default `DEFAULT_ZONE`,
+    the §23 zone the workspace lives in) is threaded to `resolve_entry_target` so a client entry
+    can be authored into a non-default zone (the `--zone` CLI flag, Z7). NEVER registers an invoke
+    verb / hits the invoke door (§21.9).
     """
-    target = resolve_entry_target(root, dimension, entry_id, user=user, workspace=workspace)
+    target = resolve_entry_target(
+        root, dimension, entry_id, user=user, workspace=workspace, zone=zone
+    )
     schema = load_dimension_schema(root, target.collection)
     text = serialize_entry_scaffold(
         schema,

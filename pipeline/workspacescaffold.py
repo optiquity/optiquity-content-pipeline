@@ -65,11 +65,17 @@ __all__ = [
     "WorkspaceDeletion",
     "WorkspaceRow",
     "WorkspaceScaffold",
+    "ZoneDeletion",
+    "ZoneRow",
+    "ZoneScaffold",
     "blueprint_dir",
     "delete_workspace",
+    "delete_zone",
     "list_workspaces",
+    "list_zones",
     "scaffold_user",
     "scaffold_workspace",
+    "scaffold_zone",
 ]
 
 #: The blueprint tree the scaffolder stamps a new workspace from (design §23): the framework-owned,
@@ -397,11 +403,13 @@ def list_workspaces(
     return rows
 
 
-def _default_delete_confirm(workspace: str) -> str:
-    """The interactive Tier-1 prompt: ask the operator to TYPE the workspace name back. Returns the
-    typed string (stripped) so the caller can compare it to the target name; a mismatch aborts."""
+def _default_delete_confirm(name: str, kind: str = "workspace") -> str:
+    """The interactive Tier-1 prompt: ask the operator to TYPE the target name back. `kind` labels
+    the target (`"workspace"` for `delete_workspace`, `"zone"` for `delete_zone`), so ONE prompt
+    serves both destructive verbs. Returns the typed string (stripped) so the caller can compare it
+    to the target name; a mismatch aborts."""
     return input(
-        f"type the workspace name {workspace!r} to confirm deletion (anything else aborts): "
+        f"type the {kind} name {name!r} to confirm deletion (anything else aborts): "
     ).strip()
 
 
@@ -491,6 +499,306 @@ def delete_workspace(
         user=user,
         workspace=workspace,
         path=target,
+        file_count=file_count,
+        had_output=had_output,
+    )
+
+
+# ===========================================================================
+# Z7: `zone new` (scaffold) + `zone list` (READ-ONLY) + `zone delete` (DESTRUCTIVE, RECURSIVE,
+# SAFE-BY-DEFAULT) — the per-zone lifecycle, one level UP from the workspace CRUD.
+#
+# A zone groups a user's workspaces (§23): they live under `users/<user>/zones/<zone>/workspaces/`,
+# so a zone sits BETWEEN user and workspace. These three verbs mirror the `scaffold_workspace` /
+# `list_workspaces` / `delete_workspace` trio exactly, over the zone dir instead of the workspace
+# dir, REUSING the isolation gate (`validate_user_segment` / `validate_zone_segment`), overwrite
+# guard (`ensure_writable`), typed refusals (`AuthoringError`), and Tier-2 output oracle
+# (`_has_generated_output`) — nothing re-implemented. `zone delete` is STRICTER than the workspace
+# delete because it is RECURSIVE: it removes EVERY workspace the zone holds at once, so its Tier-2
+# guard AGGREGATES the has-output oracle across all of them. All three stay LEAF, LOCAL file ops —
+# no invoke/session import, no `_VERB_HANDLERS`, no quota/token (§21.9).
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class ZoneScaffold:
+    """The result of `zone new`: the owning user, the created zone name, the created
+    `users/<user>/zones/<zone>/workspaces/` base path, and two visibility flags — whether the user
+    namespace was NEWLY created (so a mistyped `--user` is visible) and whether the zone itself was
+    newly created (`created_zone` is True on a fresh create, False on a `--force` no-op over an
+    existing zone; a mistyped `--zone` shows up as a brand-new zone)."""
+
+    user: str
+    zone: str
+    path: Path
+    created_user_namespace: bool
+    created_zone: bool
+
+
+def scaffold_zone(
+    root: str | Path,
+    zone: str,
+    *,
+    user: str,
+    force: bool = False,
+    isatty: Callable[[], bool] | None = None,
+    confirm: Callable[[Path], bool] | None = None,
+) -> ZoneScaffold:
+    """Create a new zone `users/<user>/zones/<zone>/workspaces/` — the per-zone home (§23).
+
+    The sibling of `scaffold_user` one level down: it validates `<user>` (`validate_user_segment`)
+    then `<zone>` (`validate_zone_segment` — the Z3 advisory: the user is pre-vetted FIRST, so the
+    zone gate never runs on an unvetted user), each the SOLE isolation gate (lowercase, single safe
+    segment, resolve-and-contain). Refuses an EXISTING zone unless `force` (`ensure_writable` on the
+    zone dir: TTY-gated interactive confirm, fail-fast headless); `force` is a SAFE no-op deleting
+    nothing. The per-user namespace `users/<user>/` is auto-created on demand;
+    `created_user_namespace` flags a brand-new user home and `created_zone` a brand-new zone so a
+    mistyped `--user`/`--zone` is visible, never silent. Writes only under the user's namespace;
+    registers NO invoke verb (§21.9)."""
+    root = Path(root)
+    # FULL L1+L2+L3 gate (parity with `delete_zone` / `validate_workspace_path`): L1 contains
+    # `<user>` under `users/`, L2 refuses a symlinked/relocated per-user `zones/`, L3 contains
+    # `<zone>` under that `zones/`. Non-destructive here, but the containment story must match.
+    owner_dir = validate_user_segment(root, user)  # L1: isolation gate + contained users/<user>
+    owner_r = owner_dir.resolve(strict=False)
+    zones_base = owner_dir / ZONES_DIRNAME  # FIXED literal join — not caller-supplied
+    if zones_base.resolve(strict=False).parent != owner_r:  # L2: symlinked/relocated zones/
+        raise AuthoringError(
+            f"invalid-authoring: the zones/ dir under {owner_dir} resolves outside the user home — "
+            "a symlinked zones/ can never relocate a user's zone base (§10/§21.1/§23); "
+            "nothing created"
+        )
+    zone_dir = validate_zone_segment(root, user, zone)  # L3: users/<user>/zones/<zone>
+    created_user_namespace = not owner_dir.exists()
+    created_zone = not zone_dir.exists()
+
+    ensure_writable(zone_dir, force=force, isatty=isatty, confirm=confirm)  # refuse-if-exists
+    ws_base = zone_dir / WORKSPACES_DIRNAME
+    ws_base.mkdir(parents=True, exist_ok=True)  # creates users/<user>/zones/<zone>/workspaces/
+    return ZoneScaffold(
+        user=user,
+        zone=zone,
+        path=ws_base,
+        created_user_namespace=created_user_namespace,
+        created_zone=created_zone,
+    )
+
+
+@dataclass(frozen=True)
+class ZoneRow:
+    """One `zone list` row: the owning user, the zone name, the zone path, and the count of
+    workspaces the zone contains (`users/<user>/zones/<zone>/workspaces/*`). A pure read projection;
+    no field is fabricated (an empty/absent `workspaces/` reports 0)."""
+
+    user: str
+    zone: str
+    path: Path
+    workspace_count: int
+
+
+def _count_workspaces(zone_dir: Path) -> int:
+    """Count the workspaces under `<zone>/workspaces/` (real subdirs, no dotfiles). A zone with
+    no `workspaces/` base (or an empty one) reports 0 — TRUE, never fabricated."""
+    ws_base = zone_dir / WORKSPACES_DIRNAME
+    if not ws_base.is_dir():
+        return 0
+    return sum(1 for p in ws_base.iterdir() if p.is_dir() and not p.name.startswith("."))
+
+
+def list_zones(root: str | Path, *, user: str | None = None) -> list[ZoneRow]:
+    """List zones under `<root>/users/*/zones/*`, sorted by `(user, zone)` — READ-ONLY (§23).
+
+    With `user`: scope to that one user (`user` put through `validate_user_segment` for hygiene even
+    though reading is safe). Without it: scan EVERY user (`users/*/zones/*`), each row identified as
+    `<user>/<zone>`. A missing/empty `users/` (or a user with no `zones/`) yields an EMPTY list —
+    never a traceback; the caller prints a clean "no zones found". Each row carries a TRUE workspace
+    count. Pure read; mutates nothing."""
+    root = Path(root)
+    users_base = root / USERS_DIRNAME
+    if user is not None:
+        validate_user_segment(root, user)  # hygiene only; reading never mutates
+        owners = [users_base / user]
+    else:
+        if not users_base.is_dir():
+            return []
+        owners = sorted(
+            (p for p in users_base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+            key=lambda p: p.name,
+        )
+
+    rows: list[ZoneRow] = []
+    for owner in owners:
+        zones_base = owner / ZONES_DIRNAME
+        if not zones_base.is_dir():
+            continue
+        for zone_dir in sorted(
+            (p for p in zones_base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+            key=lambda p: p.name,
+        ):
+            rows.append(
+                ZoneRow(
+                    user=owner.name,
+                    zone=zone_dir.name,
+                    path=zone_dir,
+                    workspace_count=_count_workspaces(zone_dir),
+                )
+            )
+    rows.sort(key=lambda r: (r.user, r.zone))
+    return rows
+
+
+@dataclass(frozen=True)
+class ZoneDeletion:
+    """The result of a successful `zone delete`: the user, the (now-removed) zone name + path,
+    the count of workspaces the zone contained, the count of files that were under it, and whether
+    ANY contained workspace held generated output (only ever True when `--force` accompanied
+    `--yes`). `users/<user>/` is left in place — only the one contained zone dir was removed."""
+
+    user: str
+    zone: str
+    path: Path
+    workspace_count: int
+    file_count: int
+    had_output: bool
+
+
+def _zone_has_generated_output(zone_dir: Path) -> bool:
+    """True iff ANY workspace under `<zone>/workspaces/` holds generated output — the RECURSIVE
+    Tier-2 guard for `zone delete`. A zone delete removes every contained workspace at once, so its
+    output guard AGGREGATES the SAME `_has_generated_output` oracle across all of them (spent
+    work/money anywhere in the zone protects the whole zone). A zone with no workspaces (or only
+    pristine ones) → False. Pure read."""
+    ws_base = zone_dir / WORKSPACES_DIRNAME
+    if not ws_base.is_dir():
+        return False
+    return any(
+        _has_generated_output(p)
+        for p in ws_base.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    )
+
+
+def delete_zone(
+    root: str | Path,
+    user: str,
+    zone: str,
+    *,
+    assume_yes: bool = False,
+    force: bool = False,
+    confirm_fn: Callable[[str], str] | None = None,
+    isatty: Callable[[], bool] | None = None,
+) -> ZoneDeletion:
+    """Remove ONE zone `users/<user>/zones/<zone>/` and EVERY workspace it contains — DESTRUCTIVE,
+    SAFE-BY-DEFAULT, and STRICTER than `delete_workspace` because it is RECURSIVE.
+
+    The SAME layered contract as `delete_workspace`, but the Tier-2 output guard AGGREGATES across
+    every contained workspace (a zone delete removes them all at once), in order:
+
+    1. **Validate + contain (the FULL L1+L2+L3 gate).** MIRRORS `validate_workspace_path`, NEVER
+       `validate_zone_segment` ALONE — that Z3 function hygiene-checks only the ZONE leg (L3) and
+       PRESUMES the user + per-user `zones/` were vetted upstream. Because the rmtree is RECURSIVE,
+       `delete_zone` re-runs those levels itself: `validate_user_segment` contains `<user>` under
+       `users/` (L1 — a crafted `--user` like `"../../victim"` can never relocate the base), a fresh
+       resolve refuses a symlinked/relocated per-user `zones/` (L2 — the prefix symlink is never
+       followed through), then `validate_zone_segment` contains `<zone>` under that `zones/` (L3). A
+       bad/uppercase/escaping `user` or `zone` raises `WorkspaceNameError`/`AuthoringError` here;
+       `user` is MANDATORY. The rmtree can therefore never escape the repo root.
+    2. **Never delete through a LEAF symlink.** If the zone dir itself is a symlink, REFUSE — an
+       `rmtree` must never follow a link out. (L1/L2 already caught a crafted `--user` and a
+       symlinked intermediate `zones/`; `shutil.rmtree` also never recurses INTO symlinked children,
+       so only the validated real tree is ever removed.)
+    3. **Refuse a non-existent zone** — nothing to delete.
+    4. **Tier-2 aggregate has-output guard.** If ANY contained workspace holds GENERATED output
+       (`_zone_has_generated_output` across `zones/<zone>/workspaces/*` — spent work/money), REFUSE
+       even with `assume_yes`, unless `force` too. Checked BEFORE the prompt so spent work
+       fails fast, never prompts-then-refuses.
+    5. **Tier-1 confirmation (always).** With `assume_yes` the confirmation is supplied
+       non-interactively. Otherwise interactive (a TTY, or an injected `confirm_fn`) prompts the
+       operator to TYPE the ZONE name — a mismatch ABORTS (nothing deleted); headless (no TTY, no
+       `confirm_fn`) REFUSES fast ("pass --yes to confirm"), never hangs.
+    6. **Remove.** `shutil.rmtree` the validated contained ZONE dir ONLY; `users/<user>/` is left in
+       place.
+
+    Every refusal is a typed `AuthoringError`/`WorkspaceNameError` (a clean exit-1 at the CLI, never
+    a traceback) raised BEFORE any removal, so a refused delete touches nothing. LOCAL file op;
+    registers NO invoke verb (§21.9)."""
+    root = Path(root)
+    # (1) FULL L1+L2+L3 isolation gate — MIRRORING `validate_workspace_path`, never
+    # `validate_zone_segment` ALONE (which hygiene-checks only the zone leg and PRESUMES the user +
+    # per-user `zones/` were vetted upstream at L1/L2). A recursive rmtree must never escape, so we
+    # re-run those two levels here BEFORE resolving the leaf:
+    #   L1 — `<user>` hygiene + resolve-and-contain under `users/` (a crafted `--user` like
+    #        `"../../victim"` can never relocate the base — closes B1).
+    #   L2 — the FIXED per-user `zones/` join must resolve to a direct child of the re-resolved user
+    #        home (a symlinked/relocated `zones/` can never be followed through — closes B2).
+    #   L3 — `<zone>` hygiene + resolve-and-contain under that `zones/` (as before).
+    owner_dir = validate_user_segment(root, user)  # L1
+    owner_r = owner_dir.resolve(strict=False)
+    zones_base = owner_dir / ZONES_DIRNAME  # FIXED literal join — not caller-supplied
+    if zones_base.resolve(strict=False).parent != owner_r:  # L2
+        raise AuthoringError(
+            f"invalid-authoring: the zones/ dir under {owner_dir} resolves outside the user home — "
+            "a symlinked zones/ can never relocate a user's zone base (§10/§21.1/§23); "
+            "nothing removed"
+        )
+    zone_dir = validate_zone_segment(root, user, zone)  # L3: gate + contained leaf path
+
+    # (2) Never delete through a LEAF symlink — before `exists()` so a broken link is refused as a
+    # symlink, not "not found". (L2 above already caught a symlinked intermediate `zones/`; this
+    # catches the zone dir itself being a link.)
+    if zone_dir.is_symlink():
+        raise AuthoringError(
+            f"invalid-authoring: {zone_dir} is a symlink — refusing to delete through it (a delete "
+            "never follows a link out of the contained zone); nothing removed"
+        )
+    # (3) Refuse a non-existent (or non-directory) zone — nothing to delete.
+    if not zone_dir.is_dir():
+        raise AuthoringError(
+            f"invalid-authoring: no zone directory at {zone_dir} to delete — name an existing zone "
+            "under users/<user>/zones/; nothing removed"
+        )
+
+    # (4) Tier-2 (RECURSIVE): output ANYWHERE in the zone is spent work/money — refuse even
+    # with --yes unless --force too.
+    had_output = _zone_has_generated_output(zone_dir)
+    if had_output and not force:
+        raise AuthoringError(
+            f"invalid-authoring: {zone_dir} contains a workspace holding generated output (spent "
+            "work) — refusing to delete the whole zone; pass --force together with --yes to "
+            "override; nothing removed"
+        )
+
+    # (5) Tier-1: confirmation is ALWAYS required. --yes supplies it non-interactively.
+    if not assume_yes:
+        interactive = confirm_fn is not None or (
+            isatty() if isatty is not None else (sys.stdin.isatty() and sys.stdout.isatty())
+        )
+        if not interactive:
+            raise AuthoringError(
+                f"invalid-authoring: refusing to delete {zone_dir} without confirmation — pass "
+                "--yes to confirm (non-interactive: never prompts, never hangs); nothing removed"
+            )
+        typed = confirm_fn(zone) if confirm_fn else _default_delete_confirm(zone, "zone")
+        if typed != zone:
+            raise AuthoringError(
+                f"invalid-authoring: confirmation {typed!r} did not match the zone name {zone!r} — "
+                "aborted, nothing deleted"
+            )
+
+    # (6) Remove ONLY the validated, contained, real zone dir. Count first (for the report).
+    ws_base = zone_dir / WORKSPACES_DIRNAME
+    workspace_count = (
+        sum(1 for p in ws_base.iterdir() if p.is_dir() and not p.name.startswith("."))
+        if ws_base.is_dir()
+        else 0
+    )
+    file_count = sum(1 for p in zone_dir.rglob("*") if p.is_file())
+    shutil.rmtree(zone_dir)
+    return ZoneDeletion(
+        user=user,
+        zone=zone,
+        path=zone_dir,
+        workspace_count=workspace_count,
         file_count=file_count,
         had_output=had_output,
     )

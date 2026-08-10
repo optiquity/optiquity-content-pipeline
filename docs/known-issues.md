@@ -78,6 +78,38 @@ When one is fixed, move it to **Resolved** with the commit that closed it.
 - **Source:** B7 template-home move (`a55febd`) + this §23 docs sweep (B9); the guard arm records the
   same reasoning inline.
 
+### GAP-13 — `recipe`/`select` authoring ignores the zone and SILENTLY writes an orphaned `zones/default/…` phantom path
+- **Status:** Open (near-term follow-up; mirror the Z7 `entry --zone` change)
+- **Severity:** Medium (silent mis-home of client authoring — a wrong-path write, not a loud refusal)
+- **Symptom:** `pipeline recipe new` and `generate --save-selection` (and the `select` load side) take
+  `--user`/`--workspace` but **no `--zone`** — their authoring core hardcodes `zone=DEFAULT_ZONE`
+  (`authoring.resolve_recipe_target` → `validate_workspace_path(..., zone=DEFAULT_ZONE)`;
+  `authoring.write_selection`/`load_selection` likewise, `authoring.py:471` / `:846` / `:987`). So a
+  client recipe/selection can only ever be authored into a **default-zone** workspace. Worse, because
+  `validate_workspace_path` is existence-independent (it computes a contained path, it does not check
+  the workspace exists), authoring against a workspace that lives ONLY in a non-default zone (e.g.
+  `users/dave/zones/work/workspaces/acme/`) does **not fail loud** — it **silently creates a phantom
+  `users/dave/zones/default/workspaces/acme/recipes/x-foo.md`**, exit 0, "wrote recipe", orphaned from
+  the real `zones/work` workspace. **Confirmed empirically (2026-08-10):** SILENT, not a
+  workspace-not-found refusal — the more concerning of the two behaviours.
+- **Root cause:** the §23 zone re-home (Z1–Z6) + the Z7 CRUD surface threaded `--zone` through the
+  workspace verbs, `sources`, and `entry` (via `entryscaffold`), but `recipe`/`select` were **not** in
+  the Z7 scope, so their `authoring` home-resolvers still pin `DEFAULT_ZONE`. `validate_workspace_path`
+  contains but never asserts existence, so a non-existent (wrong-zone) home is materialised, not
+  rejected.
+- **Impact / workaround:** a workspace kept only in a non-default zone cannot receive a
+  recipe/selection where the operator expects it; the write lands in a parallel `zones/default/` tree.
+  Workaround until fixed: author recipes/selections only for default-zone workspaces (the sole zone the
+  whole CLI reached before Z7). No isolation breach — the phantom path is still contained under the
+  correct `users/<user>/` namespace; it is a *wrong-zone*, not a *wrong-user*, write.
+- **Proposed fix / when:** (1) thread a `--zone` (default `DEFAULT_ZONE`) through `_cmd_recipe` /
+  `--save-selection` / `--selection` and `authoring.resolve_recipe_target` / `write_selection` /
+  `load_selection`, exactly as Z7 did for `entry` (additive keyword-only, behaviour-neutral default);
+  and (2) — the bigger half — make workspace-home authoring **fail loud** when the target workspace
+  directory does not exist (a `workspace-not-found` refusal), so a wrong `--zone`/`--workspace` can
+  never silently mint an orphaned phantom tree. Near-term (small, mirrors the landed `entry` change).
+- **Source:** Z7 review (reviewer item 5) + empirical confirmation during the Z7 fix pass (2026-08-10).
+
 ---
 
 ## Deferred requirements
