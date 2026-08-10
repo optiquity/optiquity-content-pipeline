@@ -190,7 +190,7 @@ def post_with_declared_length(
 def root(tmp_path: Path) -> str:
     """A framework root with an empty `users/<user>/workspaces/ws-a/` so `invoke(root=…)` resolves
     the store at the §23 depth."""
-    (tmp_path / "users" / USER / "workspaces" / "ws-a").mkdir(parents=True)
+    (tmp_path / "users" / USER / "zones" / "default" / "workspaces" / "ws-a").mkdir(parents=True)
     return str(tmp_path)
 
 
@@ -253,7 +253,7 @@ class TestStatusMapping:
     def test_per_item_block_is_200_envelope_is_authority(self) -> None:
         # A per-item BLOCK rides results[] at ok=True → 200 (200 != "all succeeded"). Injected so
         # the block is unambiguous regardless of any handler's business logic.
-        def stub(verb, workspace, user, params, token, *, root):  # noqa: ANN001, ANN202
+        def stub(verb, workspace, user, params, token, *, root, zone="default"):  # noqa: ANN001, ANN202
             return {
                 "envelope": {"ok": True, "verb": verb, "workspace": workspace, "user": user},
                 "results": [{"item": "x", "status": "block", "ids": {}}],
@@ -410,7 +410,7 @@ class TestServeWiring:
 # --------------------------------------------------------------------------- Commit 5b: auth
 
 
-def _ok_stub(verb, workspace, user, params, token, *, root):  # noqa: ANN001, ANN202
+def _ok_stub(verb, workspace, user, params, token, *, root, zone="default"):  # noqa: ANN001, ANN202
     """A minimal injected `invoke` that returns a valid ok envelope → 200 on a served request."""
     return {
         "envelope": {"ok": True, "verb": verb, "workspace": workspace, "user": user},
@@ -438,7 +438,8 @@ class TestAuthFailClosed:
         # and re-raised as the documented ShimConfigError — never an uncaught ruamel traceback.
         (tmp_path / "instance").mkdir()
         (tmp_path / "instance" / "shim.yaml").write_text(
-            'auth:\n  secrets:\n    - "unterminated\n', encoding="utf-8"  # unterminated quote
+            'auth:\n  secrets:\n    - "unterminated\n',
+            encoding="utf-8",  # unterminated quote
         )
         with pytest.raises(http_shim.ShimConfigError):
             http_shim.load_shim_config(str(tmp_path), env={})
@@ -597,7 +598,7 @@ def _seen_stub(seen: list[str]):  # noqa: ANN202
     """An injected `invoke` that records each dispatched workspace and returns an ok envelope.
     Used to PROVE a non-served workspace never reaches dispatch (its name never lands in `seen`)."""
 
-    def stub(verb, workspace, user, params, token, *, root):  # noqa: ANN001, ANN202
+    def stub(verb, workspace, user, params, token, *, root, zone="default"):  # noqa: ANN001, ANN202
         seen.append(workspace)
         return {
             "envelope": {"ok": True, "verb": verb, "workspace": workspace, "user": user},
@@ -614,7 +615,7 @@ class TestWorkspaceAllowList:
         # (proved by the recorded `seen` list containing only the listed workspace).
         seen: list[str] = []
         with running_server(
-            invoke_fn=_seen_stub(seen), allowed_workspaces=frozenset({"acme/ws-a"})
+            invoke_fn=_seen_stub(seen), allowed_workspaces=frozenset({"acme/default/ws-a"})
         ) as (host, port):
             s_listed, b_listed = post(host, port, {"verb": "list", "workspace": "ws-a"})
             s_denied, b_denied = post(host, port, {"verb": "list", "workspace": "ws-b"})
@@ -638,7 +639,7 @@ class TestWorkspaceAllowList:
         # gets `workspace-not-served` (403), NOT 501. Policy (is this workspace served?) precedes
         # tier routing; `_never_invoked` proves dispatch is never reached.
         with running_server(
-            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/ws-a"})
+            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/default/ws-a"})
         ) as (host, port):
             status, body = post(
                 host,
@@ -672,7 +673,7 @@ class TestWorkspaceAllowList:
         # (still 403). Proves the allow-list does not need to — and does not — re-validate the
         # path; a misconfig cannot defeat GAP-9 because invoke() is the containment authority.
         with running_server(
-            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/ws-a"})
+            invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/default/ws-a"})
         ) as (host, port):
             status, body = post(host, port, {"verb": "list", "workspace": "../victim"})
         assert status == 403
@@ -785,7 +786,8 @@ class TestAllowListAndBindConfig:
         # workspace dispatches (200), a non-listed one is refused 403 without reaching invoke().
         (tmp_path / "instance").mkdir()
         (tmp_path / "instance" / "shim.yaml").write_text(
-            f"auth:\n  secrets:\n    - {TEST_SECRET}\nworkspaces:\n  allowed:\n    - acme/ws-a\n",
+            f"auth:\n  secrets:\n    - {TEST_SECRET}\n"
+            "workspaces:\n  allowed:\n    - acme/default/ws-a\n",
             encoding="utf-8",
         )
         cfg = http_shim.load_shim_config(str(tmp_path), env={})
@@ -822,7 +824,7 @@ def _valid_token(workspace: str = "ws-a") -> dict:
 def _fixed_targets(ids: list[str]):  # noqa: ANN202
     """A `plan_targets_fn` seam stub returning FIXED predictable ids (no live plan resolution)."""
 
-    def resolver(root, user, workspace, decoded, params):  # noqa: ANN001, ANN202
+    def resolver(root, user, workspace, zone, decoded, params):  # noqa: ANN001, ANN202
         return list(ids)
 
     return resolver
@@ -838,7 +840,7 @@ def _spawn_recorder(calls: list):  # noqa: ANN202
     return spawn
 
 
-def _fetch_stub(verb, workspace, user, params, token, *, root):  # noqa: ANN001, ANN202
+def _fetch_stub(verb, workspace, user, params, token, *, root, zone="default"):  # noqa: ANN001, ANN202
     """An injected invoke() that SERVES fetch-by-id — the DONE path fetches the materialized
     output via the existing handler; anything else is a trivial ok envelope."""
     if verb == "fetch-by-id":
@@ -929,9 +931,12 @@ class TestTierBSubmit:
         assert len(calls) == 1  # the runner was detached exactly once
         spec, spawn_dir = calls[0]
         assert spec.key == expected_key and spec.verb == "continue-session"
-        assert Path(spawn_dir) == Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs"
+        assert (
+            Path(spawn_dir)
+            == Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a" / "jobs"
+        )
         # JobStore.submit wrote the lossy record keyed by the run-family id.
-        jobs = Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs"
+        jobs = Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a" / "jobs"
         assert (jobs / expected_key).exists()
 
     def test_double_submit_same_key_spawns_once(self, root: str) -> None:
@@ -1061,7 +1066,7 @@ class TestTierBCallbackSubmit:
         assert body["callback"] == {"registered": True}
         assert body["poll"]["path"] == http_shim.POLL_PATH
         key = job_key([ART_ID], "exec-1")
-        jobs = Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs"
+        jobs = Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a" / "jobs"
         record = json.loads((jobs / key).read_bytes())
         assert record["callback_url"] == cb  # rides the stored record
 
@@ -1093,9 +1098,7 @@ class TestTierBCallbackSubmit:
             spawn_fn=_spawn_recorder(calls),
             plan_targets_fn=_fixed_targets([ART_ID]),
         ) as (host, port):
-            status, body = _submit_gen_next(
-                host, port, callback_url=f"http://{_GLOBAL_CB_HOST}/h"
-            )
+            status, body = _submit_gen_next(host, port, callback_url=f"http://{_GLOBAL_CB_HOST}/h")
         assert status == 400
         assert body["error"] == "callback-url-rejected"
         assert body["reason"] == "callbacks-disabled"
@@ -1158,7 +1161,7 @@ class TestTierBCallbackSubmit:
         spec, _spawn_dir = calls[0]
         assert spec.callback_url is None
         key = job_key([ART_ID], "exec-1")
-        jobs = Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs"
+        jobs = Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a" / "jobs"
         record = json.loads((jobs / key).read_bytes())
         assert record["callback_url"] is None
 
@@ -1207,7 +1210,9 @@ class TestTierBPoll:
             s_run, b_run = poll(host, port, workspace="ws-a", key=key, target_ids=[ART_ID])
             assert s_run == 202 and b_run["status"] == "running"
             # materialize the output → the §22.7 DONE authority flips
-            store = WorkspaceStore(Path(root) / "users" / USER / "workspaces" / "ws-a")
+            store = WorkspaceStore(
+                Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a"
+            )
             store.output_path(ART_ID).write_text("done-bytes", encoding="utf-8")
             s_done, b_done = poll(host, port, workspace="ws-a", key=key, target_ids=[ART_ID])
         assert s_done == 200 and b_done["status"] == "done"
@@ -1228,7 +1233,9 @@ class TestTierBPoll:
             clock_fn=clock,
         ) as (host, port):
             key = self._submit(host, port, clock)
-            JobStore(Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs").record_terminal(
+            JobStore(
+                Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a" / "jobs"
+            ).record_terminal(
                 key,
                 code="re-drivable",
                 envelope={"ok": False, "code": "re-drivable", "message": "transport timeout"},
@@ -1311,7 +1318,7 @@ class TestTierBPoll:
         # N-6: a cross-workspace / non-allow-listed poll is refused 403 — the SAME allow-list gate
         # as the submit, BEFORE any store access (invoke()/store never reached).
         with running_server(
-            root=root, invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/ws-a"})
+            root=root, invoke_fn=_never_invoked, allowed_workspaces=frozenset({"acme/default/ws-a"})
         ) as (host, port):
             status, body = poll(
                 host, port, workspace="ws-b", key="r-0000000000000000", target_ids=[ART_ID]
@@ -1453,7 +1460,9 @@ class TestRenderTierBSubmit:
     def test_already_materialized_render_short_circuits_200_no_spawn(self, root: str) -> None:
         # The deliverable already exists at SUBMIT → JobStore.submit disposition `done` short-
         # circuits to 200 + output WITHOUT spawning a runner (anti-double-charge on the door).
-        store = WorkspaceStore(Path(root) / "users" / USER / "workspaces" / "ws-a")
+        store = WorkspaceStore(
+            Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a"
+        )
         out = store.output_path(DELIV_ID)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("already", encoding="utf-8")
@@ -1497,7 +1506,9 @@ class TestRenderTierBSubmit:
             )
             assert s_run == 202 and b_run["status"] == "running"
             # materialize the deliverable → the §22.7 DONE authority flips
-            store = WorkspaceStore(Path(root) / "users" / USER / "workspaces" / "ws-a")
+            store = WorkspaceStore(
+                Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a"
+            )
             out = store.output_path(DELIV_ID)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("rendered", encoding="utf-8")
@@ -1574,7 +1585,7 @@ class TestRenderTierBSubmit:
         from pipeline.jobs import job_key
 
         # `.at(...)` records identity so the render resolver recovers the framework root (§23).
-        store = WorkspaceStore.at(tmp_path, USER, "ws-a")
+        store = WorkspaceStore.at(tmp_path, USER, "ws-a", zone="default")
         store.ensure_layout()
         store.output_path(RENDER_ART).write_bytes(
             b'{"body": "canonical", "binding": {"artifact_id": "x"}}\n'
@@ -1776,7 +1787,9 @@ class TestConcurrencyBackstop:
         ) as (host, port):
             _s, ack = _submit_gen_next(host, port)
             key = ack["job"]["key"]
-            JobStore(Path(root) / "users" / USER / "workspaces" / "ws-a" / "jobs").record_terminal(
+            JobStore(
+                Path(root) / "users" / USER / "zones" / "default" / "workspaces" / "ws-a" / "jobs"
+            ).record_terminal(
                 key,
                 code="rate-limit-backpressure",
                 envelope={

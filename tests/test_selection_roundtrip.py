@@ -65,7 +65,7 @@ def build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    topics = root / "users" / USER / "workspaces" / WS / "topics"
+    topics = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "topics"
     topics.mkdir(parents=True)
     for tid, why in (("x-t-alpha", "First."), ("x-t-beta", "Second.")):
         (topics / f"{tid}.md").write_text(TOPIC_BODY.format(tid=tid, why=why), encoding="utf-8")

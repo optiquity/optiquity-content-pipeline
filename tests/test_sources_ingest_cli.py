@@ -34,7 +34,17 @@ connection:
 
 
 def _make_workspace(tmp_path, user="acme", workspace="widgets", *, feed=True):
-    feeds_dir = tmp_path / "users" / user / "workspaces" / workspace / "sources" / "feeds"
+    feeds_dir = (
+        tmp_path
+        / "users"
+        / user
+        / "zones"
+        / "default"
+        / "workspaces"
+        / workspace
+        / "sources"
+        / "feeds"
+    )
     feeds_dir.mkdir(parents=True, exist_ok=True)
     if feed:
         (feeds_dir / "x-edgar.yaml").write_text(FEED_YAML, encoding="utf-8")
@@ -58,8 +68,16 @@ class TestCliIngest:
         assert "newly cached" in out and "θ-stop" in out and "$0 model spend" in out
         head = (
             tmp_path
-            / "users" / user / "workspaces" / workspace
-            / "sources" / "cache" / "edgar-widget" / "HEAD"
+            / "users"
+            / user
+            / "zones"
+            / "default"
+            / "workspaces"
+            / workspace
+            / "sources"
+            / "cache"
+            / "edgar-widget"
+            / "HEAD"
         )
         assert head.is_file(), "the ingest must seal a slice + advance HEAD"
 
@@ -93,7 +111,17 @@ class TestCliIngest:
         # A malformed feed `namespace:` surfaces from the cache-store gate as a typed CacheError —
         # the CLI catches it → clean exit-1 refusal (as --help advertises), never a raw traceback.
         user, workspace = "acme", "widgets"
-        feeds_dir = tmp_path / "users" / user / "workspaces" / workspace / "sources" / "feeds"
+        feeds_dir = (
+            tmp_path
+            / "users"
+            / user
+            / "zones"
+            / "default"
+            / "workspaces"
+            / workspace
+            / "sources"
+            / "feeds"
+        )
         feeds_dir.mkdir(parents=True)
         (feeds_dir / "x-bad.yaml").write_text(
             'kind: edgar\nnamespace: "../escape"\n'
@@ -120,9 +148,7 @@ class TestTierAMoneySafety:
         # machinery, carries no `--go`, and registers no paid handler (`register_`). Free HTTP + a
         # local cache write only — $0 model spend.
         sources_dir = REPO_ROOT / "pipeline" / "sources"
-        text = "\n".join(
-            p.read_text(encoding="utf-8") for p in sorted(sources_dir.rglob("*.py"))
-        )
+        text = "\n".join(p.read_text(encoding="utf-8") for p in sorted(sources_dir.rglob("*.py")))
         forbidden = [
             "pipeline.transport",
             "pipeline.driver",

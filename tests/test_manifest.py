@@ -57,7 +57,7 @@ COORD = {
 @pytest.fixture()
 def store(tmp_path):
     # `.at(...)` records identity so manifest `_root_of` recovers the framework root loudly (§23).
-    s = WorkspaceStore.at(tmp_path, USER, WS)
+    s = WorkspaceStore.at(tmp_path, USER, WS, zone="default")
     s.ensure_layout()
     return s
 
@@ -71,13 +71,17 @@ class FakeResolver:
         self.stale_serials = set(stale_serials)
         self.calls = 0
 
-    def current_fit_digest(self, *, root, user, workspace, fitted_id, stored_preimage):
+    def current_fit_digest(
+        self, *, root, user, workspace, fitted_id, stored_preimage, zone="default"
+    ):
         self.calls += 1
         if fitted_id in self.stale_fits:
             return "ffffffffffff"
         return reconcile.fit_digest(stored_preimage)
 
-    def current_serialize_digest(self, *, root, user, workspace, deliverable_id, stored_preimage):
+    def current_serialize_digest(
+        self, *, root, user, workspace, deliverable_id, stored_preimage, zone="default"
+    ):
         self.calls += 1
         if deliverable_id in self.stale_serials:
             return "ffffffffffff"
@@ -269,9 +273,7 @@ class TestNoMint:
         seed_artifact(store, ART)
         seed_artifact(store, ART2)
         did_current, fit_current = seed_deliverable(store, artifact_id=ART)
-        did_stale, fit_stale = seed_deliverable(
-            store, artifact_id=ART2, fit_preimage=_fit_pre(200)
-        )
+        did_stale, fit_stale = seed_deliverable(store, artifact_id=ART2, fit_preimage=_fit_pre(200))
         fit_only = seed_fit(store, artifact_id=ART, fit_preimage=_fit_pre(999))  # render-needed src
         assert fit_only  # a bare fit exists, no deliverable
         folio = make_folio(store, [ART, ART2])
@@ -552,8 +554,16 @@ class TestColumnContract:
         assert columns.isdisjoint(forbidden)
         # The per-member SORTABLE FACTS (A4-4 condition i) ARE exposed.
         assert {
-            "added_ts", "role", "pin", "platform", "language", "output_type", "presentation",
-            "generating_run", "source_commit", "created",
+            "added_ts",
+            "role",
+            "pin",
+            "platform",
+            "language",
+            "output_type",
+            "presentation",
+            "generating_run",
+            "source_commit",
+            "created",
         } <= columns
         # Every row carries every column (a well-formed table).
         for row in _rows(out):

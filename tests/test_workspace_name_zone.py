@@ -11,8 +11,9 @@ validates against.
 
 This module is the CONTAINMENT MATRIX — the gate. Every case builds REAL symlinks inside
 `tmp_path` (auto-cleaned) and asserts the guard REFUSES with the exact `(reason, segment)`; the
-byte-identity cases pin that `zone=None` stays the legacy 3-level path unchanged and a `str` zone
-agrees with `WorkspaceStore.at(..., zone=)` and `workspace_path(..., zone=)`.
+byte-identity cases pin that a `str` zone agrees with `WorkspaceStore.at(..., zone=)` and
+`workspace_path(..., zone=)`, and that a FORGOTTEN zone is now a LOUD `TypeError` (Z4 deleted the
+legacy 3-level compatibility scaffold — `zone` is required on all three functions).
 
 **T1 (load-bearing security):** at both new FIXED joins the base is re-resolved FRESH from the
 previous validated level — cases (a)/`test_L2_*` (a symlinked `zones/` planted in a user home) and
@@ -111,13 +112,16 @@ class TestZonedByteIdentity:
         assert got == workspace_path(tmp_path, user, workspace, zone=zone)
 
     @pytest.mark.parametrize(("user", "zone", "workspace"), VALID_TRIPLES)
-    def test_zone_none_stays_legacy_three_level(self, tmp_path, user, zone, workspace):
-        # zone=None MUST be byte-identical to the legacy 3-level path (no zones/ segment) and to
-        # WorkspaceStore.at(...) with no zone — the compatibility scaffold every caller relies on.
-        legacy = validate_workspace_path(tmp_path, user, workspace)
-        assert legacy == tmp_path / "users" / user / "workspaces" / workspace
-        assert legacy == WorkspaceStore.at(tmp_path, user, workspace).root
-        assert legacy == workspace_path(tmp_path, user, workspace)
+    def test_zone_is_required_no_legacy_three_level(self, tmp_path, user, zone, workspace):
+        # Z4 (the atomic cutover) DELETED the legacy 3-level compatibility scaffold: `zone` is now
+        # REQUIRED on all three functions, and a forgotten zone is a LOUD `TypeError` (never a
+        # silent `users/<user>/workspaces/<ws>` path). Every valid path now carries `zones/<zone>`.
+        with pytest.raises(TypeError):
+            validate_workspace_path(tmp_path, user, workspace)  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            WorkspaceStore.at(tmp_path, user, workspace)  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            workspace_path(tmp_path, user, workspace)  # type: ignore[call-arg]
 
     def test_workspace_path_zoned_is_a_pure_join_with_parts(self, tmp_path):
         # workspace_path is a pure calculator: the zoned join threads zones/<zone>, appends parts.

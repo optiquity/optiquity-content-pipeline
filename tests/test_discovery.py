@@ -50,7 +50,7 @@ ACTION_VOCAB = frozenset(
 @pytest.fixture()
 def store(tmp_path):
     # `.at(...)` records identity so discovery `_root_of` recovers the framework root loudly (§23).
-    s = WorkspaceStore.at(tmp_path, USER, WS)
+    s = WorkspaceStore.at(tmp_path, USER, WS, zone="default")
     s.ensure_layout()
     return s
 
@@ -64,12 +64,16 @@ class FakeResolver:
         self.stale_fits = set(stale_fits)
         self.stale_serials = set(stale_serials)
 
-    def current_fit_digest(self, *, root, user, workspace, fitted_id, stored_preimage):
+    def current_fit_digest(
+        self, *, root, user, workspace, fitted_id, stored_preimage, zone="default"
+    ):
         if fitted_id in self.stale_fits:
             return "ffffffffffff"
         return reconcile.fit_digest(stored_preimage)
 
-    def current_serialize_digest(self, *, root, user, workspace, deliverable_id, stored_preimage):
+    def current_serialize_digest(
+        self, *, root, user, workspace, deliverable_id, stored_preimage, zone="default"
+    ):
         if deliverable_id in self.stale_serials:
             return "ffffffffffff"
         return serialize.serialize_digest(stored_preimage)
@@ -229,7 +233,11 @@ class TestCurrencyFields:
         did, _ = seed_deliverable(store)
         ctx = _ctx(_get(store, "deliverables", did))
         five = (
-            "fit_revision", "fit_current", "serialize_revision", "serialize_current", "minted_ts",
+            "fit_revision",
+            "fit_current",
+            "serialize_revision",
+            "serialize_current",
+            "minted_ts",
         )
         for field in five:
             assert field in ctx
@@ -381,8 +389,11 @@ class TestC6CiteprocCurrencyCarryForward:
         )
         assert "citeproc_enablement_version" not in non_citing["tool_bundle"]
         current = resolver.current_serialize_digest(
-            root=tmp_path, user=USER, workspace=WS,
-            deliverable_id="plain", stored_preimage=non_citing,
+            root=tmp_path,
+            user=USER,
+            workspace=WS,
+            deliverable_id="plain",
+            stored_preimage=non_citing,
         )
         assert current == serialize.serialize_digest(non_citing)
 
@@ -473,8 +484,11 @@ class TestBAssetEmbedCurrencyCarryForward:
         )
         assert "asset_embed_version" not in non_embedded["tool_bundle"]
         current = resolver.current_serialize_digest(
-            root=tmp_path, user=USER, workspace=WS,
-            deliverable_id="ref", stored_preimage=non_embedded,
+            root=tmp_path,
+            user=USER,
+            workspace=WS,
+            deliverable_id="ref",
+            stored_preimage=non_embedded,
         )
         assert current == serialize.serialize_digest(non_embedded)
 
@@ -530,7 +544,7 @@ def registry_store(tmp_path):
     _write_registry(voices / "_schema.yaml", "framework")  # skipped (leading _)
     _write_registry(voices / "voice.template.md", "framework")  # skipped (.template.)
     _write_registry(lexicons / "house-standard.md", "framework")
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     return store
 
@@ -539,7 +553,9 @@ class TestC3cNewListTypes:
     def test_list_voices_enumerates_the_axis_entries(self, registry_store):
         out = _list(registry_store, "voices")
         assert {i["item"] for i in _items(out)} == {
-            "clear-explainer", "confident-advocate", "house-voice"
+            "clear-explainer",
+            "confident-advocate",
+            "house-voice",
         }
         # SAME `{id, provenance, path}` shape as the other registry `list` types (nothing invented).
         rec = _items(out)[0]["context"]

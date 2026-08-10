@@ -49,7 +49,7 @@ def build_root(tmp_path: Path) -> Path:
             dst = registry_dir(root, reg)
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(src, dst)
-    WorkspaceStore.at(root, USER, WS).ensure_layout()
+    WorkspaceStore.at(root, USER, WS, zone="default").ensure_layout()
     return root
 
 
@@ -99,7 +99,7 @@ def test_list_recipes_and_codes_resolve(tmp_path, capsys):
 def test_list_outlines_reads_the_workspace_store(tmp_path, capsys):
     root = build_root(tmp_path)
     digest = outline_store.put_outline(
-        WorkspaceStore.at(root, USER, WS), "# Intro\n\nReal outline body.\n"
+        WorkspaceStore.at(root, USER, WS, zone="default"), "# Intro\n\nReal outline body.\n"
     )
     code = cli._cmd_list(["outlines", "--workspace", WS, "--user", USER, "--root", str(root)])
     out = capsys.readouterr().out
@@ -157,7 +157,7 @@ def test_get_voice_returns_the_entry(tmp_path, capsys):
 def test_get_outline_returns_the_entry(tmp_path, capsys):
     root = build_root(tmp_path)
     digest = outline_store.put_outline(
-        WorkspaceStore.at(root, USER, WS), "# Intro\n\nReal outline body.\n"
+        WorkspaceStore.at(root, USER, WS, zone="default"), "# Intro\n\nReal outline body.\n"
     )
     code = cli._cmd_get(
         ["outlines", digest, "--workspace", WS, "--user", USER, "--root", str(root)]

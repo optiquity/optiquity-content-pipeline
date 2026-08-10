@@ -289,13 +289,21 @@ class TestNoDisturbance:
 
         commit = driver._pin_source_commit(adapters["mock"], inst.connection)
         before = ground_item(
-            item="i", query="widget", pool=(inst,), selection=resolve_selection(),
-            adapters=adapters, now=NOW,
+            item="i",
+            query="widget",
+            pool=(inst,),
+            selection=resolve_selection(),
+            adapters=adapters,
+            now=NOW,
         )
         frozen = driver._freeze_pool((inst,), adapters, {"m": commit})
         after = ground_item(
-            item="i", query="widget", pool=frozen, selection=resolve_selection(),
-            adapters=adapters, now=NOW,
+            item="i",
+            query="widget",
+            pool=frozen,
+            selection=resolve_selection(),
+            adapters=adapters,
+            now=NOW,
         )
         # the injection is a pure no-op for a non-cache adapter: same instance, same facts + commits
         assert frozen[0] is inst
@@ -377,7 +385,8 @@ class TestGap12PublishedSplit:
         )
         # compose must never run — the raise precedes it; assert loudly if it does.
         monkeypatch.setattr(
-            driver, "compose_artifact",
+            driver,
+            "compose_artifact",
             lambda *a, **k: pytest.fail("compose must not run when `published` is empty"),
         )
 
@@ -438,8 +447,7 @@ class TestSessionProductionFreeze:
     USER = "acme"
     L2 = "voice: clear-explainer\nlanguage: en\noutput_type: md\n"
     TOPIC = (
-        "---\nid: x-t-alpha\nprovenance: instance\nschema_version: 1\n"
-        "why: First.\n---\n\nBody.\n"
+        "---\nid: x-t-alpha\nprovenance: instance\nschema_version: 1\nwhy: First.\n---\n\nBody.\n"
     )
 
     def _build_root(self, tmp_path: Path) -> Path:
@@ -454,13 +462,15 @@ class TestSessionProductionFreeze:
                 shutil.copytree(src, dst)
         (root / "instance").mkdir()
         (root / "instance" / "defaults.yaml").write_text(self.L2, encoding="utf-8")
-        ws_dir = root / "users" / self.USER / "workspaces" / self.WS
+        ws_dir = root / "users" / self.USER / "zones" / "default" / "workspaces" / self.WS
         (ws_dir / "topics").mkdir(parents=True)
         (ws_dir / "topics" / "x-t-alpha.md").write_text(self.TOPIC, encoding="utf-8")
         return root
 
     def _write_cache_source(self, root: Path, ns_dir: Path) -> None:
-        sources_dir = root / "users" / self.USER / "workspaces" / self.WS / "sources"
+        sources_dir = (
+            root / "users" / self.USER / "zones" / "default" / "workspaces" / self.WS / "sources"
+        )
         sources_dir.mkdir(parents=True, exist_ok=True)
         (sources_dir / "x-cache-src.md").write_text(
             "---\nid: x-cache-src\nprovenance: instance\nschema_version: 1\n"
@@ -477,7 +487,7 @@ class TestSessionProductionFreeze:
 
     def test_generate_next_freezes_the_head_mode_cache_to_the_plan_time_slice(self, tmp_path):
         root = self._build_root(tmp_path)
-        store = WorkspaceStore.at(root, self.USER, self.WS)
+        store = WorkspaceStore.at(root, self.USER, self.WS, zone="default")
         ns_dir = namespace_dir(store, "x-widget")
         self._write_cache_source(root, ns_dir)
 
@@ -503,8 +513,14 @@ class TestSessionProductionFreeze:
 
         # -- generate-next: the pool the driver grounds must be FROZEN to slice A, not live HEAD B
         out = invoke.invoke(
-            "continue-session", self.WS, self.USER, {"action": "generate-next"},
-            token=token, store=store, root=str(root), handlers=hs,
+            "continue-session",
+            self.WS,
+            self.USER,
+            {"action": "generate-next"},
+            token=token,
+            store=store,
+            root=str(root),
+            handlers=hs,
         )
         assert out["envelope"]["ok"] is True
         assert run.pools, "generate-next must have driven at least one artifact"
@@ -521,10 +537,7 @@ class TestSessionProductionFreeze:
 class TestFreezeIsWiredAtBothSeams:
     def _fn(self, module, name):
         tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-        return next(
-            n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == name
-        )
+        return next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
 
     def _calls_freeze_pool(self, fn) -> bool:
         # accept both the bare in-module call (`_freeze_pool(...)`, driver.run_thread) and the

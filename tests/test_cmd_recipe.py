@@ -89,7 +89,7 @@ def build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     (topics_dir / "x-t-alpha.md").write_text(
         TOPIC.format(tid="x-t-alpha", why="First."), encoding="utf-8"
@@ -117,8 +117,16 @@ def test_recipe_new_writes_public_file_prints_id_and_lints(tmp_path, capsys):
     recipes/my-brief.md (prints the exact id + path), lints green, re-parses to the bundle."""
     root = _recipe_root(tmp_path)
     code = _run(
-        "new", "my-brief", "--persona", "product-manager", "--format", "whitepaper",
-        "--set", "voice.formality=2", "--root", str(root),
+        "new",
+        "my-brief",
+        "--persona",
+        "product-manager",
+        "--format",
+        "whitepaper",
+        "--set",
+        "voice.formality=2",
+        "--root",
+        str(root),
     )
     assert code == 0
     out = capsys.readouterr().out
@@ -147,10 +155,19 @@ def test_recipe_new_writes_exactly_one_file(tmp_path):
 def test_pick_writes_only_stated_slots(tmp_path):
     """`recipe new x --persona … --format …` writes ONLY those two slots (rest fall through)."""
     root = _recipe_root(tmp_path)
-    assert _run(
-        "new", "x", "--persona", "technical-evaluator", "--format", "short-opinion-post",
-        "--root", str(root),
-    ) == 0
+    assert (
+        _run(
+            "new",
+            "x",
+            "--persona",
+            "technical-evaluator",
+            "--format",
+            "short-opinion-post",
+            "--root",
+            str(root),
+        )
+        == 0
+    )
     bundle = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "x.md")
     assert bundle == {"persona": "technical-evaluator", "format": "short-opinion-post"}
 
@@ -171,9 +188,19 @@ def test_derive_seeds_base_and_swaps_a_pick(tmp_path, capsys):
     persona; the result is a STANDALONE recipe file (no base+delta / `extends` reference)."""
     root = _recipe_root(tmp_path)
     _seed_recipe(root, "explainer-post")
-    assert _run(
-        "new", "v2", "--from", "explainer-post", "--persona", "product-manager", "--root", str(root)
-    ) == 0
+    assert (
+        _run(
+            "new",
+            "v2",
+            "--from",
+            "explainer-post",
+            "--persona",
+            "product-manager",
+            "--root",
+            str(root),
+        )
+        == 0
+    )
     assert "derived from 'explainer-post'" in capsys.readouterr().out
     bundle = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "v2.md")
     # base persona (technical-evaluator) is REPLACED; base format + goals are inherited.
@@ -188,10 +215,21 @@ def test_derive_replaces_a_set_axis(tmp_path):
     derived with `--platform github --platform linkedin`, yields {github, linkedin} — NO medium."""
     root = _recipe_root(tmp_path)
     assert _run("new", "plat-base", "--platform", "medium-post", "--root", str(root)) == 0
-    assert _run(
-        "new", "social", "--from", "plat-base", "--platform", "github", "--platform", "linkedin",
-        "--root", str(root),
-    ) == 0
+    assert (
+        _run(
+            "new",
+            "social",
+            "--from",
+            "plat-base",
+            "--platform",
+            "github",
+            "--platform",
+            "linkedin",
+            "--root",
+            str(root),
+        )
+        == 0
+    )
     social = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "social.md")
     platforms = social["platforms"]
     assert set(platforms) == {"github", "linkedin"}  # REPLACED
@@ -210,10 +248,21 @@ def test_derive_set_and_unset_together(tmp_path):
     """`--from … --set voice.formality=4 --unset diagram_style` applies BOTH edits."""
     root = _recipe_root(tmp_path)
     _seed_recipe(root, "explainer-post")
-    assert _run(
-        "new", "formal-brief", "--from", "explainer-post", "--set", "voice.formality=4",
-        "--unset", "diagram_style", "--root", str(root),
-    ) == 0
+    assert (
+        _run(
+            "new",
+            "formal-brief",
+            "--from",
+            "explainer-post",
+            "--set",
+            "voice.formality=4",
+            "--unset",
+            "diagram_style",
+            "--root",
+            str(root),
+        )
+        == 0
+    )
     bundle = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "formal-brief.md")
     assert bundle[VALUES_SLOT] == {"voice.formality": 4}
     assert "diagram_style" not in bundle
@@ -263,12 +312,33 @@ def test_client_binding_refused_from_public_no_file(tmp_path, capsys):
 def test_client_binding_homes_under_workspace(tmp_path):
     """The same binding with an `x-` id + `--workspace` homes under the workspace (instance)."""
     root = _recipe_root(tmp_path)
-    (root / "users" / USER / "workspaces" / "demo").mkdir(parents=True)
-    assert _run(
-        "new", "x-brief", "--topic", "x-secret",
-        "--workspace", "demo", "--user", USER, "--root", str(root),
-    ) == 0
-    written = root / "users" / USER / "workspaces" / "demo" / RECIPE_COLLECTION / "x-brief.md"
+    (root / "users" / USER / "zones" / "default" / "workspaces" / "demo").mkdir(parents=True)
+    assert (
+        _run(
+            "new",
+            "x-brief",
+            "--topic",
+            "x-secret",
+            "--workspace",
+            "demo",
+            "--user",
+            USER,
+            "--root",
+            str(root),
+        )
+        == 0
+    )
+    written = (
+        root
+        / "users"
+        / USER
+        / "zones"
+        / "default"
+        / "workspaces"
+        / "demo"
+        / RECIPE_COLLECTION
+        / "x-brief.md"
+    )
     assert written.is_file()
     assert not (registry_dir(root, RECIPE_COLLECTION) / "x-brief.md").exists()  # NOT in public
     entry = load_entry(written, _recipe_schema(root))
@@ -304,11 +374,29 @@ def test_from_base_under_workspace_with_user_still_works(tmp_path):
     recipe under `users/<user>/workspaces/<ws>/recipes/` (the happy path is unbroken)."""
     root = build_root(tmp_path)
     code = _run(
-        "new", "x-foo", "--from", "explainer-post",
-        "--user", "acme", "--workspace", "demo", "--root", str(root),
+        "new",
+        "x-foo",
+        "--from",
+        "explainer-post",
+        "--user",
+        "acme",
+        "--workspace",
+        "demo",
+        "--root",
+        str(root),
     )
     assert code == 0
-    written = root / "users" / "acme" / "workspaces" / "demo" / RECIPE_COLLECTION / "x-foo.md"
+    written = (
+        root
+        / "users"
+        / "acme"
+        / "zones"
+        / "default"
+        / "workspaces"
+        / "demo"
+        / RECIPE_COLLECTION
+        / "x-foo.md"
+    )
     assert written.is_file()
 
 
@@ -345,9 +433,7 @@ def test_overwrite_refused_headless_then_force(tmp_path, capsys):
     assert code == 1
     assert "already exists" in capsys.readouterr().err
     # `--force` overwrites (the new binding lands).
-    assert _run(
-        "new", "once", "--persona", "product-manager", "--root", str(root), "--force"
-    ) == 0
+    assert _run("new", "once", "--persona", "product-manager", "--root", str(root), "--force") == 0
     reparsed = _reparsed_bundle(root, registry_dir(root, RECIPE_COLLECTION) / "once.md")
     assert reparsed["persona"] == "product-manager"
 
@@ -359,8 +445,20 @@ def _preview_artifact_ids(root: Path, recipe: str, capsys) -> str:
     """Resolve a one-item plan via the REAL `pipeline preview` door and return its artifact-ids
     line (the plan-only preview mints the artifact-id at resolution, spending nothing)."""
     code = cli._cmd_preview(
-        ["--recipe", recipe, "--topic", "x-t-alpha", "--platform", "github",
-         "--workspace", WS, "--user", USER, "--root", str(root)]
+        [
+            "--recipe",
+            recipe,
+            "--topic",
+            "x-t-alpha",
+            "--platform",
+            "github",
+            "--workspace",
+            WS,
+            "--user",
+            USER,
+            "--root",
+            str(root),
+        ]
     )
     assert code == 0
     out = capsys.readouterr().out
@@ -375,10 +473,21 @@ def test_saved_recipe_run_id_byte_identical_to_inlined(tmp_path, capsys):
     as the shipped recipe carrying identical bindings — the recipe NAME never enters the artifact
     preimage (D10/W4), so authoring is identity-neutral."""
     root = build_root(tmp_path)
-    assert _run(
-        "new", "r-eq", "--persona", "technical-evaluator", "--format", "short-opinion-post",
-        "--goals", "explain", "--root", str(root),
-    ) == 0
+    assert (
+        _run(
+            "new",
+            "r-eq",
+            "--persona",
+            "technical-evaluator",
+            "--format",
+            "short-opinion-post",
+            "--goals",
+            "explain",
+            "--root",
+            str(root),
+        )
+        == 0
+    )
     authored = _preview_artifact_ids(root, "r-eq", capsys)
     shipped = _preview_artifact_ids(root, "explainer-post", capsys)
     assert authored == shipped  # byte-identical artifact-id — the name is not in the preimage

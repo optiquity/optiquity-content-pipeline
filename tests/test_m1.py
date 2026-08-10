@@ -308,7 +308,9 @@ def write_entry(
     if workspace is None:
         dirpath = registry_dir(root, collection)
     else:
-        dirpath = root / "users" / USER / "workspaces" / workspace / collection
+        dirpath = (
+            root / "users" / USER / "zones" / "default" / "workspaces" / workspace / collection
+        )
     dirpath.mkdir(parents=True, exist_ok=True)
     text = (
         f"---\nid: {entry_id}\nprovenance: {provenance}\nschema_version: {stamp}\n"

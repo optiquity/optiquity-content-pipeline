@@ -139,6 +139,7 @@ def _spec(callback_url: str | None = CB, target_ids=(A, B)) -> JobSpec:
         callback_url=callback_url,
         target_ids=tuple(target_ids),
         allowed_callback_hosts=ALLOWED,
+        zone="default",
     )
 
 

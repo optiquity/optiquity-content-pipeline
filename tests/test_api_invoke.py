@@ -408,7 +408,7 @@ class TestErgonomicRenderSubcommand:
         # the render handler RUNS and returns a deterministic `not-found` (no config, no mint) —
         # the SAME outcome for both the ergonomic and the raw-JSON form. Reaching `not-found`
         # proves the ergonomic command dispatches INTO the render handler, not just the gate.
-        store = WorkspaceStore.at(tmp_path, USER, "ws-a")
+        store = WorkspaceStore.at(tmp_path, USER, "ws-a", zone="default")
         store.output_path(ART_A).write_bytes(b"not a render record\n")
 
         rc_render = main(
@@ -464,7 +464,7 @@ class TestErgonomicRenderSubcommand:
         # it (the positional is the render `item`, never a verb selector). Even a coordinate-less
         # call (no --platform/--language) routes to `render` and rides the handler's own per-item
         # block at envelope ok=True — proving the only door this subcommand opens is `render`.
-        store = WorkspaceStore.at(tmp_path, USER, "ws-a")
+        store = WorkspaceStore.at(tmp_path, USER, "ws-a", zone="default")
         store.output_path(ART_A).write_bytes(b"not a render record\n")
         rc = main(
             [

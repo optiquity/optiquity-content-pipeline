@@ -60,7 +60,7 @@ from pipeline.schema import (
     Schema,
     load_schema,
 )
-from pipeline.workspace_name import validate_workspace_path
+from pipeline.workspace_name import DEFAULT_ZONE, validate_workspace_path
 from pipeline.yamlio import make_loader
 
 __all__ = [
@@ -468,7 +468,7 @@ def resolve_recipe_target(
                 "home (instance config lives under users/<user>/workspaces/<client>/, rule 2/§10)"
             )
         home = (
-            validate_workspace_path(root, user, workspace)
+            validate_workspace_path(root, user, workspace, zone=DEFAULT_ZONE)
             / RECIPE_COLLECTION
             / f"{recipe_id}.md"
         )
@@ -843,7 +843,7 @@ def resolve_selection_target(
                 "--workspace home (instance config lives under users/<user>/workspaces/<client>/, "
                 "rule 2/§10)"
             )
-        ws_dir = validate_workspace_path(root, user, workspace)
+        ws_dir = validate_workspace_path(root, user, workspace, zone=DEFAULT_ZONE)
         home = ws_dir / SELECTION_COLLECTION / f"{selection_id}.md"
         return SelectionTarget(selection_id, provenance, home, workspace)
 
@@ -984,7 +984,7 @@ def _selection_home(
                 "--workspace home (instance config lives under users/<user>/workspaces/<client>/, "
                 "rule 2/§10)"
             )
-        ws_dir = validate_workspace_path(root, user, workspace)
+        ws_dir = validate_workspace_path(root, user, workspace, zone=DEFAULT_ZONE)
         return ws_dir / SELECTION_COLLECTION / f"{selection_id}.md"
     return registry_dir(root, SELECTION_COLLECTION) / f"{selection_id}.md"
 

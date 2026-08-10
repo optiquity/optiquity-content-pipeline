@@ -39,7 +39,7 @@ from pipeline.api import token as token_mod
 from pipeline.canonical import canonical_json_str
 from pipeline.ids import IdError, parse_id
 from pipeline.store import WorkspaceStore
-from pipeline.workspace_name import WorkspaceNameError, validate_workspace_path
+from pipeline.workspace_name import DEFAULT_ZONE, WorkspaceNameError, validate_workspace_path
 
 __all__ = [
     "KNOWN_VERBS",
@@ -89,12 +89,15 @@ class HandlerNotWired(RuntimeError):
 @dataclass(frozen=True)
 class HandlerContext:
     """The bundle a verb handler consumes (steps 33-35). Everything the gates already vetted:
-    the verb, the invoked workspace, the owning user (§23 isolation prefix), the raw params, the
-    DECODED token (or None), the supplied pins (or None), and the resolved workspace store."""
+    the verb, the invoked workspace, the owning user (§23 isolation prefix), the owning zone (§23,
+    Z4 — carried EXPLICITLY, not read off `store.zone`, so an INJECTED bare store still yields the
+    zone a handler threads into its own path builds), the raw params, the DECODED token (or None),
+    the supplied pins (or None), and the resolved workspace store."""
 
     verb: str
     workspace: str
     user: str
+    zone: str
     params: Mapping[str, Any]
     token: token_mod.Token | None
     pins: Any
@@ -311,13 +314,17 @@ def invoke(
     *,
     store: WorkspaceStore | None = None,
     root: str | Path = ".",
+    zone: str = DEFAULT_ZONE,
     handlers: Mapping[str, Handler] | None = None,
 ) -> dict[str, Any]:
     """One synchronous external-actor call (§21.1): `{envelope, results, [token]}`.
 
     `user` is MANDATORY and never defaulted (§23): it is the isolation PREFIX of the store leaf
-    `root/users/<user>/workspaces/<workspace>/`, so a missing/None user fails LOUD at the door
-    (`validate_workspace_path`) rather than ever building a `users/None/…` path.
+    `root/users/<user>/zones/<zone>/workspaces/<workspace>/`, so a missing/None user fails LOUD at
+    the door (`validate_workspace_path`) rather than ever building a `users/None/…` path. `zone`
+    (§23, Z4) selects the zone segment between user and workspace; it defaults to `DEFAULT_ZONE`
+    (the door materializes the real value at exactly one chokepoint) and is threaded into the
+    workspace-root gate, the store build, AND `HandlerContext.zone`.
 
     The whole-invocation GATES run first, each envelope-fatal (§21.7):
     1. **unknown-verb** — `verb` not in `KNOWN_VERBS`;
@@ -361,7 +368,7 @@ def invoke(
         ws_store = store
     else:
         try:
-            validate_workspace_path(root, user, workspace)
+            validate_workspace_path(root, user, workspace, zone=zone)
         except WorkspaceNameError as exc:
             item = results.make_result(
                 results.CODE_ISOLATION_VIOLATION,
@@ -382,7 +389,7 @@ def invoke(
                 results.CODE_ISOLATION_VIOLATION,
                 exc.detail,
             )
-        ws_store = WorkspaceStore.at(root, user, workspace)
+        ws_store = WorkspaceStore.at(root, user, workspace, zone=zone)
 
     # Gate 2 — token decode/verification against the invoked workspace (§20).
     decoded: token_mod.Token | None = None
@@ -419,6 +426,7 @@ def invoke(
             verb=verb,
             workspace=workspace,
             user=user,
+            zone=zone,
             params=params,
             token=decoded,
             pins=pins,
@@ -499,7 +507,15 @@ def main_cli(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--root",
         default=".",
-        help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
+        help="framework repo root → users/<user>/zones/<zone>/workspaces/<ws>/ (default: cwd)",
+    )
+    parser.add_argument(
+        "--zone",
+        default=DEFAULT_ZONE,
+        help=(
+            "the zone segment between user and workspace (§23; "
+            f"users/<user>/zones/<zone>/workspaces/<workspace>/, default: {DEFAULT_ZONE})"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -525,7 +541,16 @@ def main_cli(argv: list[str] | None = None) -> int:
     fetch_mod.register_fetch_handler()
 
     try:
-        result = invoke(args.verb, args.workspace, args.user, params, token, pins, root=args.root)
+        result = invoke(
+            args.verb,
+            args.workspace,
+            args.user,
+            params,
+            token,
+            pins,
+            root=args.root,
+            zone=args.zone,
+        )
     except HandlerNotWired as exc:
         print(f"pipeline invoke: {exc}", file=sys.stderr)
         return 3

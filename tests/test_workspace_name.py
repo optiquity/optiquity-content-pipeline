@@ -92,9 +92,10 @@ class TestInvokeDoorRejectsNameEscape:
         assert "token" not in out  # a fatal path never echoes a token (§21.7)
 
     def test_symlink_escape_through_the_door_is_fatal(self, tmp_path):
-        # A `users/<user>/workspaces/evil` symlink pointing outside → the door refuses it before
-        # any id resolves against the (relocated) store (§23 L3 leaf containment).
-        base = tmp_path / "users" / USER / "workspaces"
+        # A `users/<user>/zones/default/workspaces/evil` symlink pointing outside → the door refuses
+        # it before any id resolves against the (relocated) store (§23/Z4 L5 leaf containment; the
+        # door materializes the default zone).
+        base = tmp_path / "users" / USER / "zones" / "default" / "workspaces"
         base.mkdir(parents=True)
         outside = tmp_path / "outside"
         outside.mkdir()

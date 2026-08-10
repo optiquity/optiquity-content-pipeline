@@ -130,12 +130,13 @@ class JobSpec:
 
     `key` is the run-family job key `JobStore.submit` ALREADY minted + wrote the record under
     (Commit 6): the runner records terminals against this exact key, it does NOT recompute or
-    re-write the initial record (record → spawn → claim ordering). `root`/`user`/`workspace` locate
-    the workspace store leaf `root/users/<user>/workspaces/<ws>/` (→ the `jobs/` dir) for
-    `record_terminal`; `params`/`token`/`pins` are the `invoke()` arguments. `user` is MANDATORY
-    (§23): a spawn-JSON written PRE-cutover LACKS it, so `from_json` RAISES loudly rather than build
-    a `users/None/…` path — safe because a job record is §22.7-class lossy bookkeeping (loud-fail +
-    poll re-drive). This crosses the process boundary as a small JSON SPAWN FILE (not argv)
+    re-write the initial record (record → spawn → claim ordering). `root`/`user`/`zone`/`workspace`
+    locate the workspace store leaf `root/users/<user>/zones/<zone>/workspaces/<ws>/` (→ the `jobs/`
+    dir) for `record_terminal`; `params`/`token`/`pins` are the `invoke()` arguments. `user` AND
+    `zone` are MANDATORY (§23/Z4): a spawn-JSON written PRE-cutover LACKS them, so `from_json` fails
+    loudly rather than build a `users/None/…` or `zones/None/…` path — safe because a job record is
+    §22.7-class lossy bookkeeping (loud-fail + poll re-drive). This crosses the process boundary as
+    a small JSON SPAWN FILE (not argv)
     so structured params ride cleanly and NO secret is placed on argv — `token` is a §20 cursor,
     not a credential, and the subscription transport carries no API key at all (F10).
 
@@ -153,6 +154,7 @@ class JobSpec:
     verb: str
     workspace: str
     user: str
+    zone: str
     params: Mapping[str, Any]
     idempotency_key: str | None
     root: str
@@ -181,6 +183,7 @@ class JobSpec:
                 "user": self.user,
                 "verb": self.verb,
                 "workspace": self.workspace,
+                "zone": self.zone,
             }
         )
 
@@ -199,6 +202,10 @@ class JobSpec:
             # KeyError loudly (never a `users/None/…` path); a job record is §22.7-lossy, so the
             # loud fail + poll re-drive is safe (mirrors the bare `key`/`verb`/`workspace`/`root`).
             user=obj["user"],
+            # §23/Z4: MANDATORY the same way — a pre-cutover spawn-JSON LACKS `zone`, so this bare
+            # subscript RAISES KeyError loudly (never a silent `zones/None/…` or default guess),
+            # completing the zone round-trip across the process boundary.
+            zone=obj["zone"],
             params=obj.get("params") or {},
             idempotency_key=obj.get("idempotency_key"),
             root=obj["root"],
@@ -288,8 +295,10 @@ def _store_for(spec: JobSpec) -> JobStore:
     `(user, workspace)` pair to a leaf under `users/<user>/workspaces/` (the SAME §10/§21.1/§23
     containment `invoke()` applies), so a malformed user/workspace can never move the record root;
     `.at()` then builds the byte-identical leaf WITH recorded identity."""
-    validate_workspace_path(spec.root, spec.user, spec.workspace)
-    return JobStore(WorkspaceStore.at(spec.root, spec.user, spec.workspace).jobs_dir)
+    validate_workspace_path(spec.root, spec.user, spec.workspace, zone=spec.zone)
+    return JobStore(
+        WorkspaceStore.at(spec.root, spec.user, spec.workspace, zone=spec.zone).jobs_dir
+    )
 
 
 def _raised_terminal_code(exc: BaseException) -> str:
@@ -428,6 +437,7 @@ def run_job(
                 spec.token,
                 spec.pins,
                 root=spec.root,
+                zone=spec.zone,
             )
         except _RAISER_SET as exc:
             code = _raised_terminal_code(exc)

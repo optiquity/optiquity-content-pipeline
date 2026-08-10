@@ -54,9 +54,7 @@ QUESTION = "What are the reliability issues with Widget 2.0?"
 
 
 def _page(title: str, body: str, *, date: str | None = None) -> bytes:
-    meta = (
-        f'<meta property="article:published_time" content="{date}T12:00:00Z"/>' if date else ""
-    )
+    meta = f'<meta property="article:published_time" content="{date}T12:00:00Z"/>' if date else ""
     return (
         f"<html><head><title>{title}</title>{meta}</head>"
         f"<body><article><h1>{title}</h1><p>{body}</p></article></body></html>"
@@ -107,7 +105,7 @@ def make_research_get(query_to_page: dict[str, tuple[str, bytes]], *, calls: lis
 def _prompt_field(prompt: str, label: str) -> str:
     for line in prompt.splitlines():
         if line.startswith(label):
-            return line[len(label):].strip()
+            return line[len(label) :].strip()
     return ""
 
 
@@ -169,7 +167,9 @@ def _budget(**over) -> dict:
 
 
 def _make_research_ws(tmp_path, *, namespace="res-cli", budget=None, user="acme", ws="widgets"):
-    feeds_dir = tmp_path / "users" / user / "workspaces" / ws / "sources" / "feeds"
+    feeds_dir = (
+        tmp_path / "users" / user / "zones" / "default" / "workspaces" / ws / "sources" / "feeds"
+    )
     feeds_dir.mkdir(parents=True, exist_ok=True)
     b = budget or _budget()
     lines = "\n".join(f"    {k}: {json.dumps(v)}" for k, v in b.items())
@@ -387,9 +387,12 @@ class TestStopRules:
         fake = FakeLlm(
             plan=["q1", "q2"],
             synth={
-                "q1": ["CLAIM ALPHA"], "q2": ["CLAIM BETA"],
-                "q3": ["CLAIM ALPHA"], "q4": ["CLAIM BETA"],
-                "q5": ["CLAIM ALPHA"], "q6": ["CLAIM BETA"],
+                "q1": ["CLAIM ALPHA"],
+                "q2": ["CLAIM BETA"],
+                "q3": ["CLAIM ALPHA"],
+                "q4": ["CLAIM BETA"],
+                "q5": ["CLAIM ALPHA"],
+                "q6": ["CLAIM BETA"],
             },
             gaps=[["q3", "q4"], ["q5", "q6"], ["q7", "q8"]],
         )
@@ -509,8 +512,17 @@ class TestDryRunAndGoCli:
         assert "bounded CEILING" in out  # honest disclosure: a range, not an exact bill
         assert fake.calls == [], "the fake LLM must NEVER be called on a dry-run (spends nothing)"
         head = (
-            tmp_path / "users" / user / "workspaces" / ws
-            / "sources" / "cache" / "res-dry" / "HEAD"
+            tmp_path
+            / "users"
+            / user
+            / "zones"
+            / "default"
+            / "workspaces"
+            / ws
+            / "sources"
+            / "cache"
+            / "res-dry"
+            / "HEAD"
         )
         assert not head.exists(), "a dry-run must cache nothing (no HEAD, no spend)"
 
@@ -518,8 +530,17 @@ class TestDryRunAndGoCli:
         user, ws = _make_research_ws(tmp_path, namespace="res-drive")
         fake = _cli_fake()
         code = _cmd_sources(
-            ["ingest", ws, "--user", user, "--root", str(tmp_path), "--source", "x-research",
-             "--go"],
+            [
+                "ingest",
+                ws,
+                "--user",
+                user,
+                "--root",
+                str(tmp_path),
+                "--source",
+                "x-research",
+                "--go",
+            ],
             http_get=_cli_get(),
             llm_call=fake,
         )
@@ -528,8 +549,17 @@ class TestDryRunAndGoCli:
         assert fake.calls, "with --go the loop MUST drive the fake LLM"
         assert "newly cached" in out and "subscription LLM" in out
         head = (
-            tmp_path / "users" / user / "workspaces" / ws
-            / "sources" / "cache" / "res-drive" / "HEAD"
+            tmp_path
+            / "users"
+            / user
+            / "zones"
+            / "default"
+            / "workspaces"
+            / ws
+            / "sources"
+            / "cache"
+            / "res-drive"
+            / "HEAD"
         )
         assert head.is_file(), "--go must seal a slice + advance HEAD"
 
@@ -606,7 +636,17 @@ connection:
 
 class TestFreeAndSessionInvariants:
     def test_feeds_ingest_still_free_without_go(self, tmp_path, capsys):
-        feeds_dir = tmp_path / "users" / "acme" / "workspaces" / "widgets" / "sources" / "feeds"
+        feeds_dir = (
+            tmp_path
+            / "users"
+            / "acme"
+            / "zones"
+            / "default"
+            / "workspaces"
+            / "widgets"
+            / "sources"
+            / "feeds"
+        )
         feeds_dir.mkdir(parents=True)
         (feeds_dir / "x-edgar.yaml").write_text(EDGAR_FEED_YAML, encoding="utf-8")
         code = _cmd_sources(

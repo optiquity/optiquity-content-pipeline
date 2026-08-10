@@ -306,18 +306,19 @@ def _request_payload(request: SelectionRequest) -> dict[str, Any]:
 
 
 def _resolve_from_inputs(
-    root: Path, user: str, workspace: str, inputs: Mapping[str, Any]
+    root: Path, user: str, workspace: str, zone: str, inputs: Mapping[str, Any]
 ) -> tuple[Plan, CascadeEnv, tuple[Any, ...], dict[str, str]]:
     """Re-resolve the plan from the token's inputs (§21.6 — never a cached plan).
 
     Reads config + registries only (LLM-free, deterministic): a mid-session config edit
     that changes the resolved plan changes the `plan_hash` — the `plan-stale` guard value.
     The source commit-map is the FROZEN pin from `begin-session` (§21.8), never re-pinned.
-    `user`+`workspace` scope the L3 config shadow at `users/<user>/workspaces/<ws>/` (§23).
+    `user`+`zone`+`workspace` scope the L3 config shadow at
+    `users/<user>/zones/<zone>/workspaces/<ws>/` (§23, Z4).
     """
     request = _request_from_fields(inputs.get("request") or {})
     env = CascadeEnv(
-        root, user=user, workspace=workspace, overrides=inputs.get("overrides") or None
+        root, user=user, workspace=workspace, zone=zone, overrides=inputs.get("overrides") or None
     )
     source_subset = tuple(inputs.get("source_subset") or ())
     source_commit = dict(inputs.get("source_commit") or {})
@@ -552,14 +553,15 @@ def _begin_session(
         return ([_block(f"begin-session needs a valid recipe + selection (§8): {exc}")], None)
     try:
         env = CascadeEnv(
-            root, user=ctx.user, workspace=ctx.workspace, overrides=ctx.params.get("overrides")
+            root, user=ctx.user, workspace=ctx.workspace, zone=ctx.zone,
+            overrides=ctx.params.get("overrides"),
         )
     except OverrideError as exc:
         return ([results.make_result(
             results.CODE_INVALID_OVERRIDE, item="overrides", hint=str(exc)
         )], None)
 
-    source_subset = tuple(driver._list_source_ids(root, ctx.user, ctx.workspace))
+    source_subset = tuple(driver._list_source_ids(root, ctx.user, ctx.workspace, ctx.zone))
     pool = build_pool(env.resolver, source_subset)
     try:
         source_commit = _pin_source_commit_map(pool, adapters, ctx.pins)
@@ -769,7 +771,12 @@ def _select_batch(plan: Plan, consumed: Sequence[str], params: Mapping[str, Any]
 
 
 def plan_next_batch_ids(
-    root: Path, user: str, workspace: str, token: token_mod.Token, params: Mapping[str, Any]
+    root: Path,
+    user: str,
+    workspace: str,
+    zone: str,
+    token: token_mod.Token,
+    params: Mapping[str, Any],
 ) -> list[str]:
     """The PREDICTABLE target artifact-id set the NEXT `generate-next` call will materialize —
     resolved PURELY (LLM-free, §22.2), so an async transport (the DR-1 shim) can KEY + POLL a job
@@ -780,7 +787,7 @@ def plan_next_batch_ids(
     stale → generate-next composes NOTHING, §21.6) or an empty batch; else the batch's artifact-ids
     IN PLAN ORDER. Shares `_select_batch` with `_generate_next`, so the returned ids are EXACTLY the
     batch that call composes — the anti-drift invariant holds BY CONSTRUCTION, not by hand-sync."""
-    plan, _env, _pool, _repos = _resolve_from_inputs(root, user, workspace, token.inputs)
+    plan, _env, _pool, _repos = _resolve_from_inputs(root, user, workspace, zone, token.inputs)
     if plan.plan_hash != token.plan_hash:
         return []
     consumed = list(token.cursor.get("consumed", []))
@@ -811,7 +818,7 @@ def _generate_next(
 
     root = _root_of(ctx.store)
     plan, env, pool, source_repos = _resolve_from_inputs(
-        root, ctx.user, ctx.workspace, token.inputs
+        root, ctx.user, ctx.workspace, ctx.zone, token.inputs
     )
     # N2 HEAD-FREEZE (mechanism (a), the PRODUCTION drive seam): the plan-time §7.2 commit-map is
     # FROZEN in the token (`begin-session`, §21.8); the pool is re-BUILT from static config here, so
@@ -933,7 +940,9 @@ def _status(
     if token is None:
         return ([_block("status requires the resumption token from begin-session (§21.1)")], None)
     root = _root_of(ctx.store)
-    plan, _env, _pool, _repos = _resolve_from_inputs(root, ctx.user, ctx.workspace, token.inputs)
+    plan, _env, _pool, _repos = _resolve_from_inputs(
+        root, ctx.user, ctx.workspace, ctx.zone, token.inputs
+    )
     consumed = list(token.cursor.get("consumed", []))
     drift = plan.plan_hash != token.plan_hash
     # §22.3 completeness sweep exposed via `status` — the wave barrier read from MATERIALIZED
@@ -1054,7 +1063,8 @@ def _emit_outline(
     root = _root_of(ctx.store)
     try:
         env = CascadeEnv(
-            root, user=ctx.user, workspace=ctx.workspace, overrides=params.get("overrides")
+            root, user=ctx.user, workspace=ctx.workspace, zone=ctx.zone,
+            overrides=params.get("overrides"),
         )
     except OverrideError as exc:
         return ([results.make_result(
@@ -1095,7 +1105,7 @@ def _emit_outline(
             source_subset: tuple[str, ...] = tuple(params["source_subset"])
             source_commit: dict[str, str] = dict(params.get("source_commit") or {})
         else:
-            source_subset = tuple(driver._list_source_ids(root, ctx.user, ctx.workspace))
+            source_subset = tuple(driver._list_source_ids(root, ctx.user, ctx.workspace, ctx.zone))
             pool = build_pool(env.resolver, source_subset)
             source_commit = _pin_source_commit_map(pool, adapters, ctx.pins)
     except AdapterError as exc:

@@ -55,6 +55,7 @@ from pipeline.folios import (
 from pipeline.ids import IdError, parse_id
 from pipeline.layout import registry_dir
 from pipeline.store import WorkspaceStore, is_temp_name
+from pipeline.workspace_name import DEFAULT_ZONE
 
 __all__ = [
     "BASELINE",
@@ -148,6 +149,7 @@ class CurrencyResolver(Protocol):
         workspace: str,
         fitted_id: str,
         stored_preimage: Mapping[str, Any],
+        zone: str = DEFAULT_ZONE,
     ) -> str: ...
 
     def current_serialize_digest(
@@ -158,6 +160,7 @@ class CurrencyResolver(Protocol):
         workspace: str,
         deliverable_id: str,
         stored_preimage: Mapping[str, Any],
+        zone: str = DEFAULT_ZONE,
     ) -> str: ...
 
 
@@ -186,6 +189,7 @@ class DefaultCurrencyResolver:
         workspace: str,
         fitted_id: str,
         stored_preimage: Mapping[str, Any],
+        zone: str = DEFAULT_ZONE,
     ) -> str:
         stored_digest = reconcile.fit_digest(stored_preimage)
         try:
@@ -193,7 +197,9 @@ class DefaultCurrencyResolver:
             platform = parsed.platform
             if platform is None:
                 return stored_digest
-            current_limits_delta = self._platform_hard_limits_delta(root, user, workspace, platform)
+            current_limits_delta = self._platform_hard_limits_delta(
+                root, user, workspace, platform, zone=zone
+            )
             rebuilt = {**dict(stored_preimage), "hard-limits": current_limits_delta}
             canonical = json.loads(canonical_json_str(rebuilt))
             return reconcile.fit_digest(canonical)
@@ -208,6 +214,7 @@ class DefaultCurrencyResolver:
         workspace: str,
         deliverable_id: str,
         stored_preimage: Mapping[str, Any],
+        zone: str = DEFAULT_ZONE,
     ) -> str:
         stored_digest = serialize.serialize_digest(stored_preimage)
         try:
@@ -260,13 +267,13 @@ class DefaultCurrencyResolver:
 
     @staticmethod
     def _platform_hard_limits_delta(
-        root: Path, user: str, workspace: str, platform: str
+        root: Path, user: str, workspace: str, platform: str, *, zone: str = DEFAULT_ZONE
     ) -> dict[str, Any]:
         """The platform's CURRENT hard-limits, delta-vs-floor — the live config re-read (§16)."""
         from pipeline.cascade import CascadeEnv
         from pipeline.ids import delta_vs_floor
 
-        env = CascadeEnv(root, user=user, workspace=workspace)
+        env = CascadeEnv(root, user=user, workspace=workspace, zone=zone)
         entry = env.resolver.resolve("platforms", platform)
         schema = env.resolver.schema("platforms")
         limits = dict(entry.effective.get("hard_limits") or {})
@@ -447,7 +454,7 @@ def deliverable_detail(
     if isinstance(serialize_recorded, str):
         current_s = resolver.current_serialize_digest(
             root=root, user=user, workspace=workspace, deliverable_id=deliverable_id,
-            stored_preimage=_submap(binding, "preimage"),
+            stored_preimage=_submap(binding, "preimage"), zone=store.zone,
         )
         serialize_current = serialize_recorded == current_s
 
@@ -459,7 +466,7 @@ def deliverable_detail(
         if isinstance(fit_recorded, str):
             current_d = resolver.current_fit_digest(
                 root=root, user=user, workspace=workspace, fitted_id=fitted_id,
-                stored_preimage=_submap(fit_binding, "preimage"),
+                stored_preimage=_submap(fit_binding, "preimage"), zone=store.zone,
             )
             fit_current = fit_recorded == current_d
 

@@ -107,7 +107,7 @@ from pipeline.overrides import (
     validate_override_against_schema,
 )
 from pipeline.schema import RESERVED_ATTRIBUTE_NAMES, UndeclaredAttributeError
-from pipeline.workspace_name import workspace_path
+from pipeline.workspace_name import DEFAULT_ZONE, workspace_path
 from pipeline.yamlio import load_yaml
 
 __all__ = [
@@ -691,6 +691,7 @@ class CascadeEnv:
         *,
         user: str,
         workspace: str,
+        zone: str = DEFAULT_ZONE,
         overrides: OverrideSet | Any = None,
         now: date | None = None,
         window: WindowOracle | None = None,
@@ -698,8 +699,9 @@ class CascadeEnv:
         self.root = Path(root)
         self.user = user
         self.workspace = workspace
+        self.zone = zone
         self.resolver = Resolver(
-            self.root, user=user, workspace=workspace, now=now, window=window
+            self.root, user=user, workspace=workspace, zone=zone, now=now, window=window
         )
         self.overrides = (
             overrides if isinstance(overrides, OverrideSet) else collect_overrides(overrides)
@@ -726,7 +728,7 @@ class CascadeEnv:
         # §23 re-home: the L3 workspace defaults live under users/<user>/workspaces/<ws>/ — a PURE
         # join off the door-validated (user, workspace) pair (`workspace_path`), never a re-resolve.
         ws_defaults_path = workspace_path(
-            self.root, user, workspace, WORKSPACE_DEFAULTS_FILENAME
+            self.root, user, workspace, WORKSPACE_DEFAULTS_FILENAME, zone=zone
         )
         if ws_defaults_path.is_file():
             self.workspace_defaults = load_scope_defaults(ws_defaults_path, scope=WORKSPACE_SCOPE)

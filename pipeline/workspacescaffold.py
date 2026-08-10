@@ -50,10 +50,13 @@ from pathlib import Path
 
 from pipeline.authoring import AuthoringError, _framework_root, ensure_writable
 from pipeline.workspace_name import (
+    DEFAULT_ZONE,
     USERS_DIRNAME,
     WORKSPACES_DIRNAME,
+    ZONES_DIRNAME,
     validate_user_segment,
     validate_workspace_path,
+    validate_zone_segment,
 )
 
 __all__ = [
@@ -144,16 +147,19 @@ def _seed_blueprint(source: Path, target: Path) -> tuple[list[str], list[str]]:
 
 @dataclass(frozen=True)
 class WorkspaceScaffold:
-    """The result of `workspace new`: the owning user, the workspace name, the created target path,
-    the seeded (`copied`) + left-untouched (`skipped`) blueprint files, and whether the user
-    namespace was NEWLY created (so a mistyped `--user` is visible, never silent)."""
+    """The result of `workspace new`: the owning user, the zone, the workspace name, the created
+    target path, the seeded (`copied`) + left-untouched (`skipped`) blueprint files, and whether the
+    user namespace / the zone were NEWLY created (so a mistyped `--user` or `--zone` is visible,
+    never silent)."""
 
     user: str
+    zone: str
     workspace: str
     path: Path
     copied: tuple[str, ...]
     skipped: tuple[str, ...]
     created_user_namespace: bool
+    created_zone: bool
 
 
 @dataclass(frozen=True)
@@ -171,35 +177,44 @@ def scaffold_workspace(
     workspace: str,
     *,
     user: str,
+    zone: str = DEFAULT_ZONE,
     force: bool = False,
     isatty: Callable[[], bool] | None = None,
     confirm: Callable[[Path], bool] | None = None,
 ) -> WorkspaceScaffold:
-    """Seed a new workspace `users/<user>/workspaces/<workspace>/` from `templates/workspace/`.
+    """Seed a new workspace `users/<user>/zones/<zone>/workspaces/<workspace>/` from
+    `templates/workspace/`.
 
-    Validates `<user>` + `<workspace>` and computes the contained target via
+    Validates `<user>` + `<zone>` + `<workspace>` and computes the contained target via
     `validate_workspace_path` (the SOLE isolation gate — lowercase, single safe segment,
     resolve-and-contain). Refuses an existing target unless `force` (`ensure_writable`: TTY-gated
     interactive confirm, fail-fast headless); `force` NEVER overwrites an existing destination
     file — the blueprint is copied non-destructively, so a `--force` re-run only tops up MISSING
-    files. The per-user namespace `users/<user>/workspaces/` is auto-created on demand;
-    `created_user_namespace` flags a brand-new `users/<user>/` home so a mistyped `--user` is
-    visible. Writes only under the user's namespace; registers NO invoke verb (§21.9)."""
+    files. The per-user namespace `users/<user>/` and the per-zone home `zones/<zone>/` are
+    auto-created on demand; `created_user_namespace` / `created_zone` flag a brand-new user home /
+    zone so a mistyped `--user` / `--zone` is visible (§23/Z4). `zone` defaults to `DEFAULT_ZONE`
+    (the `--zone` CLI flag lands in Z7). The owner / zone dirs are derived from IDENTITY
+    (`validate_user_segment` / `validate_zone_segment`), never fragile positional path math on the
+    5-level target. Writes only under the user's namespace; registers NO invoke verb (§21.9)."""
     root = Path(root)
-    target = validate_workspace_path(root, user, workspace)  # isolation gate + contained path
-    owner_dir = target.parent.parent  # users/<user> — derived from the validated path
+    target = validate_workspace_path(root, user, workspace, zone=zone)  # gate + contained path
+    owner_dir = validate_user_segment(root, user)  # users/<user> — derived from IDENTITY, not depth
+    zone_dir = validate_zone_segment(root, user, zone)  # users/<user>/zones/<zone> — from IDENTITY
     created_user_namespace = not owner_dir.exists()
+    created_zone = not zone_dir.exists()
 
     ensure_writable(target, force=force, isatty=isatty, confirm=confirm)
-    target.mkdir(parents=True, exist_ok=True)  # auto-creates users/<user>/workspaces/ on demand
+    target.mkdir(parents=True, exist_ok=True)  # auto-creates users/<user>/zones/<zone>/workspaces/
     copied, skipped = _seed_blueprint(blueprint_dir(), target)
     return WorkspaceScaffold(
         user=user,
+        zone=zone,
         workspace=workspace,
         path=target,
         copied=tuple(copied),
         skipped=tuple(skipped),
         created_user_namespace=created_user_namespace,
+        created_zone=created_zone,
     )
 
 
@@ -207,21 +222,28 @@ def scaffold_user(
     root: str | Path,
     user: str,
     *,
+    zone: str = DEFAULT_ZONE,
     force: bool = False,
     isatty: Callable[[], bool] | None = None,
     confirm: Callable[[Path], bool] | None = None,
 ) -> UserNamespace:
-    """Create JUST the empty per-user namespace `users/<user>/workspaces/` (no workspace).
+    """Create JUST the empty per-zone namespace `users/<user>/zones/<zone>/workspaces/` (no
+    workspace).
 
-    Validates `<user>` and returns the contained `users/<user>` home via `validate_user_segment`
-    (the isolation gate — lowercase, single safe segment, resolve-and-contain). Refuses an existing
-    `users/<user>/workspaces/` unless `force` (`ensure_writable`: TTY-gated, fail-fast headless);
-    `force` is a SAFE no-op that deletes nothing. `created_user_namespace` flags a brand-new
-    `users/<user>/` home. The explicit way to stand up a per-user home (the extensible per-user
-    root) before any workspace exists. Local file op; registers NO invoke verb (§21.9)."""
+    Validates `<user>` (via `validate_user_segment`) then `<zone>` (via `validate_zone_segment` —
+    the Z3 advisory: user is pre-validated first, so the zone gate never runs on an unvetted user),
+    each the isolation gate (lowercase, single safe segment, resolve-and-contain). Refuses an
+    existing `users/<user>/zones/<zone>/workspaces/` unless `force` (`ensure_writable`: TTY-gated,
+    fail-fast headless); `force` is a SAFE no-op that deletes nothing. `created_user_namespace`
+    flags a brand-new `users/<user>/` home. `zone` defaults to `DEFAULT_ZONE` (the `--zone` CLI flag
+    lands in Z7). The explicit way to stand up a per-user/zone home before any workspace exists. A
+    local file op; registers NO invoke verb (§21.9)."""
     root = Path(root)
     owner_dir = validate_user_segment(root, user)  # isolation gate + contained users/<user>
-    ws_base = owner_dir / WORKSPACES_DIRNAME
+    zone_dir = validate_zone_segment(
+        root, user, zone
+    )  # users/<user>/zones/<zone> (user pre-vetted)
+    ws_base = zone_dir / WORKSPACES_DIRNAME
     created_user_namespace = not owner_dir.exists()
 
     ensure_writable(ws_base, force=force, isatty=isatty, confirm=confirm)
@@ -258,12 +280,13 @@ _GITKEEP = ".gitkeep"
 
 @dataclass(frozen=True)
 class WorkspaceRow:
-    """One `workspace list` row: the owning user, the workspace name, its directory path, and a
-    light TRUE summary — the count of authored topic files (`topics/*.md`) and whether the workspace
-    holds generated output (`has_output`, the same oracle the delete Tier-2 guard reads). A pure
-    read projection; no field is fabricated."""
+    """One `workspace list` row: the owning user, the zone, the workspace name, its directory path,
+    and a light TRUE summary — the count of authored topic files (`topics/*.md`) and whether the
+    workspace holds generated output (`has_output`, the same oracle the delete Tier-2 guard reads).
+    A pure read projection; no field is fabricated."""
 
     user: str
+    zone: str
     workspace: str
     path: Path
     topic_count: int
@@ -313,15 +336,20 @@ def _has_generated_output(ws_dir: Path) -> bool:
     return (ws_dir / _SSOT_CSV_NAME).is_file()
 
 
-def list_workspaces(root: str | Path, *, user: str | None = None) -> list[WorkspaceRow]:
-    """List workspaces under `<root>/users/…`, sorted by `(user, workspace)` — READ-ONLY.
+def list_workspaces(
+    root: str | Path, *, user: str | None = None, zone: str | None = None
+) -> list[WorkspaceRow]:
+    """List workspaces under `<root>/users/*/zones/*/workspaces/*`, sorted by `(user, zone,
+    workspace)` — READ-ONLY (§23/Z4: the scan is now 3-deep — user → zone → workspace).
 
-    With `user`: list workspaces under that one user's `users/<user>/workspaces/`; `user` is put
-    through `validate_user_segment` (lowercase, single safe segment) for hygiene even though reading
-    is safe. Without `user`: scan EVERY user (`users/*/workspaces/*`), each row identified as
-    `<user>/<workspace>`. A missing/empty `users/` (or a user with no namespace) yields an EMPTY
-    list — never a traceback; the caller prints a clean "no workspaces found". Each row carries a
-    light TRUE summary (topic count + has-output). Pure read; mutates nothing."""
+    With `user`: scope to that one user (`user` put through `validate_user_segment` for hygiene even
+    though reading is safe). With `zone`: further scope to that one zone name across the selected
+    user(s). Without either: scan EVERY user AND EVERY zone (`users/*/zones/*/workspaces/*`), each
+    row identified as `<user>/<zone>/<workspace>`. A missing/empty `users/` (or a user/zone with no
+    namespace) yields an EMPTY list — never a traceback; the caller prints a clean "no workspaces
+    found". Each row carries a light TRUE summary (topic count + has-output). Pure read; mutates
+    nothing. (The 2-deep pre-Z4 scan `users/*/workspaces/*` returns EMPTY post-flip — a workspace
+    now lives one level deeper under `zones/<zone>/`.)"""
     root = Path(root)
     users_base = root / USERS_DIRNAME
     if user is not None:
@@ -337,23 +365,35 @@ def list_workspaces(root: str | Path, *, user: str | None = None) -> list[Worksp
 
     rows: list[WorkspaceRow] = []
     for owner in owners:
-        ws_base = owner / WORKSPACES_DIRNAME
-        if not ws_base.is_dir():
+        zones_base = owner / ZONES_DIRNAME
+        if not zones_base.is_dir():
             continue
-        for ws_dir in sorted(
-            (p for p in ws_base.iterdir() if p.is_dir() and not p.name.startswith(".")),
-            key=lambda p: p.name,
-        ):
-            rows.append(
-                WorkspaceRow(
-                    user=owner.name,
-                    workspace=ws_dir.name,
-                    path=ws_dir,
-                    topic_count=_count_topics(ws_dir),
-                    has_output=_has_generated_output(ws_dir),
-                )
+        if zone is not None:
+            zone_dirs = [zones_base / zone]
+        else:
+            zone_dirs = sorted(
+                (p for p in zones_base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                key=lambda p: p.name,
             )
-    rows.sort(key=lambda r: (r.user, r.workspace))
+        for zone_dir in zone_dirs:
+            ws_base = zone_dir / WORKSPACES_DIRNAME
+            if not ws_base.is_dir():
+                continue
+            for ws_dir in sorted(
+                (p for p in ws_base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                key=lambda p: p.name,
+            ):
+                rows.append(
+                    WorkspaceRow(
+                        user=owner.name,
+                        zone=zone_dir.name,
+                        workspace=ws_dir.name,
+                        path=ws_dir,
+                        topic_count=_count_topics(ws_dir),
+                        has_output=_has_generated_output(ws_dir),
+                    )
+                )
+    rows.sort(key=lambda r: (r.user, r.zone, r.workspace))
     return rows
 
 
@@ -370,6 +410,7 @@ def delete_workspace(
     user: str,
     workspace: str,
     *,
+    zone: str = DEFAULT_ZONE,
     assume_yes: bool = False,
     force: bool = False,
     confirm_fn: Callable[[str], str] | None = None,
@@ -402,7 +443,7 @@ def delete_workspace(
     a traceback) raised BEFORE any removal, so a refused delete touches nothing. LOCAL file op;
     registers NO invoke verb (§21.9)."""
     root = Path(root)
-    target = validate_workspace_path(root, user, workspace)  # isolation gate + contained path
+    target = validate_workspace_path(root, user, workspace, zone=zone)  # gate + contained path
 
     # (2) Never delete through a symlink — catches a workspace dir planted as a link (broken or
     # live). Checked before `exists()` so a broken link is refused as a symlink, not "not found".
@@ -428,9 +469,8 @@ def delete_workspace(
 
     # (5) Tier-1: confirmation is ALWAYS required. --yes supplies it non-interactively.
     if not assume_yes:
-        interactive = (
-            confirm_fn is not None
-            or (isatty() if isatty is not None else (sys.stdin.isatty() and sys.stdout.isatty()))
+        interactive = confirm_fn is not None or (
+            isatty() if isatty is not None else (sys.stdin.isatty() and sys.stdout.isatty())
         )
         if not interactive:
             raise AuthoringError(

@@ -148,12 +148,26 @@ def test_workspace_gives_x_prefixed_instance_file(tmp_path, capsys):
     with a co-located workspace schema it lints GREEN unedited."""
     root = _dim_root(tmp_path, "persona")
     # a co-located workspace schema so lint actually SCANS + validates the instance entry
-    _copy_schema(root, "personas", at=root / "users" / USER / "workspaces" / "demo" / "personas")
+    _copy_schema(
+        root,
+        "personas",
+        at=root / "users" / USER / "zones" / "default" / "workspaces" / "demo" / "personas",
+    )
     code = _run(
         "new", "persona", "x-my-eval", "--workspace", "demo", "--user", USER, "--root", str(root)
     )
     assert code == 0
-    written = root / "users" / USER / "workspaces" / "demo" / "personas" / "x-my-eval.md"
+    written = (
+        root
+        / "users"
+        / USER
+        / "zones"
+        / "default"
+        / "workspaces"
+        / "demo"
+        / "personas"
+        / "x-my-eval.md"
+    )
     assert written.is_file()
     assert not (registry_dir(root, "personas") / "x-my-eval.md").exists()  # NOT public
     out = capsys.readouterr().out
@@ -176,10 +190,13 @@ def test_workspace_auto_prefixes_x(tmp_path):
     """A `--workspace` id WITHOUT the `x-` prefix is auto-prefixed (an instance entry is always
     `x-`-namespaced, §11.4): `my-eval` → x-my-eval.md."""
     root = _dim_root(tmp_path, "persona")
-    assert _run(
-        "new", "persona", "my-eval", "--workspace", "demo", "--user", USER, "--root", str(root)
-    ) == 0
-    ws = root / "users" / USER / "workspaces" / "demo" / "personas"
+    assert (
+        _run(
+            "new", "persona", "my-eval", "--workspace", "demo", "--user", USER, "--root", str(root)
+        )
+        == 0
+    )
+    ws = root / "users" / USER / "zones" / "default" / "workspaces" / "demo" / "personas"
     assert (ws / "x-my-eval.md").is_file()
     assert not (ws / "my-eval.md").exists()
 
@@ -201,10 +218,21 @@ def test_entry_new_topic_requires_workspace(tmp_path, capsys):
 def test_entry_new_topic_with_workspace_ok(tmp_path):
     """The same topic WITH --workspace homes under the workspace as an x- instance entry."""
     root = _dim_root(tmp_path, "topic")
-    assert _run(
-        "new", "topic", "launch", "--workspace", "demo", "--user", USER, "--root", str(root)
-    ) == 0
-    assert (root / "users" / USER / "workspaces" / "demo" / "topics" / "x-launch.md").is_file()
+    assert (
+        _run("new", "topic", "launch", "--workspace", "demo", "--user", USER, "--root", str(root))
+        == 0
+    )
+    assert (
+        root
+        / "users"
+        / USER
+        / "zones"
+        / "default"
+        / "workspaces"
+        / "demo"
+        / "topics"
+        / "x-launch.md"
+    ).is_file()
 
 
 # --- loud dimension / id refusals (never a crash) ---------------------------------------------

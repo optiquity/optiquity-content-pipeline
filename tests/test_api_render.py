@@ -83,7 +83,7 @@ def _registry_side(output_type: str) -> str:
 def outline_store(tmp_path):
     """A workspace store carrying ONE emitted `Format=outline` artifact — the `item` a render
     resolves. Returns (store, artifact_id)."""
-    store = WorkspaceStore.at(tmp_path, USER, WS)
+    store = WorkspaceStore.at(tmp_path, USER, WS, zone="default")
     store.ensure_layout()
     preimage = _outline_preimage(OUTLINE_MD)
     artifact_id = mint_artifact_id(preimage)

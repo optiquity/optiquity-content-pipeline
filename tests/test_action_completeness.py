@@ -135,6 +135,7 @@ class TestActionCompleteness:
             verb="continue-session",
             workspace=WS,
             user=USER,
+            zone="default",
             params={"action": "emit-manifest"},  # a real action, but no handler supplied
             token=None,
             pins=None,

@@ -48,7 +48,7 @@ FIXED_TS = "2024-01-01T00:00:00+00:00"
 @pytest.fixture()
 def store(tmp_path):
     # `.at(...)` records identity so the render resolver recovers the framework root loudly (§23).
-    s = WorkspaceStore.at(tmp_path, USER, WS)
+    s = WorkspaceStore.at(tmp_path, USER, WS, zone="default")
     s.ensure_layout()
     # GAP-1a: the RAW compose envelope shape (top-level `body`/`binding`, NO `ir` wrapper) — exactly
     # what `compose.py` persists. The read now unwraps this via `ir.unwrap_ir`; the old wrapped
@@ -374,7 +374,7 @@ def _c6_world(tmp_path):
     (root / "instance" / "defaults.yaml").write_text(
         "voice: clear-explainer\nlanguage: en\noutput_type: md\n", encoding="utf-8"
     )
-    store = WorkspaceStore.at(root, USER, _C6_WS)
+    store = WorkspaceStore.at(root, USER, _C6_WS, zone="default")
     store.ensure_layout()
     fitted_id = ids.fitted_id(ART, _C6_PLATFORM, _C6_LANGUAGE)
     # The fit record the engine reads for the fit-binding ref (`_read_record(store, fitted_id)`).

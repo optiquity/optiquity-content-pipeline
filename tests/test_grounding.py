@@ -207,14 +207,14 @@ class TestMockAdapter:
         tiers = {f.tier for facts in datasets.values() for f in facts}
         assert tiers == {TIER_EXTRACTED, TIER_INFERRED, TIER_AMBIGUOUS}
         # the authored conflict + agreement seeds exist
-        claims = {
-            (f.subject, f.claim) for facts in datasets.values() for f in facts
-        }
+        claims = {(f.subject, f.claim) for facts in datasets.values() for f in facts}
         subjects = [s for s, _ in claims]
         assert subjects.count("widget-service.timeout") == 2  # one agreement + one conflict
         assert subjects.count("gadget-cache.capacity") == 2
         anchorless = [
-            f for facts in datasets.values() for f in facts
+            f
+            for facts in datasets.values()
+            for f in facts
             if f.tier == TIER_EXTRACTED and not f.anchors
         ]
         assert anchorless  # the SM9 seed
@@ -305,9 +305,7 @@ class TestEmptyPoolBlocks:
         assert out.remediation["action"] == "add-source"
 
     def test_no_facts_for_query_blocks(self):
-        out = ground(
-            [inst("x-a", "d")], datasets={"d": (fact("s", "c"),)}, query="unrelated-term"
-        )
+        out = ground([inst("x-a", "d")], datasets={"d": (fact("s", "c"),)}, query="unrelated-term")
         assert (out.status, out.code) == (STATUS_BLOCK, CODE_EMPTY_POOL)
         assert "no facts" in out.context["detail"]
 
@@ -350,9 +348,7 @@ class TestSpan:
         sel = resolve_selection(
             workspace={"span": {"content-kind": ["merged-code", "research-notes"]}}
         )
-        out = ground(
-            pool, sel, datasets={"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)}
-        )
+        out = ground(pool, sel, datasets={"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)})
         assert out.status == STATUS_OK
 
     def test_span_miss_blocks_naming_the_member(self):
@@ -378,9 +374,7 @@ class TestSpan:
                 "span": {"content-kind": ["merged-code", "research-notes"]},
             }
         )
-        out = ground(
-            pool, sel, datasets={"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)}
-        )
+        out = ground(pool, sel, datasets={"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)})
         assert out.status == STATUS_BLOCK
         assert out.context["clause"] == "span content-kind: merged-code"
 
@@ -392,9 +386,7 @@ class TestSpan:
         sel = resolve_selection(
             workspace={"span": {"independence": ["first-party", "independent"]}}
         )
-        out = ground(
-            pool, sel, datasets={"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)}
-        )
+        out = ground(pool, sel, datasets={"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)})
         assert out.status == STATUS_OK
 
 
@@ -439,17 +431,17 @@ class TestPreferAndRanking:
 
     def test_bare_and_predicate_weights_rank(self):
         pool = [
-            inst("x-notes", "d1", trusted=3, content_kind="research-notes",
-                 kind_defaults=NOTES_KIND),
-            inst("x-record", "d2", trusted=3, content_kind="merged-code",
-                 kind_defaults=RECORD_KIND),
+            inst(
+                "x-notes", "d1", trusted=3, content_kind="research-notes", kind_defaults=NOTES_KIND
+            ),
+            inst(
+                "x-record", "d2", trusted=3, content_kind="merged-code", kind_defaults=RECORD_KIND
+            ),
         ]
         sel = resolve_selection(
             workspace={"prefer": [{"authoritative": 2}, {"content-kind == merged-code": 1}]}
         )
-        out = ground(
-            pool, sel, datasets={"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)}
-        )
+        out = ground(pool, sel, datasets={"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)})
         assert [f.instance_id for f in out.facts] == ["x-record", "x-notes"]
         assert out.facts[0].weight == 4 * 2 + 1  # bare auth 4×2 + predicate match
         assert out.facts[1].weight == 2 * 2
@@ -545,8 +537,13 @@ class TestCorroboration:
         pool, datasets = self.agreeing_pool("independent")
         datasets = {
             name: tuple(
-                Fact(subject=f.subject, claim=f.claim, tier=TIER_AMBIGUOUS, anchors=f.anchors,
-                     as_of=f.as_of)
+                Fact(
+                    subject=f.subject,
+                    claim=f.claim,
+                    tier=TIER_AMBIGUOUS,
+                    anchors=f.anchors,
+                    as_of=f.as_of,
+                )
                 for f in facts
             )
             for name, facts in datasets.items()
@@ -658,9 +655,7 @@ class TestTierAndTraceability:
             },
             run={"relax": ["traceability is true"]},
         )
-        out = ground(
-            pool, sel, datasets={"d": (fact("s", "c", tier=TIER_INFERRED),)}
-        )
+        out = ground(pool, sel, datasets={"d": (fact("s", "c", tier=TIER_INFERRED),)})
         assert out.facts[0].publishable is False
 
 
@@ -743,9 +738,7 @@ class TestFreshness:
         # `relax-clause`. The hint names the config home; grammar-clause blocks keep
         # `relax-clause`.
         stale = fact("s-old", "c", as_of=datetime.date(2024, 1, 1))
-        kind_pool = [
-            inst("x-notes", "d", content_kind="research-notes", kind_defaults=NOTES_KIND)
-        ]
+        kind_pool = [inst("x-notes", "d", content_kind="research-notes", kind_defaults=NOTES_KIND)]
         policy_block = ground(kind_pool, resolve_selection(), datasets={"d": (stale,)})
         assert policy_block.context["set_at"] == "config"
         assert policy_block.remediation["action"] == "adjust-freshness-policy"
@@ -812,9 +805,7 @@ class TestScoresConsumed:
 
     def test_per_fact_refinement_beats_kind_default(self):
         pool = [inst("x-a", "d", content_kind="merged-code", kind_defaults=RECORD_KIND)]
-        sel = resolve_selection(
-            workspace={"require": ["review_status == formally-vetted"]}
-        )
+        sel = resolve_selection(workspace={"require": ["review_status == formally-vetted"]})
         out = ground(
             pool,
             sel,
@@ -829,14 +820,16 @@ class TestScoresConsumed:
 
     def test_each_instance_score_filters_the_pool(self):
         pool = [
-            inst("x-weak", "d1", trusted=2, independence="first-party",
-                 primariness="tertiary"),
-            inst("x-strong", "d2", trusted=5, independence="independent",
-                 primariness="primary"),
+            inst("x-weak", "d1", trusted=2, independence="first-party", primariness="tertiary"),
+            inst("x-strong", "d2", trusted=5, independence="independent", primariness="primary"),
         ]
         datasets = {"d1": (fact("s1", "c1"),), "d2": (fact("s2", "c2"),)}
-        for clause in ("trusted >= 4", "independence == independent",
-                       "primariness == primary", "content-kind == general"):
+        for clause in (
+            "trusted >= 4",
+            "independence == independent",
+            "primariness == primary",
+            "content-kind == general",
+        ):
             sel = resolve_selection(workspace={"require": [clause]})
             out = ground(pool, sel, datasets=datasets)
             assert out.status == STATUS_OK, clause
@@ -863,10 +856,20 @@ class TestScoresConsumed:
 def conflict_pool(*, opinion_trusted: int = 3, factual_trusted: int = 3):
     """A factual-vs-opinion conflict on one subject (the SM4 fixture seed)."""
     pool = [
-        inst("x-record", "rec", content_kind="merged-code", trusted=factual_trusted,
-             kind_defaults=RECORD_KIND),
-        inst("x-notes", "op", content_kind="research-notes", trusted=opinion_trusted,
-             kind_defaults=NOTES_KIND),
+        inst(
+            "x-record",
+            "rec",
+            content_kind="merged-code",
+            trusted=factual_trusted,
+            kind_defaults=RECORD_KIND,
+        ),
+        inst(
+            "x-notes",
+            "op",
+            content_kind="research-notes",
+            trusted=opinion_trusted,
+            kind_defaults=NOTES_KIND,
+        ),
     ]
     datasets = {
         "rec": (fact("cache.size", "The cache holds 512 entries."),),
@@ -999,9 +1002,7 @@ class TestUserAssertions:
     def test_assertion_wins_selection_and_warns_once(self):
         pool = [inst("x-a", "d", assertions={"corroboration": 4})]
         sel = resolve_selection(workspace={"require": ["corroboration >= 2"]})
-        out = ground(
-            pool, sel, datasets={"d": (fact("s1", "c1"), fact("s2", "c2"))}
-        )
+        out = ground(pool, sel, datasets={"d": (fact("s1", "c1"), fact("s2", "c2"))})
         # the assertion rides as authoritative config (§3.1): the require passes
         assert out.status == STATUS_OK
         record = next(a for a in out.assertions if a.score == "corroboration")
@@ -1178,7 +1179,7 @@ def e2e_root(tmp_path: Path) -> Path:
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    ws = root / "users" / USER / "workspaces" / WS
+    ws = root / "users" / USER / "zones" / "default" / "workspaces" / WS
     (ws / "topics").mkdir(parents=True)
     (ws / "topics" / "x-sample-topic.md").write_text(TOPIC_ENTRY, encoding="utf-8")
     (ws / "recipes").mkdir()
@@ -1207,9 +1208,17 @@ class TestEndToEnd:
         bad = ALPHA_SOURCE.replace("id: x-alpha-record", "id: x-bad-kind").replace(
             "content_kind: merged-code", "content_kind: no-such-kind"
         )
-        (e2e_root / "users" / USER / "workspaces" / WS / "sources" / "x-bad-kind.md").write_text(
-            bad, encoding="utf-8"
-        )
+        (
+            e2e_root
+            / "users"
+            / USER
+            / "zones"
+            / "default"
+            / "workspaces"
+            / WS
+            / "sources"
+            / "x-bad-kind.md"
+        ).write_text(bad, encoding="utf-8")
         env = CascadeEnv(e2e_root, user=USER, workspace=WS)
         with pytest.raises(DanglingRefError, match="no-such-kind"):
             build_instance(env.resolver, "x-bad-kind")
@@ -1237,14 +1246,23 @@ class TestEndToEnd:
         pool = build_pool(env.resolver, ["x-alpha-record", "x-delta-notes"])
         datasets = {
             "alpha": (
-                fact("widget.timeout", "The timeout is 30 seconds.",
-                     as_of=datetime.date(2026, 5, 1)),
-                fact("widget.retries", "The client retries three times.",
-                     as_of=datetime.date(2026, 5, 1), anchored=False),
+                fact(
+                    "widget.timeout", "The timeout is 30 seconds.", as_of=datetime.date(2026, 5, 1)
+                ),
+                fact(
+                    "widget.retries",
+                    "The client retries three times.",
+                    as_of=datetime.date(2026, 5, 1),
+                    anchored=False,
+                ),
             ),
             "delta": (
-                fact("widget.timeout", "The timeout is 30 seconds.",
-                     tier=TIER_INFERRED, as_of=datetime.date(2026, 6, 1)),
+                fact(
+                    "widget.timeout",
+                    "The timeout is 30 seconds.",
+                    tier=TIER_INFERRED,
+                    as_of=datetime.date(2026, 6, 1),
+                ),
             ),
         }
         out = ground_item(
@@ -1340,9 +1358,7 @@ class TestReuseRights:
     # -- the ordinal + its schema pin -------------------------------------------------------
 
     def test_ordinal_is_ordered_low_to_high(self):
-        assert REUSE_RIGHTS == (
-            "forbidden", "internal-only", "lead-only", "attribution", "full"
-        )
+        assert REUSE_RIGHTS == ("forbidden", "internal-only", "lead-only", "attribution", "full")
         ranks = [reuse_rights_rank(v) for v in REUSE_RIGHTS]
         assert ranks == [0, 1, 2, 3, 4] == sorted(ranks)
         assert REUSE_RIGHTS_FLOOR == "full"

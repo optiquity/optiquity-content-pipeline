@@ -277,7 +277,7 @@ def test_provenance_instance_id_homes_under_workspace(tmp_path: Path) -> None:
     )
     assert target.provenance == PROVENANCE_INSTANCE
     expected = (
-        tmp_path / "users" / "acme" / "workspaces" / "mvp-demo"
+        tmp_path / "users" / "acme" / "zones" / "default" / "workspaces" / "mvp-demo"
         / RECIPE_COLLECTION / "x-launch-brief.md"
     )
     assert target.path == expected

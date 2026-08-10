@@ -64,7 +64,7 @@ def build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    topics = root / "users" / USER / "workspaces" / WS / "topics"
+    topics = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "topics"
     topics.mkdir(parents=True)
     for tid, why in (("x-t-alpha", "First."), ("x-t-beta", "Second.")):
         (topics / f"{tid}.md").write_text(TOPIC_BODY.format(tid=tid, why=why), encoding="utf-8")
@@ -113,10 +113,14 @@ def _clean_registry():
 
 def argv(root: Path, *extra: str) -> list[str]:
     return [
-        "--recipe", "explainer-post",
-        "--workspace", WS,
-        "--user", USER,
-        "--root", str(root),
+        "--recipe",
+        "explainer-post",
+        "--workspace",
+        WS,
+        "--user",
+        USER,
+        "--root",
+        str(root),
         *extra,
     ]
 
@@ -196,14 +200,33 @@ def test_generate_save_selection_writes_n_variants_no_cartesian(tmp_path: Path, 
     count), each carrying its OWN render — never a cross product beyond the run's own fan-out."""
     root = build_root(tmp_path)
     code = cli._cmd_generate(
-        argv(root, "--topic", "x-t-alpha", "--topic", "x-t-beta", "--platform", "github",
-             "--save-selection", "x-launch-set")
+        argv(
+            root,
+            "--topic",
+            "x-t-alpha",
+            "--topic",
+            "x-t-beta",
+            "--platform",
+            "github",
+            "--save-selection",
+            "x-launch-set",
+        )
     )
     out = capsys.readouterr().out
     assert code == 0
     assert "saved selection 'x-launch-set'" in out
     # instance provenance (x- topics) → homed under the workspace, NEVER the public root
-    path = root / "users" / USER / "workspaces" / WS / "selections" / "x-launch-set.md"
+    path = (
+        root
+        / "users"
+        / USER
+        / "zones"
+        / "default"
+        / "workspaces"
+        / WS
+        / "selections"
+        / "x-launch-set.md"
+    )
     assert path.exists()
     assert not list(registry_dir(root, "selections").glob("x-launch-set.md"))
     text = path.read_text(encoding="utf-8")
@@ -223,7 +246,9 @@ def test_single_run_saves_one_variant(tmp_path: Path, capsys) -> None:
         argv(root, "--topic", "x-t-alpha", "--platform", "github", "--save-selection", "x-one")
     )
     assert code == 0
-    path = root / "users" / USER / "workspaces" / WS / "selections" / "x-one.md"
+    path = (
+        root / "users" / USER / "zones" / "default" / "workspaces" / WS / "selections" / "x-one.md"
+    )
     assert len(selection_variants(path)) == 1
 
 
@@ -231,11 +256,30 @@ def test_variant_field_named_values_not_overrides(tmp_path: Path, capsys) -> Non
     """The run's shared `--set` tweaks persist under `values`, NEVER `overrides` (D4/§12.5)."""
     root = build_root(tmp_path)
     code = cli._cmd_generate(
-        argv(root, "--topic", "x-t-alpha", "--platform", "github",
-             "--set", "voice.formality=2", "--save-selection", "x-tuned")
+        argv(
+            root,
+            "--topic",
+            "x-t-alpha",
+            "--platform",
+            "github",
+            "--set",
+            "voice.formality=2",
+            "--save-selection",
+            "x-tuned",
+        )
     )
     assert code == 0
-    path = root / "users" / USER / "workspaces" / WS / "selections" / "x-tuned.md"
+    path = (
+        root
+        / "users"
+        / USER
+        / "zones"
+        / "default"
+        / "workspaces"
+        / WS
+        / "selections"
+        / "x-tuned.md"
+    )
     text = path.read_text(encoding="utf-8")
     assert "values:" in text
     assert "overrides" not in text
@@ -248,14 +292,25 @@ def test_client_binding_refused_from_public(tmp_path: Path, capsys) -> None:
     the public root (rule 4) — exit 1, and NO file lands anywhere."""
     root = build_root(tmp_path)
     code = cli._cmd_generate(
-        argv(root, "--topic", "x-t-alpha", "--platform", "github",
-             "--save-selection", "public-leak")
+        argv(
+            root, "--topic", "x-t-alpha", "--platform", "github", "--save-selection", "public-leak"
+        )
     )
     err = capsys.readouterr().err
     assert code == 1
     assert "not an instance id" in err or "client/instance" in err
     assert not (registry_dir(root, "selections") / "public-leak.md").exists()
-    leak = root / "users" / USER / "workspaces" / WS / "selections" / "public-leak.md"
+    leak = (
+        root
+        / "users"
+        / USER
+        / "zones"
+        / "default"
+        / "workspaces"
+        / WS
+        / "selections"
+        / "public-leak.md"
+    )
     assert not leak.exists()
 
 
@@ -276,20 +331,30 @@ def test_save_selection_without_go_builds_no_continue_handler(tmp_path, monkeypa
     )
     assert code == 0
     assert constructed == []  # no continue-session handler / live runner instantiated
-    assert (root / "users" / USER / "workspaces" / WS / "selections" / "x-safe.md").exists()
+    assert (
+        root / "users" / USER / "zones" / "default" / "workspaces" / WS / "selections" / "x-safe.md"
+    ).exists()
 
 
 def test_save_selection_refused_when_no_deliverable(tmp_path: Path, capsys) -> None:
     """A compose-only plan (no platform) resolves no deliverable → the save is refused loudly
     (a saved selection replays a fan-out; there is nothing to replay)."""
     root = build_root(tmp_path)
-    code = cli._cmd_generate(
-        argv(root, "--topic", "x-t-alpha", "--save-selection", "x-empty")
-    )
+    code = cli._cmd_generate(argv(root, "--topic", "x-t-alpha", "--save-selection", "x-empty"))
     err = capsys.readouterr().err
     assert code == 1
     assert "no deliverable" in err
-    assert not (root / "users" / USER / "workspaces" / WS / "selections" / "x-empty.md").exists()
+    assert not (
+        root
+        / "users"
+        / USER
+        / "zones"
+        / "default"
+        / "workspaces"
+        / WS
+        / "selections"
+        / "x-empty.md"
+    ).exists()
 
 
 # --- the `--go` drive door: save AFTER the drive ----------------------------------------------
@@ -301,13 +366,16 @@ def test_save_selection_with_go_saves_after_drive(tmp_path: Path, capsys) -> Non
     root = build_root(tmp_path)
     runner = FakeRun()
     code = cli._cmd_generate(
-        argv(root, "--topic", "x-t-alpha", "--platform", "github", "--go",
-             "--save-selection", "x-go"),
+        argv(
+            root, "--topic", "x-t-alpha", "--platform", "github", "--go", "--save-selection", "x-go"
+        ),
         run_artifact=runner,
     )
     assert code == 0
     assert runner.calls  # the drive actually ran (through the injected seam)
-    path = root / "users" / USER / "workspaces" / WS / "selections" / "x-go.md"
+    path = (
+        root / "users" / USER / "zones" / "default" / "workspaces" / WS / "selections" / "x-go.md"
+    )
     assert len(selection_variants(path)) == 1
 
 
@@ -323,8 +391,10 @@ def test_public_framework_only_selection_via_serializer(tmp_path: Path) -> None:
     _sel_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(registry_dir(REPO_ROOT, "selections"), _sel_dst)
     variants = [
-        {"coordinate": {"persona": "technical-evaluator", "format": "short-opinion-post"},
-         "render": {"platform": "github"}}
+        {
+            "coordinate": {"persona": "technical-evaluator", "format": "short-opinion-post"},
+            "render": {"platform": "github"},
+        }
     ]
     target = authoring.write_selection(root, "launch-set", "explainer-post", variants)
     assert target.provenance == "framework"
@@ -340,13 +410,24 @@ def test_client_binding_homes_under_workspace_via_serializer(tmp_path: Path) -> 
     _sel_dst = registry_dir(root, "selections")
     _sel_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(registry_dir(REPO_ROOT, "selections"), _sel_dst)
-    (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)
+    (root / "users" / USER / "zones" / "default" / "workspaces" / WS).mkdir(parents=True)
     variants = [{"coordinate": {"topic": "x-t-alpha"}, "render": {"platform": "github"}}]
     target = authoring.write_selection(
         root, "x-client", "explainer-post", variants, user=USER, workspace=WS
     )
     assert target.provenance == "instance"
-    assert target.path == root / "users" / USER / "workspaces" / WS / "selections" / "x-client.md"
+    assert (
+        target.path
+        == root
+        / "users"
+        / USER
+        / "zones"
+        / "default"
+        / "workspaces"
+        / WS
+        / "selections"
+        / "x-client.md"
+    )
 
 
 def test_overwrite_guard_headless_then_force(tmp_path: Path) -> None:
@@ -386,6 +467,8 @@ def test_variant_missing_platform_refused(tmp_path: Path) -> None:
     shutil.copytree(registry_dir(REPO_ROOT, "selections"), _sel_dst)
     with pytest.raises(authoring.AuthoringError, match="platform"):
         authoring.write_selection(
-            root, "bad", "explainer-post",
+            root,
+            "bad",
+            "explainer-post",
             [{"coordinate": {"persona": "technical-evaluator"}, "render": {}}],
         )

@@ -43,7 +43,7 @@ from pipeline.store import (
     write_new,
     write_replace,
 )
-from pipeline.workspace_name import USERS_DIRNAME, WORKSPACES_DIRNAME
+from pipeline.workspace_name import USERS_DIRNAME, WORKSPACES_DIRNAME, ZONES_DIRNAME
 
 # The §7.4 literal examples, verbatim.
 ART = "a-9f3c07d21b44e8aa"
@@ -667,31 +667,37 @@ class TestStoreIdentity:
 
     FR = Path("/instance/fw")
 
-    def test_at_builds_root_from_the_two_layout_literals(self, tmp_path):
-        s = WorkspaceStore.at(tmp_path, "optiquity", "mvp-demo")
-        assert s.root == tmp_path / USERS_DIRNAME / "optiquity" / WORKSPACES_DIRNAME / "mvp-demo"
-        # spelled out with the literal values, pinning the exact re-home shape:
-        assert s.root == tmp_path / "users" / "optiquity" / "workspaces" / "mvp-demo"
+    def test_at_builds_root_from_the_layout_literals(self, tmp_path):
+        s = WorkspaceStore.at(tmp_path, "optiquity", "mvp-demo", zone="default")
+        assert s.root == (
+            tmp_path / USERS_DIRNAME / "optiquity" / ZONES_DIRNAME / "default"
+            / WORKSPACES_DIRNAME / "mvp-demo"
+        )
+        # spelled out with the literal values, pinning the exact zoned re-home shape (Z4):
+        assert s.root == (
+            tmp_path / "users" / "optiquity" / "zones" / "default" / "workspaces" / "mvp-demo"
+        )
 
-    def test_at_records_all_three_identity_fields(self):
-        s = WorkspaceStore.at(self.FR, "optiquity", "mvp-demo")
+    def test_at_records_all_identity_fields(self):
+        s = WorkspaceStore.at(self.FR, "optiquity", "mvp-demo", zone="default")
         assert s.framework_root == self.FR
         assert s.user == "optiquity"
         assert s.workspace == "mvp-demo"
+        assert s.zone == "default"
 
     def test_user_root_is_the_per_user_anchor(self):
-        s = WorkspaceStore.at(self.FR, "optiquity", "mvp-demo")
+        s = WorkspaceStore.at(self.FR, "optiquity", "mvp-demo", zone="default")
         assert s.user_root == self.FR / USERS_DIRNAME / "optiquity"
         assert s.user_root == self.FR / "users" / "optiquity"
 
     def test_at_coerces_a_string_framework_root_to_path(self):
         # Parity with `root`'s str→Path coercion in __post_init__.
-        s = WorkspaceStore.at("/instance/fw", "u", "w")
+        s = WorkspaceStore.at("/instance/fw", "u", "w", zone="default")
         assert isinstance(s.framework_root, Path)
         assert s.framework_root == Path("/instance/fw")
 
     def test_at_store_is_still_frozen(self):
-        s = WorkspaceStore.at(self.FR, "u", "w")
+        s = WorkspaceStore.at(self.FR, "u", "w", zone="default")
         with pytest.raises(dataclasses.FrozenInstanceError):
             s.root = Path("/somewhere/else")  # type: ignore[misc]
 
@@ -710,7 +716,7 @@ class TestStoreIdentity:
         assert WorkspaceStoreIdentityError.code == "workspace-store-identity-unavailable"
 
     def test_framework_root_of_helper_matches_the_property(self):
-        s = WorkspaceStore.at(self.FR, "u", "w")
+        s = WorkspaceStore.at(self.FR, "u", "w", zone="default")
         assert framework_root_of(s) == s.framework_root == self.FR
 
     def test_framework_root_of_helper_is_loud_on_a_bare_store(self, tmp_path):
@@ -732,7 +738,7 @@ class TestStoreIdentity:
         # Identity does not disturb path derivation: an .at() store's id-addressed paths still
         # derive purely from `root` (the identity fields are metadata, not a routing input). Uses
         # tmp_path as the framework root because these methods materialize their store dirs.
-        s = WorkspaceStore.at(tmp_path, "optiquity", "mvp-demo")
+        s = WorkspaceStore.at(tmp_path, "optiquity", "mvp-demo", zone="default")
         assert s.output_path(ART) == s.root / "artifacts" / ART
         assert s.claim_path(FIT) == s.root / "claims" / FIT
 

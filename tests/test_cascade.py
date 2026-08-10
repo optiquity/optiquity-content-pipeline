@@ -102,7 +102,7 @@ def build_root(tmp_path: Path, *, l2: str | None = BASE_L2, l3: str | None = Non
     if l2 is not None:
         (root / "instance").mkdir()
         (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
-    ws_home = root / "users" / USER / "workspaces" / WS
+    ws_home = root / "users" / USER / "zones" / "default" / "workspaces" / WS
     topics = ws_home / "topics"
     topics.mkdir(parents=True)
     (topics / "x-sample-topic.md").write_text(TOPIC_ENTRY, encoding="utf-8")
@@ -123,7 +123,7 @@ def write_entry(
 ) -> Path:
     provenance = "instance" if entry_id.startswith("x-") else "framework"
     dirpath = (
-        root / "users" / USER / "workspaces" / workspace / collection
+        root / "users" / USER / "zones" / "default" / "workspaces" / workspace / collection
         if workspace
         else registry_dir(root, collection)
     )

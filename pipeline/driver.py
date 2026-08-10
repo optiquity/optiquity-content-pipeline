@@ -88,7 +88,7 @@ from pipeline.spine import AdvanceHook, SpineResult, WorkUnit, drive, registry_f
 from pipeline.ssot import Ssot
 from pipeline.store import AlreadyMaterializedError, WorkspaceStore, write_new
 from pipeline.transport import Runner
-from pipeline.workspace_name import workspace_path
+from pipeline.workspace_name import DEFAULT_ZONE, workspace_path
 
 __all__ = [
     "DeliverableResult",
@@ -219,11 +219,12 @@ def demo_selection() -> SelectionRequest:
 # --- Grounding inputs (pool, query, commit pin) --------------------------------------------
 
 
-def _list_source_ids(root: Path, user: str, workspace: str) -> list[str]:
+def _list_source_ids(root: Path, user: str, workspace: str, zone: str) -> list[str]:
     """The workspace's declared source pool (§6.1): every `sources/<id>.md` instance
     entry, in id order. Templates and the co-located schema are not entries. The pool lives
-    under `users/<user>/workspaces/<ws>/sources/` (§23) — a pure door-validated join."""
-    sources_dir = workspace_path(root, user, workspace, "sources")
+    under `users/<user>/zones/<zone>/workspaces/<ws>/sources/` (§23, Z4) — a pure door-validated
+    join."""
+    sources_dir = workspace_path(root, user, workspace, "sources", zone=zone)
     if not sources_dir.is_dir():
         return []
     ids: list[str] = []
@@ -1039,6 +1040,7 @@ def run_thread(
     root: str | Path,
     user: str,
     workspace: str,
+    zone: str = DEFAULT_ZONE,
     request: SelectionRequest | None = None,
     now: date | None = None,
     model: str | None = None,
@@ -1058,10 +1060,10 @@ def run_thread(
     log = log or (lambda _msg: None)
     request = request or demo_selection()
 
-    env = CascadeEnv(root, user=user, workspace=workspace)
+    env = CascadeEnv(root, user=user, workspace=workspace, zone=zone)
 
     # -- source pool + the pinned commit-map (§7.2): read the graph's commit BY PATH.
-    source_ids = _list_source_ids(root, user, workspace)
+    source_ids = _list_source_ids(root, user, workspace, zone)
     if not source_ids:
         raise DriverError(
             f"driver-error: workspace {workspace!r} declares no source instances under "
@@ -1109,7 +1111,7 @@ def run_thread(
 
     # -- the store, claims, and SSOT under the workspace (rule 2; instance data). `.at()` records
     #    the (user, workspace) identity so depth-robust framework-root recovery holds (§23).
-    store = WorkspaceStore.at(root, user, workspace)
+    store = WorkspaceStore.at(root, user, workspace, zone=zone)
     store.ensure_layout()
     claims = registry_for(store)
     ssot_csv = store.root / "ssot.csv"

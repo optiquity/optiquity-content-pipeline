@@ -1,18 +1,16 @@
-"""The 3-level `users/<user>/workspaces/<workspace>/` containment guard (§23 re-home).
+"""The zoned `users/<user>/zones/<zone>/workspaces/<workspace>/` containment guard (§23 re-home).
 
 Design authority: `docs/design.md` §21.1 (isolation is enforced BY THE API, not by trust) +
-§10 (client isolation is structural) + CLAUDE.md rule 2, extended to the per-user re-home:
-where a single-level workspace-name validator would contain ONE segment under a fixed `workspaces/`,
-`validate_workspace_path` contains TWO caller-supplied segments — `<user>` then `<workspace>` —
-each at its OWN resolve-and-contain level, so a symlink or `..` planted at any of the three
-joins cannot relocate the store root the §21.1 per-id gate validates against. `user` and
-`workspace` always arrive as SEPARATE arguments (never a slashed string), and every id is
-case-insensitive (a non-lowercase spelling is refused, not silently folded — W5).
+§10 (client isolation is structural) + CLAUDE.md rule 2. Z4 (the atomic cutover) made `zone`
+REQUIRED on `validate_workspace_path` / `workspace_path` / `WorkspaceStore.at`, so the validator is
+now ALWAYS the 5-level zoned path — there is no legacy 3-level branch.
 
-These tests are the UNIT home for the sole workspace-path validator: they pin the three
-containment levels with REAL tmp symlinks (the door-level companion lives in
-`test_workspace_name.py`) plus the lowercase and hygiene reject sets. All fixtures are generic
-(`optiquity`, `acme`, `mvp-demo`, §7.4 literal ids); no instance content.
+This module is the UNIT home for the `<user>` + `<workspace>` hygiene/lowercase rules and the L1
+user containment level (a symlinked `<user>` escaping `users/`), plus the reusable
+`validate_user_segment`. The COMPLETE five-level containment matrix (L1-L5, the zoned `zones/` and
+per-zone `workspaces/` joins, and the leaf zone/workspace symlink escapes) lives in
+`test_workspace_name_zone.py`. All fixtures are generic (`optiquity`, `acme`, `mvp-demo`, §7.4
+literal ids); no instance content.
 """
 
 from __future__ import annotations
@@ -27,7 +25,8 @@ from pipeline.workspace_name import (
     validate_workspace_path,
 )
 
-#: Valid (user, workspace) pairs — the guard must accept every real lowercase id unchanged.
+#: Valid (user, workspace) pairs — the guard must accept every real lowercase id unchanged (all
+#: exercised under the default zone; the zoned matrix in test_workspace_name_zone.py sweeps zones).
 VALID_PAIRS = (
     ("optiquity", "mvp-demo"),
     ("optiquity", "optiquitytrader"),
@@ -53,25 +52,36 @@ UNSAFE_SEGMENTS = (
 
 
 # ---------------------------------------------------------------------------
+# Z4: `zone` is REQUIRED — a forgotten zone is a LOUD TypeError (never a silent 3-level path).
+# ---------------------------------------------------------------------------
+
+
+class TestZoneIsRequired:
+    def test_missing_zone_is_a_loud_type_error(self, tmp_path):
+        with pytest.raises(TypeError):
+            validate_workspace_path(tmp_path, "optiquity", "mvp-demo")  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
 # validate_workspace_path — accepts every valid lowercase pair, existence-independent.
 # ---------------------------------------------------------------------------
 
 
 class TestValidateWorkspacePathAccepts:
     @pytest.mark.parametrize(("user", "workspace"), VALID_PAIRS)
-    def test_returns_unresolved_three_level_path(self, tmp_path, user, workspace):
-        # Byte-identical to WorkspaceStore.at(framework_root, user, workspace).root — the
-        # UNRESOLVED users/<user>/workspaces/<workspace> (behavior-neutral for the corpus).
-        got = validate_workspace_path(tmp_path, user, workspace)
-        assert got == tmp_path / "users" / user / "workspaces" / workspace
+    def test_returns_unresolved_five_level_path(self, tmp_path, user, workspace):
+        # Byte-identical to WorkspaceStore.at(root, user, workspace, zone=zone).root — the
+        # UNRESOLVED users/<user>/zones/<zone>/workspaces/<workspace>.
+        got = validate_workspace_path(tmp_path, user, workspace, zone="default")
+        assert got == tmp_path / "users" / user / "zones" / "default" / "workspaces" / workspace
 
     @pytest.mark.parametrize(("user", "workspace"), VALID_PAIRS)
     def test_validates_before_any_dir_exists(self, tmp_path, user, workspace):
-        # A brand-new home whose users/<user>/workspaces/<workspace> does not exist yet still
-        # validates (resolve is existence-independent) — the store is created on demand later.
+        # A brand-new home whose zoned path does not exist yet still validates (resolve is
+        # existence-independent) — the store is created on demand later.
         assert not (tmp_path / "users").exists()
-        assert validate_workspace_path(tmp_path, user, workspace) == (
-            tmp_path / "users" / user / "workspaces" / workspace
+        assert validate_workspace_path(tmp_path, user, workspace, zone="default") == (
+            tmp_path / "users" / user / "zones" / "default" / "workspaces" / workspace
         )
 
 
@@ -83,22 +93,22 @@ class TestValidateWorkspacePathAccepts:
 class TestValidateWorkspacePathLowercase:
     def test_uppercase_user_refused(self, tmp_path):
         with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_path(tmp_path, "Optiquity", "mvp-demo")
+            validate_workspace_path(tmp_path, "Optiquity", "mvp-demo", zone="default")
         assert exc.value.reason == "not-lowercase"
         assert exc.value.segment == "user"
 
     @pytest.mark.parametrize("workspace", ("WS", "Mvp-Demo"))
     def test_uppercase_workspace_refused(self, tmp_path, workspace):
         with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_path(tmp_path, "optiquity", workspace)
+            validate_workspace_path(tmp_path, "optiquity", workspace, zone="default")
         assert exc.value.reason == "not-lowercase"
         assert exc.value.segment == "workspace"
 
     @pytest.mark.parametrize(("user", "workspace"), VALID_PAIRS)
     def test_lowercase_accepted(self, tmp_path, user, workspace):
         # The valid corpus is already lowercase — the rule accepts it unchanged.
-        assert validate_workspace_path(tmp_path, user, workspace) == (
-            tmp_path / "users" / user / "workspaces" / workspace
+        assert validate_workspace_path(tmp_path, user, workspace, zone="default") == (
+            tmp_path / "users" / user / "zones" / "default" / "workspaces" / workspace
         )
 
 
@@ -111,7 +121,7 @@ class TestValidateWorkspacePathHygieneRejects:
     @pytest.mark.parametrize("workspace", UNSAFE_SEGMENTS)
     def test_unsafe_workspace_is_not_a_safe_segment(self, tmp_path, workspace):
         with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_path(tmp_path, "optiquity", workspace)
+            validate_workspace_path(tmp_path, "optiquity", workspace, zone="default")
         assert exc.value.reason == "not-a-safe-segment"
         assert exc.value.segment == "workspace"
 
@@ -119,69 +129,42 @@ class TestValidateWorkspacePathHygieneRejects:
     def test_unsafe_user_is_not_a_safe_segment(self, tmp_path, user):
         # The user segment is refused at L1 hygiene (before the workspace is even inspected).
         with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_path(tmp_path, user, "mvp-demo")
+            validate_workspace_path(tmp_path, user, "mvp-demo", zone="default")
         assert exc.value.reason == "not-a-safe-segment"
         assert exc.value.segment == "user"
 
     def test_non_string_workspace_refused(self, tmp_path):
         with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_path(tmp_path, "optiquity", 123)  # type: ignore[arg-type]
+            validate_workspace_path(tmp_path, "optiquity", 123, zone="default")  # type: ignore[arg-type]
         assert exc.value.reason == "not-a-safe-segment"
         assert exc.value.segment == "workspace"
 
 
 # ---------------------------------------------------------------------------
-# The three resolve-and-contain levels — proven with REAL tmp symlinks (L1/L2/L3).
+# L1 containment — the user level, shared with the zoned path (proven with a REAL tmp symlink).
+# The zoned L2-L5 levels (zones/, per-zone workspaces/, leaf zone/workspace) live in
+# test_workspace_name_zone.py.
 # ---------------------------------------------------------------------------
 
 
 class TestValidateWorkspacePathContainment:
     def test_L1_symlinked_user_escapes_users_root(self, tmp_path):
         # `eviluser` is a CLEAN lowercase segment whose users/ entry is a symlink pointing
-        # OUTSIDE users/. Only the L1 resolve-and-contain check catches it — proving the resolve
-        # step (not a lexical check) is the real protection at the user level.
+        # OUTSIDE users/. Only the L1 resolve-and-contain check catches it (before any zone or
+        # workspace level is inspected) — proving the resolve step (not a lexical check) protects.
         users = tmp_path / "users"
         users.mkdir()
         outside = tmp_path / "outside"
         outside.mkdir()
         os.symlink(outside, users / "eviluser")
         with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_path(tmp_path, "eviluser", "mvp-demo")
+            validate_workspace_path(tmp_path, "eviluser", "mvp-demo", zone="default")
         assert exc.value.reason == "escapes-users-root"
         assert exc.value.segment == "user"
 
-    def test_L2_symlinked_workspaces_escapes_owner_root(self, tmp_path):
-        # The FIXED per-owner workspaces/ dir is itself a symlink out of the owner home. L2
-        # catches it before any workspace leaf is joined (a relocated store BASE is fatal).
-        owner = tmp_path / "users" / "optiquity"
-        owner.mkdir(parents=True)
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        os.symlink(outside, owner / "workspaces")
-        with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_path(tmp_path, "optiquity", "mvp-demo")
-        assert exc.value.reason == "escapes-owner-root"
-        assert exc.value.segment == "workspaces"
-
-    def test_L3_leaf_symlink_into_sibling_user_escapes_workspaces_root(self, tmp_path):
-        # The exploit L3 closes: a leaf symlink `optiquity/.../evilws` pointing into a SIBLING
-        # user's tree (`acme/workspaces/secret`) would relocate the store root into acme's home,
-        # where the per-id gate would then resolve acme's ids and PASS (a cross-user read). The
-        # guard refuses `evilws` BEFORE the store is built — the door-level `../victim` proof, at
-        # the re-home depth and across users.
-        opt_ws = tmp_path / "users" / "optiquity" / "workspaces"
-        opt_ws.mkdir(parents=True)
-        acme_secret = tmp_path / "users" / "acme" / "workspaces" / "secret"
-        acme_secret.mkdir(parents=True)
-        os.symlink(acme_secret, opt_ws / "evilws")
-        with pytest.raises(WorkspaceNameError) as exc:
-            validate_workspace_path(tmp_path, "optiquity", "evilws")
-        assert exc.value.reason == "escapes-workspaces-root"
-        assert exc.value.segment == "workspace"
-
 
 # ---------------------------------------------------------------------------
-# validate_user_segment — the extracted L1 user hygiene + containment (reused per-user).
+# validate_user_segment — the extracted L1 user hygiene + containment (reused per-user; zone-free).
 # ---------------------------------------------------------------------------
 
 

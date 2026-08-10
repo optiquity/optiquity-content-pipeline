@@ -102,7 +102,7 @@ from pipeline.schema import (
     UndeclaredAttributeError,
     load_schema,
 )
-from pipeline.workspace_name import WORKSPACES_DIRNAME, workspace_path
+from pipeline.workspace_name import DEFAULT_ZONE, WORKSPACES_DIRNAME, workspace_path
 
 __all__ = [
     "CONTENT_DIMENSION_TOKENS",
@@ -451,25 +451,29 @@ class Resolver:
         *,
         user: str | None = None,
         workspace: str | None = None,
+        zone: str = DEFAULT_ZONE,
         now: date | None = None,
         window: WindowOracle | None = None,
     ) -> None:
         self._root = Path(root)
         if workspace is not None:
             _require_slug(workspace, "workspace")
-            # §23 re-home: the workspace SHADOW lives at users/<user>/workspaces/<ws>/, so a
-            # workspace-scoped resolver MUST carry its owning user — a missing one would build a
+            # §23 re-home: the workspace SHADOW lives at users/<user>/zones/<zone>/workspaces/<ws>/,
+            # so a workspace-scoped resolver MUST carry its owning user — a missing one would make a
             # `users/None/…` shadow path. Fail LOUD here rather than silently miss the shadow (the
-            # owner was validated at the door; this only enforces the pair is complete).
+            # owner was validated at the door; this only enforces the pair is complete). `zone`
+            # defaults to `DEFAULT_ZONE` (Z4), exactly as its sole real constructor `CascadeEnv`
+            # does — the workspace-root gate already vetted a non-default zone at the door.
             if user is None:
                 raise M1Error(
                     "entry-resolution-refused: a workspace-scoped Resolver requires `user` — the "
-                    "workspace shadow lives at users/<user>/workspaces/<workspace>/ (§23); a "
-                    "missing user would build a users/None/ path (never silent)"
+                    "workspace shadow lives at users/<user>/zones/<zone>/workspaces/<workspace>/ "
+                    "(§23); a missing user would build a users/None/ path (never silent)"
                 )
             _require_slug(user, "user")
         self._user = user
         self._workspace = workspace
+        self._zone = zone
         if window is not None and now is None:
             raise M1Error(
                 "entry-resolution-refused: `now` is required when a window oracle is "
@@ -574,7 +578,7 @@ class Resolver:
             # no re-resolve on the hot M1 path (`workspace_path`, the "validate once, pure-join
             # downstream" discipline).
             local = workspace_path(
-                self._root, self._user, self._workspace, collection, filename
+                self._root, self._user, self._workspace, collection, filename, zone=self._zone
             )
             if local.is_file():
                 candidates.append((local, SCOPE_WORKSPACE))
@@ -593,6 +597,7 @@ class Resolver:
                             self._workspace,
                             collection,
                             f"{entry_id}{ENTRY_SUFFIX}",
+                            zone=self._zone,
                         )
                     )
                 )

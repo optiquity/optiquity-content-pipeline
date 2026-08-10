@@ -232,6 +232,7 @@ def _resolvable_fit(
                 workspace=workspace,
                 fitted_id=entry.name,
                 stored_preimage=preimage if isinstance(preimage, Mapping) else {},
+                zone=store.zone,
             )
             if recorded == current_d and (current_match is None or entry.name < current_match):
                 current_match = entry.name

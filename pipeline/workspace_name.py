@@ -99,17 +99,15 @@ class WorkspaceNameError(ValueError):
     - `not-lowercase` — hygiene: a segment carrying an uppercase letter, refused by the
       case-insensitive-id rule (W5; `_check_segment_ci`, on the `user`/`zone`/`workspace` legs).
     - `escapes-users-root` — resolve-and-contain: the owner dir escapes `users/`
-      (`validate_user_segment`; L1 of both the legacy 3-level and the zoned 5-level path).
-    - `escapes-owner-root` — LEGACY 3-level (`zone=None`) only: the fixed per-owner `workspaces/`
-      dir escapes the owner home (`validate_workspace_path` L2).
-    - `escapes-user-root` — ZONED path only: the fixed per-user `zones/` dir escapes the user home
+      (`validate_user_segment`; L1 of the zoned 5-level path).
+    - `escapes-user-root` — the fixed per-user `zones/` dir escapes the user home
       (`validate_workspace_path` L2).
-    - `escapes-zones-root` — ZONED path only: the leaf `zone` escapes `zones/`
+    - `escapes-zones-root` — the leaf `zone` escapes `zones/`
       (`validate_zone_segment`; `validate_workspace_path` L3).
-    - `escapes-zone-root` — ZONED path only: the fixed per-zone `workspaces/` dir escapes the zone
-      home (`validate_workspace_path` L4).
+    - `escapes-zone-root` — the fixed per-zone `workspaces/` dir escapes the zone home
+      (`validate_workspace_path` L4).
     - `escapes-workspaces-root` — the leaf `workspace` escapes its parent `workspaces/`
-      (`validate_workspace_path`: legacy 3-level L3, zoned L5).
+      (`validate_workspace_path` L5).
 
     `segment` names which segment was rejected: a caller-supplied leg (`"user"`, `"zone"`,
     `"workspace"`) or a fixed layout literal (`"zones"`, `"workspaces"`). The validators always set
@@ -244,31 +242,23 @@ def validate_zone_segment(framework_root: str | Path, user: str, zone: str) -> P
 
 
 def validate_workspace_path(
-    framework_root: str | Path, user: str, workspace: str, *, zone: str | None = None
+    framework_root: str | Path, user: str, workspace: str, *, zone: str
 ) -> Path:
     """Return the CONTAINED workspace store root under `<framework_root>/users/<user>/…`, or raise.
 
-    The isolation core of the re-home (§23). `user`, `workspace`, and (when zoned) `zone` arrive as
-    SEPARATE caller-supplied arguments — never a slashed string — and each is contained at its own
-    resolve-and-contain level. `zone` is KEYWORD-ONLY with two shapes:
+    The isolation core of the re-home (§23). `user`, `workspace`, and `zone` arrive as SEPARATE
+    caller-supplied arguments — never a slashed string — and each is contained at its own
+    resolve-and-contain level. `zone` is a REQUIRED KEYWORD-ONLY argument (Z4, the atomic cutover):
+    a forgotten `zone` is a LOUD missing-keyword `TypeError`, and a `zone=None` is a LOUD
+    `WorkspaceNameError` (refused by `validate_zone_segment`'s `_check_segment_ci` hygiene — `None`
+    is not a safe segment) — NEVER a silent legacy 3-level path (Z4 deleted the `zone=None`
+    compatibility scaffold every pre-cutover caller relied on).
 
-    **`zone is None` (default) — the LEGACY 3-level path** `users/<user>/workspaces/<workspace>`
-    (BYTE-IDENTICAL to every existing caller; a compatibility scaffold Z4 removes):
+    **The 5-level ZONED path** `users/<user>/zones/<zone>/workspaces/<workspace>` (a zone sits
+    BETWEEN user and workspace) contains at each level:
 
     - **L1 (user):** `validate_user_segment` — `user` hygiene + lowercase, and `users/<user>`
       resolves to a direct child of `users/` (`reason="escapes-users-root"`, `segment="user"`).
-    - **L2 (workspaces):** the FIXED per-owner `workspaces/` join must resolve to a direct child
-      of the owner dir — catching a symlinked `workspaces/` planted in an owner's tree
-      (`reason="escapes-owner-root"`, `segment="workspaces"`).
-    - **L3 (workspace):** `workspace` hygiene + lowercase, and `workspaces/<workspace>` resolves
-      to a direct child of that `workspaces/` — catching a leaf symlink into a sibling user's
-      tree, a `..`, or an absolute path (`reason="escapes-workspaces-root"`, `segment="workspace"`).
-
-    **`zone` is a `str` — the 5-level ZONED path**
-    `users/<user>/zones/<zone>/workspaces/<workspace>` (a zone sits BETWEEN user and workspace);
-    it adds two levels around the caller-supplied `<zone>`:
-
-    - **L1 (user):** as above (`escapes-users-root`, `segment="user"`).
     - **L2 (zones):** the FIXED per-user `zones/` join must resolve to a direct child of the user
       home — catching a symlinked `zones/` planted in a user's tree (`reason="escapes-user-root"`,
       `segment="zones"`).
@@ -284,8 +274,8 @@ def validate_workspace_path(
     **T1 (load-bearing security):** at BOTH zoned fixed joins the base is RE-RESOLVED FRESH from the
     previous validated level — the `zones/` base off the re-resolved user home (L2), the
     `workspaces/` base off the re-resolved `zones/<zone>` home (L4) — never a reused unresolved
-    parent. This is the same discipline the legacy L2 `workspaces/` join uses; it defeats a
-    symlinked `zones/` planted in a user home AND a symlinked `workspaces/` planted in a zone home.
+    parent. It defeats a symlinked `zones/` planted in a user home AND a symlinked `workspaces/`
+    planted in a zone home.
 
     Resolving BOTH sides at each level (with `resolve(strict=False)`, so a not-yet-created path
     still validates) is what defeats `..`, absolute paths, AND symlink escapes at that level. The
@@ -294,104 +284,75 @@ def validate_workspace_path(
     """
     owner_dir = validate_user_segment(framework_root, user)  # L1: user hygiene + containment.
 
-    if zone is not None:
-        # === ZONED 5-level path: users/<user>/zones/<zone>/workspaces/<workspace> ===
-        # L2: the FIXED per-user zones/ join, re-resolved FRESH off the re-resolved user home (T1).
-        owner_r = owner_dir.resolve(strict=False)
-        zones_base = owner_dir / ZONES_DIRNAME  # FIXED literal join — not caller-supplied.
-        zones_base_r = zones_base.resolve(strict=False)
-        if zones_base_r.parent != owner_r:
-            raise WorkspaceNameError(
-                zone,
-                "escapes-user-root",
-                f"the zones/ dir under {str(owner_dir)!r} resolves outside the user "
-                "home — a symlinked zones/ can never relocate a user's zone base "
-                "(§10/§21.1/§23)",
-                segment="zones",
-            )
-
-        # L3: <zone> hygiene + containment under the FRESHLY-resolved zones/ base.
-        zone_dir = validate_zone_segment(framework_root, user, zone)
-
-        # L4: FIXED per-zone workspaces/ join, re-resolved FRESH off the re-resolved zone (T1).
-        zone_r = zone_dir.resolve(strict=False)
-        ws_base = zone_dir / WORKSPACES_DIRNAME  # FIXED literal join — not caller-supplied.
-        ws_base_r = ws_base.resolve(strict=False)
-        if ws_base_r.parent != zone_r:
-            raise WorkspaceNameError(
-                workspace,
-                "escapes-zone-root",
-                f"the workspaces/ dir under {str(zone_dir)!r} resolves outside the "
-                "zone home — a symlinked workspaces/ can never relocate a zone's store "
-                "base (§10/§21.1/§23)",
-                segment="workspaces",
-            )
-
-        # L5: <workspace> hygiene + containment under the FRESHLY-resolved workspaces/ base.
-        _check_segment_ci(workspace, "workspace")
-        candidate = ws_base / workspace  # the caller-supplied leaf segment.
-        if candidate.resolve(strict=False).parent != ws_base_r:
-            raise WorkspaceNameError(
-                workspace,
-                "escapes-workspaces-root",
-                f"workspace {workspace!r} does not resolve to a direct child of "
-                f"{str(ws_base)!r} — a workspace store root can never escape its zone's "
-                "workspaces/ (via '..', an absolute path, or a symlink into a sibling zone); "
-                "isolation holds at the root (§10/§21.1/§23)",
-                segment="workspace",
-            )
-        return candidate
-
-    # === LEGACY 3-level path (zone is None) — BYTE-IDENTICAL, unchanged ===
-    _check_segment_ci(workspace, "workspace")
-
+    # === ZONED 5-level path: users/<user>/zones/<zone>/workspaces/<workspace> ===
+    # L2: the FIXED per-user zones/ join, re-resolved FRESH off the re-resolved user home (T1).
     owner_r = owner_dir.resolve(strict=False)
-    ws_base = owner_dir / WORKSPACES_DIRNAME  # FIXED literal join — not caller-supplied.
+    zones_base = owner_dir / ZONES_DIRNAME  # FIXED literal join — not caller-supplied.
+    zones_base_r = zones_base.resolve(strict=False)
+    if zones_base_r.parent != owner_r:
+        raise WorkspaceNameError(
+            zone,
+            "escapes-user-root",
+            f"the zones/ dir under {str(owner_dir)!r} resolves outside the user "
+            "home — a symlinked zones/ can never relocate a user's zone base "
+            "(§10/§21.1/§23)",
+            segment="zones",
+        )
+
+    # L3: <zone> hygiene + containment under the FRESHLY-resolved zones/ base.
+    zone_dir = validate_zone_segment(framework_root, user, zone)
+
+    # L4: FIXED per-zone workspaces/ join, re-resolved FRESH off the re-resolved zone (T1).
+    zone_r = zone_dir.resolve(strict=False)
+    ws_base = zone_dir / WORKSPACES_DIRNAME  # FIXED literal join — not caller-supplied.
     ws_base_r = ws_base.resolve(strict=False)
-    if ws_base_r.parent != owner_r:
+    if ws_base_r.parent != zone_r:
         raise WorkspaceNameError(
             workspace,
-            "escapes-owner-root",
-            f"the workspaces/ dir under {str(owner_dir)!r} resolves outside the owner home — a "
-            "symlinked workspaces/ can never relocate an owner's store base (§10/§21.1/§23)",
+            "escapes-zone-root",
+            f"the workspaces/ dir under {str(zone_dir)!r} resolves outside the "
+            "zone home — a symlinked workspaces/ can never relocate a zone's store "
+            "base (§10/§21.1/§23)",
             segment="workspaces",
         )
 
-    candidate = ws_base / workspace  # L3: the caller-supplied leaf segment.
+    # L5: <workspace> hygiene + containment under the FRESHLY-resolved workspaces/ base.
+    _check_segment_ci(workspace, "workspace")
+    candidate = ws_base / workspace  # the caller-supplied leaf segment.
     if candidate.resolve(strict=False).parent != ws_base_r:
         raise WorkspaceNameError(
             workspace,
             "escapes-workspaces-root",
-            f"workspace {workspace!r} does not resolve to a direct child of {str(ws_base)!r} — a "
-            "workspace store root can never escape its owner's workspaces/ (via '..', an absolute "
-            "path, or a symlink into a sibling user); isolation holds at the root (§10/§21.1/§23)",
+            f"workspace {workspace!r} does not resolve to a direct child of "
+            f"{str(ws_base)!r} — a workspace store root can never escape its zone's "
+            "workspaces/ (via '..', an absolute path, or a symlink into a sibling zone); "
+            "isolation holds at the root (§10/§21.1/§23)",
             segment="workspace",
         )
     return candidate
 
 
 def workspace_path(
-    framework_root: str | Path, user: str, workspace: str, *parts: str, zone: str | None = None
+    framework_root: str | Path, user: str, workspace: str, *parts: str, zone: str
 ) -> Path:
-    """The PURE `<framework_root>/users/<user>/[zones/<zone>/]workspaces/<workspace>[/…]` join.
+    """The PURE `<framework_root>/users/<user>/zones/<zone>/workspaces/<workspace>[/…]` join.
 
     The hot-path companion to `validate_workspace_path` (§23 re-home): once a door has VALIDATED
-    the `(framework_root, user, workspace[, zone])` tuple ONCE (the resolve-and-contain gate), every
+    the `(framework_root, user, workspace, zone)` tuple ONCE (the resolve-and-contain gate), every
     downstream path under that workspace — a per-collection M1 shadow dir, a `sources/` scan root,
     a save-home — is a plain `Path` join off the SAME layout literals
     (`USERS_DIRNAME`/`ZONES_DIRNAME`/`WORKSPACES_DIRNAME`), never a second resolve on the hot
-    cascade/M1 path (the "validate once at the door, pure-join downstream" discipline). `zone` is
-    KEYWORD-ONLY: `zone is None` (default) yields the legacy 3-level root (BYTE-IDENTICAL to every
-    existing caller); a `str` `zone` yields the zoned root with `zones/<zone>` between user and
-    `workspaces/`. Byte-identical to `WorkspaceStore.at(framework_root, user, workspace,
-    zone=zone).root` when `parts` is empty, and to that root joined with `parts` otherwise.
+    cascade/M1 path (the "validate once at the door, pure-join downstream" discipline). `zone` is a
+    REQUIRED KEYWORD-ONLY argument (Z4, the atomic cutover): the root always carries `zones/<zone>`
+    between user and `workspaces/`. Byte-identical to `WorkspaceStore.at(framework_root, user,
+    workspace, zone=zone).root` when `parts` is empty, and to that root joined with `parts`
+    otherwise.
 
     This is a pure calculator: it touches no filesystem and does NOT re-validate the segments
-    (a `None`/non-`str` segment surfaces LOUDLY as a `TypeError` from `Path.joinpath` — never a
-    silent `users/None/…` — so a caller that skipped the door still fails fast, never escapes).
+    (a `None`/non-`str` segment — including a forgotten `zone` — surfaces LOUDLY as a `TypeError`
+    from `Path.joinpath` — never a silent `users/None/…` or `zones/None/…` path — so a caller that
+    skipped the door still fails fast, never escapes).
     """
-    if zone is not None:
-        return Path(framework_root).joinpath(
-            USERS_DIRNAME, user, ZONES_DIRNAME, zone, WORKSPACES_DIRNAME, workspace, *parts
-        )
-    return Path(framework_root).joinpath(USERS_DIRNAME, user, WORKSPACES_DIRNAME, workspace, *parts)
+    return Path(framework_root).joinpath(
+        USERS_DIRNAME, user, ZONES_DIRNAME, zone, WORKSPACES_DIRNAME, workspace, *parts
+    )

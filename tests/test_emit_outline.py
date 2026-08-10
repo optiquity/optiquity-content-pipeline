@@ -76,7 +76,7 @@ def build_root(tmp_path: Path, *, l2: str = BASE_L2) -> Path:
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
-    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     (topics_dir / f"{TOPIC_ID}.md").write_text(
         TOPIC.format(tid=TOPIC_ID, why="First."), encoding="utf-8"
@@ -85,7 +85,7 @@ def build_root(tmp_path: Path, *, l2: str = BASE_L2) -> Path:
 
 
 def store_for(root: Path) -> WorkspaceStore:
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     return store
 

@@ -51,6 +51,7 @@ from pipeline.outline import normalize_outline, outline_digest
 from pipeline.spine import registry_for
 from pipeline.store import WorkspaceStore
 from pipeline.transport import Runner
+from pipeline.workspace_name import DEFAULT_ZONE
 
 __all__ = [
     "DEFAULT_OUTLINE",
@@ -264,6 +265,7 @@ def run_ablation(
     root: str | Path,
     user: str,
     workspace: str,
+    zone: str = DEFAULT_ZONE,
     outline_md: str,
     recipe: str = "explainer-post",
     topic: str = "x-architecture-overview",
@@ -286,10 +288,10 @@ def run_ablation(
     """
     root = Path(root)
     now = now or date.today()
-    env = CascadeEnv(root, user=user, workspace=workspace)
+    env = CascadeEnv(root, user=user, workspace=workspace, zone=zone)
 
     # -- source pool + the pinned §7.2 commit-map/repo-map (the driver's own read, read-only).
-    source_ids = _list_source_ids(root, user, workspace)
+    source_ids = _list_source_ids(root, user, workspace, zone)
     if not source_ids:
         raise AblationError(
             f"workspace {workspace!r} declares no sources under sources/ -- grounding needs a "
@@ -348,7 +350,7 @@ def run_ablation(
             "needs a grounded artifact"
         )
 
-    store = WorkspaceStore.at(root, user, workspace)
+    store = WorkspaceStore.at(root, user, workspace, zone=zone)
     store.ensure_layout()
     claims = registry_for(store)
 

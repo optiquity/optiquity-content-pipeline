@@ -137,7 +137,7 @@ def _build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
-    (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)
+    (root / "users" / USER / "zones" / "default" / "workspaces" / WS).mkdir(parents=True)
     return root
 
 
@@ -256,7 +256,7 @@ def _paper_preimage() -> dict:
 def _compose_conforming_ir(root: Path) -> dict:
     """Genuinely compose ONE conforming `academic-paper` IR over the REAL compose path (faked
     writer, real IR mint + grounding validation). Returns the validated canonical IR."""
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     claims = registry_for(store)
     preimage = _paper_preimage()
@@ -369,7 +369,7 @@ def _compose_citing_paper_ir(root: Path) -> dict:
     projection resolution gate). Its `references` are MACHINERY-projected from the TWO-source ledger
     (C2), and every `[@key]` in the body resolves against exactly that projected set (C4) — no
     fabrication. Returns the validated canonical IR (references == the projection; body cites)."""
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     claims = registry_for(store)
     preimage = _citing_paper_preimage()
@@ -572,7 +572,7 @@ def test_two_phase_render_engine_records_the_typed_version(tmp_path):
         root=root,
         user=USER,
         workspace=WS,
-        store=WorkspaceStore.at(root, USER, WS),
+        store=WorkspaceStore.at(root, USER, WS, zone="default"),
         fitted_id=fit.fitted_id,
         fitted_ir=fit.fitted_ir,
         output_type="html",
@@ -726,7 +726,7 @@ def test_two_phase_render_engine_records_the_citeproc_version(tmp_path):
         root=root,
         user=USER,
         workspace=WS,
-        store=WorkspaceStore.at(root, USER, WS),
+        store=WorkspaceStore.at(root, USER, WS, zone="default"),
         fitted_id=citing_ir["binding"]["artifact_id"] + ".journal-strict.en",
         fitted_ir=citing_ir,
         output_type="html",
@@ -798,7 +798,7 @@ def _embed_leg(root, fitted_ir, *, body_png=_EMBED_PNG):
     from pipeline.api.render import SerializeLeg
     from pipeline.reconcile import build_fit_binding
 
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     (store.root / "assets").mkdir(parents=True, exist_ok=True)
     (store.root / "assets" / "x.png").write_bytes(body_png)

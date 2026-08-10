@@ -1894,7 +1894,7 @@ def _load_base_bundle(
     from pipeline import authoring, entries, m1
     from pipeline.attrtypes import AttrTypeSpec, ValueValidationError, validate_value
     from pipeline.layout import registry_dir
-    from pipeline.workspace_name import workspace_path
+    from pipeline.workspace_name import DEFAULT_ZONE, workspace_path
 
     try:  # the SSOT §7.4 slug validator (the one `_require_slug` wraps) — blocks a traversal id
         validate_value(AttrTypeSpec(kind="ref"), base_id)
@@ -1917,7 +1917,9 @@ def _load_base_bundle(
     filename = f"{base_id}{entries.ENTRY_SUFFIX}"
     shared = registry_dir(root_path, authoring.RECIPE_COLLECTION) / filename
     local = (
-        workspace_path(root_path, user, workspace, authoring.RECIPE_COLLECTION, filename)
+        workspace_path(
+            root_path, user, workspace, authoring.RECIPE_COLLECTION, filename, zone=DEFAULT_ZONE
+        )
         if workspace is not None
         else None
     )
@@ -2386,6 +2388,8 @@ def _cmd_workspace(argv: list[str]) -> int:
 
 def _workspace_new(args: "object") -> int:
     """W1: `workspace new` — seed one workspace from the blueprint + print the path/next hint."""
+    from pathlib import Path
+
     from pipeline import workspacescaffold
 
     try:
@@ -2397,9 +2401,17 @@ def _workspace_new(args: "object") -> int:
         return 1
 
     if result.created_user_namespace:
+        # §23/Z4 S1: derive the namespace path from IDENTITY (`result.user`), never fragile
+        # positional path math on the 5-level target (`.parent.parent` = zones/<zone>, WRONG).
+        user_namespace = Path(args.root) / "users" / result.user
         print(
-            f"pipeline workspace new: created new user namespace {result.path.parent.parent} "
+            f"pipeline workspace new: created new user namespace {user_namespace} "
             f"(users/{result.user}/)"
+        )
+    if result.created_zone:
+        print(
+            f"pipeline workspace new: created new zone {result.zone!r} for user {result.user!r} "
+            f"(users/{result.user}/zones/{result.zone}/)"
         )
     print(
         f"pipeline workspace new: seeded workspace {result.workspace!r} for user {result.user!r} "
@@ -2440,7 +2452,7 @@ def _workspace_list(args: "object") -> int:
     for row in rows:
         output_note = "has output" if row.has_output else "no output"
         print(
-            f"{row.user}/{row.workspace}  "
+            f"{row.user}/{row.zone}/{row.workspace}  "
             f"({row.topic_count} topic(s), {output_note})  — {row.path}"
         )
     return 0
@@ -2625,6 +2637,7 @@ def _cmd_sources(
     import argparse
 
     from pipeline.sources.feeds import feed_kinds  # the shipped feed set (discovery surface)
+    from pipeline.workspace_name import DEFAULT_ZONE
 
     known_kinds = ", ".join(feed_kinds())
 
@@ -2664,7 +2677,17 @@ def _cmd_sources(
         help="a single source id under sources/feeds/ (default: every descriptor)",
     )
     ingest.add_argument(
-        "--root", default=".", help="framework repo root → users/<user>/workspaces/<ws>/ (def: cwd)"
+        "--root",
+        default=".",
+        help="framework repo root → users/<user>/zones/<zone>/workspaces/<ws>/ (def: cwd)",
+    )
+    ingest.add_argument(
+        "--zone",
+        default=DEFAULT_ZONE,
+        help=(
+            "the zone segment between user and workspace (§23; "
+            f"users/<user>/zones/<zone>/workspaces/<ws>/, default: {DEFAULT_ZONE})"
+        ),
     )
     ingest.add_argument(
         "--go",
@@ -2691,12 +2714,13 @@ def _cmd_sources(
     from pipeline.workspace_name import WorkspaceNameError, validate_workspace_path
 
     try:
-        validate_workspace_path(args.root, args.user, args.workspace)  # door: resolve-and-contain
+        # door: resolve-and-contain (zone materialized at the --zone flag, exactly one chokepoint)
+        validate_workspace_path(args.root, args.user, args.workspace, zone=args.zone)
     except WorkspaceNameError as exc:
         print(f"pipeline sources ingest: {exc}", file=sys.stderr)
         return 1
 
-    store = WorkspaceStore.at(args.root, args.user, args.workspace)
+    store = WorkspaceStore.at(args.root, args.user, args.workspace, zone=args.zone)
     fetch = http_get if http_get is not None else acquire.default_http_get
     try:
         # Resolve descriptors FIRST (no fetch, no spend) so the paid gate can inspect each kind

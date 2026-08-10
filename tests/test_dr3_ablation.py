@@ -111,12 +111,12 @@ def build_world(tmp_path: Path) -> Path:
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(_L2, encoding="utf-8")
-    topics = root / "users" / USER / "workspaces" / WS / "topics"
+    topics = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "topics"
     topics.mkdir(parents=True)
     (topics / f"{TOPIC_ID}.md").write_text(
         _TOPIC.format(tid=TOPIC_ID, why="Architecture."), encoding="utf-8"
     )
-    sources = root / "users" / USER / "workspaces" / WS / "sources"
+    sources = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "sources"
     sources.mkdir(parents=True)
     (sources / "x-arch-src.md").write_text(
         _SOURCE.format(sid="x-arch-src", ds="arch"), encoding="utf-8"

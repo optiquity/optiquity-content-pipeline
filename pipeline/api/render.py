@@ -922,7 +922,7 @@ class DefaultRenderEngine:
         from pipeline.cascade import CascadeEnv
         from pipeline.ids import delta_vs_floor  # noqa: F401 — parity with the driver's read
 
-        env = CascadeEnv(leg.root, user=leg.user, workspace=leg.workspace)
+        env = CascadeEnv(leg.root, user=leg.user, workspace=leg.workspace, zone=leg.store.zone)
         entry = env.resolver.resolve("platforms", leg.platform)
         schema = env.resolver.schema("platforms")
         limits = dict(entry.effective.get("hard_limits") or {})
@@ -946,7 +946,7 @@ class DefaultRenderEngine:
         from pipeline.cascade import CascadeEnv
         from pipeline.dispatch import render_target_from_entry
 
-        env = CascadeEnv(leg.root, user=leg.user, workspace=leg.workspace)
+        env = CascadeEnv(leg.root, user=leg.user, workspace=leg.workspace, zone=leg.store.zone)
         entry = env.resolver.resolve("render-targets", leg.output_type)
         target_values = {**entry.defaults(), **entry.effective, "id": entry.id}
         target = render_target_from_entry(target_values)

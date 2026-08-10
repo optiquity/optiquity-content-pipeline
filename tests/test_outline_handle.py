@@ -102,7 +102,7 @@ def build_root(tmp_path: Path, *, sources: tuple[tuple[str, str], ...] = (("x-ar
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(BASE_L2, encoding="utf-8")
-    ws = root / "users" / USER / "workspaces" / WS
+    ws = root / "users" / USER / "zones" / "default" / "workspaces" / WS
     (ws / "topics").mkdir(parents=True)
     (ws / "topics" / f"{TOPIC_ID}.md").write_text(
         TOPIC_MD.format(tid=TOPIC_ID, why="Architecture."), encoding="utf-8"
@@ -114,7 +114,7 @@ def build_root(tmp_path: Path, *, sources: tuple[tuple[str, str], ...] = (("x-ar
 def add_sources(root: Path, *sources: tuple[str, str]) -> None:
     """Write `sources/<sid>.md` mock source entries into the workspace (used to CHANGE the pool
     between emit and drive — the σ source-subset probe)."""
-    sources_dir = root / "users" / USER / "workspaces" / WS / "sources"
+    sources_dir = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "sources"
     sources_dir.mkdir(parents=True, exist_ok=True)
     for sid, dataset in sources:
         (sources_dir / f"{sid}.md").write_text(
@@ -123,7 +123,7 @@ def add_sources(root: Path, *sources: tuple[str, str]) -> None:
 
 
 def store_for(root: Path) -> WorkspaceStore:
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     return store
 

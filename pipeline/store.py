@@ -253,7 +253,7 @@ class WorkspaceStore:
         user: str,
         workspace: str,
         *,
-        zone: str | None = None,
+        zone: str,
     ) -> WorkspaceStore:
         """Build the store for a workspace AND record its identity (increment B3; zone since Z2).
 
@@ -264,26 +264,19 @@ class WorkspaceStore:
         that already hold a full root keep using bare `WorkspaceStore(root)`; this factory is for
         callers that hold the framework root + identity and want depth-robust accessors.
 
-        `zone` is KEYWORD-ONLY (a positional 4th arg is a `TypeError`) with two shapes:
+        `zone` is a REQUIRED KEYWORD-ONLY argument (Z4, the atomic cutover): the root is the 4-level
+        `framework_root / USERS_DIRNAME / user / ZONES_DIRNAME / zone / WORKSPACES_DIRNAME /
+        workspace` (a zone sits BETWEEN user and workspace), recording `_zone=zone`. A forgotten
+        `zone` is a LOUD missing-keyword `TypeError`, and a `zone=None` is a LOUD `TypeError` from
+        the `zones/None` join — NEVER a silent legacy 3-level path (Z4 deleted the `zone=None`
+        compatibility scaffold every pre-cutover caller relied on).
 
-        - **`zone is None` (default)** — the legacy 3-level root
-          `framework_root / USERS_DIRNAME / user / WORKSPACES_DIRNAME / workspace`, BYTE-IDENTICAL
-          to this factory's pre-Z2 output (`_zone=None`, so `.zone` raises like `.workspace` on a
-          bare store). This is a compatibility scaffold every existing caller relies on (none pass
-          `zone` yet); Z4 removes it once the zone becomes required.
-        - **`zone` is a `str`** — the 4-level root
-          `framework_root / USERS_DIRNAME / user / ZONES_DIRNAME / zone / WORKSPACES_DIRNAME /
-          workspace` (a zone sits BETWEEN user and workspace), recording `_zone=zone`.
-
-        This factory does NOT validate `zone` — the `validate_zone_segment` hygiene/containment
-        gate lands in Z3; `.at` only constructs the path (mirroring how it never re-validates
-        `user`/`workspace`). `user_root` and every other method are unchanged.
+        This factory does NOT validate `zone` (the `validate_zone_segment` hygiene/containment gate
+        is the door's job, mirroring how `.at` never re-validates `user`/`workspace`). `user_root`
+        and every other method are unchanged.
         """
         fr = Path(framework_root)
-        if zone is None:
-            root = fr / USERS_DIRNAME / user / WORKSPACES_DIRNAME / workspace
-        else:
-            root = fr / USERS_DIRNAME / user / ZONES_DIRNAME / zone / WORKSPACES_DIRNAME / workspace
+        root = fr / USERS_DIRNAME / user / ZONES_DIRNAME / zone / WORKSPACES_DIRNAME / workspace
         return cls(root, fr, user, workspace, zone)
 
     # -- identity accessors (§23 re-home; raise-loud, never silent-None) ----

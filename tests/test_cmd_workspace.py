@@ -77,13 +77,14 @@ def _clean_registry():
 
 
 def test_workspace_new_seeds_full_tree(tmp_path, capsys):
-    """`workspace new demo --user acme --root <root>` creates users/acme/workspaces/demo/ with
-    ALL 8 blueprint files, each byte-identical to templates/workspace/, and prints the path."""
+    """`workspace new demo --user acme --root <root>` creates
+    users/acme/zones/default/workspaces/demo/ with ALL 8 blueprint files, each byte-identical to
+    templates/workspace/, and prints the path."""
     root = _root(tmp_path)
     assert BLUEPRINT_FILES  # guard: the blueprint really ships files (not a vacuous assertion)
     code = _run_ws("new", "demo", "--user", USER, "--root", str(root))
     assert code == 0
-    target = root / "users" / USER / "workspaces" / "demo"
+    target = root / "users" / USER / "zones" / "default" / "workspaces" / "demo"
     assert target.is_dir()
 
     # every blueprint file is present under the target and byte-identical to the blueprint copy
@@ -108,8 +109,8 @@ def test_created_workspace_resolves_via_validate_workspace_path(tmp_path):
     """The created target is EXACTLY the isolation gate's contained path for (root, user, ws)."""
     root = _root(tmp_path)
     assert _run_ws("new", "demo", "--user", USER, "--root", str(root)) == 0
-    resolved = validate_workspace_path(root, USER, "demo")
-    assert resolved == root / "users" / USER / "workspaces" / "demo"
+    resolved = validate_workspace_path(root, USER, "demo", zone="default")
+    assert resolved == root / "users" / USER / "zones" / "default" / "workspaces" / "demo"
     assert resolved.is_dir()
 
 
@@ -132,7 +133,7 @@ def test_force_never_overwrites_existing_file_and_tops_up_missing(tmp_path):
     topped up — the copy is non-destructive (rule 1/2; never deletes client data)."""
     root = _root(tmp_path)
     assert _run_ws("new", "demo", "--user", USER, "--root", str(root)) == 0
-    target = root / "users" / USER / "workspaces" / "demo"
+    target = root / "users" / USER / "zones" / "default" / "workspaces" / "demo"
 
     # the user has edited source.md and (say) removed readme.md
     edited = "EDITED BY CLIENT — do not clobber\n"
@@ -152,7 +153,7 @@ def test_force_dir_replaced_by_file_is_typed_refusal(tmp_path, capsys):
     traceback — the collision is caught before any copy/delete, so the file stays untouched."""
     root = _root(tmp_path)
     assert _run_ws("new", "demo", "--user", USER, "--root", str(root)) == 0
-    target = root / "users" / USER / "workspaces" / "demo"
+    target = root / "users" / USER / "zones" / "default" / "workspaces" / "demo"
 
     import shutil as _shutil
 
@@ -175,7 +176,7 @@ def test_force_file_replaced_by_dir_is_typed_refusal(tmp_path, capsys):
     DIRECTORY and re-runs with --force also gets a clean typed refusal (exit 1), not a traceback."""
     root = _root(tmp_path)
     assert _run_ws("new", "demo", "--user", USER, "--root", str(root)) == 0
-    target = root / "users" / USER / "workspaces" / "demo"
+    target = root / "users" / USER / "zones" / "default" / "workspaces" / "demo"
 
     (target / "source.md").unlink()
     (target / "source.md").mkdir()
@@ -225,7 +226,7 @@ def test_uppercase_workspace_refused_no_crash(tmp_path, capsys):
     err = capsys.readouterr().err
     assert err.startswith("pipeline workspace new:")
     assert "Traceback" not in err
-    assert not (root / "users" / USER / "workspaces" / "Demo").exists()
+    assert not (root / "users" / USER / "zones" / "default" / "workspaces" / "Demo").exists()
 
 
 def test_traversal_workspace_refused(tmp_path, capsys):
@@ -292,11 +293,11 @@ def test_workspacescaffold_source_calls_no_register():
 
 
 def test_user_new_creates_namespace(tmp_path, capsys):
-    """`user new bob --root <root>` creates the empty per-user namespace users/bob/workspaces/
-    (no workspace) and prints the path."""
+    """`user new bob --root <root>` creates the empty per-user namespace
+    users/bob/zones/default/workspaces/ (no workspace) and prints the path."""
     root = _root(tmp_path)
     assert _run_user("new", "bob", "--root", str(root)) == 0
-    ns = root / "users" / "bob" / "workspaces"
+    ns = root / "users" / "bob" / "zones" / "default" / "workspaces"
     assert ns.is_dir()
     # it is an EMPTY namespace — no workspace seeded
     assert list(ns.iterdir()) == []
@@ -312,7 +313,9 @@ def test_user_new_refuse_if_exists_then_force(tmp_path, capsys):
     assert code == 1
     assert "already exists" in capsys.readouterr().err
     assert _run_user("new", "bob", "--root", str(root), "--force") == 0
-    assert (root / "users" / "bob" / "workspaces").is_dir()  # still there, undeleted
+    assert (
+        root / "users" / "bob" / "zones" / "default" / "workspaces"
+    ).is_dir()  # still there, undeleted
 
 
 def test_user_new_bad_user_refused_no_crash(tmp_path, capsys):
@@ -347,7 +350,7 @@ def test_user_new_never_registers_a_verb(tmp_path):
 def _seed(root: Path, workspace: str, *, user: str = USER) -> Path:
     """Seed ONE pristine workspace under `user` via the real CLI and return its target path."""
     assert _run_ws("new", workspace, "--user", user, "--root", str(root)) == 0
-    return root / "users" / user / "workspaces" / workspace
+    return root / "users" / user / "zones" / "default" / "workspaces" / workspace
 
 
 # --- `workspace list`: per-user, all-users, empty, accurate summary, bad --user ---------------
@@ -362,8 +365,8 @@ def test_list_per_user_scoped(tmp_path, capsys):
     capsys.readouterr()  # drop the seed output
     assert _run_ws("list", "--user", USER, "--root", str(root)) == 0
     out = capsys.readouterr().out
-    assert "acme/alpha" in out and "acme/beta" in out
-    assert "bob/gamma" not in out  # scoped to --user acme
+    assert "acme/default/alpha" in out and "acme/default/beta" in out
+    assert "bob/default/gamma" not in out  # scoped to --user acme
 
 
 def test_list_all_users(tmp_path, capsys):
@@ -375,8 +378,8 @@ def test_list_all_users(tmp_path, capsys):
     capsys.readouterr()
     assert _run_ws("list", "--root", str(root)) == 0
     out = capsys.readouterr().out
-    assert "acme/alpha" in out
-    assert "bob/gamma" in out
+    assert "acme/default/alpha" in out
+    assert "bob/default/gamma" in out
 
 
 def test_list_empty_missing_users_is_clean_exit0(tmp_path, capsys):
@@ -396,7 +399,7 @@ def test_list_summary_is_true(tmp_path, capsys):
     capsys.readouterr()
     assert _run_ws("list", "--user", USER, "--root", str(root)) == 0
     pristine = capsys.readouterr().out
-    assert "acme/demo" in pristine
+    assert "acme/default/demo" in pristine
     assert "0 topic(s)" in pristine and "no output" in pristine
 
     (target / "topics" / "x-widgets.md").write_text("# widgets\n", encoding="utf-8")
@@ -519,7 +522,7 @@ def test_delete_symlink_target_refused_link_target_intact(tmp_path, capsys):
     root = _root(tmp_path)
     realws = _seed(root, "realws")
     (realws / "output" / "keep.md").write_text("real content\n", encoding="utf-8")
-    ws_base = root / "users" / USER / "workspaces"
+    ws_base = root / "users" / USER / "zones" / "default" / "workspaces"
     linked = ws_base / "linked"
     linked.symlink_to(realws, target_is_directory=True)
     capsys.readouterr()
@@ -544,7 +547,9 @@ def test_delete_preserves_namespace_and_sibling(tmp_path, capsys):
 
     assert _run_ws("delete", "goner", "--user", USER, "--root", str(root), "--yes") == 0
     assert not goner.exists()
-    assert (root / "users" / USER / "workspaces").is_dir()  # namespace survives
+    assert (
+        root / "users" / USER / "zones" / "default" / "workspaces"
+    ).is_dir()  # namespace survives
     assert keep.is_dir()  # sibling untouched
     assert (keep / "output" / "post.md").read_text(encoding="utf-8") == "sibling work\n"
 

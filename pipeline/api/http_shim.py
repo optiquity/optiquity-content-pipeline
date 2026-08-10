@@ -473,31 +473,38 @@ def _tier_b_body(verb: str, params: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _open_workspace(
-    root: str, user: str, workspace: str
+    root: str, user: str, workspace: str, zone: str
 ) -> tuple[Any, Any, Any, Callable[[str], bool]]:
     """The CONTAINED (store, job_store, claims, is_done) bundle for a Tier-B submit/poll.
 
     Delegates the §23 resolve-and-contain to `jobrunner._store_for` (the job subsystem's
     containment authority — NOT re-implemented here); it raises a `ValueError` (WorkspaceName
-    error) on an escaping `(user, workspace)` pair, which the caller maps to 403. Returns the full
-    identity-bearing `WorkspaceStore` (built via `.at(root, user, workspace)` — the SAME contained
-    leaf, so downstream `store.user`/`framework_root` read loudly), the `JobStore`, a fresh claim
-    registry (for `peek`), and an `is_done(target_id)` closure over the §22.7 authority."""
+    error) on an escaping `(user, zone, workspace)` tuple, which the caller maps to 403. Returns the
+    full identity-bearing `WorkspaceStore` (built via `.at(root, user, workspace, zone=zone)` — the
+    SAME contained leaf, so downstream `store.user`/`store.zone`/`framework_root` read loudly), the
+    `JobStore`, a fresh claim registry (for `peek`), and an `is_done(target_id)` closure over the
+    §22.7 authority."""
     from pipeline.api import jobrunner
     from pipeline.spine import registry_for
     from pipeline.store import WorkspaceStore, is_done
 
-    # A minimal probe carrying only what `_store_for` reads (`.user`, `.workspace`, `.root`) — the
-    # containment delegate. On an escaping pair this RAISES before any store dir is created.
-    probe = SimpleNamespace(user=user, workspace=workspace, root=str(root))
+    # A minimal probe carrying only what `_store_for` reads (`.user`, `.zone`, `.workspace`,
+    # `.root`) — the containment delegate. On an escaping tuple this RAISES before any store dir is
+    # created.
+    probe = SimpleNamespace(user=user, zone=zone, workspace=workspace, root=str(root))
     job_store = jobrunner._store_for(probe)
-    store = WorkspaceStore.at(root, user, workspace)
+    store = WorkspaceStore.at(root, user, workspace, zone=zone)
     claims = registry_for(store)
     return store, job_store, claims, (lambda target_id: is_done(store, target_id))
 
 
 def _default_plan_targets(
-    root: str, user: str, workspace: str, decoded: token_mod.Token, params: Mapping[str, Any]
+    root: str,
+    user: str,
+    workspace: str,
+    zone: str,
+    decoded: token_mod.Token,
+    params: Mapping[str, Any],
 ) -> list[str]:
     """The PREDICTABLE target artifact-id set a `generate-next` call will materialize — resolved
     LLM-FREE (§22.2), so the job can be keyed + polled BEFORE the paid call.
@@ -509,7 +516,7 @@ def _default_plan_targets(
     empty target set)."""
     from pipeline.api import session
 
-    return list(session.plan_next_batch_ids(Path(root), user, workspace, decoded, params))
+    return list(session.plan_next_batch_ids(Path(root), user, workspace, zone, decoded, params))
 
 
 def _default_render_targets(store: Any, workspace: str, params: Mapping[str, Any]) -> Any:
@@ -799,26 +806,52 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             return  # `_read_json_object` already sent a 400
         endpoint(server, payload)
 
-    def _deny_unserved_workspace(self, server: ShimServer, user: str, workspace: str) -> bool:
+    def _zone_of(self, payload: Mapping[str, Any]) -> str | None:
+        """The §23/Z4 zone from the request body — `payload['zone']` if present, else the
+        materialized default `'default'` (the ONE chokepoint that materializes the default for this
+        door). A present `zone` MUST be a non-empty string, else a 400 is sent and this returns
+        `None` (the caller aborts). A returned string is the zone threaded into every store build /
+        `invoke()` / `JobSpec` / allow-list check for this request."""
+        if "zone" not in payload:
+            return "default"
+        zone = payload.get("zone")
+        if not isinstance(zone, str) or not zone:
+            self._bad_request(
+                "'zone', when supplied, must be a non-empty string (§23; the zone segment "
+                "users/<user>/zones/<zone>/workspaces/<workspace>/)"
+            )
+            return None
+        return zone
+
+    def _deny_unserved_workspace(
+        self, server: ShimServer, user: str, workspace: str, zone: str
+    ) -> bool:
         """Served-workspace ALLOW-LIST (Commit 5c, applied to BOTH /invoke and /poll — N-6). Now a
-        `(user, workspace)` POLICY-PAIR membership (§23): each allow-list entry is a
-        `user/workspace` string, or a `user/*` wildcard admitting every workspace under one user.
-        If the allow-list is CONFIGURED (non-empty), only a matching pair is served: a non-member →
-        403
+        `(user, zone, workspace)` POLICY-TRIPLE membership (§23/Z4): each allow-list entry is a
+        `user/zone/workspace` string, a `user/zone/*` wildcard admitting every workspace under one
+        zone, or a `user/*` wildcard admitting every zone+workspace under one user. If the list
+        is CONFIGURED (non-empty), only a matching triple is served: a non-member → 403
         `workspace-not-served` BEFORE any dispatch/store access, and this returns True. If UNSET
-        (default), returns False (serve any pair; the §23 resolve-and-contain gate remains the
-        containment authority). PAIR membership ONLY — never a path re-check (an escaping user/
-        workspace is still refused by the delegated GAP-9/§23 gate inside `invoke()`)."""
+        (default), returns False (serve any triple; the §23 resolve-and-contain gate remains the
+        containment authority). TRIPLE membership ONLY — never a path re-check (an escaping
+        user/zone/workspace is still refused by the delegated GAP-9/§23 gate inside `invoke()`).
+        The zone is LOAD-BEARING for isolation: without it, `dave/work/acme` and
+        `dave/personal/acme` would collide on the same allow-list key (the planner's Blocker 2)."""
         allowed = server.allowed_workspaces
-        if allowed and f"{user}/{workspace}" not in allowed and f"{user}/*" not in allowed:
+        if (
+            allowed
+            and f"{user}/{zone}/{workspace}" not in allowed
+            and f"{user}/{zone}/*" not in allowed
+            and f"{user}/*" not in allowed
+        ):
             self._respond(
                 _HTTP_FORBIDDEN,
                 {
                     "error": "workspace-not-served",
                     "detail": (
-                        f"user/workspace {user!r}/{workspace!r} is not in this shim's served "
-                        "allow-list (workspaces.allowed = 'user/workspace' or 'user/*' entries in "
-                        "instance/shim.yaml)"
+                        f"user/zone/workspace {user!r}/{zone!r}/{workspace!r} is not in this "
+                        "shim's served allow-list (workspaces.allowed = 'user/zone/workspace', "
+                        "'user/zone/*', or 'user/*' entries in instance/shim.yaml)"
                     ),
                 },
             )
@@ -880,19 +913,22 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             # missing workspace; a missing user must NEVER default (never `users/None/…`).
             self._bad_request("'user' is required (a non-empty string; the §23 isolation prefix)")
             return
+        zone = self._zone_of(payload)
+        if zone is None:  # a present-but-invalid `zone` (already 400'd by `_zone_of`)
+            return
         if not isinstance(params, Mapping):
             self._bad_request("'params' must be a JSON object")
             return
 
-        if self._deny_unserved_workspace(server, user, workspace):
+        if self._deny_unserved_workspace(server, user, workspace, zone):
             return
 
         if classify_verb(verb, params) == TIER_B:
             if _is_generate_next_submit(verb, params):
-                self._submit_generate_next(server, workspace, user, params, token, pins)
+                self._submit_generate_next(server, workspace, user, zone, params, token, pins)
                 return
             if verb == "render":
-                self._submit_render(server, workspace, user, params, token, pins)
+                self._submit_render(server, workspace, user, zone, params, token, pins)
                 return
             # The STILL-DEFERRED Tier-B verb `begin-session{generate!=none}` (Commit 9).
             self._respond(_HTTP_NOT_IMPLEMENTED, _tier_b_body(verb, params))
@@ -900,7 +936,9 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
 
         # Tier-A or unknown-verb: `invoke()` is the authority (unknown-verb → its fatal envelope).
         try:
-            result = server.invoke_fn(verb, workspace, user, params, token, root=server.root)
+            result = server.invoke_fn(
+                verb, workspace, user, params, token, root=server.root, zone=zone
+            )
         except HandlerNotWired:
             # Post-`register_api_handlers()` this is unreachable; defensive only.
             self._respond(_HTTP_INTERNAL, {"error": "handler-not-wired", "verb": verb})
@@ -912,6 +950,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         server: ShimServer,
         workspace: str,
         user: str,
+        zone: str,
         params: Mapping[str, Any],
         token: Any,
         pins: Any,
@@ -963,9 +1002,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         callback_url = params.get("callback_url")
         if callback_url is not None:
             try:
-                validate_callback_url(
-                    callback_url, allowed_hosts=server.allowed_callback_hosts
-                )
+                validate_callback_url(callback_url, allowed_hosts=server.allowed_callback_hosts)
             except CallbackPolicyError as exc:
                 self._respond(
                     _HTTP_BAD_REQUEST,
@@ -980,15 +1017,17 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         # (b) Build the CONTAINED store (delegated §23 gate — an escaping user/workspace RAISES →
         #     403).
         try:
-            store, job_store, claims, is_done_fn = _open_workspace(server.root, user, workspace)
+            store, job_store, claims, is_done_fn = _open_workspace(
+                server.root, user, workspace, zone
+            )
         except ValueError:
             self._respond(
                 _HTTP_FORBIDDEN,
                 {
                     "error": "isolation-violation",
                     "detail": (
-                        "user/workspace does not resolve to a contained store root — workspaces "
-                        "never cross (§10/§21.1/§23)"
+                        "user/zone/workspace does not resolve to a contained store root — "
+                        "workspaces never cross (§10/§21.1/§23)"
                     ),
                 },
             )
@@ -1007,7 +1046,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         plan_targets = (
             server.plan_targets_fn if server.plan_targets_fn is not None else _default_plan_targets
         )
-        target_ids = list(plan_targets(server.root, user, workspace, decoded, params))
+        target_ids = list(plan_targets(server.root, user, workspace, zone, decoded, params))
         if not target_ids:
             self._respond(
                 _HTTP_OK,
@@ -1039,7 +1078,8 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 list(outcome.record.target_ids) if outcome.record is not None else target_ids
             )
             self._respond(
-                _HTTP_OK, self._done_body(server, workspace, user, outcome.key, record_targets)
+                _HTTP_OK,
+                self._done_body(server, workspace, user, zone, outcome.key, record_targets),
             )
             return
         if outcome.spawn:  # `spawned` or `stolen` — detach the runner (record already written).
@@ -1055,6 +1095,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 verb="continue-session",
                 workspace=workspace,
                 user=user,
+                zone=zone,
                 params=dict(params),
                 idempotency_key=idempotency_key,
                 root=str(server.root),
@@ -1082,6 +1123,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         server: ShimServer,
         workspace: str,
         user: str,
+        zone: str,
         params: Mapping[str, Any],
         token: Any,
         pins: Any,
@@ -1143,15 +1185,17 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         # (c) Build the CONTAINED store (delegated §23 gate — an escaping user/workspace RAISES →
         #     403).
         try:
-            store, job_store, claims, is_done_fn = _open_workspace(server.root, user, workspace)
+            store, job_store, claims, is_done_fn = _open_workspace(
+                server.root, user, workspace, zone
+            )
         except ValueError:
             self._respond(
                 _HTTP_FORBIDDEN,
                 {
                     "error": "isolation-violation",
                     "detail": (
-                        "user/workspace does not resolve to a contained store root — workspaces "
-                        "never cross (§10/§21.1/§23)"
+                        "user/zone/workspace does not resolve to a contained store root — "
+                        "workspaces never cross (§10/§21.1/§23)"
                     ),
                 },
             )
@@ -1187,7 +1231,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             self._respond(
                 _HTTP_OK,
                 self._done_body(
-                    server, workspace, user, job_key(target_ids, idempotency_key), target_ids
+                    server, workspace, user, zone, job_key(target_ids, idempotency_key), target_ids
                 ),
             )
             return
@@ -1206,7 +1250,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         # cache-hit / an idempotent re-submit after completion) → 200 + the fetched output.
         if outcome.disposition == "done":
             self._respond(
-                _HTTP_OK, self._done_body(server, workspace, user, outcome.key, target_ids)
+                _HTTP_OK, self._done_body(server, workspace, user, zone, outcome.key, target_ids)
             )
             return
         if outcome.spawn:  # `spawned` or `stolen` — detach the runner (record already written).
@@ -1223,6 +1267,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 verb="render",
                 workspace=workspace,
                 user=user,
+                zone=zone,
                 params=dict(params),
                 idempotency_key=idempotency_key,
                 root=str(server.root),
@@ -1239,14 +1284,15 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             # output; a paid reshape exceeds it → the 202 ack below.
             if self._render_wait_for_done(server, is_done_fn, deliverable_id):
                 self._respond(
-                    _HTTP_OK, self._done_body(server, workspace, user, outcome.key, target_ids)
+                    _HTTP_OK,
+                    self._done_body(server, workspace, user, zone, outcome.key, target_ids),
                 )
                 return
         elif is_done_fn(deliverable_id):
             # `existing` — a prior submit owns the spawn/wait; SHORT-CIRCUIT (never a second wait):
             # if it has since materialized → 200 + output, else the 202 ack below.
             self._respond(
-                _HTTP_OK, self._done_body(server, workspace, user, outcome.key, target_ids)
+                _HTTP_OK, self._done_body(server, workspace, user, zone, outcome.key, target_ids)
             )
             return
         # `spawned`/`stolen` exceeding the wait, or an `existing` not-yet-done → the N-3 202 ack
@@ -1292,7 +1338,12 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(user, str) or not user:
             self._bad_request("'user' is required (a non-empty string; the §23 isolation prefix)")
             return
-        if self._deny_unserved_workspace(server, user, workspace):  # N-6 allow-list, same as submit
+        zone = self._zone_of(payload)
+        if zone is None:  # a present-but-invalid `zone` (already 400'd by `_zone_of`)
+            return
+        if self._deny_unserved_workspace(
+            server, user, workspace, zone
+        ):  # N-6 allow-list, same as submit
             return
         if not isinstance(key, str) or not key:
             self._bad_request("'key' is required (the run-family job key from the 202 ack)")
@@ -1307,17 +1358,19 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Build the CONTAINED store (delegated §23 gate — an escaping user/workspace RAISES → 403).
+        # Build the CONTAINED store (delegated §23 gate — an escaping user/zone/workspace → 403).
         try:
-            _store, job_store, claims, is_done_fn = _open_workspace(server.root, user, workspace)
+            _store, job_store, claims, is_done_fn = _open_workspace(
+                server.root, user, workspace, zone
+            )
         except ValueError:
             self._respond(
                 _HTTP_FORBIDDEN,
                 {
                     "error": "isolation-violation",
                     "detail": (
-                        "user/workspace does not resolve to a contained store root — workspaces "
-                        "never cross (§10/§21.1/§23)"
+                        "user/zone/workspace does not resolve to a contained store root — "
+                        "workspaces never cross (§10/§21.1/§23)"
                     ),
                 },
             )
@@ -1353,7 +1406,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 {
                     "status": "done",
                     "job": job_ref,
-                    "results": self._fetch_outputs(server, workspace, user, target_ids),
+                    "results": self._fetch_outputs(server, workspace, user, zone, target_ids),
                 },
             )
             return
@@ -1364,8 +1417,7 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                     "status": "running",
                     "job": job_ref,
                     "detail": (
-                        "the job is still working (a live claim/lease or the job-lifetime "
-                        "window)"
+                        "the job is still working (a live claim/lease or the job-lifetime window)"
                     ),
                 },
             )
@@ -1417,24 +1469,36 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _done_body(
-        self, server: ShimServer, workspace: str, user: str, key: str, target_ids: Sequence[str]
+        self,
+        server: ShimServer,
+        workspace: str,
+        user: str,
+        zone: str,
+        key: str,
+        target_ids: Sequence[str],
     ) -> dict[str, Any]:
         """The 200 DONE body — the job's key/target-ids + the fetched output items."""
         return {
             "status": "done",
             "job": {"key": key, "target_ids": list(target_ids)},
-            "results": self._fetch_outputs(server, workspace, user, target_ids),
+            "results": self._fetch_outputs(server, workspace, user, zone, target_ids),
         }
 
     def _fetch_outputs(
-        self, server: ShimServer, workspace: str, user: str, target_ids: Sequence[str]
+        self, server: ShimServer, workspace: str, user: str, zone: str, target_ids: Sequence[str]
     ) -> list[Any]:
         """Fetch each materialized target via the EXISTING `fetch-by-id` handler (dumb hot path,
         §21.5) and merge the returned result items — the shim adds no retrieval logic of its own."""
         merged: list[Any] = []
         for target_id in target_ids:
             result = server.invoke_fn(
-                "fetch-by-id", workspace, user, {"id": target_id}, None, root=server.root
+                "fetch-by-id",
+                workspace,
+                user,
+                {"id": target_id},
+                None,
+                root=server.root,
+                zone=zone,
             )
             items = result.get("results") if isinstance(result, Mapping) else None
             if isinstance(items, list):
@@ -1576,9 +1640,7 @@ def make_server(
     )
 
 
-def serve(
-    *, host: str | None = None, port: int = DEFAULT_PORT, root: str = "."
-) -> None:
+def serve(*, host: str | None = None, port: int = DEFAULT_PORT, root: str = ".") -> None:
     """Load config (FAIL-CLOSED on a missing secret), wire the EXACT existing handlers, then serve
     `POST /invoke` until interrupted.
 

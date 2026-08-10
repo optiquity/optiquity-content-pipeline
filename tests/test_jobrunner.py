@@ -85,7 +85,7 @@ def _never_claimed(_id: str):
 
 @pytest.fixture
 def jobs_dir(tmp_path):
-    return tmp_path / "users" / USER / "workspaces" / WS / "jobs"
+    return tmp_path / "users" / USER / "zones" / "default" / "workspaces" / WS / "jobs"
 
 
 @pytest.fixture
@@ -111,6 +111,7 @@ def _spec(key: str, *, verb: str = "continue-session", token=None, params=None) 
         root="/repo-root",
         token=token,
         pins=None,
+        zone="default",
     )
 
 
@@ -366,6 +367,7 @@ class TestPresenceLease:
             params={"action": "generate-next"},
             idempotency_key=IDK,
             root=str(tmp_path),
+            zone="default",
         )
         registry = _presence_for(spec)
         assert registry.ops_dir == tmp_path / "instance" / "ops" / "presence"
@@ -432,6 +434,7 @@ class TestSpawnPrimitive:
             callback_url=cb,
             target_ids=(A, B),
             allowed_callback_hosts=hosts,
+            zone="default",
         )
         restored = JobSpec.from_json(spec.as_json())
         assert restored.callback_url == cb
@@ -498,6 +501,7 @@ class TestMain:
             params={"action": "generate-next"},
             idempotency_key=IDK,
             root=str(tmp_path),
+            zone="default",
         )
         spawn_file = spawn_dir / "spawn.json"
         spawn_file.write_text(spec.as_json(), encoding="utf-8")
@@ -541,6 +545,7 @@ class TestMain:
             params={"action": "generate-next"},  # token-less → the real handler blocks, no LLM
             idempotency_key=IDK,
             root=str(tmp_path),
+            zone="default",
         )
         job_store = jobrunner._store_for(spec)  # the SAME store main() records into
         submitted = job_store.submit((A,), IDK, now=T0, is_done=_never_done, peek=_never_claimed)
@@ -600,6 +605,7 @@ class TestMain:
             callback_url=cb,
             target_ids=(A,),
             allowed_callback_hosts=hosts,
+            zone="default",
         )
         job_store, spawn_file = self._spawn_for(tmp_path, spec)
 
@@ -642,6 +648,7 @@ class TestMain:
             callback_url="https://hooks.example.com/exec-1",
             target_ids=(A,),
             allowed_callback_hosts=frozenset({"hooks.example.com"}),
+            zone="default",
         )
         job_store, spawn_file = self._spawn_for(tmp_path, spec)
         monkeypatch.setattr(cbd, "deliver_callback", lambda *a, **k: "failed")  # noqa: ARG005
@@ -668,6 +675,7 @@ class TestMain:
             idempotency_key=IDK,
             root=str(tmp_path),
             target_ids=(A,),
+            zone="default",
         )
         job_store, spawn_file = self._spawn_for(tmp_path, spec)
 
@@ -693,8 +701,6 @@ class TestMain:
             "assert not leaked, sorted(leaked)\n"
             "print('import-empty-ok')\n"
         )
-        proc = subprocess.run(
-            [sys.executable, "-c", probe], capture_output=True, text=True
-        )
+        proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
         assert "import-empty-ok" in proc.stdout

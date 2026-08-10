@@ -57,7 +57,7 @@ from pipeline.entries import (
 from pipeline.layout import registry_dir
 from pipeline.m1 import DIMENSION_COLLECTIONS
 from pipeline.schema import SCHEMA_FILENAME, Schema, load_schema
-from pipeline.workspace_name import validate_workspace_path
+from pipeline.workspace_name import DEFAULT_ZONE, validate_workspace_path
 
 __all__ = [
     "TOPIC_DIMENSION",
@@ -140,7 +140,7 @@ def resolve_entry_target(
         )
         _require_slug(wanted, "entry id")
         home = (
-            validate_workspace_path(root, user, workspace)
+            validate_workspace_path(root, user, workspace, zone=DEFAULT_ZONE)
             / collection
             / f"{wanted}{ENTRY_SUFFIX}"
         )

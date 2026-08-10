@@ -83,7 +83,7 @@ def build_root(
         )
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
-    ws_home = root / "users" / USER / "workspaces" / WS
+    ws_home = root / "users" / USER / "zones" / "default" / "workspaces" / WS
     topics = ws_home / "topics"
     topics.mkdir(parents=True)
     for tid, why in (("x-t-alpha", "First fixture subject."), ("x-t-beta", "Second one.")):
@@ -94,7 +94,7 @@ def build_root(
 
 
 def write_entry(root: Path, collection: str, entry_id: str, frontmatter: str = "") -> Path:
-    dirpath = root / "users" / USER / "workspaces" / WS / collection
+    dirpath = root / "users" / USER / "zones" / "default" / "workspaces" / WS / collection
     dirpath.mkdir(parents=True, exist_ok=True)
     path = dirpath / f"{entry_id}.md"
     path.write_text(

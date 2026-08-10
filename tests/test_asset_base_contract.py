@@ -76,7 +76,7 @@ def _build_root(tmp_path: Path) -> Path:
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
-    (root / "users" / USER / "workspaces" / WS).mkdir(parents=True)
+    (root / "users" / USER / "zones" / "default" / "workspaces" / WS).mkdir(parents=True)
     return root
 
 
@@ -135,7 +135,7 @@ def capture(tmp_path_factory) -> _Capture:
         pytest.skip("pandoc not installed; the base-contract drives the real A gate + B render leg")
 
     root = _build_root(tmp_path_factory.mktemp("base-contract"))
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     (store.root / "assets").mkdir(parents=True, exist_ok=True)
     (store.root / "assets" / "x.png").write_bytes(_PNG)

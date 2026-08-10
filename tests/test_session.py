@@ -86,7 +86,7 @@ def build_root(
             shutil.copytree(src, dst)
     (root / "instance").mkdir()
     (root / "instance" / "defaults.yaml").write_text(l2, encoding="utf-8")
-    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     for tid, why in topics:
         (topics_dir / f"{tid}.md").write_text(TOPIC.format(tid=tid, why=why), encoding="utf-8")
@@ -95,7 +95,7 @@ def build_root(
 
 def store_for(root: Path) -> WorkspaceStore:
     # `.at(...)` records identity so session/render recover the framework root loudly (§23).
-    return WorkspaceStore.at(root, USER, WS)
+    return WorkspaceStore.at(root, USER, WS, zone="default")
 
 
 class FakeRun:
@@ -238,7 +238,7 @@ class TestBeginSession:
         # AdapterError — parity with the sibling FanoutError/FolioError/UnknownEntryError paths.
         root = build_root(tmp_path)
         store = store_for(root)
-        sources_dir = root / "users" / USER / "workspaces" / WS / "sources"
+        sources_dir = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "sources"
         sources_dir.mkdir(parents=True)
         (sources_dir / "x-bad-src.md").write_text(
             "---\nid: x-bad-src\nprovenance: instance\nschema_version: 1\n"
@@ -583,7 +583,17 @@ class TestGenerateNext:
         token = begin(root, store, base_params(), hs=hs)["token"]
         # A mid-session workspace edit that changes the resolved plan (the topic's `why`
         # rides identity §7.2) → the re-resolve's plan_hash ≠ the token's → plan-stale.
-        (root / "users" / USER / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
+        (
+            root
+            / "users"
+            / USER
+            / "zones"
+            / "default"
+            / "workspaces"
+            / WS
+            / "topics"
+            / "x-t-alpha.md"
+        ).write_text(
             TOPIC.format(tid="x-t-alpha", why="A completely rewritten rationale."), encoding="utf-8"
         )
         out = cont(root, store, {"action": "generate-next"}, token, hs=hs)
@@ -597,9 +607,17 @@ class TestGenerateNext:
         store = store_for(root)
         hs = handlers()
         token = begin(root, store, base_params(), hs=hs)["token"]
-        (root / "users" / USER / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
-            TOPIC.format(tid="x-t-alpha", why="A drifted rationale."), encoding="utf-8"
-        )
+        (
+            root
+            / "users"
+            / USER
+            / "zones"
+            / "default"
+            / "workspaces"
+            / WS
+            / "topics"
+            / "x-t-alpha.md"
+        ).write_text(TOPIC.format(tid="x-t-alpha", why="A drifted rationale."), encoding="utf-8")
         out = cont(root, store, {"action": "status"}, token, hs=hs)
         assert out["results"][0]["code"] == "plan-stale"
         assert out["results"][0]["context"]["drift"] is True
@@ -714,16 +732,16 @@ class TestOutlineDrive:
     def test_cosmetic_edit_does_not_churn_semantic_does(self, tmp_path):
         root = build_root(tmp_path)
         store = store_for(root)
-        base_ids = begin(root, store, outline_params(self.MD_A), hs=handlers())[
-            "results"
-        ][0]["ids"]["artifact_ids"]
+        base_ids = begin(root, store, outline_params(self.MD_A), hs=handlers())["results"][0][
+            "ids"
+        ]["artifact_ids"]
         cosmetic = "# Outline A\n\n\n- alpha point   \n- beta point\n\n"  # N-identical to MD_A
-        cos_ids = begin(root, store, outline_params(cosmetic), hs=handlers())[
-            "results"
-        ][0]["ids"]["artifact_ids"]
-        sem_ids = begin(root, store, outline_params(self.MD_B), hs=handlers())[
-            "results"
-        ][0]["ids"]["artifact_ids"]
+        cos_ids = begin(root, store, outline_params(cosmetic), hs=handlers())["results"][0]["ids"][
+            "artifact_ids"
+        ]
+        sem_ids = begin(root, store, outline_params(self.MD_B), hs=handlers())["results"][0]["ids"][
+            "artifact_ids"
+        ]
         assert cos_ids == base_ids  # a cosmetic edit is N-invariant -> the SAME id
         assert sem_ids != base_ids  # a semantic edit churns the id (the accepted R2 cost)
 
@@ -792,7 +810,7 @@ class TestPlanNextBatchIds:
         wire = begin(root, store, params, hs=hs)["token"]
         gn = {"action": "generate-next", "batch_size": 2}
         # BEFORE the paid call:
-        predicted = session.plan_next_batch_ids(root, USER, WS, decode(wire), gn)
+        predicted = session.plan_next_batch_ids(root, USER, WS, "default", decode(wire), gn)
         out = cont(root, store, gn, wire, hs=hs)
         assert predicted == self._batch_ids(out)
         assert len(predicted) == 2  # a genuine multi-artifact slice, not a trivial single id
@@ -806,7 +824,7 @@ class TestPlanNextBatchIds:
         wire = begun["token"]
         target = [begun["results"][0]["ids"]["artifact_ids"][1]]  # a specific id
         gn = {"action": "generate-next", "only": target}
-        predicted = session.plan_next_batch_ids(root, USER, WS, decode(wire), gn)
+        predicted = session.plan_next_batch_ids(root, USER, WS, "default", decode(wire), gn)
         out = cont(root, store, gn, wire, hs=hs)
         assert predicted == self._batch_ids(out) == target
 
@@ -824,7 +842,7 @@ class TestPlanNextBatchIds:
         consumed_id = out1["results"][0]["item"]
         wire1 = out1["token"]  # the advanced cursor
         gn = {"action": "generate-next", "batch_size": 2}
-        predicted = session.plan_next_batch_ids(root, USER, WS, decode(wire1), gn)
+        predicted = session.plan_next_batch_ids(root, USER, WS, "default", decode(wire1), gn)
         out2 = cont(root, store, gn, wire1, hs=hs)
         assert predicted == self._batch_ids(out2)
         assert consumed_id not in predicted and len(predicted) == 2
@@ -836,10 +854,20 @@ class TestPlanNextBatchIds:
         store = store_for(root)
         hs = handlers(FakeRun())
         wire = begin(root, store, base_params(), hs=hs)["token"]
-        (root / "users" / USER / "workspaces" / WS / "topics" / "x-t-alpha.md").write_text(
+        (
+            root
+            / "users"
+            / USER
+            / "zones"
+            / "default"
+            / "workspaces"
+            / WS
+            / "topics"
+            / "x-t-alpha.md"
+        ).write_text(
             TOPIC.format(tid="x-t-alpha", why="A completely rewritten rationale."), encoding="utf-8"
         )
         gn = {"action": "generate-next"}
-        assert session.plan_next_batch_ids(root, USER, WS, decode(wire), gn) == []
+        assert session.plan_next_batch_ids(root, USER, WS, "default", decode(wire), gn) == []
         out = cont(root, store, gn, wire, hs=hs)
         assert out["results"][0]["code"] == "plan-stale"  # generate-next likewise composes nothing

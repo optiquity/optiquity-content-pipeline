@@ -174,9 +174,7 @@ def _git_init(root: Path) -> None:
     instance's own synthetic-generic corpus under tmp — never a client repo, never committed."""
 
     def g(*args: str) -> None:
-        subprocess.run(
-            ["git", "-C", str(root), *args], check=True, capture_output=True, text=True
-        )
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True)
 
     g("init", "-q")
     g("config", "user.email", "shim-int@example.invalid")
@@ -200,7 +198,7 @@ def _build_world(tmp: Path) -> Path:
     (root / "instance" / "defaults.yaml").write_text(_L2_DEFAULTS, encoding="utf-8")
     (registry_dir(root, "platforms") / "github.md").write_text(_GITHUB_PASS, encoding="utf-8")
 
-    topics_dir = root / "users" / USER / "workspaces" / WS / "topics"
+    topics_dir = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "topics"
     topics_dir.mkdir(parents=True)
     (topics_dir / "x-widget-service.md").write_text(_TOPIC, encoding="utf-8")
 
@@ -212,7 +210,7 @@ def _build_world(tmp: Path) -> Path:
     _git_init(corpus_a)
     _git_init(corpus_b)
 
-    sources_dir = root / "users" / USER / "workspaces" / WS / "sources"
+    sources_dir = root / "users" / USER / "zones" / "default" / "workspaces" / WS / "sources"
     sources_dir.mkdir(parents=True)
     (sources_dir / "x-alpha.md").write_text(
         _SOURCE.format(sid="x-alpha", path=str(corpus_a), t=5, ind="first-party", pri="primary"),
@@ -370,7 +368,9 @@ def _begin_and_plan(root: Path, store: WorkspaceStore, adapters) -> tuple[str, l
     assert begin["envelope"]["ok"], begin["envelope"]
     token = begin["token"]
     decoded = invoke_mod.token_mod.decode(token, expected_workspace=WS)
-    target_ids = list(session.plan_next_batch_ids(root, USER, WS, decoded, {"batch_size": 1}))
+    target_ids = list(
+        session.plan_next_batch_ids(root, USER, WS, "default", decoded, {"batch_size": 1})
+    )
     assert target_ids, "the plan must resolve a predictable target artifact-id"
     return token, target_ids
 
@@ -390,7 +390,7 @@ def test_poll_materialize_within_lifetime_and_no_double_spawn(tmp_path, monkeypa
     monkeypatch.setenv("FAKE_CLAUDE_WRITER_LOG", str(writer_log))
     monkeypatch.setenv("FAKE_CLAUDE_RELEASE_FILE", str(release_file))  # HOLD the writer
 
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     adapters = default_adapters()
     token, target_ids = _begin_and_plan(root, store, adapters)
@@ -417,6 +417,7 @@ def test_poll_materialize_within_lifetime_and_no_double_spawn(tmp_path, monkeypa
         token=token,
         pins=None,
         target_ids=tuple(target_ids),
+        zone="default",
     )
     handle = jobrunner.spawn_runner(spec, spawn_dir=store.jobs_dir)  # REAL detached subprocess
     spawned.append(handle)
@@ -433,7 +434,11 @@ def test_poll_materialize_within_lifetime_and_no_double_spawn(tmp_path, monkeypa
     # W1 FIX: past the OLD 120 s startup line but within the job lifetime → RUNNING
     # (within-lifetime), not the resend the old boundary would have emitted.
     fixed = resolve_job_state(
-        record, tid, now=t0 + 200, is_done=_done, peek=claims.peek,
+        record,
+        tid,
+        now=t0 + 200,
+        is_done=_done,
+        peek=claims.peek,
         job_lifetime=JOB_LIFETIME_SECONDS,
     )
     assert fixed.kind == "running" and fixed.detail == "within-lifetime"
@@ -446,9 +451,7 @@ def test_poll_materialize_within_lifetime_and_no_double_spawn(tmp_path, monkeypa
 
     # Anti-double-charge: a re-submit (same idempotency_key) WHILE running → existing, NO second
     # spawn and NO steal (the incumbent record is neither re-spawned nor rewritten).
-    resubmit = job_store.submit(
-        target_ids, "idem-1", now=t0 + 200, is_done=_done, peek=claims.peek
-    )
+    resubmit = job_store.submit(target_ids, "idem-1", now=t0 + 200, is_done=_done, peek=claims.peek)
     assert resubmit.disposition == "existing" and not resubmit.spawn
     assert job_store.load(outcome.key).spawn_time == t0  # unchanged → no steal
     assert _writer_calls(writer_log) == 1  # no second runner reached the writer
@@ -465,7 +468,11 @@ def test_poll_materialize_within_lifetime_and_no_double_spawn(tmp_path, monkeypa
 
     # The real output is fetchable through the existing `fetch-by-id` door.
     fetched = invoke_mod.invoke(
-        "fetch-by-id", WS, USER, {"id": tid}, root=str(root),
+        "fetch-by-id",
+        WS,
+        USER,
+        {"id": tid},
+        root=str(root),
         handlers={"fetch-by-id": fetch.fetch_handler()},
     )
     assert fetched["envelope"]["ok"] and fetched["results"]
@@ -521,7 +528,7 @@ def test_webhook_guard_rejects_loopback_at_real_detached_delivery(tmp_path, monk
     # No release sentinel → the writer emits immediately; the job materializes, THEN the runner
     # reaches the real delivery step.
 
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     adapters = default_adapters()
     token, target_ids = _begin_and_plan(root, store, adapters)
@@ -538,7 +545,11 @@ def test_webhook_guard_rejects_loopback_at_real_detached_delivery(tmp_path, monk
         # REAL submit writes a record carrying the callback_url (JobStore.submit does not validate
         # the URL — that guard is the shim's; here we exercise the DELIVERY-time re-validation).
         outcome = job_store.submit(
-            target_ids, "idem-cb", now=time.time(), is_done=_done, peek=claims.peek,
+            target_ids,
+            "idem-cb",
+            now=time.time(),
+            is_done=_done,
+            peek=claims.peek,
             callback_url=callback_url,
         )
         assert outcome.spawn
@@ -558,6 +569,7 @@ def test_webhook_guard_rejects_loopback_at_real_detached_delivery(tmp_path, monk
             callback_url=callback_url,
             target_ids=tuple(target_ids),
             allowed_callback_hosts=frozenset({"127.0.0.1"}),
+            zone="default",
         )
         handle = jobrunner.spawn_runner(spec, spawn_dir=store.jobs_dir)  # REAL detached subprocess
         spawned.append(handle)
@@ -590,7 +602,7 @@ def test_nonok_records_a_terminal_surfaced_by_the_real_poll(tmp_path, monkeypatc
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "nonok")  # the writer emits is_error: true
 
-    store = WorkspaceStore.at(root, USER, WS)
+    store = WorkspaceStore.at(root, USER, WS, zone="default")
     store.ensure_layout()
     adapters = default_adapters()
     token, target_ids = _begin_and_plan(root, store, adapters)
@@ -616,6 +628,7 @@ def test_nonok_records_a_terminal_surfaced_by_the_real_poll(tmp_path, monkeypatc
         token=token,
         pins=None,
         target_ids=tuple(target_ids),
+        zone="default",
     )
     handle = jobrunner.spawn_runner(spec, spawn_dir=store.jobs_dir)
     spawned.append(handle)
