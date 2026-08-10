@@ -102,6 +102,8 @@ _HEADER = (
     "# Each row maps an EXPLICIT (scope_level, scope_id) to a keystore HANDLE (a NON-secret\n"
     "# reference — the secret lives in the keystore) + a HARD weekly dollar cap. No secret here.\n"
     "# Edited via `pipeline transport assign-key/clear-key`; read by the cascade resolver.\n"
+    "# Also holds `subscription_user`: the SINGLE user entitled to the subscription fallback\n"
+    "# (plan G5) — set ONLY via `transport set-subscription-user`, never a run verb (I2/I3).\n"
 )
 
 
@@ -284,12 +286,24 @@ class AssignmentStore:
     Loaded from / saved to `instance/ops/transport/config.yaml`. `assign` adds or REPLACES the
     assignment for a scope; `clear` removes one (idempotent). `cascade_key` resolves the
     most-specific-wins chain. The store holds only non-secret handles + caps — never a secret.
+
+    It ALSO holds the OPTIONAL single entitled subscription user (`entitled_user`, plan G5) in the
+    SAME document, so the key-assignment block and the entitlement never clobber each other on a
+    set/clear of either (one store, one renderer — never a second config file).
     """
 
-    def __init__(self, assignments: Iterable[Assignment] = ()) -> None:
+    def __init__(
+        self, assignments: Iterable[Assignment] = (), *, entitled_user: str | None = None
+    ) -> None:
         self._by_scope: dict[ScopeKey, Assignment] = {}
         for assignment in assignments:
             self._by_scope[assignment.scope] = assignment
+        # The SINGLE entitled subscription user (plan G5, §21.10, I2/I3) — single-valued, swappable,
+        # OPTIONAL. It coexists with the key assignments in the SAME config document (one store, one
+        # renderer), so a set/clear of one block NEVER clobbers the other. `None` → nobody entitled.
+        # The value is opaque here (a validated user segment); the deep §23 validation + the
+        # admin-only write discipline live in `pipeline.spend.entitlement`, the domain owner.
+        self._entitled_user: str | None = entitled_user
 
     @property
     def assignments(self) -> list[Assignment]:
@@ -310,6 +324,25 @@ class AssignmentStore:
     def clear(self, scope: ScopeKey) -> bool:
         """Remove the assignment at `scope`; return True iff one was present (idempotent)."""
         return self._by_scope.pop(scope, None) is not None
+
+    @property
+    def entitled_user(self) -> str | None:
+        """The SINGLE entitled subscription user, or `None` (plan G5, §21.10, I2/I3).
+
+        Single-valued + swappable: at most one user is ever entitled. The value is opaque to the
+        store (a validated user segment — the §23 validation lives in `pipeline.spend.entitlement`,
+        the domain owner); the store only PERSISTS it alongside the assignments so a set/clear of
+        one block never drops the other.
+        """
+        return self._entitled_user
+
+    def set_entitled_user(self, user: str) -> None:
+        """REPLACE the entitled subscription user (single-valued — never a second entry)."""
+        self._entitled_user = user
+
+    def clear_entitled_user(self) -> None:
+        """Remove the entitled subscription user (idempotent)."""
+        self._entitled_user = None
 
     def cascade_key(
         self, user: str, zone: str, workspace: str | None = None
@@ -401,7 +434,25 @@ def _parse_config(text: str, *, source: str) -> AssignmentStore:
             )
         seen.add(assignment.scope)
         assignments.append(assignment)
-    return AssignmentStore(assignments)
+    entitled = _parse_entitled_user(data.get("subscription_user"), source=source)
+    return AssignmentStore(assignments, entitled_user=entitled)
+
+
+def _parse_entitled_user(value: Any, *, source: str) -> str | None:
+    """Validate the OPTIONAL `subscription_user` config value: `None` or a non-empty string (G5).
+
+    Shape-only, mirroring how `scope_id` is validated on parse (the deep §23 user-segment check
+    lives in `pipeline.spend.entitlement.set_entitled_user`, the write path). A present-but-non-
+    string / empty value is a loud `ConfigError` — never silently dropped (I2/I3)."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or value == "":
+        raise ConfigError(
+            f"assignment-bad-config: {source}: subscription_user must be a non-empty string "
+            "(the SINGLE entitled subscription user; stored EXPLICITLY — I2/I3), got "
+            f"{type(value).__name__}"
+        )
+    return value
 
 
 def _parse_row(raw: Any, *, index: int, source: str) -> Assignment:
@@ -466,7 +517,13 @@ def _render_config(store: AssignmentStore) -> str:
         }
         for a in store.assignments
     ]
-    return _HEADER + _dump_yaml({"format": CONFIG_FORMAT, "assignments": rows})
+    doc: dict[str, Any] = {"format": CONFIG_FORMAT}
+    if store.entitled_user is not None:
+        # The single entitled subscription user (G5) lives in the SAME document as the assignments
+        # (one store, one renderer) — so neither block clobbers the other on a set/clear.
+        doc["subscription_user"] = store.entitled_user
+    doc["assignments"] = rows
+    return _HEADER + _dump_yaml(doc)
 
 
 def _dump_yaml(data: Any) -> str:

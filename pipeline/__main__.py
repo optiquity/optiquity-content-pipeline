@@ -3184,23 +3184,31 @@ def _cmd_sources(
 
 
 def _cmd_transport(argv: list[str]) -> int:
-    """G4: `pipeline transport <assign-key|list-keys|clear-key> …` — key ASSIGNMENT admin (§21.10).
+    """G4/G5: `pipeline transport <assign-key|list-keys|clear-key|set-subscription-user|
+    clear-subscription-user|show> …` — key ASSIGNMENT + subscription ENTITLEMENT admin (§21.10).
 
     Tier-A ADMIN verbs (the `zone`/`workspace` family: LOCAL file ops, NEVER an invoke verb / HTTP
-    door / spend — §21.9). They edit the gitignored handle-assignment config at
+    door / spend — §21.9). They edit the gitignored transport config at
     instance/ops/transport/config.yaml, which maps an EXPLICIT (scope-level, scope-id) to a keystore
-    HANDLE + a HARD weekly dollar cap. No secret is ever read, stored, or printed (the handle is
-    a NON-secret reference; the secret lives in the keystore, G3) and NOTHING spends — G4 stores
-    assignments + resolves the cascade only (transport selection + metering are G6/G7).
+    HANDLE + a HARD weekly dollar cap (G4) AND names the SINGLE entitled subscription user (G5). No
+    secret is ever read, stored, or printed (the handle is a NON-secret reference; the secret lives
+    in the keystore, G3) and NOTHING spends — this stores + resolves config only (transport
+    selection + metering are G6/G7).
 
     - assign-key --scope <global|user:<u>|zone:<u>/<z>|workspace:<u>/<z>/<ws>> --handle <ns:name>
                  --weekly-cap $C   assign (or replace) the handle for one scope. --weekly-cap is
                  HARD-REQUIRED (S3): absent → a loud refusal, NOTHING written (no default cap).
-    - list-keys                    READ-ONLY: scope + handle + cap per assignment (NEVER a secret).
+    - list-keys                    READ-ONLY: scope + handle + cap per assignment (NEVER a secret),
+                                   plus the entitled subscription user (G5) when one is set.
     - clear-key --scope <…>        remove one scope's assignment (idempotent).
+    - set-subscription-user <u>    name the SINGLE entitled subscription user (G5). REPLACES any
+                                   prior (single-valued, swappable). Set ONLY here — NEVER via a
+                                   run/spend verb (I2/I3). A bad §23 user segment → loud refuse.
+    - clear-subscription-user      remove the entitled subscription user (idempotent).
+    - show                         READ-ONLY combined view: the entitled user + every assignment.
 
-    Exit 0 ok; 1 refusal (bad scope/handle/cap, malformed config); 2 usage (no subcommand / missing
-    --weekly-cap / missing --scope)."""
+    Exit 0 ok; 1 refusal (bad scope/handle/cap/user, malformed config); 2 usage (no subcommand /
+    missing --weekly-cap / missing --scope / missing <u>)."""
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -3281,6 +3289,57 @@ def _cmd_transport(argv: list[str]) -> int:
         help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
     )
 
+    setsub = sub.add_parser(
+        "set-subscription-user",
+        help="name the SINGLE entitled subscription user (single-valued, swappable; NO spend)",
+        description=(
+            "Name the SINGLE user entitled to the subscription fallback (ToS: subscription is used "
+            "ONLY for this one user, G5). Validates the user segment (§23); REPLACES any prior "
+            "entitled user — never a second entry. The entitled user is set ONLY here (an "
+            "admin/config verb) — NEVER via a run/spend verb (I2/I3). Tier-A: spends nothing, "
+            "resolves no transport. A bad / uppercase / empty user is a loud refusal, NOTHING "
+            "written."
+        ),
+    )
+    setsub.add_argument(
+        "user",
+        help="the entitled subscription user segment (lowercase, one path segment; §23)",
+    )
+    setsub.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
+    )
+
+    clrsub = sub.add_parser(
+        "clear-subscription-user",
+        help="remove the entitled subscription user (idempotent; NO spend)",
+        description=(
+            "Remove the entitled subscription user (G5). Idempotent: clearing an unset entitlement "
+            "is a clean no-op (exit 0). Preserves the key assignments (one shared config). Tier-A: "
+            "spends nothing."
+        ),
+    )
+    clrsub.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
+    )
+
+    show = sub.add_parser(
+        "show",
+        help="show the entitled subscription user + key assignments (READ-ONLY; NEVER a secret)",
+        description=(
+            "READ-ONLY combined view: the SINGLE entitled subscription user (if any) plus every "
+            "key assignment (scope + handle + cap; NEVER a secret). Mutates + spends nothing."
+        ),
+    )
+    show.add_argument(
+        "--root",
+        default=".",
+        help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
+    )
+
     args = parser.parse_args(argv)
     if args.subcommand == "assign-key":
         return _transport_assign_key(args)
@@ -3288,9 +3347,16 @@ def _cmd_transport(argv: list[str]) -> int:
         return _transport_list_keys(args)
     if args.subcommand == "clear-key":
         return _transport_clear_key(args)
+    if args.subcommand == "set-subscription-user":
+        return _transport_set_subscription_user(args)
+    if args.subcommand == "clear-subscription-user":
+        return _transport_clear_subscription_user(args)
+    if args.subcommand == "show":
+        return _transport_show(args)
     parser.print_usage(sys.stderr)
     print(
-        "pipeline transport: a subcommand is required (known: assign-key, list-keys, clear-key)",
+        "pipeline transport: a subcommand is required (known: assign-key, list-keys, clear-key, "
+        "set-subscription-user, clear-subscription-user, show)",
         file=sys.stderr,
     )
     return 2
@@ -3333,7 +3399,10 @@ def _transport_assign_key(args: "object") -> int:
 
 
 def _transport_list_keys(args: "object") -> int:
-    """G4: `transport list-keys` — READ-ONLY scope + handle + cap listing (NEVER a secret)."""
+    """G4/G5: `transport list-keys` — READ-ONLY scope + handle + cap listing (NEVER a secret).
+
+    Also surfaces the entitled subscription user (G5) when one is set — so the operator sees WHO
+    the subscription fallback is reserved for alongside the key assignments. No secret printed."""
     from pipeline.spend import assignment as A
 
     try:
@@ -3341,6 +3410,10 @@ def _transport_list_keys(args: "object") -> int:
     except A.AssignmentError as exc:
         print(f"pipeline transport list-keys: {exc}", file=sys.stderr)
         return 1
+
+    # Surface the entitled subscription user (G5) when set — a NON-secret user id, no credential.
+    if store.entitled_user is not None:
+        print(f"subscription user: {store.entitled_user}  (the ONE entitled subscription user)")
 
     rows = store.assignments
     if not rows:
@@ -3376,6 +3449,87 @@ def _transport_clear_key(args: "object") -> int:
             f"pipeline transport clear-key: no assignment for {scope.level}:{scope.scope_id} "
             "(no-op)"
         )
+    return 0
+
+
+def _transport_set_subscription_user(args: "object") -> int:
+    """G5: `transport set-subscription-user <u>` — name the ONE entitled subscription user (I2/I3).
+
+    Tier-A admin, NO spend. Validates the user segment (§23); a bad / uppercase / empty / traversing
+    user is a loud refusal with NOTHING written. REPLACES any prior entitled user (single-valued —
+    never a second entry). The entitled user is set ONLY here — never via a run/spend verb (I2/I3).
+    """
+    from pipeline.spend import assignment as A
+    from pipeline.spend import entitlement as E
+
+    try:
+        path = E.set_entitled_user(args.root, args.user)
+    except (E.EntitlementError, A.AssignmentError) as exc:
+        print(f"pipeline transport set-subscription-user: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"pipeline transport set-subscription-user: entitled subscription user is now "
+        f"{args.user!r} (single-valued — any prior entitlement was replaced) — {path}"
+    )
+    return 0
+
+
+def _transport_clear_subscription_user(args: "object") -> int:
+    """G5: `transport clear-subscription-user` — remove the entitled subscription user (idempotent).
+
+    Tier-A admin, NO spend. Preserves the key assignments (one shared config)."""
+    from pipeline.spend import assignment as A
+    from pipeline.spend import entitlement as E
+
+    try:
+        prior = E.entitled_user(args.root)
+        path = E.clear_entitled_user(args.root)
+    except A.AssignmentError as exc:
+        print(f"pipeline transport clear-subscription-user: {exc}", file=sys.stderr)
+        return 1
+    if prior is None:
+        print(
+            "pipeline transport clear-subscription-user: no entitled subscription user (no-op)"
+        )
+    else:
+        print(
+            f"pipeline transport clear-subscription-user: removed entitled subscription user "
+            f"{prior!r} — {path}"
+        )
+    return 0
+
+
+def _transport_show(args: "object") -> int:
+    """G5: `transport show` — READ-ONLY combined view: the entitled user + the key assignments.
+
+    Prints the SINGLE entitled subscription user (if any) then every assignment (scope + handle +
+    cap; NEVER a secret). Mutates nothing, spends nothing (§21.9)."""
+    from pipeline.spend import assignment as A
+
+    try:
+        store = A.load_store(args.root)
+    except A.AssignmentError as exc:
+        print(f"pipeline transport show: {exc}", file=sys.stderr)
+        return 1
+
+    entitled = store.entitled_user
+    if entitled is None:
+        print("subscription user: (none — no user is entitled to the subscription fallback)")
+    else:
+        print(f"subscription user: {entitled}  (the ONE entitled subscription user)")
+
+    rows = store.assignments
+    if not rows:
+        print("key assignments: (none — subscription is the fallback)")
+    else:
+        print("key assignments:")
+        for assignment in rows:
+            # `assignment.handle.handle` is the NON-secret reference; no secret is ever printed.
+            print(
+                f"  {assignment.scope.level}:{assignment.scope.scope_id}  →  "
+                f"{assignment.handle.handle}  "
+                f"(weekly cap {A.format_cap(assignment.weekly_cap_usd)})"
+            )
     return 0
 
 
