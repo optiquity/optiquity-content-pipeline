@@ -25,7 +25,8 @@ These steps take you from an empty checkout to one grounded artifact.
 
 The command-line surface is the launcher `scripts/pipeline` (run it directly, or as `uv run
 pipeline`). It is a set of **friendly doors** onto the engine's verbs — readable flags in, a plan and
-a spend count out — built so nothing paid happens by accident.
+a spend count out — built so nothing paid happens by accident. Every command and its exact flags are
+catalogued in the generated [CLI reference](../reference/cli.md).
 
 **The money-safety model.** `preview` spends nothing; `generate` is a **dry-run by default** (it
 prints the plan and stops); only adding **`--go`** spends, and spend is your Claude **subscription**

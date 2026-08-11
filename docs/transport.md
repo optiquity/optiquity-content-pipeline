@@ -7,7 +7,8 @@ wants a hard, auditable ceiling on what that can cost.
 This is the AS-BUILT operator guide. The design of record is `docs/design.md` **§21.9** (the
 transport invariant) and **§21.10** (the single home for the resolver, keystore, and meter);
 this page is the how-to. Nothing here spends by reading it; the commands below are all local
-config edits until you actually run a generation verb.
+config edits until you actually run a generation verb. Every transport command and its exact flags
+are also catalogued in the generated [CLI reference](reference/cli.md).
 
 ## Money-safety in one paragraph
 
