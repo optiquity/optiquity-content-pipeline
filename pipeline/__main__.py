@@ -37,8 +37,17 @@ Implemented:
 
 (`migrate` is deliberately NOT a subcommand here: migration is a maintenance verb with its
 own entry point, `scripts/migrate.sh` → `python -m pipeline.migration` — §11.6/§21.9.)
+
+The per-command argparse parsers are each built by a reusable `_build_<cmd>_parser(parser)`
+helper (behavior-neutral: it configures a supplied parser rather than constructing one). The
+runtime `_cmd_<cmd>` passes a standalone `ArgumentParser(prog="pipeline <cmd>")`; `build_parser()`
+passes the child from `add_subparsers().add_parser(...)`. Both therefore share ONE definition of
+every flag + its help, so the runtime `--help` and the generated `docs/reference/cli.md`
+(`pipeline docs cli`, via `pipeline.clidoc`) can never disagree (the byte-equality contract test
+`tests/test_cli_doc_contract.py` fails loudly if the tree changes without regenerating the doc).
 """
 
+import argparse
 import sys
 
 _USAGE = """\
@@ -129,7 +138,7 @@ commands:
                  folios, per-id isolation + currency detail) stays on `pipeline invoke get`.
                  Exit 0 ok; 1 no such entry; 2 usage.
   docs           LOCAL/operator doc generators (authoring layer D12/D13; never an HTTP door,
-                 §21.9 preserved). Subcommand:
+                 §21.9 preserved). Subcommands:
                    attributes  regenerate docs/reference/attributes.md — a reference of what
                                every framework registry attribute MEANS (its schema `definition:`
                                prose, verbatim) + type/floor/definition_version. Walks
@@ -137,6 +146,11 @@ commands:
                                client content); deterministic (sorted, no clock); guarded by a
                                byte-equality drift test. Options: --root DIR (default: the
                                package's repo root). Exit 0 ok; 2 usage.
+                   cli         regenerate docs/reference/cli.md — a reference of EVERY pipeline
+                               command + subcommand + flag, rendered from the live argparse tree
+                               (build_parser()); deterministic (definition-order, no clock/width);
+                               guarded by a byte-equality drift test. Options: --root DIR (default:
+                               the package's repo root). Exit 0 ok; 2 usage.
   recipe         the FRIENDLY recipe authoring/derive door (authoring layer C2b, design §8).
                  LOCAL Tier-A file write — never an invoke verb / HTTP door (§21.9 preserved:
                  a recipe write cannot spend quota or mint a token). Subcommand:
@@ -282,23 +296,16 @@ plan). Migration is NOT a subcommand: run scripts/migrate.sh (§11.6).
 """
 
 
-def _cmd_drift_report(argv: list[str]) -> int:
-    """PA-9c: `scripts/pipeline drift-report` — the update-time report (§11.5 SV7)."""
-    import argparse
-    from datetime import date
-    from pathlib import Path
+def _build_drift_report_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline drift-report` (shared by the runtime + `build_parser()`; one SSOT)."""
+    from pipeline import migration
 
-    from pipeline import drift, migration
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline drift-report",
-        description=(
-            "Run the update-time drift report (docs/design.md §11.5 SV7/MIG-6) over every "
-            "config collection under --root: redefinitions to review (BLOCK), removed "
-            "attributes still present (BLOCK), out-of-window stamps (BLOCK, MIG-2), new "
-            "attributes riding defaults (WARN). Wording-only changes are silent by "
-            "design. Read-only; remediation is scripts/migrate.sh (never auto-run)."
-        ),
+    parser.description = (
+        "Run the update-time drift report (docs/design.md §11.5 SV7/MIG-6) over every "
+        "config collection under --root: redefinitions to review (BLOCK), removed "
+        "attributes still present (BLOCK), out-of-window stamps (BLOCK, MIG-2), new "
+        "attributes riding defaults (WARN). Wording-only changes are silent by "
+        "design. Read-only; remediation is scripts/migrate.sh (never auto-run)."
     )
     parser.add_argument("--root", default=".", help="config tree root (default: cwd)")
     parser.add_argument(
@@ -318,6 +325,17 @@ def _cmd_drift_report(argv: list[str]) -> int:
             "injected here at the edge — the library never reads ambient time."
         ),
     )
+    return parser
+
+
+def _cmd_drift_report(argv: list[str]) -> int:
+    """PA-9c: `scripts/pipeline drift-report` — the update-time report (§11.5 SV7)."""
+    from datetime import date
+    from pathlib import Path
+
+    from pipeline import drift, migration
+
+    parser = _build_drift_report_parser(argparse.ArgumentParser(prog="pipeline drift-report"))
     args = parser.parse_args(argv)
 
     root = Path(args.root)
@@ -340,21 +358,9 @@ def _cmd_drift_report(argv: list[str]) -> int:
     return 1 if report.has_blocks else 0
 
 
-def _cmd_ssot(argv: list[str]) -> int:
-    """Plan step 22: `scripts/pipeline ssot <subcommand>` — tracking-SSOT operator verbs.
-
-    Only `derive-state` exists in v1: it renders the derived `state.md`-style mirror
-    (CLAUDE.md rule 3; docs/design.md §24) from an SSOT CSV. Read-only; the output goes to a
-    CALLER-SUPPLIED `--out` path or stdout — never the repo's live `state.md`. There is
-    deliberately no read-a-status verb: the SSOT is write-only w.r.t. control flow (§22.7).
-    """
-    import argparse
-    from pathlib import Path
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline ssot",
-        description="Tracking-SSOT operator verbs (design §24).",
-    )
+def _build_ssot_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline ssot` (+ subcommands): one SSOT for the runtime + build_parser()."""
+    parser.description = "Tracking-SSOT operator verbs (design §24)."
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
     derive = sub.add_parser(
         "derive-state",
@@ -375,6 +381,20 @@ def _cmd_ssot(argv: list[str]) -> int:
         metavar="FILE",
         help="caller-supplied destination for the mirror (default: stdout)",
     )
+    return parser
+
+
+def _cmd_ssot(argv: list[str]) -> int:
+    """Plan step 22: `scripts/pipeline ssot <subcommand>` — tracking-SSOT operator verbs.
+
+    Only `derive-state` exists in v1: it renders the derived `state.md`-style mirror
+    (CLAUDE.md rule 3; docs/design.md §24) from an SSOT CSV. Read-only; the output goes to a
+    CALLER-SUPPLIED `--out` path or stdout — never the repo's live `state.md`. There is
+    deliberately no read-a-status verb: the SSOT is write-only w.r.t. control flow (§22.7).
+    """
+    from pathlib import Path
+
+    parser = _build_ssot_parser(argparse.ArgumentParser(prog="pipeline ssot"))
     args = parser.parse_args(argv)
 
     if args.subcommand != "derive-state":
@@ -394,28 +414,8 @@ def _cmd_ssot(argv: list[str]) -> int:
     return 0
 
 
-def _cmd_demo_thread(argv: list[str]) -> int:
-    """Plan step 28: `scripts/pipeline demo-thread` — the FIRST END-TO-END OUTPUT.
-
-    Drives one full thread (ground → resolve/bind → compose LIVE → reconcile → serialize
-    → persist + SSOT advance, design §2.1 stages 1–5) against a local demo instance and
-    prints the transcript. A build milestone, NOT the MVP (§25). The compose call spends
-    subscription quota. Exit 0 on a real deliverable, 1 on a thread failure, 2 on usage.
-    """
-    import argparse
-    from datetime import date
-
-    from pipeline.driver import DriverError, run_thread
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline demo-thread",
-        description=(
-            "Drive ONE full thread end to end (design §2.1 stages 1–5): ground the client "
-            "graph, resolve/bind, compose via a LIVE subscription writer call, reconcile, "
-            "serialize to an internal target, and persist the artifact + deliverable + "
-            "bindings, advancing both SSOT row kinds. A build milestone (§25), not the MVP."
-        ),
-    )
+def _add_demo_run_args(parser: argparse.ArgumentParser) -> None:
+    """The shared workspace/user/root/now/model surface for `demo-thread` + `mvp-demo`."""
     parser.add_argument("--workspace", required=True, help="the demo workspace (e.g. mvp-demo)")
     parser.add_argument(
         "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
@@ -430,6 +430,33 @@ def _cmd_demo_thread(argv: list[str]) -> int:
     parser.add_argument(
         "--model", default=None, help="writer model to pin (default: the CLI's own default)"
     )
+
+
+def _build_demo_thread_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline demo-thread` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "Drive ONE full thread end to end (design §2.1 stages 1–5): ground the client "
+        "graph, resolve/bind, compose via a LIVE subscription writer call, reconcile, "
+        "serialize to an internal target, and persist the artifact + deliverable + "
+        "bindings, advancing both SSOT row kinds. A build milestone (§25), not the MVP."
+    )
+    _add_demo_run_args(parser)
+    return parser
+
+
+def _cmd_demo_thread(argv: list[str]) -> int:
+    """Plan step 28: `scripts/pipeline demo-thread` — the FIRST END-TO-END OUTPUT.
+
+    Drives one full thread (ground → resolve/bind → compose LIVE → reconcile → serialize
+    → persist + SSOT advance, design §2.1 stages 1–5) against a local demo instance and
+    prints the transcript. A build milestone, NOT the MVP (§25). The compose call spends
+    subscription quota. Exit 0 on a real deliverable, 1 on a thread failure, 2 on usage.
+    """
+    from datetime import date
+
+    from pipeline.driver import DriverError, run_thread
+
+    parser = _build_demo_thread_parser(argparse.ArgumentParser(prog="pipeline demo-thread"))
     args = parser.parse_args(argv)
 
     try:
@@ -504,6 +531,19 @@ def _print_thread_report(result: object) -> None:
         print(f"  {line}")
 
 
+def _build_mvp_demo_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline mvp-demo` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "Drive THE §25 MVP scenario (all nine dimensions, interacting) against a local demo "
+        "instance: grounding with the full selection grammar, one run override, "
+        "compose→reconcile→serialize across an internal AND an external target, both review "
+        "gates, a typed folio (typed + untyped member), emit-manifest, the sequential AND "
+        "parallel consumption modes, and the SSOT projection. LIVE compose + review calls."
+    )
+    _add_demo_run_args(parser)
+    return parser
+
+
 def _cmd_mvp_demo(argv: list[str]) -> int:
     """Plan step 39: `scripts/pipeline mvp-demo` — ★ THE MVP DEMONSTRATION (§25).
 
@@ -520,7 +560,6 @@ def _cmd_mvp_demo(argv: list[str]) -> int:
     quota (compose + review are real); writes only under the workspace store (the client graph
     is read-only, rule 1).
     """
-    import argparse
     from datetime import date
 
     from pipeline.api.render import DefaultRenderEngine
@@ -528,30 +567,7 @@ def _cmd_mvp_demo(argv: list[str]) -> int:
     from pipeline.driver import DriverError
     from pipeline.mvpdemo import MvpFailSafeCurrencyResolver, run_mvp_scenario
 
-    parser = argparse.ArgumentParser(
-        prog="pipeline mvp-demo",
-        description=(
-            "Drive THE §25 MVP scenario (all nine dimensions, interacting) against a local demo "
-            "instance: grounding with the full selection grammar, one run override, "
-            "compose→reconcile→serialize across an internal AND an external target, both review "
-            "gates, a typed folio (typed + untyped member), emit-manifest, the sequential AND "
-            "parallel consumption modes, and the SSOT projection. LIVE compose + review calls."
-        ),
-    )
-    parser.add_argument("--workspace", required=True, help="the demo workspace (e.g. mvp-demo)")
-    parser.add_argument(
-        "--user", required=True, help="the owning user (§23 isolation prefix; users/<user>/…)"
-    )
-    parser.add_argument("--root", default=".", help="the framework repo root (default: cwd)")
-    parser.add_argument(
-        "--now",
-        default=None,
-        metavar="YYYY-MM-DD",
-        help="grounding clock override (default: today; injected at the edge, never ambient)",
-    )
-    parser.add_argument(
-        "--model", default=None, help="writer model to pin (default: the CLI's own default)"
-    )
+    parser = _build_mvp_demo_parser(argparse.ArgumentParser(prog="pipeline mvp-demo"))
     args = parser.parse_args(argv)
 
     try:
@@ -658,33 +674,14 @@ def _cmd_invoke(argv: list[str]) -> int:
     return main_cli(argv)
 
 
-def _cmd_render(argv: list[str]) -> int:
-    """render-output-fix (GAP-2): `pipeline render <item> …` — the ERGONOMIC render door.
-
-    The friendly form of `pipeline invoke render`: friendly flags in (a positional artifact-id +
-    the render coordinates as options) instead of raw `--params-json`, the SAME behavior out. It
-    builds the §21.2 render params dict and hands them to the SAME door
-    (`pipeline.api.invoke.main_cli` → `register_render_handler()` + `invoke()`), so it prints the
-    SAME one-line JSON envelope on stdout and returns the SAME exit codes: 0 ok · 1 whole-invocation
-    failure (JSON still emitted) · 2 usage · 3 a known verb not wired. A THIN ergonomic wrapper — no
-    handler logic is duplicated. render is token-free and the default engine is `pass`-strategy, so
-    no live subscription/LLM call runs. Only `render` is reachable through this subcommand (the verb
-    is HARDCODED); the §21.9 operator-verb exclusion is unchanged — an operator verb is not in
-    KNOWN_VERBS and cannot be named here."""
-    import argparse
-    import json
-
-    from pipeline.api.invoke import main_cli
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline render",
-        description=(
-            "The ergonomic render door (design §21.8, GAP-2): the friendly form of `pipeline "
-            "invoke render` — a positional artifact-id + the render coordinates as flags, the SAME "
-            "JSON envelope out. render is token-free and deterministic (strategy=pass, no live "
-            "call): it mints/serves the deliverable for `item` at the given "
-            "platform/language/output-type/presentation and prints one JSON object on stdout."
-        ),
+def _build_render_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline render` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "The ergonomic render door (design §21.8, GAP-2): the friendly form of `pipeline "
+        "invoke render` — a positional artifact-id + the render coordinates as flags, the SAME "
+        "JSON envelope out. render is token-free and deterministic (strategy=pass, no live "
+        "call): it mints/serves the deliverable for `item` at the given "
+        "platform/language/output-type/presentation and prints one JSON object on stdout."
     )
     parser.add_argument("item", help="the artifact-id to render (§7.4; the render `item`)")
     parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
@@ -707,6 +704,27 @@ def _cmd_render(argv: list[str]) -> int:
         action="store_true",
         help="force a re-reconcile → a NEW revision fit, never mutating the old (§21.8)",
     )
+    return parser
+
+
+def _cmd_render(argv: list[str]) -> int:
+    """render-output-fix (GAP-2): `pipeline render <item> …` — the ERGONOMIC render door.
+
+    The friendly form of `pipeline invoke render`: friendly flags in (a positional artifact-id +
+    the render coordinates as options) instead of raw `--params-json`, the SAME behavior out. It
+    builds the §21.2 render params dict and hands them to the SAME door
+    (`pipeline.api.invoke.main_cli` → `register_render_handler()` + `invoke()`), so it prints the
+    SAME one-line JSON envelope on stdout and returns the SAME exit codes: 0 ok · 1 whole-invocation
+    failure (JSON still emitted) · 2 usage · 3 a known verb not wired. A THIN ergonomic wrapper — no
+    handler logic is duplicated. render is token-free and the default engine is `pass`-strategy, so
+    no live subscription/LLM call runs. Only `render` is reachable through this subcommand (the verb
+    is HARDCODED); the §21.9 operator-verb exclusion is unchanged — an operator verb is not in
+    KNOWN_VERBS and cannot be named here."""
+    import json
+
+    from pipeline.api.invoke import main_cli
+
+    parser = _build_render_parser(argparse.ArgumentParser(prog="pipeline render"))
     args = parser.parse_args(argv)
 
     # Build the §21.2 render params from the friendly flags, then hand them to the SAME door as
@@ -1435,23 +1453,24 @@ def _run_friendly_generate(
     return drive_code
 
 
+def _build_preview_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline preview` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "The friendly plan-only door (CLI-UX C3a): English-ish flags in, the whole plan + the "
+        "exact count of paid pieces out — and it SPENDS NOTHING (begin-session with "
+        "generate=none, explain=true, via the direct-handler pattern; §21.9 preserved)."
+    )
+    _add_friendly_generate_args(parser)
+    return parser
+
+
 def _cmd_preview(argv: list[str], *, adapters: "object | None" = None) -> int:
     """CLI-UX C3a: `pipeline preview` — the FREE plan-only door. Friendly flags →
     `normalize(interactive)` → begin-session `{generate=none, explain=true}` via the direct-handler
     pattern → print the effective settings, the plan, and `spend-scope: N`. NEVER spends (only the
     begin-session handler is constructed; no continue-session, no live runner). `adapters` is a test
     injection seam. Exit 0 ok; 1 refusal; 2 usage."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline preview",
-        description=(
-            "The friendly plan-only door (CLI-UX C3a): English-ish flags in, the whole plan + the "
-            "exact count of paid pieces out — and it SPENDS NOTHING (begin-session with "
-            "generate=none, explain=true, via the direct-handler pattern; §21.9 preserved)."
-        ),
-    )
-    _add_friendly_generate_args(parser)
+    parser = _build_preview_parser(argparse.ArgumentParser(prog="pipeline preview"))
     args = parser.parse_args(argv)
 
     friendly = _friendly_from_args(args, spend=False)
@@ -1468,26 +1487,13 @@ def _cmd_preview(argv: list[str], *, adapters: "object | None" = None) -> int:
     return code
 
 
-def _cmd_generate(
-    argv: list[str], *, adapters: "object | None" = None, run_artifact: "object | None" = None
-) -> int:
-    """CLI-UX C3a: `pipeline generate` — the friendly generate door. Friendly flags →
-    `normalize(interactive)` → begin-session `{generate=none, explain=true}`. The DEFAULT is a
-    DRY-RUN identical to `preview` (prints the plan + spend estimate and STOPS, spending nothing —
-    only the begin-session handler is constructed). `--go` DRIVES the plan to completion via
-    continue-session `generate-next` (the ONLY spend path). `adapters`/`run_artifact` are test
-    injection seams — `run_artifact` is the drive seam (default `driver._run_artifact`, live) so
-    tests never spend live quota. Exit 0 ok; 1 refusal / --go spend failure; 2 usage."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline generate",
-        description=(
-            "The friendly generate door (CLI-UX C3a). Same flags as `preview`; the DEFAULT is a "
-            "DRY-RUN (prints the plan + spend estimate and STOPS, spending nothing). Add --go to "
-            "DRIVE the plan to completion (the ONLY path that spends subscription quota). Direct-"
-            "handler pattern throughout — never registers a session verb (§21.9 preserved)."
-        ),
+def _build_generate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline generate` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "The friendly generate door (CLI-UX C3a). Same flags as `preview`; the DEFAULT is a "
+        "DRY-RUN (prints the plan + spend estimate and STOPS, spending nothing). Add --go to "
+        "DRIVE the plan to completion (the ONLY path that spends subscription quota). Direct-"
+        "handler pattern throughout — never registers a session verb (§21.9 preserved)."
     )
     _add_friendly_generate_args(parser)
     parser.add_argument(
@@ -1542,6 +1548,20 @@ def _cmd_generate(
         action="store_true",
         help="overwrite an existing saved-selection file (default: refuse; --save-selection only)",
     )
+    return parser
+
+
+def _cmd_generate(
+    argv: list[str], *, adapters: "object | None" = None, run_artifact: "object | None" = None
+) -> int:
+    """CLI-UX C3a: `pipeline generate` — the friendly generate door. Friendly flags →
+    `normalize(interactive)` → begin-session `{generate=none, explain=true}`. The DEFAULT is a
+    DRY-RUN identical to `preview` (prints the plan + spend estimate and STOPS, spending nothing —
+    only the begin-session handler is constructed). `--go` DRIVES the plan to completion via
+    continue-session `generate-next` (the ONLY spend path). `adapters`/`run_artifact` are test
+    injection seams — `run_artifact` is the drive seam (default `driver._run_artifact`, live) so
+    tests never spend live quota. Exit 0 ok; 1 refusal / --go spend failure; 2 usage."""
+    parser = _build_generate_parser(argparse.ArgumentParser(prog="pipeline generate"))
     args = parser.parse_args(argv)
 
     return _run_friendly_generate(
@@ -1661,21 +1681,12 @@ def _emit_and_print(
     return 0
 
 
-def _outline_emit(argv: list[str]) -> int:
-    """CLI-UX C3b: `pipeline outline emit <file>` — realize an authored outline as a viewable
-    artifact. Tier-A, NO spend: builds emit-outline params from the friendly content axes and
-    dispatches ONLY the `emit_outline_handler` (direct-handler pattern). Prints the emitted
-    artifact-id (the continuation HANDLE). Exit 0 ok; 1 refusal; 2 usage."""
-    import argparse
-    from pathlib import Path
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline outline emit",
-        description=(
-            "Realize an authored/edited outline as a viewable Format=outline artifact (CLI-UX C3b, "
-            "DR-3 horn (a)): Tier-A, SPENDS NOTHING. Prints the emitted artifact-id — the "
-            "continuation HANDLE. A re-emit of the same bytes is the idempotent no-op."
-        ),
+def _build_outline_emit_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline outline emit` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "Realize an authored/edited outline as a viewable Format=outline artifact (CLI-UX C3b, "
+        "DR-3 horn (a)): Tier-A, SPENDS NOTHING. Prints the emitted artifact-id — the "
+        "continuation HANDLE. A re-emit of the same bytes is the idempotent no-op."
     )
     parser.add_argument(
         "file", help="the authored outline Markdown file to emit (§15 substance floor)"
@@ -1715,6 +1726,17 @@ def _outline_emit(argv: list[str]) -> int:
         default=".",
         help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
     )
+    return parser
+
+
+def _outline_emit(argv: list[str]) -> int:
+    """CLI-UX C3b: `pipeline outline emit <file>` — realize an authored outline as a viewable
+    artifact. Tier-A, NO spend: builds emit-outline params from the friendly content axes and
+    dispatches ONLY the `emit_outline_handler` (direct-handler pattern). Prints the emitted
+    artifact-id (the continuation HANDLE). Exit 0 ok; 1 refusal; 2 usage."""
+    from pathlib import Path
+
+    parser = _build_outline_emit_parser(argparse.ArgumentParser(prog="pipeline outline emit"))
     args = parser.parse_args(argv)
 
     try:
@@ -1748,23 +1770,13 @@ def _outline_emit(argv: list[str]) -> int:
     )
 
 
-def _outline_drive(
-    argv: list[str], *, adapters: "object | None" = None, run_artifact: "object | None" = None
-) -> int:
-    """CLI-UX C3b: `pipeline outline drive <file>` — ingest an authored/edited outline and drive it
-    to completion. Identical to `generate --outline <file>` (the single normalizer path): default
-    DRY-RUN (no spend), `--go` to drive `generate-next` through the injectable runner. Exit 0 ok;
-    1 refusal / --go spend failure; 2 usage."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline outline drive",
-        description=(
-            "Ingest an authored/edited outline and DRIVE the plan to completion (CLI-UX C3b, DR-3 "
-            "ingest leg). Identical to `pipeline generate --outline FILE`: the DEFAULT is a "
-            "DRY-RUN (prints the plan + spend estimate and STOPS, spending nothing); add --go. "
-            "Direct-handler pattern throughout — never registers a session verb (§21.9 preserved)."
-        ),
+def _build_outline_drive_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline outline drive` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "Ingest an authored/edited outline and DRIVE the plan to completion (CLI-UX C3b, DR-3 "
+        "ingest leg). Identical to `pipeline generate --outline FILE`: the DEFAULT is a "
+        "DRY-RUN (prints the plan + spend estimate and STOPS, spending nothing); add --go. "
+        "Direct-handler pattern throughout — never registers a session verb (§21.9 preserved)."
     )
     parser.add_argument(
         "file", help="the authored/edited outline Markdown file to drive (DR-3 ingest leg)"
@@ -1776,6 +1788,17 @@ def _outline_drive(
         help="DRIVE the plan to completion (spends quota); omit for a free dry-run preview",
     )
     _add_outline_handle_args(parser)
+    return parser
+
+
+def _outline_drive(
+    argv: list[str], *, adapters: "object | None" = None, run_artifact: "object | None" = None
+) -> int:
+    """CLI-UX C3b: `pipeline outline drive <file>` — ingest an authored/edited outline and drive it
+    to completion. Identical to `generate --outline <file>` (the single normalizer path): default
+    DRY-RUN (no spend), `--go` to drive `generate-next` through the injectable runner. Exit 0 ok;
+    1 refusal / --go spend failure; 2 usage."""
+    parser = _build_outline_drive_parser(argparse.ArgumentParser(prog="pipeline outline drive"))
     args = parser.parse_args(argv)
 
     return _run_friendly_generate(
@@ -1786,6 +1809,35 @@ def _outline_drive(
         adapters=adapters,
         run_artifact=run_artifact,
     )
+
+
+def _build_outline_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure the `pipeline outline` group FOR THE CLI-DOC TREE (`build_parser()`).
+
+    The runtime `_cmd_outline` hand-rolls its emit/drive dispatch (kept as-is — behavior-neutral);
+    this assembles the SAME two subcommands into an argparse group so the generated reference lists
+    them. Their FLAGS come from the SAME `_build_outline_{emit,drive}_parser` the runtime uses, so
+    the documented flags cannot drift from the real ones."""
+    parser.description = (
+        "The friendly two-phase outline door (design §21, CLI-UX C3b): thin wrappers over the "
+        "DR-3 emit-outline / begin-session ingest legs, via the direct-handler pattern (never "
+        "registers a session verb; §21.9 preserved). Subcommands: emit, drive."
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    _build_outline_emit_parser(
+        sub.add_parser(
+            "emit",
+            help="realize an authored outline as a viewable artifact + print its handle (no spend)",
+        )
+    )
+    _build_outline_drive_parser(
+        sub.add_parser(
+            "drive",
+            help="ingest an outline and DRIVE the plan to completion (dry-run by default; --go "
+            "spends)",
+        )
+    )
+    return parser
 
 
 def _cmd_outline(
@@ -1869,22 +1921,13 @@ def _discovery_row_tail(context: dict) -> str:
     return ("  " + " ".join(parts)) if parts else ""
 
 
-def _cmd_list(argv: list[str]) -> int:
-    """CLI-UX C3c: `pipeline list <type> [--filters JSON]` — enumerate a discovery type by name
-    (design §21.3). Tier-A, READ-ONLY (no spend, no token). Prints one `id [provenance path]` row
-    per entry. An unknown type is a `not-found` refusal (exit 1, never a silent empty). Exit 0 ok;
-    1 refusal; 2 usage."""
-    import argparse
-    import json
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline list",
-        description=(
-            "Enumerate a discovery type by name (design §21.3): recipes, voices, lexicons, "
-            "outlines, codes, deliverables, artifacts, folios, … (see `pipeline list types`). "
-            "Tier-A, READ-ONLY — spends nothing, mints no token. Direct-handler pattern (§21.9 "
-            "preserved)."
-        ),
+def _build_list_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline list` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "Enumerate a discovery type by name (design §21.3): recipes, voices, lexicons, "
+        "outlines, codes, deliverables, artifacts, folios, … (see `pipeline list types`). "
+        "Tier-A, READ-ONLY — spends nothing, mints no token. Direct-handler pattern (§21.9 "
+        "preserved)."
     )
     parser.add_argument(
         "type", help="the discovery type to enumerate (see `pipeline list types`)"
@@ -1902,6 +1945,17 @@ def _cmd_list(argv: list[str]) -> int:
     parser.add_argument(
         "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
     )
+    return parser
+
+
+def _cmd_list(argv: list[str]) -> int:
+    """CLI-UX C3c: `pipeline list <type> [--filters JSON]` — enumerate a discovery type by name
+    (design §21.3). Tier-A, READ-ONLY (no spend, no token). Prints one `id [provenance path]` row
+    per entry. An unknown type is a `not-found` refusal (exit 1, never a silent empty). Exit 0 ok;
+    1 refusal; 2 usage."""
+    import json
+
+    parser = _build_list_parser(argparse.ArgumentParser(prog="pipeline list"))
     args = parser.parse_args(argv)
 
     filters: object | None = None
@@ -1929,21 +1983,12 @@ def _cmd_list(argv: list[str]) -> int:
     return 0
 
 
-def _cmd_get(argv: list[str]) -> int:
-    """CLI-UX C3c: `pipeline get <type> <id>` — fetch ONE discovery entry by id (design §21.3).
-    Tier-A, READ-ONLY. Enumerates the type via the `list` handler and selects the matching id
-    (invoke's Gate-3 isolation refuses a registry NAME / bare outline digest through the `get`
-    VERB — see the section note); the id-addressed rich `get` stays on `pipeline invoke get`. Prints
-    the entry's fields. Exit 0 ok; 1 refusal / no such entry; 2 usage."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline get",
-        description=(
-            "Fetch one discovery entry by id (design §21.3): e.g. `get voices clear-explainer`. "
-            "Tier-A, READ-ONLY — spends nothing. Enumerate-then-match keeps §10 isolation "
-            "structural; the id-addressed rich `get` is on `pipeline invoke get`."
-        ),
+def _build_get_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline get` (shared by the runtime + `build_parser()`; one SSOT)."""
+    parser.description = (
+        "Fetch one discovery entry by id (design §21.3): e.g. `get voices clear-explainer`. "
+        "Tier-A, READ-ONLY — spends nothing. Enumerate-then-match keeps §10 isolation "
+        "structural; the id-addressed rich `get` is on `pipeline invoke get`."
     )
     parser.add_argument("type", help="the discovery type (see `pipeline list types`)")
     parser.add_argument("id", help="the entry id to fetch")
@@ -1954,6 +1999,16 @@ def _cmd_get(argv: list[str]) -> int:
     parser.add_argument(
         "--root", default=".", help="framework repo root → workspaces/<workspace>/ (default: cwd)"
     )
+    return parser
+
+
+def _cmd_get(argv: list[str]) -> int:
+    """CLI-UX C3c: `pipeline get <type> <id>` — fetch ONE discovery entry by id (design §21.3).
+    Tier-A, READ-ONLY. Enumerates the type via the `list` handler and selects the matching id
+    (invoke's Gate-3 isolation refuses a registry NAME / bare outline digest through the `get`
+    VERB — see the section note); the id-addressed rich `get` stays on `pipeline invoke get`. Prints
+    the entry's fields. Exit 0 ok; 1 refusal / no such entry; 2 usage."""
+    parser = _build_get_parser(argparse.ArgumentParser(prog="pipeline get"))
     args = parser.parse_args(argv)
 
     result = _invoke_discovery_list(args.type, args.workspace, args.user, args.root)
@@ -1979,26 +2034,14 @@ def _cmd_get(argv: list[str]) -> int:
     return 0
 
 
-def _cmd_docs(argv: list[str]) -> int:
-    """Authoring-layer D12/D13: `pipeline docs <subcommand>` — LOCAL operator doc generators.
-
-    LOCAL/operator only (never an HTTP `_VERB_HANDLERS` verb; §21.9 preserved): regenerates a
-    committed framework reference doc from the code. Subcommand:
-      attributes  regenerate `docs/reference/attributes.md` from the framework registry schemas
-                  (`pipeline.lint.REGISTRY_ROOTS` — framework-only, no client/instance content).
-    Deterministic + framework-only; a CI drift test asserts the committed file byte-for-byte.
-    Exit 0 ok; 2 usage."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline docs",
-        description=(
-            "Regenerate a committed framework reference doc from the code (authoring layer D12; "
-            "LOCAL/operator only, never an HTTP door). Subcommands: attributes."
-        ),
+def _build_docs_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline docs` (+ subcommands): one SSOT for the runtime + build_parser()."""
+    parser.description = (
+        "Regenerate a committed framework reference doc from the code (authoring layer D12; "
+        "LOCAL/operator only, never an HTTP door). Subcommands: attributes, cli."
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
-    p_attr = sub.add_parser(
+    attr = sub.add_parser(
         "attributes",
         help="regenerate docs/reference/attributes.md from the framework registry schemas",
         description=(
@@ -2009,15 +2052,57 @@ def _cmd_docs(argv: list[str]) -> int:
             "byte-equality CI test guards it against un-regenerated edits."
         ),
     )
-    p_attr.add_argument(
+    attr.add_argument(
         "--root",
         default=None,
         help="framework repo root (default: the installed package's own repo root)",
     )
+    cli = sub.add_parser(
+        "cli",
+        help="regenerate docs/reference/cli.md from the live argparse command tree",
+        description=(
+            "Regenerate docs/reference/cli.md: a reference of EVERY `pipeline` command and "
+            "subcommand — each one's description, a usage synopsis, and every flag/argument (with "
+            "its default, whether it is required, and its help) — rendered from the live argparse "
+            "tree that `build_parser()` returns (the SAME tree the runtime `--help` walks). "
+            "Deterministic (definition-order; no clock, env, cwd, or terminal width); a "
+            "byte-equality CI test (tests/test_cli_doc_contract.py) fails loudly if a command or "
+            "flag changes without regenerating. LOCAL/operator only, never an HTTP door (§21.9)."
+        ),
+    )
+    cli.add_argument(
+        "--root",
+        default=None,
+        help="framework repo root (default: the installed package's own repo root)",
+    )
+    return parser
+
+
+def _cmd_docs(argv: list[str]) -> int:
+    """Authoring-layer D12/D13: `pipeline docs <subcommand>` — LOCAL operator doc generators.
+
+    LOCAL/operator only (never an HTTP `_VERB_HANDLERS` verb; §21.9 preserved): regenerates a
+    committed framework reference doc from the code. Subcommands:
+      attributes  regenerate `docs/reference/attributes.md` from the framework registry schemas
+                  (`pipeline.lint.REGISTRY_ROOTS` — framework-only, no client/instance content).
+      cli         regenerate `docs/reference/cli.md` from the live argparse tree (`build_parser()`)
+                  — every command + flag, deterministically.
+    Deterministic + framework-only; a CI drift test asserts each committed file byte-for-byte.
+    Exit 0 ok; 2 usage."""
+    parser = _build_docs_parser(argparse.ArgumentParser(prog="pipeline docs"))
     args = parser.parse_args(argv)
     if args.subcommand is None:
         parser.print_help(sys.stderr)
         return 2
+
+    if args.subcommand == "cli":
+        from pipeline import clidoc
+
+        root_parser = build_parser()
+        out_path = clidoc.write_cli_doc(root_parser, root=args.root)
+        n_commands = clidoc.command_count(root_parser)
+        print(f"pipeline docs cli: wrote {clidoc.DOC_RELPATH} ({n_commands} commands) — {out_path}")
+        return 0
 
     from pipeline import attrdoc
 
@@ -2162,15 +2247,53 @@ def _cmd_recipe(argv: list[str]) -> int:
     public), overwrite-guard it, and print the exact id + path. NEVER registers an invoke verb /
     touches `_VERB_HANDLERS` / hits the invoke door (§21.9). Exit 0 ok; 1 refusal (bad edit /
     provenance-refused / unknown base / non-slug id / refuse-if-exists); 2 usage."""
-    import argparse
+    parser = _build_recipe_parser(argparse.ArgumentParser(prog="pipeline recipe"))
+    args = parser.parse_args(argv)
 
-    parser = argparse.ArgumentParser(
-        prog="pipeline recipe",
-        description=(
-            "The friendly recipe authoring/derive door (authoring layer C2b, design §8): the "
-            "first consumer of the C2a authoring core. LOCAL Tier-A file write — never an invoke "
-            "verb / HTTP door (§21.9). Subcommand: new."
-        ),
+    if args.subcommand != "new":
+        parser.print_usage(sys.stderr)
+        print("pipeline recipe: a subcommand is required (known: new)", file=sys.stderr)
+        return 2
+
+    from pipeline import authoring
+
+    picks: dict[str, list[str]] = {}
+    for dest, slot in _RECIPE_PICK_SLOTS.items():
+        values = getattr(args, dest)
+        if values:
+            picks[slot] = values
+
+    try:
+        edits = authoring.build_edit_set(
+            picks=picks, set_entries=args.set or [], unset=args.unset or []
+        )
+        base_bundle: dict = (
+            _load_base_bundle(args.root, args.base, args.user, args.workspace)
+            if args.base is not None
+            else {}
+        )
+        bundle = authoring.merge_bundle(base_bundle, edits)
+        target = authoring.write_recipe(
+            args.root, args.id, bundle, user=args.user, workspace=args.workspace, force=args.force
+        )
+    except _recipe_error_types() as exc:
+        print(f"pipeline recipe new: {exc}", file=sys.stderr)
+        return 1
+
+    seeded = f" (derived from {args.base!r})" if args.base is not None else ""
+    print(
+        f"pipeline recipe new: wrote recipe {target.recipe_id!r} [{target.provenance}]{seeded} "
+        f"— {target.path}"
+    )
+    return 0
+
+
+def _build_recipe_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline recipe` (+ subcommands): one SSOT for the runtime + build_parser()."""
+    parser.description = (
+        "The friendly recipe authoring/derive door (authoring layer C2b, design §8): the "
+        "first consumer of the C2a authoring core. LOCAL Tier-A file write — never an invoke "
+        "verb / HTTP door (§21.9). Subcommand: new."
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
     new = sub.add_parser(
@@ -2271,44 +2394,7 @@ def _cmd_recipe(argv: list[str]) -> int:
     new.add_argument(
         "--force", action="store_true", help="overwrite an existing recipe file (default: refuse)"
     )
-    args = parser.parse_args(argv)
-
-    if args.subcommand != "new":
-        parser.print_usage(sys.stderr)
-        print("pipeline recipe: a subcommand is required (known: new)", file=sys.stderr)
-        return 2
-
-    from pipeline import authoring
-
-    picks: dict[str, list[str]] = {}
-    for dest, slot in _RECIPE_PICK_SLOTS.items():
-        values = getattr(args, dest)
-        if values:
-            picks[slot] = values
-
-    try:
-        edits = authoring.build_edit_set(
-            picks=picks, set_entries=args.set or [], unset=args.unset or []
-        )
-        base_bundle: dict = (
-            _load_base_bundle(args.root, args.base, args.user, args.workspace)
-            if args.base is not None
-            else {}
-        )
-        bundle = authoring.merge_bundle(base_bundle, edits)
-        target = authoring.write_recipe(
-            args.root, args.id, bundle, user=args.user, workspace=args.workspace, force=args.force
-        )
-    except _recipe_error_types() as exc:
-        print(f"pipeline recipe new: {exc}", file=sys.stderr)
-        return 1
-
-    seeded = f" (derived from {args.base!r})" if args.base is not None else ""
-    print(
-        f"pipeline recipe new: wrote recipe {target.recipe_id!r} [{target.provenance}]{seeded} "
-        f"— {target.path}"
-    )
-    return 0
+    return parser
 
 
 # ---------------------------------------------------------------------------
@@ -2349,28 +2435,14 @@ def _entry_error_types() -> tuple:
     )
 
 
-def _cmd_entry(argv: list[str]) -> int:
-    """Authoring layer C3: `pipeline entry new DIMENSION ID [--workspace W] [--force]` — scaffold
-    ONE new dimension entry from a schema-conforming floor skeleton (the C2a core, via
-    `pipeline.entryscaffold`).
-
-    A LOCAL Tier-A file write: validate the dimension against the real dimension set
-    (`m1.DIMENSION_COLLECTIONS`), slug-validate the id, home the file by `--workspace`
-    (instance x- under the workspace, or a public framework-default candidate), overwrite-guard
-    it, and print the exact id + path. NEVER registers an invoke verb / touches `_VERB_HANDLERS`
-    / hits the invoke door (§21.9). Exit 0 ok; 1 refusal (bad dimension / non-slug id /
-    topic-without-workspace / refuse-if-exists); 2 usage."""
-    import argparse
-
+def _build_entry_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline entry` (+ subcommands): one SSOT for the runtime + build_parser()."""
     from pipeline.workspace_name import DEFAULT_ZONE
 
-    parser = argparse.ArgumentParser(
-        prog="pipeline entry",
-        description=(
-            "The friendly dimension-entry scaffolder (authoring layer C3, design D11): a second "
-            "consumer of the C2a authoring core. LOCAL Tier-A file write — never an invoke verb / "
-            "HTTP door (§21.9). Subcommand: new."
-        ),
+    parser.description = (
+        "The friendly dimension-entry scaffolder (authoring layer C3, design D11): a second "
+        "consumer of the C2a authoring core. LOCAL Tier-A file write — never an invoke verb / "
+        "HTTP door (§21.9). Subcommand: new."
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
     new = sub.add_parser(
@@ -2420,6 +2492,21 @@ def _cmd_entry(argv: list[str]) -> int:
     new.add_argument(
         "--force", action="store_true", help="overwrite an existing entry file (default: refuse)"
     )
+    return parser
+
+
+def _cmd_entry(argv: list[str]) -> int:
+    """Authoring layer C3: `pipeline entry new DIMENSION ID [--workspace W] [--force]` — scaffold
+    ONE new dimension entry from a schema-conforming floor skeleton (the C2a core, via
+    `pipeline.entryscaffold`).
+
+    A LOCAL Tier-A file write: validate the dimension against the real dimension set
+    (`m1.DIMENSION_COLLECTIONS`), slug-validate the id, home the file by `--workspace`
+    (instance x- under the workspace, or a public framework-default candidate), overwrite-guard
+    it, and print the exact id + path. NEVER registers an invoke verb / touches `_VERB_HANDLERS`
+    / hits the invoke door (§21.9). Exit 0 ok; 1 refusal (bad dimension / non-slug id /
+    topic-without-workspace / refuse-if-exists); 2 usage."""
+    parser = _build_entry_parser(argparse.ArgumentParser(prog="pipeline entry"))
     args = parser.parse_args(argv)
 
     if args.subcommand != "new":
@@ -2492,17 +2579,30 @@ def _cmd_workspace(argv: list[str]) -> int:
 
     Exit 0 ok; 1 refusal (bad name / refuse-if-exists / missing blueprint / delete refusal);
     2 usage (no subcommand / missing required flag)."""
-    import argparse
+    parser = _build_workspace_parser(argparse.ArgumentParser(prog="pipeline workspace"))
+    args = parser.parse_args(argv)
 
+    if args.subcommand == "new":
+        return _workspace_new(args)
+    if args.subcommand == "list":
+        return _workspace_list(args)
+    if args.subcommand == "delete":
+        return _workspace_delete(args)
+    parser.print_usage(sys.stderr)
+    print(
+        "pipeline workspace: a subcommand is required (known: new, list, delete)", file=sys.stderr
+    )
+    return 2
+
+
+def _build_workspace_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline workspace` (+ subcommands): one SSOT for the runtime + build_parser()."""
     from pipeline.workspace_name import DEFAULT_ZONE
 
-    parser = argparse.ArgumentParser(
-        prog="pipeline workspace",
-        description=(
-            "The friendly local workspace lifecycle (design §23) over the self-contained "
-            "users/<user>/workspaces/<workspace>/ layout. LOCAL Tier-A file ops — never an invoke "
-            "verb / HTTP door (§21.9). Subcommands: new, list, delete."
-        ),
+    parser.description = (
+        "The friendly local workspace lifecycle (design §23) over the self-contained "
+        "users/<user>/workspaces/<workspace>/ layout. LOCAL Tier-A file ops — never an invoke "
+        "verb / HTTP door (§21.9). Subcommands: new, list, delete."
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
 
@@ -2623,20 +2723,7 @@ def _cmd_workspace(argv: list[str]) -> int:
         default=".",
         help="framework repo root → users/<user>/workspaces/<workspace>/ (default: cwd)",
     )
-
-    args = parser.parse_args(argv)
-
-    if args.subcommand == "new":
-        return _workspace_new(args)
-    if args.subcommand == "list":
-        return _workspace_list(args)
-    if args.subcommand == "delete":
-        return _workspace_delete(args)
-    parser.print_usage(sys.stderr)
-    print(
-        "pipeline workspace: a subcommand is required (known: new, list, delete)", file=sys.stderr
-    )
-    return 2
+    return parser
 
 
 def _workspace_new(args: "object") -> int:
@@ -2742,23 +2829,12 @@ def _workspace_delete(args: "object") -> int:
     return 0
 
 
-def _cmd_user(argv: list[str]) -> int:
-    """W1 (sibling): `pipeline user new <user> [--root DIR] [--force]` — create just the empty
-    per-user namespace users/<user>/workspaces/ (the extensible per-user home) without a workspace.
-
-    A LOCAL Tier-A file op (never an invoke verb / HTTP door; §21.9): validate `<user>` via the
-    isolation gate, create users/<user>/workspaces/, refuse an existing namespace unless --force
-    (a SAFE no-op that deletes nothing), and print the created namespace path. Exit 0 ok; 1 refusal
-    (bad user / refuse-if-exists); 2 usage (no subcommand)."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        prog="pipeline user",
-        description=(
-            "The explicit per-user namespace setup (design §23): create users/<user>/workspaces/ "
-            "(the extensible per-user home) without a workspace. LOCAL Tier-A file op — never an "
-            "invoke verb / HTTP door (§21.9). Subcommand: new."
-        ),
+def _build_user_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline user` (+ subcommands): one SSOT for the runtime + build_parser()."""
+    parser.description = (
+        "The explicit per-user namespace setup (design §23): create users/<user>/workspaces/ "
+        "(the extensible per-user home) without a workspace. LOCAL Tier-A file op — never an "
+        "invoke verb / HTTP door (§21.9). Subcommand: new."
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
     new = sub.add_parser(
@@ -2785,6 +2861,18 @@ def _cmd_user(argv: list[str]) -> int:
         action="store_true",
         help="proceed if the namespace exists — a safe no-op, never deletes (default: refuse)",
     )
+    return parser
+
+
+def _cmd_user(argv: list[str]) -> int:
+    """W1 (sibling): `pipeline user new <user> [--root DIR] [--force]` — create just the empty
+    per-user namespace users/<user>/workspaces/ (the extensible per-user home) without a workspace.
+
+    A LOCAL Tier-A file op (never an invoke verb / HTTP door; §21.9): validate `<user>` via the
+    isolation gate, create users/<user>/workspaces/, refuse an existing namespace unless --force
+    (a SAFE no-op that deletes nothing), and print the created namespace path. Exit 0 ok; 1 refusal
+    (bad user / refuse-if-exists); 2 usage (no subcommand)."""
+    parser = _build_user_parser(argparse.ArgumentParser(prog="pipeline user"))
     args = parser.parse_args(argv)
 
     if args.subcommand != "new":
@@ -2838,16 +2926,27 @@ def _cmd_zone(argv: list[str]) -> int:
 
     Exit 0 ok; 1 refusal (bad name / refuse-if-exists / non-existent / symlink / delete refusal);
     2 usage (no subcommand / missing --user)."""
-    import argparse
+    parser = _build_zone_parser(argparse.ArgumentParser(prog="pipeline zone"))
+    args = parser.parse_args(argv)
 
-    parser = argparse.ArgumentParser(
-        prog="pipeline zone",
-        description=(
-            "The friendly per-zone lifecycle (design §23) over users/<user>/zones/<zone>/"
-            "workspaces/. A zone groups a user's workspaces (it sits between user and workspace). "
-            "LOCAL Tier-A file ops — never an invoke verb / HTTP door (§21.9). Subcommands: new, "
-            "list, delete."
-        ),
+    if args.subcommand == "new":
+        return _zone_new(args)
+    if args.subcommand == "list":
+        return _zone_list(args)
+    if args.subcommand == "delete":
+        return _zone_delete(args)
+    parser.print_usage(sys.stderr)
+    print("pipeline zone: a subcommand is required (known: new, list, delete)", file=sys.stderr)
+    return 2
+
+
+def _build_zone_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline zone` (+ subcommands): one SSOT for the runtime + build_parser()."""
+    parser.description = (
+        "The friendly per-zone lifecycle (design §23) over users/<user>/zones/<zone>/"
+        "workspaces/. A zone groups a user's workspaces (it sits between user and workspace). "
+        "LOCAL Tier-A file ops — never an invoke verb / HTTP door (§21.9). Subcommands: new, "
+        "list, delete."
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
 
@@ -2945,17 +3044,7 @@ def _cmd_zone(argv: list[str]) -> int:
     # `--zone` never appears on this group: the ZONE is the positional subject of new/delete (a zone
     # verb never defaults its own subject), and the per-zone `workspaces/` home is a fixed literal
     # (§23).
-    args = parser.parse_args(argv)
-
-    if args.subcommand == "new":
-        return _zone_new(args)
-    if args.subcommand == "list":
-        return _zone_list(args)
-    if args.subcommand == "delete":
-        return _zone_delete(args)
-    parser.print_usage(sys.stderr)
-    print("pipeline zone: a subcommand is required (known: new, list, delete)", file=sys.stderr)
-    return 2
+    return parser
 
 
 def _zone_new(args: "object") -> int:
@@ -3122,42 +3211,19 @@ def _research_dry_run_lines(config: "object", budget: "object") -> list[str]:
     ]
 
 
-def _cmd_sources(
-    argv: list[str],
-    *,
-    http_get: "object | None" = None,
-    llm_call: "object | None" = None,
-) -> int:
-    """Sources P2/P3: `pipeline sources ingest <workspace> --user <u>` — the OUT-OF-BAND acquisition
-    maintenance door (design §6).
-
-    FREE feed sources (edgar/rss/gdelt/commoncrawl) fetch FREE HTTP and write the LOCAL sealed
-    cache — no paid quota, no token, $0 model spend (§21.9). The PAID `research` source (P3b) SPENDS
-    subscription LLM tokens in an agentic loop, so it is TRANSPORT-AWARE and money-safe by
-    construction: WITHOUT `--go` it DRY-RUNS (prints the `acquire-scope` ceiling and spends nothing,
-    never even building the LLM seam); WITH `--go` it drives the loop through the subscription
-    transport (no API key, a per-call `--max-budget-usd` cap, a hard round/fan-out ceiling +
-    θ-stop). Feed sources ignore `--go` (always free). Both fetch seams are INJECTABLE (`http_get`,
-    `llm_call`) so a test drives the whole command with fixtures and NEVER hits the network or a
-    real model. Exit 0 ok; 1 refusal (bad name / unknown feed / busy namespace / paid failure); 2
-    usage.
-    """
-    import argparse
-
+def _build_sources_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline sources` (+ subcommands): one SSOT for the runtime + build_parser()."""
     from pipeline.sources.feeds import feed_kinds  # the shipped feed set (discovery surface)
     from pipeline.workspace_name import DEFAULT_ZONE
 
     known_kinds = ", ".join(feed_kinds())
 
-    parser = argparse.ArgumentParser(
-        prog="pipeline sources",
-        description=(
-            "The out-of-band acquisition maintenance door (design §6; sources P2/P3): fetch a "
-            "workspace's source(s), normalize + dedup + θ-gate, and SEAL into the local sealed "
-            "cache. Feed kinds are LOCAL Tier-A (free HTTP, $0 model spend); the `research` kind "
-            "SPENDS subscription LLM tokens and is dry-run by default (needs --go). Subcommand: "
-            "ingest."
-        ),
+    parser.description = (
+        "The out-of-band acquisition maintenance door (design §6; sources P2/P3): fetch a "
+        "workspace's source(s), normalize + dedup + θ-gate, and SEAL into the local sealed "
+        "cache. Feed kinds are LOCAL Tier-A (free HTTP, $0 model spend); the `research` kind "
+        "SPENDS subscription LLM tokens and is dry-run by default (needs --go). Subcommand: "
+        "ingest."
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
     ingest = sub.add_parser(
@@ -3206,6 +3272,30 @@ def _cmd_sources(
             "that SPENDS NOTHING."
         ),
     )
+    return parser
+
+
+def _cmd_sources(
+    argv: list[str],
+    *,
+    http_get: "object | None" = None,
+    llm_call: "object | None" = None,
+) -> int:
+    """Sources P2/P3: `pipeline sources ingest <workspace> --user <u>` — the OUT-OF-BAND acquisition
+    maintenance door (design §6).
+
+    FREE feed sources (edgar/rss/gdelt/commoncrawl) fetch FREE HTTP and write the LOCAL sealed
+    cache — no paid quota, no token, $0 model spend (§21.9). The PAID `research` source (P3b) SPENDS
+    subscription LLM tokens in an agentic loop, so it is TRANSPORT-AWARE and money-safe by
+    construction: WITHOUT `--go` it DRY-RUNS (prints the `acquire-scope` ceiling and spends nothing,
+    never even building the LLM seam); WITH `--go` it drives the loop through the subscription
+    transport (no API key, a per-call `--max-budget-usd` cap, a hard round/fan-out ceiling +
+    θ-stop). Feed sources ignore `--go` (always free). Both fetch seams are INJECTABLE (`http_get`,
+    `llm_call`) so a test drives the whole command with fixtures and NEVER hits the network or a
+    real model. Exit 0 ok; 1 refusal (bad name / unknown feed / busy namespace / paid failure); 2
+    usage.
+    """
+    parser = _build_sources_parser(argparse.ArgumentParser(prog="pipeline sources"))
     args = parser.parse_args(argv)
 
     if args.subcommand != "ingest":
@@ -3314,18 +3404,45 @@ def _cmd_transport(argv: list[str]) -> int:
 
     Exit 0 ok; 1 refusal (bad scope/handle/cap/user, malformed config); 2 usage (no subcommand /
     missing --weekly-cap / missing --scope / missing <u>)."""
-    import argparse
+    parser = _build_transport_parser(argparse.ArgumentParser(prog="pipeline transport"))
+    args = parser.parse_args(argv)
+    if args.subcommand == "store-key":
+        return _transport_store_key(args)
+    if args.subcommand == "assign-key":
+        return _transport_assign_key(args)
+    if args.subcommand == "list-keys":
+        return _transport_list_keys(args)
+    if args.subcommand == "clear-key":
+        return _transport_clear_key(args)
+    if args.subcommand == "set-subscription-user":
+        return _transport_set_subscription_user(args)
+    if args.subcommand == "clear-subscription-user":
+        return _transport_clear_subscription_user(args)
+    if args.subcommand == "set-umbrella-cap":
+        return _transport_set_umbrella_cap(args)
+    if args.subcommand == "clear-umbrella-cap":
+        return _transport_clear_umbrella_cap(args)
+    if args.subcommand == "show":
+        return _transport_show(args)
+    parser.print_usage(sys.stderr)
+    print(
+        "pipeline transport: a subcommand is required (known: store-key, assign-key, list-keys, "
+        "clear-key, set-subscription-user, clear-subscription-user, set-umbrella-cap, "
+        "clear-umbrella-cap, show)",
+        file=sys.stderr,
+    )
+    return 2
 
-    parser = argparse.ArgumentParser(
-        prog="pipeline transport",
-        description=(
-            "Key-assignment admin (plan G4, §21.10). Tier-A LOCAL file ops over the gitignored "
-            "instance/ops/transport/config.yaml — never an invoke verb / HTTP door / spend. "
-            "Each assignment maps an EXPLICIT (scope-level, scope-id) to a keystore HANDLE (a "
-            "non-secret reference) + a HARD weekly dollar cap. `store-key` puts the SECRET VALUE "
-            "in the keystore (read from stdin/getpass, NEVER argv). Subcommands: store-key, "
-            "assign-key, list-keys, clear-key."
-        ),
+
+def _build_transport_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure `pipeline transport` (+ subcommands): one SSOT for the runtime + build_parser()."""
+    parser.description = (
+        "Key-assignment admin (plan G4, §21.10). Tier-A LOCAL file ops over the gitignored "
+        "instance/ops/transport/config.yaml — never an invoke verb / HTTP door / spend. "
+        "Each assignment maps an EXPLICIT (scope-level, scope-id) to a keystore HANDLE (a "
+        "non-secret reference) + a HARD weekly dollar cap. `store-key` puts the SECRET VALUE "
+        "in the keystore (read from stdin/getpass, NEVER argv). Subcommands: store-key, "
+        "assign-key, list-keys, clear-key."
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
 
@@ -3515,34 +3632,7 @@ def _cmd_transport(argv: list[str]) -> int:
         default=".",
         help="framework repo root → instance/ops/transport/config.yaml (default: cwd)",
     )
-
-    args = parser.parse_args(argv)
-    if args.subcommand == "store-key":
-        return _transport_store_key(args)
-    if args.subcommand == "assign-key":
-        return _transport_assign_key(args)
-    if args.subcommand == "list-keys":
-        return _transport_list_keys(args)
-    if args.subcommand == "clear-key":
-        return _transport_clear_key(args)
-    if args.subcommand == "set-subscription-user":
-        return _transport_set_subscription_user(args)
-    if args.subcommand == "clear-subscription-user":
-        return _transport_clear_subscription_user(args)
-    if args.subcommand == "set-umbrella-cap":
-        return _transport_set_umbrella_cap(args)
-    if args.subcommand == "clear-umbrella-cap":
-        return _transport_clear_umbrella_cap(args)
-    if args.subcommand == "show":
-        return _transport_show(args)
-    parser.print_usage(sys.stderr)
-    print(
-        "pipeline transport: a subcommand is required (known: store-key, assign-key, list-keys, "
-        "clear-key, set-subscription-user, clear-subscription-user, set-umbrella-cap, "
-        "clear-umbrella-cap, show)",
-        file=sys.stderr,
-    )
-    return 2
+    return parser
 
 
 def _transport_assign_key(args: "object") -> int:
@@ -3870,6 +3960,73 @@ def _transport_store_key(args: "object") -> int:
         "(0600; the secret value is never printed)"
     )
     return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Assemble the FULL argparse command tree — the single introspectable SSOT the CLI-reference
+    generator (`pipeline docs cli` / `pipeline.clidoc`) walks.
+
+    Each command's flags/help come from the SAME `_build_<cmd>_parser` that `_cmd_<cmd>` uses,
+    so the generated `docs/reference/cli.md` can never drift from the real CLI (a byte-equality CI
+    test asserts it). This tree is NOT used for runtime DISPATCH — that stays the hand-rolled
+    `_COMMANDS` table in `main()` (behavior-unchanged); `build_parser()` exists purely to make the
+    whole command surface introspectable + a drift contract enforceable. Commands are added in the
+    SAME order as `_COMMANDS` (definition-order, deterministic). `invoke` registers via the SAME
+    `build_invoke_parser` its own runtime `--help` uses (owned by `pipeline.api.invoke`), so every
+    command in the tree — with no exception — shares one definition with the runtime."""
+    from pipeline import __version__
+    from pipeline.api.invoke import build_invoke_parser
+
+    root = argparse.ArgumentParser(
+        prog="pipeline",
+        description=(
+            "The optiquity-content-pipeline operator CLI (framework mechanism): one synchronous "
+            "command per invocation (see each subcommand's own --help). Money-safe by construction "
+            "(§21.9) — only `generate --go`, `mvp-demo`, `demo-thread`, and `sources ingest --go` "
+            "research loop ever spend."
+        ),
+    )
+    root.add_argument(
+        "--version",
+        action="version",
+        version=f"pipeline {__version__}",
+        help="print the pipeline version and exit",
+    )
+    sub = root.add_subparsers(dest="command", metavar="<command>")
+
+    def add(name: str, builder: "object", help_text: str) -> None:
+        builder(sub.add_parser(name, help=help_text))  # type: ignore[operator]
+
+    add("drift-report", _build_drift_report_parser,
+        "update-time config drift report (SV7/MIG-6); read-only")
+    add("ssot", _build_ssot_parser, "tracking-SSOT operator verbs (design §24)")
+    add("demo-thread", _build_demo_thread_parser,
+        "drive ONE full end-to-end thread (build milestone; LIVE writer call)")
+    add("mvp-demo", _build_mvp_demo_parser,
+        "drive THE §25 MVP scenario (all nine axes; LIVE compose + review)")
+    add("invoke", build_invoke_parser, "external-actor API door — one verb → one JSON envelope")
+    add("render", _build_render_parser,
+        "the ergonomic render door (friendly flags → the render JSON envelope)")
+    add("preview", _build_preview_parser,
+        "the FREE plan-only door — the whole plan + paid-piece count, spends nothing")
+    add("generate", _build_generate_parser,
+        "the friendly generate door (dry-run by default; --go spends)")
+    add("outline", _build_outline_parser,
+        "the two-phase outline door (emit a handle, then drive it)")
+    add("list", _build_list_parser, "enumerate a discovery type by name (read-only)")
+    add("get", _build_get_parser, "fetch ONE discovery entry by id (read-only)")
+    add("docs", _build_docs_parser,
+        "regenerate a committed framework reference doc (attributes / cli)")
+    add("recipe", _build_recipe_parser, "author (or derive) one recipe file from friendly flags")
+    add("entry", _build_entry_parser, "scaffold ONE new dimension entry from its floor skeleton")
+    add("workspace", _build_workspace_parser, "local workspace lifecycle (new / list / delete)")
+    add("user", _build_user_parser, "create the empty per-user namespace")
+    add("zone", _build_zone_parser, "per-zone lifecycle (new / list / delete)")
+    add("sources", _build_sources_parser,
+        "out-of-band source acquisition (feeds free; research spends)")
+    add("transport", _build_transport_parser,
+        "key-assignment + subscription-entitlement admin (no spend)")
+    return root
 
 
 _COMMANDS = {

@@ -45,6 +45,7 @@ __all__ = [
     "KNOWN_VERBS",
     "HandlerContext",
     "HandlerNotWired",
+    "build_invoke_parser",
     "invoke",
     "main_cli",
     "referenced_ids",
@@ -546,36 +547,16 @@ def _load_json(label: str, raw: str | None, *, default: Any) -> Any:
         raise ValueError(f"--{label} must be valid JSON: {exc}") from exc
 
 
-def main_cli(argv: list[str] | None = None) -> int:
-    """`invoke` on the CLI: params/token/pins as JSON in, one JSON object out.
+def build_invoke_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Configure the `pipeline invoke` parser (args + help) on a supplied parser, and return it.
 
-    This is BOTH the human door and the n8n **Execute Command** door (§21.9, GAP-2):
-    `pipeline invoke <verb> --workspace W --params-json JSON` → one JSON envelope on stdout.
-    C7 wires the SAFE, STATELESS verbs — `render` (mint) + `fetch-by-id` (retrieve) — so the
-    full render→retrieve loop is reachable here. SECURITY (§21.9): only those two verbs are
-    wired. Operator-only verbs (`drift-report`, …) are NOT in `KNOWN_VERBS` → structurally
-    unreachable through this door (they answer `unknown-verb`); the live-quota session verbs
-    (`begin-session`/`continue-session`/…) and the `emit-outline` producer verb (reachable via
-    programmatic `invoke()`, deliberately not CLI-wired) stay honestly `HandlerNotWired` → exit 3.
-
-    n8n Execute Command CAVEAT (research 3a): the node is **off by default starting n8n v2.0**
-    and is **unavailable on n8n Cloud** — SELF-HOSTED only. To drive this door from n8n, self-host
-    and enable Execute Command; a cloud-hosted n8n (or Make/Zapier/Google) needs the deferred HTTP
-    shim over this same `invoke()` (docs/known-issues.md DR-1). Per-item blocks (a `not-found`,
-    `render-input-mismatch`) ride `results[]` at envelope `ok:true` → exit 0, so Execute Command
-    never throws on them; only the three whole-invocation failures return exit 1 (JSON still on
-    stdout).
-
-    Exit codes: 0 = envelope ok; 1 = a whole-invocation failure (ok=False envelope still
-    printed to stdout); 2 = usage/JSON error (stderr); 3 = a known verb whose handler is not
-    wired (the honest unwired seam — never a fabricated success).
-    """
-    parser = argparse.ArgumentParser(
-        prog="pipeline invoke",
-        description=(
-            "The external-actor API (design §21): one synchronous verb invocation → a single "
-            "JSON object {envelope, results, [token]} on stdout (the n8n-facing shape)."
-        ),
+    The SINGLE source of truth for `invoke`'s CLI surface: `main_cli` builds the runtime parser
+    from it, and `pipeline.__main__.build_parser()` registers the `invoke` doc node from it too — so
+    the runtime `invoke --help` and the generated `docs/reference/cli.md` share ONE definition (no
+    hand-mirror that could drift). Behavior-neutral extraction (same parser as the inline one)."""
+    parser.description = (
+        "The external-actor API (design §21): one synchronous verb invocation → a single "
+        "JSON object {envelope, results, [token]} on stdout (the n8n-facing shape)."
     )
     parser.add_argument("verb", help="the API verb (design §21.1 verb map)")
     parser.add_argument("--workspace", required=True, help="the invoked workspace (§21.1)")
@@ -615,6 +596,34 @@ def main_cli(argv: list[str] | None = None) -> int:
             "Selects a MODE / an assigned handle, never a user (I3). Default: the cascade decides."
         ),
     )
+    return parser
+
+
+def main_cli(argv: list[str] | None = None) -> int:
+    """`invoke` on the CLI: params/token/pins as JSON in, one JSON object out.
+
+    This is BOTH the human door and the n8n **Execute Command** door (§21.9, GAP-2):
+    `pipeline invoke <verb> --workspace W --params-json JSON` → one JSON envelope on stdout.
+    C7 wires the SAFE, STATELESS verbs — `render` (mint) + `fetch-by-id` (retrieve) — so the
+    full render→retrieve loop is reachable here. SECURITY (§21.9): only those two verbs are
+    wired. Operator-only verbs (`drift-report`, …) are NOT in `KNOWN_VERBS` → structurally
+    unreachable through this door (they answer `unknown-verb`); the live-quota session verbs
+    (`begin-session`/`continue-session`/…) and the `emit-outline` producer verb (reachable via
+    programmatic `invoke()`, deliberately not CLI-wired) stay honestly `HandlerNotWired` → exit 3.
+
+    n8n Execute Command CAVEAT (research 3a): the node is **off by default starting n8n v2.0**
+    and is **unavailable on n8n Cloud** — SELF-HOSTED only. To drive this door from n8n, self-host
+    and enable Execute Command; a cloud-hosted n8n (or Make/Zapier/Google) needs the deferred HTTP
+    shim over this same `invoke()` (docs/known-issues.md DR-1). Per-item blocks (a `not-found`,
+    `render-input-mismatch`) ride `results[]` at envelope `ok:true` → exit 0, so Execute Command
+    never throws on them; only the three whole-invocation failures return exit 1 (JSON still on
+    stdout).
+
+    Exit codes: 0 = envelope ok; 1 = a whole-invocation failure (ok=False envelope still
+    printed to stdout); 2 = usage/JSON error (stderr); 3 = a known verb whose handler is not
+    wired (the honest unwired seam — never a fabricated success).
+    """
+    parser = build_invoke_parser(argparse.ArgumentParser(prog="pipeline invoke"))
     args = parser.parse_args(argv)
 
     try:
