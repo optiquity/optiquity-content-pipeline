@@ -14,7 +14,7 @@ build delivered at `5f58d63` (final verification PASSED; cross-reference audit *
 CLOSED, the §21.7-code HARD GATE CLOSED at step 39, the §21.9 gate correctly OPEN/honored). The prepared
 CLAUDE.md diff was applied post-delivery (`5b1c584`). Since then a series of ratified design-record
 increments + the friendly CLI surface + the authoring layer + the users/-namespace restructure + the
-**sources subsystem**, the **foundation/ reorg**, the **diagram-tools-optional** change, and the **zone restructure** landed. **Current HEAD `9b13e61`.** Detailed per-increment records live in the
+**sources subsystem**, the **foundation/ reorg**, the **diagram-tools-optional** change, the **zone restructure**, and the **transport-selection build** landed. **Current HEAD `5c51638`.** Detailed per-increment records live in the
 commit history + `ops-handoff/`;
 the summary below is orientation only.
 
@@ -170,6 +170,34 @@ the summary below is orientation only.
   DEFERRED to the transport build: the transport-credential zone RUNG (per-zone keys/weekly-caps + spend-bucket
   isolation between same-named zones) — the restructure gives STORE isolation only. Suite 3853→3994.
   **Current HEAD `9b13e61`.**
+
+- **★ TRANSPORT-SELECTION build — subscription vs API-key, secure keystore, HARD weekly cap (`8200346`..
+  `5c51638`; 2026-08-10 → 08-11; 11 gates G0–G10, research→design→adversarial→reconciliation then
+  plan→adversarial→reconciliation up front, each gate coder→reviewer→commit).** Adds an API-key transport
+  ALONGSIDE subscription-only — opt-in by explicit per-scope key assignment (cascade **workspace→zone→user→
+  global**), a 0600 referenced keystore, a HARD WEEKLY cap enforced by a cross-process tamper-evident meter +
+  one install UMBRELLA. Reverses the F10 subscription-only invariant SAFELY (money-safety-first).
+  - **G0** verify (rule 8, pinned CLI 2.1.223: `--max-budget-usd` hard-stop, `--setting-sources`/`--settings`
+    wall mechanism, managed-apiKeyHelper unexcludable). **G1** the chokepoint cost-accounting fix (the
+    pre-existing gap — a run-scoped accumulator + `ConstructionBudget` ceiling, ×attempts every stage).
+    **G2** the subscription apiKeyHelper/settings WALL (fail-closed, incl. detect-and-refuse a managed key).
+    **G3** the secure keystore (2 secret-leak vectors caught + closed in review). **G4** per-scope/per-zone
+    key assignments + cascade + hard-cap-required. **G5** the single config-set subscription-entitled user.
+    **G6** the weekly meter + umbrella + INTER-PROCESS admission lock (reviewer reproduced 3-admit/9-refuse
+    with the lock vs 12-admit without it). **G7** the API-key transport (FIRST PAID SURFACE) — resolver +
+    admit-before-spend + settle-in-finally + hold-gated key injection (fail-closed) + uniform-S4 at the shared
+    chokepoint covering CLI + served HTTP doors. **G8** pre-spend cost disclosure. **G9** sources keystore
+    convergence (one keystore, two consumers). **G10** docs (design §21.9/§21.10/§3.3/§23 + `docs/transport.md`
+    + mission §12 `0.3.3`).
+  - Money-safe by construction: G0–G6 spend NOTHING; G7 the only paid surface, gated behind G1+G2+G6;
+    unconfigured install = subscription-only; Tier-A never resolves; identity-neutral (ids byte-identical sub
+    vs api-key, proven). Defaults **$5/call**, **$50/week install umbrella**; per-key caps stay explicit-
+    required (S3). Closes the zone restructure's DEFERRED per-zone spend isolation + uniform-S4.
+  - RESIDUAL (documented R1–R6): `--user` is addressing not auth; local meter `rm` reopens the cap
+    (edit-evident, not reset-proof); single-writer-host; forged in-process plan out of scope; key in child env
+    (/proc same-UID). FOLLOW-UPS: a `transport store-key` CLI verb (today the secret is stored via a python
+    one-liner off argv / a hand-written 0600 file); api-key-enabling render's reconcile mint; the driver
+    hold-refresh heartbeat for >30-min batches. Suite 3994→4250. **Current HEAD `5c51638`.**
 
 - **Steps 37–38 (prior):** G2 closed by a bounded live probe (peak_inflight=3, ZERO backpressure) →
   `MAX_PARALLEL_SESSIONS=3`, `LEASE_TTL_SECONDS=1800` (both CONFIRMED UNCHANGED, now telemetry-validated;
