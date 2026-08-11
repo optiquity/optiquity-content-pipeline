@@ -257,6 +257,14 @@ commands:
                  keystore) + a HARD weekly dollar cap. No secret is ever read/stored/printed; G4
                  stores assignments + resolves the workspace→zone→user→global cascade only
                  (transport selection + metering are later gates). Subcommands:
+                   store-key   store (or ROTATE) a secret VALUE under a handle, read from STDIN
+                            (a HIDDEN getpass prompt on a TTY, else piped bytes — one trailing
+                            newline stripped) or --from-file PATH. There is DELIBERATELY NO
+                            --value/--secret flag: a secret on argv lands in `ps` + shell history.
+                            Writes the 0600 keystore file under $OPTIQUITY_SECRETS_DIR; announces
+                            created-vs-updated with the HANDLE + store path, NEVER the value.
+                            Options: --handle <ns:name> (required) · --from-file PATH. Exit 0 ok;
+                            1 refusal (bad handle / empty secret / unsafe $OPTIQUITY_SECRETS_DIR).
                    assign-key  assign (or replace) a handle for one scope: --scope <global |
                             user:<u> | zone:<u>/<z> | workspace:<u>/<z>/<ws>> --handle <ns:name>
                             --weekly-cap $C. --weekly-cap is HARD-REQUIRED (S3): a missing cap is a
@@ -3281,8 +3289,13 @@ def _cmd_transport(argv: list[str]) -> int:
     HANDLE + a HARD weekly dollar cap (G4) AND names the SINGLE entitled subscription user (G5). No
     secret is ever read, stored, or printed (the handle is a NON-secret reference; the secret lives
     in the keystore, G3) and NOTHING spends — this stores + resolves config only (transport
-    selection + metering are G6/G7).
+    selection + metering are G6/G7). The ONE exception is `store-key`, which writes the SECRET
+    VALUE into the keystore (read from stdin/getpass, NEVER argv) — still Tier-A, still no spend.
 
+    - store-key --handle <ns:name> [--from-file PATH]   store (or ROTATE) the secret VALUE in the
+                 0600 keystore under $OPTIQUITY_SECRETS_DIR, read from STDIN (hidden getpass on a
+                 TTY, else piped bytes) — NEVER argv (no --value/--secret flag). Announces the
+                 HANDLE + path, never the value.
     - assign-key --scope <global|user:<u>|zone:<u>/<z>|workspace:<u>/<z>/<ws>> --handle <ns:name>
                  --weekly-cap $C   assign (or replace) the handle for one scope. --weekly-cap is
                  HARD-REQUIRED (S3): absent → a loud refusal, NOTHING written (no default cap).
@@ -3309,11 +3322,41 @@ def _cmd_transport(argv: list[str]) -> int:
             "Key-assignment admin (plan G4, §21.10). Tier-A LOCAL file ops over the gitignored "
             "instance/ops/transport/config.yaml — never an invoke verb / HTTP door / spend. "
             "Each assignment maps an EXPLICIT (scope-level, scope-id) to a keystore HANDLE (a "
-            "non-secret reference) + a HARD weekly dollar cap. Subcommands: assign-key, list-keys, "
-            "clear-key."
+            "non-secret reference) + a HARD weekly dollar cap. `store-key` puts the SECRET VALUE "
+            "in the keystore (read from stdin/getpass, NEVER argv). Subcommands: store-key, "
+            "assign-key, list-keys, clear-key."
         ),
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+
+    storekey = sub.add_parser(
+        "store-key",
+        help="store (or ROTATE) a secret VALUE under a handle — read from stdin/getpass, "
+        "NEVER argv",
+        description=(
+            "Store a secret VALUE in the 0600-per-handle keystore under $OPTIQUITY_SECRETS_DIR "
+            "(default ~/.optiquity/secrets/), referenced everywhere else by the NON-secret handle "
+            "'<namespace>:<name>'. The VALUE is read from STDIN — a HIDDEN getpass prompt when "
+            "stdin is a TTY, else the piped bytes with a single trailing newline stripped (or "
+            "--from-file PATH). There is DELIBERATELY no --value/--secret flag: a secret on argv "
+            "lands in `ps`, the process table, and your shell history. Overwriting an existing "
+            "handle ROTATES it. Announces created-vs-updated with the HANDLE + store path — NEVER "
+            "the value (I5). Tier-A: spends nothing; resolves no transport."
+        ),
+    )
+    storekey.add_argument(
+        "--handle",
+        required=True,
+        help="the keystore handle '<namespace>:<name>' to store under (a NON-secret ref; e.g. "
+        "anthropic:acme)",
+    )
+    storekey.add_argument(
+        "--from-file",
+        default=None,
+        metavar="PATH",
+        help="read the secret VALUE from this file's bytes instead of stdin (still NEVER from "
+        "argv); a single trailing newline is stripped",
+    )
 
     assign = sub.add_parser(
         "assign-key",
@@ -3474,6 +3517,8 @@ def _cmd_transport(argv: list[str]) -> int:
     )
 
     args = parser.parse_args(argv)
+    if args.subcommand == "store-key":
+        return _transport_store_key(args)
     if args.subcommand == "assign-key":
         return _transport_assign_key(args)
     if args.subcommand == "list-keys":
@@ -3492,9 +3537,9 @@ def _cmd_transport(argv: list[str]) -> int:
         return _transport_show(args)
     parser.print_usage(sys.stderr)
     print(
-        "pipeline transport: a subcommand is required (known: assign-key, list-keys, clear-key, "
-        "set-subscription-user, clear-subscription-user, set-umbrella-cap, clear-umbrella-cap, "
-        "show)",
+        "pipeline transport: a subcommand is required (known: store-key, assign-key, list-keys, "
+        "clear-key, set-subscription-user, clear-subscription-user, set-umbrella-cap, "
+        "clear-umbrella-cap, show)",
         file=sys.stderr,
     )
     return 2
@@ -3730,6 +3775,100 @@ def _transport_show(args: "object") -> int:
                 f"{assignment.handle.handle}  "
                 f"(weekly cap {A.format_cap(assignment.weekly_cap_usd)})"
             )
+    return 0
+
+
+def _strip_one_trailing_newline(raw: str) -> str:
+    r"""Strip EXACTLY ONE trailing newline (`\r\n` or `\n`) — the pipe/heredoc/editor artifact —
+
+    preserving the secret otherwise VERBATIM. Deliberately not a broad `.rstrip()`: a real secret
+    may legitimately end in spaces/tabs; only the single line terminator is a transport artifact.
+    """
+    if raw.endswith("\r\n"):
+        return raw[:-2]
+    if raw.endswith("\n"):
+        return raw[:-1]
+    return raw
+
+
+def _transport_store_key(args: "object") -> int:
+    r"""Operator ergonomics: `transport store-key --handle <ns:name>` — store a secret in the 0600
+    keystore WITHOUT the VALUE ever touching argv / `ps` / shell history (Tier-A, NO spend).
+
+    The VALUE is read from STDIN: a HIDDEN `getpass` prompt when stdin is a TTY (no echo), else the
+    piped bytes with a SINGLE trailing newline stripped — or, with `--from-file PATH`, the file's
+    bytes (still NEVER argv). There is DELIBERATELY no --value/--secret flag: a secret on a command
+    line lands in the process table and the shell history. The handle is validated up front
+    (`SecretRef.parse` → typed refuse on a bad handle, NOTHING read/stored), an EMPTY / whitespace
+    -only value is a typed refuse (nothing stored), and the write reuses the reviewed 0600
+    `FileSecretBackend` (honoring $OPTIQUITY_SECRETS_DIR, fail-closed on a relative/in-repo dir).
+    Overwriting an existing handle is a key ROTATION; the announce names the HANDLE + store path,
+    NEVER the secret value (I5). Resolves no transport and spends nothing."""
+    import getpass
+    from pathlib import Path
+
+    from pipeline.spend.keystore import FileSecretBackend, KeyStoreError, SecretRef
+
+    # 1) Validate the handle FIRST — a bad handle refuses BEFORE we prompt for / read any secret.
+    try:
+        ref = SecretRef.parse(args.handle)
+    except KeyStoreError as exc:
+        print(f"pipeline transport store-key: {exc}", file=sys.stderr)
+        return 1
+
+    # 2) Resolve the keystore dir FAIL-CLOSED (S-2) BEFORE prompting — a relative / in-repo
+    #    $OPTIQUITY_SECRETS_DIR refuses HERE (nothing read, nothing written). `store()` is what
+    #    creates the dir/file later; construction only canonicalizes the path.
+    try:
+        backend = FileSecretBackend()
+    except KeyStoreError as exc:
+        print(f"pipeline transport store-key: {exc}", file=sys.stderr)
+        return 1
+
+    # 3) Read the secret VALUE — from --from-file, else a HIDDEN getpass prompt on a TTY, else the
+    #    piped stdin bytes. The value NEVER comes from argv (there is no --value/--secret flag).
+    from_file = getattr(args, "from_file", None)
+    if from_file is not None:
+        try:
+            raw = Path(from_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"pipeline transport store-key: cannot read --from-file {from_file!r} "
+                f"({exc.strerror or exc}) — nothing stored",
+                file=sys.stderr,
+            )
+            return 1
+        value = _strip_one_trailing_newline(raw)
+    elif sys.stdin.isatty():
+        # TTY → a HIDDEN prompt (no echo); getpass returns the line already newline-free.
+        value = getpass.getpass(f"Secret value for {ref.handle} (input hidden, not echoed): ")
+    else:
+        # Piped / non-TTY → read the value from stdin; strip a SINGLE trailing newline (the pipe /
+        # heredoc artifact), preserving the secret otherwise verbatim.
+        value = _strip_one_trailing_newline(sys.stdin.read())
+
+    # 4) Refuse an EMPTY / whitespace-only secret — a typed refuse, NOTHING stored.
+    if not value.strip():
+        print(
+            "pipeline transport store-key: the secret value is EMPTY (or whitespace only) — "
+            f"refusing to store an empty secret under {ref.handle}. Nothing was written.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 5) Store via the reviewed 0600 backend. Overwriting a handle is a key ROTATION; announce
+    #    created-vs-updated with the HANDLE + path — NEVER the value (I5).
+    existed = backend.has(ref)
+    try:
+        backend.store(ref, value)
+    except KeyStoreError as exc:
+        print(f"pipeline transport store-key: {exc}", file=sys.stderr)
+        return 1
+    verb = "updated" if existed else "created"
+    print(
+        f"pipeline transport store-key: {verb} {ref.handle} — {backend.path_for(ref)} "
+        "(0600; the secret value is never printed)"
+    )
     return 0
 
 

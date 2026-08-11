@@ -47,9 +47,9 @@ spawn). See the [operator note on managed hosts](#operator-note-managed-hosts) b
 
 ## Setup
 
-Three steps get you from nothing to a metered API-key run. Steps 2–3 are `pipeline transport`
-admin verbs (local file edits over `instance/ops/transport/config.yaml`; they spend nothing and
-never read or print a secret).
+Three steps get you from nothing to a metered API-key run. All three are `pipeline transport`
+verbs (local edits; they spend nothing). Step 1 writes the secret into the keystore; steps 2–3
+edit `instance/ops/transport/config.yaml` and never read or print a secret.
 
 ### 1. Store the secret key in the keystore
 
@@ -58,9 +58,30 @@ Secrets live **outside the repo** in a 0600-per-handle store under `$OPTIQUITY_S
 `<namespace>:<name>` (e.g. `anthropic:acme`) — the secret value itself never appears in config,
 argv, logs, the ledger, or telemetry.
 
-There is **no CLI verb that takes a secret value** (by design — a secret on a command line lands in
-your shell history and `ps`). Store it with the keystore's file backend, which writes the file at
-exactly 0600:
+Store it with `transport store-key`, which reads the value from **stdin** — never from a command-
+line flag, so the secret never lands in `ps`, the process table, or your shell history. On a
+terminal it prompts with a **hidden** (no-echo) `getpass` line; piped, it reads the value from
+stdin (stripping a single trailing newline). It writes the keystore file at exactly **0600** and
+announces the handle + path — **never the value**:
+
+```bash
+# Interactive: a hidden prompt, nothing echoed, nothing on argv.
+pipeline transport store-key --handle anthropic:acme
+# Secret value for anthropic:acme (input hidden, not echoed): ····
+# pipeline transport store-key: created anthropic:acme — ~/.optiquity/secrets/anthropic:acme (0600; …)
+
+# Piped: keep the value in a shell var (off argv), pipe it in.
+export KEY=sk-ant-…                       # in your shell first — keeps the value off argv
+printf '%s' "$KEY" | pipeline transport store-key --handle anthropic:acme
+
+# Or read it from an existing file (bytes, never argv):
+pipeline transport store-key --handle anthropic:acme --from-file /path/to/key.txt
+```
+
+Storing under an existing handle **rotates** it (the announce says `updated`). An empty /
+whitespace-only value or a malformed handle is a loud refusal with nothing written.
+
+**Scripting alternative** (equivalent, keeps the value off argv via an env var):
 
 ```bash
 # One handle → one 0600 file under $OPTIQUITY_SECRETS_DIR (default ~/.optiquity/secrets/).
