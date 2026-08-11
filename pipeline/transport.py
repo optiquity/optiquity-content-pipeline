@@ -116,6 +116,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,6 +138,7 @@ __all__ = [
     "ControlledSettingsError",
     "CostAccumulator",
     "ManagedApiKeyHelperError",
+    "NoLiveHoldError",
     "ProcessOutcome",
     "ProcessRequest",
     "Remediation",
@@ -242,6 +244,35 @@ class ApiKeyPresentError(TransportError):
         self.source = source
 
 
+class NoLiveHoldError(TransportError):
+    """FAIL-CLOSED api-key refusal (plan G7): an `apikey` `TransportPlan` reached the chokepoint
+    WITHOUT a live, unexpired admission hold — refused BEFORE any spawn, so no api key is ever
+    injected without an admitted, in-window meter reservation.
+
+    The chokepoint cannot import `pipeline.spend` (no cycle — the plan TYPE lives here), so it does
+    NOT re-check the meter: it checks the plan-EMBEDDED `hold_expiry` against an INJECTED clock. A
+    `hold_expiry` that is `None` (a forgotten thread / a mis-resolved plan) or at/behind the clock
+    (an expired hold whose ceiling has been freed) is refused here — the disarm of the widened F10
+    strip fires ONLY under a live hold. This is the money-safety crux: a paid spawn can NEVER happen
+    on a stale or absent reservation."""
+
+    code = "no-live-hold"
+
+    def __init__(self, *, hold_expiry: float | None, now: float) -> None:
+        detail = (
+            "absent (hold_expiry is None — no reservation threaded onto the plan)"
+            if hold_expiry is None
+            else f"expired (hold_expiry {hold_expiry} <= clock {now})"
+        )
+        super().__init__(
+            f"no-live-hold: an api-key spawn needs a LIVE admission hold, but the plan's hold is "
+            f"{detail} — refusing to inject an API key / disarm the F10 strip without a live, "
+            "unexpired meter reservation (plan G7, fail-closed; nothing spawned, nothing spent)"
+        )
+        self.hold_expiry = hold_expiry
+        self.now = now
+
+
 class BinaryNotFoundError(TransportError):
     """The headless binary was not found on the invocation path — never a silent no-op."""
 
@@ -297,9 +328,10 @@ class CostAccumulator:
         return f"CostAccumulator(total={self.total!r}, calls={self.calls!r})"
 
 
-#: The closed transport-mode set. `"subscription"` is the ONLY variant any pre-G7 code can
-#: reach; the paid `"apikey"` variant (its finite per-call cap + live-hold disarm) lands at G7.
-TransportMode = Literal["subscription"]
+#: The closed transport-mode set. `"subscription"` is the flat-rate variant (still the only one any
+#: pre-G7 code reaches); `"apikey"` is the G7 PAID variant — a FINITE per-call cap + a resolved
+#: secret + a live-hold disarm that fires ONLY under an unexpired, injected-clock-checked hold.
+TransportMode = Literal["subscription", "apikey"]
 
 
 @dataclass(frozen=True)
@@ -315,39 +347,98 @@ class TransportPlan:
     - `cost_accumulator`: the ONE run-scoped running-$ total EVERY chokepoint call adds into
       (the B1 accounting fix — replaces the last-call-only read at driver.py:976).
 
-    `per_call_cap` becomes a FINITE dollar cap ONLY on the G7 `apikey` variant (not built here)
-    — the finite cap that makes loop-caps × cap a true spend bound. Building a `subscription`
-    plan with a finite `per_call_cap` is refused LOUDLY (the S-1 truncation regression).
+    `per_call_cap` becomes a FINITE dollar cap ONLY on the G7 `apikey` variant — the finite cap
+    that makes loop-caps × cap a true spend bound. Building a `subscription` plan with a finite
+    `per_call_cap` is refused LOUDLY (the S-1 truncation regression).
+
+    **The `apikey` variant (plan G7).** It additionally carries:
+    - `api_key_reveal`: a zero-arg callable returning the resolved secret VALUE (the keystore's
+      `ResolvedSecret.reveal` — the ONE seam that exposes the bytes, called ONLY at the injection
+      point in `build_child_env`; the value NEVER rides argv/log/ledger, I5). Typed as a plain
+      callable so `transport.py` imports NOTHING from `pipeline.spend` (no cycle — the resolver
+      sets it).
+    - `hold_expiry`: the admitted meter hold's EMBEDDED expiry (epoch seconds). The chokepoint
+      cannot import the meter, so it disarms the widened F10 strip ONLY when this expiry is strictly
+      ahead of an INJECTED clock (`NoLiveHoldError` otherwise — fail-closed, no spawn). `None` (a
+      forgotten thread) is itself refused at the chokepoint.
     """
 
     mode: TransportMode
     cost_accumulator: CostAccumulator
     per_call_cap: float | None = None
+    #: G7 apikey-only: the resolved secret's `reveal` (a `Callable[[], str]`) + the admitted hold's
+    #: embedded expiry. Both are `None` on the subscription path (nothing to inject, no hold).
+    api_key_reveal: Callable[[], str] | None = None
+    hold_expiry: float | None = None
 
     def __post_init__(self) -> None:
-        if self.mode == "subscription" and self.per_call_cap is not None:
-            raise TransportError(
-                "transport-error: a subscription TransportPlan MUST carry per_call_cap=None "
-                f"(the subscription is flat-rate; got {self.per_call_cap!r}) — forcing a finite "
-                "--max-budget-usd on the subscription path truncates real artifacts for no money "
-                "reason (S-1: a truncation regression + a design divergence). The finite cap is "
-                "real only on the G7 api-key path."
-            )
         if not isinstance(self.cost_accumulator, CostAccumulator):
             raise TransportError(
                 "transport-error: a TransportPlan needs a CostAccumulator, got "
                 f"{type(self.cost_accumulator).__name__}"
             )
+        if self.mode == "subscription":
+            if self.per_call_cap is not None:
+                raise TransportError(
+                    "transport-error: a subscription TransportPlan MUST carry per_call_cap=None "
+                    f"(subscription is flat-rate; got {self.per_call_cap!r}) — forcing a finite "
+                    "--max-budget-usd on the subscription path truncates real artifacts for no "
+                    "money reason (S-1: a truncation regression + a design divergence). The finite "
+                    "cap is real only on the G7 api-key path."
+                )
+            if self.api_key_reveal is not None or self.hold_expiry is not None:
+                raise TransportError(
+                    "transport-error: a subscription TransportPlan must carry NO api key + NO hold "
+                    "(subscription authenticates on the subscription, never a key — F10). The "
+                    "api-key fields are the G7 apikey variant only."
+                )
+        elif self.mode == "apikey":
+            if self.per_call_cap is None or float(self.per_call_cap) <= 0.0:
+                raise TransportError(
+                    "transport-error: an apikey TransportPlan MUST carry a FINITE positive "
+                    f"per_call_cap (the money wall), got {self.per_call_cap!r} — the api-key path "
+                    "always spawns under --max-budget-usd = min(caller, cap)."
+                )
+            if self.api_key_reveal is None:
+                raise TransportError(
+                    "transport-error: an apikey TransportPlan MUST carry api_key_reveal (the "
+                    "resolved secret's reveal seam) — there is no key to inject otherwise."
+                )
+            # NOTE: `hold_expiry` is DELIBERATELY not required at construction. A plan with no
+            # (None) or expired hold is a VALID object that the chokepoint FAIL-CLOSED refuses to
+            # spawn under (`NoLiveHoldError`) — so a forgotten/mis-resolved hold can never silently
+            # spend, and the disarm-without-a-live-hold refusal is directly testable.
+        else:  # pragma: no cover — TransportMode is a closed Literal
+            raise TransportError(f"transport-error: unknown transport mode {self.mode!r}")
 
     @classmethod
     def subscription(cls, *, cost_accumulator: CostAccumulator | None = None) -> TransportPlan:
-        """Build the flat-rate SUBSCRIPTION plan (the only pre-G7 variant): `per_call_cap=None`
-        (S-1). Uses a fresh `CostAccumulator` when the caller supplies none (else the run's shared
-        one)."""
+        """Build the flat-rate SUBSCRIPTION plan: `per_call_cap=None` (S-1), no key, no hold. Uses a
+        fresh `CostAccumulator` when the caller supplies none (else the run's shared one)."""
         return cls(
             mode="subscription",
             cost_accumulator=cost_accumulator or CostAccumulator(),
             per_call_cap=None,
+        )
+
+    @classmethod
+    def apikey(
+        cls,
+        *,
+        per_call_cap: float,
+        api_key_reveal: Callable[[], str],
+        hold_expiry: float | None,
+        cost_accumulator: CostAccumulator | None = None,
+    ) -> TransportPlan:
+        """Build the G7 API-KEY plan: a FINITE `per_call_cap` (money wall), the resolved secret's
+        `reveal` seam, and the hold's embedded `hold_expiry` (the chokepoint's injected-clock
+        disarm). Built ONLY by `pipeline.spend.resolve` — the single mode-selector."""
+        return cls(
+            mode="apikey",
+            cost_accumulator=cost_accumulator or CostAccumulator(),
+            per_call_cap=per_call_cap,
+            api_key_reveal=api_key_reveal,
+            hold_expiry=hold_expiry,
         )
 
 
@@ -360,8 +451,9 @@ def build_child_env(
     base_env: Mapping[str, str] | None = None,
     *,
     overrides: Mapping[str, str] | None = None,
+    api_key: str | None = None,
 ) -> dict[str, str]:
-    """Construct the EXACT child env for one headless invocation (F10, §21.9).
+    """Construct the EXACT child env for one headless invocation (F10, §21.9 / G7 api-key).
 
     `base_env` defaults to a copy of `os.environ` (the ambient shell — on this machine
     that ambient env carries `ANTHROPIC_API_KEY`, the standing F10 hazard flagged at gate
@@ -383,6 +475,15 @@ def build_child_env(
     override (its F10 assertion is unchanged); the siblings are removed silently. Env-only
     stripping is NECESSARY-BUT-INSUFFICIENT on its own — the `apiKeyHelper` hole is closed
     by `build_subscription_wall`, applied at every spawn in `invoke_headless`.
+
+    **G7 api-key injection (`api_key` given).** This is the DISARM of the F10 strip — the ONLY code
+    path that lets a Claude api key ride the child env, reached ONLY after `invoke_headless`'s
+    live-hold check. The widened siblings that OUTRANK an api key are STILL stripped
+    (`ANTHROPIC_AUTH_TOKEN` + the `CLAUDE_CODE_USE_*` provider switches — else they divert auth away
+    from our key, G0 precedence), `overrides` still may NOT smuggle `ANTHROPIC_API_KEY`, and the
+    RESOLVED key is set LAST so it authenticates the spawn. The value is injected here and NEVER
+    placed on argv or logged (I5); the F10 absence-assertion is deliberately skipped (the key is
+    present ON PURPOSE, under a live meter hold).
     """
     env = dict(os.environ if base_env is None else base_env)
     for var in F10_STRIPPED_ENV_VARS:  # the expected, silent hot-path strip (widened at G2)
@@ -397,6 +498,13 @@ def build_child_env(
         for var in F10_STRIPPED_ENV_VARS:
             env.pop(var, None)
     env[DISABLE_AUTO_MEMORY_ENV] = "1"  # per-call statelessness, set unconditionally last
+    if api_key is not None:
+        # The G7 DISARM: inject the resolved api key LAST (after every strip), so it outranks any
+        # ambient apiKeyHelper (G0 precedence) and authenticates the spawn. Reached ONLY under a
+        # live meter hold (invoke_headless checks the plan-embedded expiry first). The value never
+        # touches argv or any log line.
+        env[ANTHROPIC_API_KEY_ENV] = api_key
+        return env
     if ANTHROPIC_API_KEY_ENV in env:  # pragma: no cover — structurally unreachable; belt+suspenders
         raise ApiKeyPresentError("the constructed child env")
     return env
@@ -994,6 +1102,7 @@ def invoke_headless(
     env_overrides: Mapping[str, str] | None = None,
     runner: Runner | None = None,
     plan: TransportPlan | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> TransportResult:
     """One synchronous headless invocation (§21.9): params in, a typed result out.
 
@@ -1024,8 +1133,33 @@ def invoke_headless(
     `result.total_cost_usd` on EVERY call (both modes) — the B1 accounting fix that replaces
     the last-call-only read at driver.py:976 with the RUN total. A finite `plan.per_call_cap`
     (only ever set on the G7 api-key path) forces `--max-budget-usd = min(caller, cap)`.
+
+    **G7 api-key path (`plan.mode == "apikey"`).** The disarm of the F10 strip fires ONLY here, and
+    ONLY when the plan carries a LIVE hold: the plan-embedded `hold_expiry` is checked against the
+    INJECTED `clock` (default `time.time`) — an absent (`None`) or expired hold raises
+    `NoLiveHoldError` FAIL-CLOSED, BEFORE any env is built or process spawned (`transport.py` cannot
+    import the meter, so it trusts the plan-embedded expiry, not a live meter read). On a live hold
+    the resolved secret (`plan.api_key_reveal()`) is injected into the child env (never argv/log,
+    I5), the FINITE per-call cap is FORCED (`--max-budget-usd = min(caller, cap)`), and the
+    subscription wall is NOT applied (the api key authenticates the spawn, not the subscription).
     """
-    child_env = build_child_env(base_env, overrides=env_overrides)  # raises loudly (F10)
+    now = (clock or time.time)()
+    # `getattr` (not `plan.mode`) keeps a minimal duck-typed cap-only plan (a per_call_cap +
+    # cost_accumulator, no `mode`) on the subscription path — the api-key branch is opt-in on a
+    # real `mode == "apikey"` plan only.
+    is_apikey = getattr(plan, "mode", None) == "apikey"
+    if is_apikey:
+        assert plan is not None  # narrowed by is_apikey
+        # FAIL-CLOSED live-hold check (the money-safety crux): NO api-key spawn without a live,
+        # unexpired admission hold. Checked BEFORE the env is built / the process is spawned.
+        if plan.hold_expiry is None or not plan.hold_expiry > now:
+            raise NoLiveHoldError(hold_expiry=plan.hold_expiry, now=now)
+        assert plan.api_key_reveal is not None  # apikey plans carry it (see __post_init__)
+        child_env = build_child_env(
+            base_env, overrides=env_overrides, api_key=plan.api_key_reveal()
+        )
+    else:
+        child_env = build_child_env(base_env, overrides=env_overrides)  # raises loudly (F10)
     # The per-call cap MECHANISM (plan G1): a finite `plan.per_call_cap` forces
     # `--max-budget-usd = min(caller, cap)`; `per_call_cap is None` (the subscription path,
     # S-1) forces NOTHING, so the caller's value (usually None) rides through unchanged.
@@ -1042,15 +1176,15 @@ def invoke_headless(
         max_budget_usd=effective_budget,
         fallback_model=fallback_model,
     )
-    # The subscription WALL (plan G2, S-4): EVERY subscription spawn is pinned under
-    # pipeline-controlled settings that provably define NO apiKeyHelper, and no ambient/managed
-    # apiKeyHelper may supply an api key. This is the ONLY transport at G2 (no api-key path is
-    # built), so it fires on every spawn — generation AND the research seam alike, with no
-    # unwalled path. FAIL-CLOSED: build_subscription_wall RAISES (a managed apiKeyHelper, or an
-    # unverifiable controlled file) rather than ever spawning uncontrolled, and the raise happens
-    # BEFORE the runner is called.
-    wall = build_subscription_wall()
-    argv += list(wall.argv)
+    if not is_apikey:
+        # The subscription WALL (plan G2, S-4): EVERY subscription spawn is pinned under
+        # pipeline-controlled settings that provably define NO apiKeyHelper, and no ambient/managed
+        # apiKeyHelper may supply an api key. FAIL-CLOSED: build_subscription_wall RAISES (a managed
+        # apiKeyHelper, or an unverifiable controlled file) rather than ever spawning uncontrolled,
+        # BEFORE the runner is called. The api-key path does NOT apply it — the injected key
+        # authenticates the spawn (it outranks any ambient apiKeyHelper, G0 precedence).
+        wall = build_subscription_wall()
+        argv += list(wall.argv)
     request = ProcessRequest(
         argv=tuple(argv),
         env=child_env,

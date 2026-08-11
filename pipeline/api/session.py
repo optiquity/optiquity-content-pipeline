@@ -794,6 +794,75 @@ def plan_next_batch_ids(
     return [item.artifact_id for item in _select_batch(plan, consumed, params)]
 
 
+def _transport_enforced(root: Path, override: str | None) -> bool:
+    """True iff the plan-G7 transport RESOLUTION runs for this spend batch. An explicit per-run
+    override ALWAYS enforces; otherwise enforcement activates once a transport config exists
+    (`instance/ops/transport/config.yaml` — any assigned key / entitled user / umbrella cap). An
+    install that has configured NOTHING keeps the pre-G7 subscription-only behavior (`transport_plan
+    = None`), so existing generation is byte-unchanged and no new refusal is introduced until the
+    operator opts in by configuring transport (the money-safety activation model)."""
+    if override:
+        return True
+    from pipeline.spend.assignment import config_path
+
+    return config_path(root).is_file()
+
+
+def _admit_batch_transport(
+    root: Path,
+    user: str,
+    zone: str,
+    workspace: str,
+    override: str | None,
+    to_generate: Sequence[Any],
+    plan: Plan,
+) -> tuple[Any, Any, str | None]:
+    """The plan-G7 run-admission step for ONE generate-next batch: RESOLVE the transport (the ONLY
+    mode-selector, `pipeline.spend.resolve`) and ADMIT the batch's worst-case ceiling against the
+    assignment bucket + the umbrella BEFORE any spawn.
+
+    Returns `(admission, transport_plan, spend_refusal)`:
+    - enforcement inactive OR nothing to generate → `(None, None, None)` (the subscription/None path
+      — no admit, no metering);
+    - a resolved transport → `(AdmittedTransport, TransportPlan, None)` — caller drives under the
+      plan and settles `admission` in a `finally`;
+    - a PRE-SPEND refusal (no key + unentitled, a cap-over ceiling, a bad override, a missing/
+      unreadable secret) → `(None, None, <reason>)` — the caller blocks each un-done item with the
+      reason (no hold, no spawn), never a crash across `invoke()`."""
+    if not to_generate or not _transport_enforced(root, override):
+        return None, None, None
+    from pipeline.spend import resolve as resolve_mod
+    from pipeline.spend.assignment import AssignmentError
+    from pipeline.spend.keystore import KeyStoreError
+    from pipeline.spend.meter import MeterError
+
+    n_artifacts = len(to_generate)
+    n_deliverables = sum(len(item.deliverables) for item in to_generate)
+    try:
+        admission = resolve_mod.resolve_transport(
+            root,
+            user,
+            zone,
+            workspace,
+            override=override,
+            n_artifacts=n_artifacts,
+            n_deliverables=n_deliverables,
+            run_id=f"{workspace}:{plan.plan_hash[:12]}",
+        )
+    except (
+        resolve_mod.TransportResolutionError,
+        MeterError,
+        KeyStoreError,
+        AssignmentError,
+    ) as exc:
+        # A PRE-SPEND refusal — typed, no hold written, nothing spawned. Surface the reason as a
+        # per-item block (the caller decides), never a raise across the shared `invoke()` boundary.
+        # `AssignmentError` (LOW-2) covers a MALFORMED transport config (`ConfigError` from
+        # `load_store`) — an operator typo becomes a clean refusal block, never a runner crash.
+        return None, None, str(exc)
+    return admission, admission.plan, None
+
+
 def _generate_next(
     ctx: invoke_mod.HandlerContext,
     *,
@@ -852,77 +921,106 @@ def _generate_next(
     # materializes (one source of truth, no hand-synced fork).
     batch = _select_batch(plan, consumed, ctx.params)
 
+    # plan G7 — the RUN-ADMISSION tier at the SHARED spend chokepoint both doors traverse (CLI +
+    # `jobrunner→invoke()` re-enter this handler identically): resolve the transport for THIS batch
+    # and ADMIT its worst-case ceiling vs the assignment bucket + the umbrella BEFORE any spawn,
+    # then SETTLE the accumulated ACTUAL cost in a `finally` on EVERY exit path. The per-call disarm
+    # (transport.py) fires ONLY under the live hold this admit produces. A refusal (no key +
+    # not entitled, a cap-exceeding ceiling, a bad override, a missing secret) is surfaced as a
+    # per-item BLOCK — never a spawn, never a crash across `invoke()`.
+    to_generate = [item for item in batch if not is_done(store, item.artifact_id)]
+    admission, transport_plan, spend_refusal = _admit_batch_transport(
+        root, ctx.user, ctx.zone, ctx.workspace, ctx.transport_override, to_generate, plan
+    )
+
     now = now or date.today()
     out: list[results.ResultItem] = []
-    for item in batch:
-        aid = item.artifact_id
-        # §21.8 idempotency floor: correctness comes from id EXISTENCE, never the cursor.
-        if is_done(store, aid):
-            out.append(results.make_result(
-                results.CODE_ALREADY_MATERIALIZED, item=aid, ids={"artifact_id": aid}
-            ))
-            _append_unique(produced, aid)
-        else:
-            try:
-                result = run_artifact(
-                    env=env,
-                    store=store,
-                    claims=claims,
-                    ssot=ssot,
-                    plan=plan,
-                    item=item,
-                    pool=pool,
-                    adapters=adapters,
-                    source_repos=source_repos,
-                    now=now,
-                    model=model,
-                    log=_nolog,
-                )
-            except driver.DriverError as exc:
-                # SM1: a per-item block never fails the batch; siblings proceed.
-                # HARD GATE-1 (§21.7 code threading) — CLOSED at step 39 (`mvp-demo` is the
-                # first real caller wiring generate-next to the LIVE transport). The driver now
-                # threads the TRUE §21.7 taxonomy code across the driver→session boundary on its
-                # three generation-tier gates (`empty-pool` at grounding, `hard-limit-exceeded`
-                # at the reconcile terminal gate, `grounding-uncovered` at the post-review
-                # abstain gate); a coded block surfaces it with its taxonomy
-                # `category`. A NON-taxonomy driver failure (malformed call, compose-contract,
-                # transport code) carries NO code and stays a code-less `_block` FOREVER — the
-                # §3.1 no-fabrication rule. `make_result` DEFAULTS the status from the code's
-                # `CodeSpec.statuses[0]` (never hardcoded `status="block"`), so a future non-block
-                # code threaded here can never raise an uncaught `ResultContractError`, and the
-                # remediation `action` defaults from the CodeSpec when the driver supplies none.
-                code = exc.stage_code if exc.stage_code in results.ALL_CODES else None
-                if code is not None:
-                    out.append(results.make_result(
-                        code,
-                        item=aid,
-                        ids={"artifact_id": aid},
-                        action=exc.remediation_action,
-                        hint=str(exc),
-                    ))
-                else:
-                    out.append(_block(str(exc), item=aid))  # malformed-call blocks stay code-less
-            else:
-                deliverable_ids = [d.deliverable_id for d in getattr(result, "deliverables", ())]
-                ids: dict[str, Any] = {"artifact_id": aid}
-                if deliverable_ids:
-                    ids["deliverable_ids"] = deliverable_ids
-                out.append(results.ResultItem(item=aid, status="ok", ids=ids))
+    try:
+        for item in batch:
+            aid = item.artifact_id
+            # §21.8 idempotency floor: correctness comes from id EXISTENCE, never the cursor.
+            if is_done(store, aid):
+                out.append(results.make_result(
+                    results.CODE_ALREADY_MATERIALIZED, item=aid, ids={"artifact_id": aid}
+                ))
                 _append_unique(produced, aid)
-                for did in deliverable_ids:
-                    _append_unique(produced, did)
-        _append_unique(consumed, aid)  # advance the cursor by COORDINATE (§21.6), not index
+            elif spend_refusal is not None:
+                # A PRE-SPEND transport refusal (plan G7): no hold, no spawn — surfaced as a
+                # per-item block naming the reason. Nothing was admitted or spent for this item.
+                out.append(_block(spend_refusal, item=aid))
+            else:
+                try:
+                    # plan G7: the admitted api-key plan (or the subscription/None plan when
+                    # enforcement is inactive) — the run-admission tier resolved+admitted it above.
+                    result = run_artifact(
+                        env=env,
+                        store=store,
+                        claims=claims,
+                        ssot=ssot,
+                        plan=plan,
+                        item=item,
+                        pool=pool,
+                        adapters=adapters,
+                        source_repos=source_repos,
+                        now=now,
+                        model=model,
+                        log=_nolog,
+                        transport_plan=transport_plan,
+                    )
+                except driver.DriverError as exc:
+                    # SM1: a per-item block never fails the batch; siblings proceed.
+                    # HARD GATE-1 (§21.7 code threading) — CLOSED at step 39 (`mvp-demo` is the
+                    # first real caller wiring generate-next to the LIVE transport). The driver now
+                    # threads the TRUE §21.7 taxonomy code across the driver→session boundary on its
+                    # three generation-tier gates (`empty-pool` at grounding, `hard-limit-exceeded`
+                    # at the reconcile terminal gate, `grounding-uncovered` at the post-review
+                    # abstain gate); a coded block surfaces it with its taxonomy
+                    # `category`. A NON-taxonomy driver failure (malformed call, compose-contract,
+                    # transport code) carries NO code and stays a code-less `_block` FOREVER — the
+                    # §3.1 no-fabrication rule. `make_result` DEFAULTS the status from the code's
+                    # `CodeSpec.statuses[0]` (never hardcoded `status="block"`), so a future code
+                    # code threaded here can never raise an uncaught `ResultContractError`, and the
+                    # remediation `action` defaults from the CodeSpec when the driver supplies none.
+                    code = exc.stage_code if exc.stage_code in results.ALL_CODES else None
+                    if code is not None:
+                        out.append(results.make_result(
+                            code,
+                            item=aid,
+                            ids={"artifact_id": aid},
+                            action=exc.remediation_action,
+                            hint=str(exc),
+                        ))
+                    else:
+                        out.append(_block(str(exc), item=aid))  # malformed-call stays codeless
+                else:
+                    deliverable_ids = [
+                        d.deliverable_id for d in getattr(result, "deliverables", ())
+                    ]
+                    ids: dict[str, Any] = {"artifact_id": aid}
+                    if deliverable_ids:
+                        ids["deliverable_ids"] = deliverable_ids
+                    out.append(results.ResultItem(item=aid, status="ok", ids=ids))
+                    _append_unique(produced, aid)
+                    for did in deliverable_ids:
+                        _append_unique(produced, did)
+            _append_unique(consumed, aid)  # advance the cursor by COORDINATE (§21.6), not index
 
-    new_token = token_mod.mint(
-        ctx.workspace,
-        plan.plan_hash,
-        inputs=token.inputs,
-        cursor={**dict(token.cursor), "consumed": consumed},
-        produced_ids=produced,
-        folio_id=token.folio_id,
-    )
-    return (out, new_token)
+        new_token = token_mod.mint(
+            ctx.workspace,
+            plan.plan_hash,
+            inputs=token.inputs,
+            cursor={**dict(token.cursor), "consumed": consumed},
+            produced_ids=produced,
+            folio_id=token.folio_id,
+        )
+        return (out, new_token)
+    finally:
+        # SETTLE on EVERY exit path (a clean return OR a mid-loop raise): append the settled ledger
+        # line with the accumulated ACTUAL cost and drop the hold (plan G7). A no-op for the
+        # subscription / unconfigured path (no admission). A crash that skips this self-expires the
+        # hold at its full ceiling (the G6 TTL) — never a leaked reservation.
+        if admission is not None and transport_plan is not None:
+            admission.settle(transport_plan.cost_accumulator.total)
 
 
 # ---------------------------------------------------------------------------

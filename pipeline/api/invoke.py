@@ -102,6 +102,10 @@ class HandlerContext:
     token: token_mod.Token | None
     pins: Any
     store: WorkspaceStore
+    #: The per-run transport override (plan G7: `subscription` | `api` | `key:<handle>`), threaded
+    #: from both doors so a spend handler passes it to the resolver. `None` = no override (the
+    #: cascade decides). It selects a MODE / a handle, NEVER a user (I3, structural).
+    transport_override: str | None = None
 
 
 #: A verb handler: given a vetted context, produce the result items + an optional next token.
@@ -308,6 +312,65 @@ def _fatal(
     return {"envelope": envelope.as_dict(), "results": [i.as_dict() for i in items]}
 
 
+#: The whole-invocation code for the uniform-S4 zone-required refusal (plan G7 / B-1). A SPEND verb
+#: invoked by a user who owns >1 zone WITHOUT an explicit zone is refused at THIS shared chokepoint
+#: (both the CLI and the served `jobrunner→invoke()` re-entry pass through it), never a silent spend
+#: in the wrong zone. It reuses the same rule the CLI `_resolve_spend_zone_or_refuse` applies early.
+CODE_ZONE_REQUIRED = "zone-required"
+
+
+def _is_spend_call(verb: str, params: Mapping[str, Any]) -> bool:
+    """True iff this invocation is a SPEND door subject to the uniform-S4 zone-required rule (B-1).
+
+    The paid/served surfaces: `continue-session{action: generate-next}` (the generation door) and
+    `render` (the reshape/mint door). `begin-session{generate != none}` would be one too, but it is
+    still deferred (501), so `begin-session` stays Tier-A here (generate defaults to `none`). Every
+    OTHER verb/action — begin-session plan-only, CRUD, list/get, fetch, the cheap continue-session
+    actions — is Tier-A and NEVER resolves/refuses (S2: Tier-A never spends)."""
+    if verb == "render":
+        return True
+    if verb == "continue-session" and params.get("action") == "generate-next":
+        return True
+    if verb == "begin-session":
+        generate = params.get("generate")
+        return generate is not None and generate != "none"
+    return False
+
+
+def _zone_required_or_none(
+    verb: str,
+    workspace: str,
+    user: str,
+    params: Mapping[str, Any],
+    *,
+    root: str | Path,
+    zone: str,
+    zone_explicit: bool,
+) -> dict[str, Any] | None:
+    """The UNIFORM S4 gate (G7, B-1): for a SPEND call with a NON-explicit zone, a user who owns
+    MORE THAN ONE zone is REFUSED here — the whole-invocation `zone-required` fatal — rather than
+    silently defaulting `zone` and spending in the wrong bucket. Returns the fatal envelope on a
+    refusal, else `None` (proceed). Reuses `workspacescaffold.resolve_spend_zone` (the SAME
+    `list_zones` scan the CLI early-refusal uses), so the CLI door and the served
+    `generate-next`/`render` re-entry enforce ONE rule. Tier-A verbs never reach here (they never
+    spend); an EXPLICIT zone (named by the caller) is honored with no scan."""
+    if zone_explicit or not _is_spend_call(verb, params):
+        return None
+    from pipeline import workspacescaffold
+
+    try:
+        workspacescaffold.resolve_spend_zone(root, user, None)
+    except workspacescaffold.SpendZoneError as exc:
+        # A whole-invocation refusal (§21.7): the coded envelope carries the reason. `zone-required`
+        # is an ENVELOPE code (the `Envelope` does not gate `code` against the §21.7 ResultItem
+        # taxonomy, so no new §21.7 code is registered); the empty results list keeps the refusal a
+        # pure envelope-fatal, parallel to the other three whole-invocation gates.
+        return _fatal(
+            verb, workspace, user, [], CODE_ZONE_REQUIRED, str(exc), zone=zone
+        )
+    return None
+
+
 def invoke(
     verb: str,
     workspace: str,
@@ -319,6 +382,8 @@ def invoke(
     store: WorkspaceStore | None = None,
     root: str | Path = ".",
     zone: str = DEFAULT_ZONE,
+    zone_explicit: bool = True,
+    transport_override: str | None = None,
     handlers: Mapping[str, Handler] | None = None,
 ) -> dict[str, Any]:
     """One synchronous external-actor call (§21.1): `{envelope, results, [token]}`.
@@ -427,6 +492,17 @@ def invoke(
             zone=zone,
         )
 
+    # Gate 4 (plan G7 / B-1) — UNIFORM S4 at the shared chokepoint: a SPEND call by a >1-zone user
+    # WITHOUT an explicit zone is refused HERE, so the CLI door AND the served `generate-next`/
+    # `render` re-entry enforce ONE rule (never a silent spend in the wrong zone). Tier-A verbs and
+    # an explicit zone pass straight through; the driver/transport apply the run-admission +
+    # per-call tiers below the handler.
+    zone_fatal = _zone_required_or_none(
+        verb, workspace, user, params, root=root, zone=zone, zone_explicit=zone_explicit
+    )
+    if zone_fatal is not None:
+        return zone_fatal
+
     # Dispatch — the thin real seam (step 32: unwired verbs raise HandlerNotWired).
     handler = handlers.get(verb)
     if handler is None:
@@ -441,6 +517,7 @@ def invoke(
             token=decoded,
             pins=pins,
             store=ws_store,
+            transport_override=transport_override,
         )
     )
     envelope = results.Envelope(ok=True, verb=verb, workspace=workspace, user=user, zone=zone)
@@ -521,10 +598,21 @@ def main_cli(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--zone",
-        default=DEFAULT_ZONE,
+        default=None,
         help=(
             "the zone segment between user and workspace (§23; "
-            f"users/<user>/zones/<zone>/workspaces/<workspace>/, default: {DEFAULT_ZONE})"
+            f"users/<user>/zones/<zone>/workspaces/<workspace>/, default: {DEFAULT_ZONE}). For a "
+            "SPEND verb (render), OMITTING it lets a >1-zone user be refused (uniform S4, G7); "
+            "naming it (even 'default') is honored verbatim."
+        ),
+    )
+    parser.add_argument(
+        "--transport",
+        default=None,
+        metavar="MODE",
+        help=(
+            "per-run transport override (G7): 'subscription' | 'api' | 'key:<namespace>:<name>'. "
+            "Selects a MODE / an assigned handle, never a user (I3). Default: the cascade decides."
         ),
     )
     args = parser.parse_args(argv)
@@ -559,7 +647,9 @@ def main_cli(argv: list[str] | None = None) -> int:
             token,
             pins,
             root=args.root,
-            zone=args.zone,
+            zone=args.zone if args.zone is not None else DEFAULT_ZONE,
+            zone_explicit=args.zone is not None,
+            transport_override=args.transport,
         )
     except HandlerNotWired as exc:
         print(f"pipeline invoke: {exc}", file=sys.stderr)

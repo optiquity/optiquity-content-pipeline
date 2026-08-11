@@ -1073,6 +1073,7 @@ def _drive_generate(
     adapters: "object | None",
     run_artifact: "object | None",
     zone: str,
+    transport_override: "str | None" = None,
 ) -> int:
     """`generate --go`: drive `continue-session` `generate-next` to completion over the plan cover.
     The per-item generation seam `run_artifact` is INJECTABLE (default `driver._run_artifact`, the
@@ -1107,6 +1108,11 @@ def _drive_generate(
             handlers={"continue-session": continue_handler},
             root=root,
             zone=zone,
+            # The zone was already S4-resolved by `_resolve_spend_zone_or_refuse` up front (the CLI
+            # friendly early refusal), so it is EXPLICIT here — the uniform-S4 gate in invoke() will
+            # not re-refuse. The per-run transport override (plan G7) rides into the resolver.
+            zone_explicit=True,
+            transport_override=transport_override,
         )
         if not out["envelope"]["ok"]:
             _print_refusal("generate", out)
@@ -1341,7 +1347,13 @@ def _run_friendly_generate(
         print("\n(dry-run: nothing spent — re-run with --go to drive the plan to completion)")
         return 0
     drive_code = _drive_generate(
-        normalized, result, args.root, adapters=adapters, run_artifact=run_artifact, zone=zone
+        normalized,
+        result,
+        args.root,
+        adapters=adapters,
+        run_artifact=run_artifact,
+        zone=zone,
+        transport_override=getattr(args, "transport", None),
     )
     if drive_code == 0 and save_selection is not None:
         return _save_selection(
@@ -1409,6 +1421,17 @@ def _cmd_generate(
         "--go",
         action="store_true",
         help="DRIVE the plan to completion (spends quota); omit for a free dry-run preview",
+    )
+    parser.add_argument(
+        "--transport",
+        default=None,
+        metavar="MODE",
+        help=(
+            "per-run transport override (G7): 'subscription' | 'api' | 'key:<namespace>:<name>'. "
+            "Forces the subscription, the scope's assigned api key, or a specific assigned handle. "
+            "Selects a MODE / a handle, never a user (I3). Default: the workspace→zone→user→global "
+            "cascade decides (an assigned key → api-key transport; else the entitled subscription)."
+        ),
     )
     parser.add_argument(
         "--outline",

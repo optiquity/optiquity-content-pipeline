@@ -75,9 +75,10 @@ from pipeline.api.render import _EngineError
 from pipeline.canonical import canonical_json_str
 from pipeline.driver import DriverError
 from pipeline.jobs import JobStore, is_deterministic_block
+from pipeline.spend.assignment import AssignmentError
 from pipeline.store import WorkspaceStore
 from pipeline.telemetry import PresenceRegistry, TelemetryError
-from pipeline.transport import ApiKeyPresentError, BinaryNotFoundError
+from pipeline.transport import ApiKeyPresentError, BinaryNotFoundError, NoLiveHoldError
 from pipeline.workspace_name import validate_workspace_path
 
 __all__ = [
@@ -115,6 +116,14 @@ _RAISER_SET: tuple[type[BaseException], ...] = (
     HandlerNotWired,
     ApiKeyPresentError,
     BinaryNotFoundError,
+    # plan G7: the FAIL-CLOSED api-key refusal (an absent/expired hold reached the chokepoint — no
+    # spend happened). Caught like the sibling env/wiring raisers so the detached runner records a
+    # `runner-failed` terminal instead of crashing (money-safe either way: nothing was spawned).
+    NoLiveHoldError,
+    # plan G7 (LOW-2): a MALFORMED transport config (`assignment.ConfigError`) that escapes the
+    # `_admit_batch_transport` block-surfacing on any other invoke path — caught here so an operator
+    # typo records a clean terminal instead of crashing the detached runner (pre-spawn, no spend).
+    AssignmentError,
     DriverError,
 )
 
@@ -163,6 +172,14 @@ class JobSpec:
     callback_url: str | None = None
     target_ids: tuple[str, ...] = ()
     allowed_callback_hosts: frozenset[str] = frozenset()
+    #: plan G7 / B-1: the ZONE-PROVENANCE signal (True iff the client NAMED `zone`) + the per-run
+    #: transport OVERRIDE, carried across the process boundary so the detached runner's `invoke()`
+    #: re-entry applies the SAME uniform-S4 refusal + resolver a synchronous caller gets. Both are
+    #: transient input, never identity (no schema bump). `zone_explicit` defaults True for
+    #: a pre-G7 spawn file (the shim always writes the real provenance now); `transport_override` is
+    #: a MODE / handle, never a user (I3).
+    zone_explicit: bool = True
+    transport_override: str | None = None
 
     def as_json(self) -> str:
         """Canonical JSON for the spawn file (byte-stable, matching the repo convention). The
@@ -180,10 +197,12 @@ class JobSpec:
                 "root": self.root,
                 "target_ids": list(self.target_ids),
                 "token": self.token,
+                "transport_override": self.transport_override,
                 "user": self.user,
                 "verb": self.verb,
                 "workspace": self.workspace,
                 "zone": self.zone,
+                "zone_explicit": self.zone_explicit,
             }
         )
 
@@ -214,6 +233,11 @@ class JobSpec:
             callback_url=obj.get("callback_url"),
             target_ids=tuple(obj.get("target_ids") or ()),
             allowed_callback_hosts=frozenset(obj.get("allowed_callback_hosts") or ()),
+            # plan G7 / B-1: a pre-G7 spawn file LACKS these; default to `zone_explicit=True` (the
+            # shim writes the real provenance now) + no override — enforcement rides
+            # the re-entry `invoke()` either way.
+            zone_explicit=bool(obj.get("zone_explicit", True)),
+            transport_override=obj.get("transport_override"),
         )
 
 
@@ -438,6 +462,11 @@ def run_job(
                 spec.pins,
                 root=spec.root,
                 zone=spec.zone,
+                # plan G7 / B-1: the detached runner's re-entry gets the SAME uniform-S4 refusal +
+                # resolver a synchronous caller gets (the shared chokepoint fires for the served
+                # `generate-next`/`render` re-entry, not just the CLI).
+                zone_explicit=spec.zone_explicit,
+                transport_override=spec.transport_override,
             )
         except _RAISER_SET as exc:
             code = _raised_terminal_code(exc)

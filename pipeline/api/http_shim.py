@@ -230,6 +230,10 @@ _HTTP_PAYLOAD_TOO_LARGE = 413
 _HTTP_UNPROCESSABLE = 422
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_INTERNAL = 500
+
+#: The sentinel `_transport_of` returns after sending a 400 for a present-but-invalid `transport`
+#: override (plan G7) — the door aborts on identity, distinct from a valid absent override (`None`).
+_BAD_TRANSPORT: Any = object()
 _HTTP_NOT_IMPLEMENTED = 501
 _HTTP_GATEWAY_TIMEOUT = 504
 
@@ -824,6 +828,30 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
             return None
         return zone
 
+    @staticmethod
+    def _zone_explicit(payload: Mapping[str, Any]) -> bool:
+        """The §23/Z4 ZONE-PROVENANCE signal (G7 / B-1): True iff the request body NAMED `zone`.
+        Threaded into `invoke()` / the `JobSpec`, so the served `generate-next`/`render` re-entry
+        gets the SAME uniform-S4 refusal a >1-zone CLI caller gets when the zone is defaulted — the
+        served door no longer silently defaults `zone` past S4 (the B-1 hole)."""
+        return "zone" in payload
+
+    def _transport_of(self, payload: Mapping[str, Any]) -> str | None:
+        """The per-run transport OVERRIDE from the request body (plan G7): `payload['transport']`
+        when present (a non-empty string: `subscription` | `api` | `key:<handle>`), else None. A
+        present-but-invalid `transport` (non-string / empty) is sent as a 400 and returns
+        `_BAD_TRANSPORT` (the caller aborts). It selects a MODE / a handle, NEVER a user (I3)."""
+        if "transport" not in payload:
+            return None
+        transport = payload.get("transport")
+        if not isinstance(transport, str) or not transport:
+            self._bad_request(
+                "'transport', when supplied, must be a non-empty string (plan G7: 'subscription' | "
+                "'api' | 'key:<namespace>:<name>' — a MODE or an assigned handle, never a user)"
+            )
+            return _BAD_TRANSPORT
+        return transport
+
     def _deny_unserved_workspace(
         self, server: ShimServer, user: str, workspace: str, zone: str
     ) -> bool:
@@ -917,6 +945,13 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         zone = self._zone_of(payload)
         if zone is None:  # a present-but-invalid `zone` (already 400'd by `_zone_of`)
             return
+        # plan G7 / B-1: the zone-provenance signal (did the client NAME `zone`?) + the per-run
+        # transport override — threaded into the re-entry so the chokepoint applies the
+        # SAME uniform-S4 refusal + resolver a synchronous caller gets.
+        zone_explicit = self._zone_explicit(payload)
+        transport_override = self._transport_of(payload)
+        if transport_override is _BAD_TRANSPORT:  # a present-but-invalid `transport` (400'd)
+            return
         if not isinstance(params, Mapping):
             self._bad_request("'params' must be a JSON object")
             return
@@ -926,16 +961,25 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
 
         if classify_verb(verb, params) == TIER_B:
             if _is_generate_next_submit(verb, params):
-                self._submit_generate_next(server, workspace, user, zone, params, token, pins)
+                self._submit_generate_next(
+                    server, workspace, user, zone, params, token, pins,
+                    zone_explicit=zone_explicit, transport_override=transport_override,
+                )
                 return
             if verb == "render":
-                self._submit_render(server, workspace, user, zone, params, token, pins)
+                self._submit_render(
+                    server, workspace, user, zone, params, token, pins,
+                    zone_explicit=zone_explicit, transport_override=transport_override,
+                )
                 return
             # The STILL-DEFERRED Tier-B verb `begin-session{generate!=none}` (Commit 9).
             self._respond(_HTTP_NOT_IMPLEMENTED, _tier_b_body(verb, params))
             return
 
         # Tier-A or unknown-verb: `invoke()` is the authority (unknown-verb → its fatal envelope).
+        # Tier-A NEVER resolves/refuses (S2) — it never spends, so the S4 gate can't fire and
+        # the zone-provenance / transport-override signals aren't threaded here (they matter only on
+        # the Tier-B spend submit doors below, which re-enter `invoke()` via the detached runner).
         try:
             result = server.invoke_fn(
                 verb, workspace, user, params, token, root=server.root, zone=zone
@@ -955,6 +999,9 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         params: Mapping[str, Any],
         token: Any,
         pins: Any,
+        *,
+        zone_explicit: bool = True,
+        transport_override: str | None = None,
     ) -> None:
         """The Tier-B `continue-session{generate-next}` SUBMIT (Commit 6): resolve the predictable
         target-ids LLM-free, `JobStore.submit` a lossy idempotency record, detach a runner, and
@@ -1109,6 +1156,10 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 # re-reading instance config.
                 target_ids=tuple(target_ids),
                 allowed_callback_hosts=server.allowed_callback_hosts,
+                # plan G7 / B-1: the zone-provenance + transport-override ride the spawn file so the
+                # detached runner's `invoke()` re-entry gets the SAME uniform-S4 refusal + resolver.
+                zone_explicit=zone_explicit,
+                transport_override=transport_override,
             )
             spawn = server.spawn_fn if server.spawn_fn is not None else _default_spawn
             spawn(spec, spawn_dir=store.jobs_dir)
@@ -1130,6 +1181,9 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
         params: Mapping[str, Any],
         token: Any,
         pins: Any,
+        *,
+        zone_explicit: bool = True,
+        transport_override: str | None = None,
     ) -> None:
         """The Tier-B `render` SUBMIT with the OPTIMISTIC-SYNC-then-202 fast path (Commit 8):
         resolve the predictable deliverable-id LLM-free, `JobStore.submit` a lossy idempotency
@@ -1279,6 +1333,10 @@ class _ShimRequestHandler(BaseHTTPRequestHandler):
                 callback_url=callback_url,
                 target_ids=tuple(target_ids),
                 allowed_callback_hosts=server.allowed_callback_hosts,
+                # plan G7 / B-1: the zone-provenance + transport-override ride the spawn file so the
+                # detached render runner's `invoke()` re-entry gets the SAME uniform-S4 refusal.
+                zone_explicit=zone_explicit,
+                transport_override=transport_override,
             )
             spawn = server.spawn_fn if server.spawn_fn is not None else _default_spawn
             spawn(spec, spawn_dir=store.jobs_dir)

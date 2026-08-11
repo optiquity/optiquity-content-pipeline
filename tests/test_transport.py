@@ -49,6 +49,7 @@ from pipeline.transport import (
     ApiKeyPresentError,
     BinaryNotFoundError,
     CostAccumulator,
+    NoLiveHoldError,
     ProcessOutcome,
     ProcessRequest,
     TransportError,
@@ -645,6 +646,58 @@ def test_finite_cap_keeps_a_smaller_caller_budget():
 needs_claude_binary = pytest.mark.skipif(
     shutil.which("claude") is None, reason="claude binary absent from PATH"
 )
+
+
+# --- G7: the apikey branch (disarm ONLY under a live hold; $5 cap; key in env, not argv) ---------
+
+
+def _apikey_plan(hold_expiry, *, secret="sk-ant-BRANCH", cap=5.0):
+    return TransportPlan.apikey(
+        per_call_cap=cap, api_key_reveal=lambda: secret, hold_expiry=hold_expiry
+    )
+
+
+def test_apikey_branch_injects_key_forces_cap_and_skips_the_wall(monkeypatch):
+    """The G7 apikey branch under a LIVE hold: the resolved key rides the child ENV (not argv), the
+    FINITE $5 per-call cap is forced, the subscription wall is NOT applied, and cost accumulates.
+    An ambient ANTHROPIC_API_KEY is overwritten by the RESOLVED one (never the ambient value)."""
+    monkeypatch.setenv(ANTHROPIC_API_KEY_ENV, "sk-ambient-should-not-win")
+    plan = _apikey_plan(2000.0)
+    runner = FakeRunner(outcome_ok_cost(0.33))
+    result = invoke_headless("hi", runner=runner, plan=plan, clock=lambda: 1000.0)
+    assert result.status == "ok"
+    req = runner.requests[0]
+    # The RESOLVED key is injected into the ENV (never the ambient), and never appears on argv.
+    assert req.env[ANTHROPIC_API_KEY_ENV] == "sk-ant-BRANCH"
+    assert "sk-ant-BRANCH" not in " ".join(req.argv)
+    assert "sk-ambient-should-not-win" not in dict(req.env).values()
+    # The finite $5 cap is forced; the subscription wall (--settings/--setting-sources) is NOT here.
+    assert req.argv[req.argv.index("--max-budget-usd") + 1] == "5.0"
+    assert "--settings" not in req.argv and "--setting-sources" not in req.argv
+    assert "--bare" not in req.argv  # never the api-key-only mode either
+    # The cost accumulates into the plan (the B1 fix, both modes).
+    assert plan.cost_accumulator.total == pytest.approx(0.33)
+
+
+def test_apikey_branch_without_live_hold_refuses_before_spawn():
+    """FAIL-CLOSED: an apikey plan with NO hold (None) or an EXPIRED hold refuses at the chokepoint
+    (NoLiveHoldError) BEFORE any spawn — the runner is never called, nothing accumulates."""
+    for hold_expiry in (None, 900.0):
+        runner = FakeRunner(outcome_ok(SUCCESS_JSON))
+        plan = _apikey_plan(hold_expiry)
+        with pytest.raises(NoLiveHoldError):
+            invoke_headless("hi", runner=runner, plan=plan, clock=lambda: 1000.0)
+        assert runner.call_count == 0  # no spawn
+        assert plan.cost_accumulator.total == 0.0
+
+
+def test_apikey_plan_requires_finite_cap_and_reveal():
+    """An apikey TransportPlan MUST carry a finite positive per_call_cap + a reveal seam (the money
+    wall + the key); a subscription plan MUST carry neither (F10)."""
+    with pytest.raises(TransportError):
+        TransportPlan.apikey(per_call_cap=None, api_key_reveal=lambda: "x", hold_expiry=1.0)  # type: ignore[arg-type]
+    with pytest.raises(TransportError):
+        TransportPlan(mode="apikey", cost_accumulator=CostAccumulator(), per_call_cap=5.0)
 
 
 @pytest.mark.live
