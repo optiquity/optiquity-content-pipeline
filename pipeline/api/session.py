@@ -62,6 +62,7 @@ closed the honest empty seam step 32 opened; `tests/test_action_completeness.py`
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -932,6 +933,15 @@ def _generate_next(
     admission, transport_plan, spend_refusal = _admit_batch_transport(
         root, ctx.user, ctx.zone, ctx.workspace, ctx.transport_override, to_generate, plan
     )
+    # plan G8 — the pre-spend COST DISCLOSURE, emitted at the admission spot so it reflects the REAL
+    # resolved+admitted plan (mode / charged bucket / worst-case ceiling / live headroom), BEFORE
+    # the first spawn below. A READ-ONLY projection off the admitted plan + the same meter; it
+    # admits nothing and spends nothing. To STDERR (the shared chokepoint both doors traverse — CLI
+    # drive + the detached jobrunner re-entry): a money-safety notice, never on the stdout JSON
+    # envelope. Fires only when transport is enforced (an `admission` exists); the unconfigured
+    # subscription-only path (`admission is None`) discloses nothing, byte-unchanged (§ activation).
+    if admission is not None:
+        print(admission.disclose().line(), file=sys.stderr)
 
     now = now or date.today()
     out: list[results.ResultItem] = []

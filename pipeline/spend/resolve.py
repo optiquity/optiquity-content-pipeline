@@ -51,9 +51,11 @@ from typing import Literal
 from pipeline.spend.assignment import (
     Assignment,
     AssignmentStore,
+    ScopeKey,
     load_store,
 )
 from pipeline.spend.construction import ConstructionBudget
+from pipeline.spend.disclose import MODE_APIKEY, MODE_SUBSCRIPTION, TransportDisclosure
 from pipeline.spend.keystore import (
     FileSecretBackend,
     KeyStoreError,
@@ -77,6 +79,7 @@ __all__ = [
     "TransportOverrideError",
     "TransportResolutionError",
     "parse_override",
+    "preview_transport",
     "resolve_transport",
 ]
 
@@ -200,17 +203,58 @@ class AdmittedTransport:
     - api-key: `plan.mode == "apikey"` carrying the FINITE per-call cap + the resolved secret + the
       admitted hold's embedded expiry; `hold`/`meter` are set so `settle(actual)` appends the
       settled ledger line and drops the hold. Call `settle` in a `finally` on EVERY exit path (a
-      crash before settle self-expires the hold at its full ceiling, G6 TTL)."""
+      crash before settle self-expires the hold at its full ceiling, G6 TTL).
+
+    It ALSO carries the READ-ONLY disclosure provenance (plan G8) — the worst-case `budget`, the
+    charged `scope` + `handle`, and the bucket + umbrella caps — so `disclose()` reflects the REAL
+    admitted plan (never a second, possibly-disagreeing store read) and reads the live headroom off
+    the SAME meter it admitted against. The `handle` is a NON-secret `SecretRef` (I5)."""
 
     plan: TransportPlan
     hold: Hold | None
     meter: WeeklyMeter | None
+    budget: ConstructionBudget | None = None
+    scope: ScopeKey | None = None
+    handle: SecretRef | None = None
+    bucket_cap: Decimal | None = None
+    umbrella_cap: Decimal | None = None
 
     def settle(self, actual_cost: object) -> None:
         """Settle the admitted hold with the ACTUAL accumulated cost (call in a `finally`). A no-op
         for the subscription path (no hold) — subscription is flat-rate, nothing is metered."""
         if self.hold is not None and self.meter is not None:
             self.meter.settle(self.hold, actual_cost)
+
+    def disclose(self) -> TransportDisclosure:
+        """The pre-spend COST DISCLOSURE for this admitted run (plan G8) — a READ-ONLY projection
+        that admits NOTHING and spends NOTHING.
+
+        For the api-key path it reads the LIVE week-to-date (settled + all live holds, incl. THIS
+        run's just-written hold) off the SAME meter via the sanctioned `bucket_week_to_date` /
+        `umbrella_week_to_date` reads, so the disclosed headroom (`cap − week-to-date`) reflects the
+        real reservation. For the subscription path (no meter) it discloses the flat-rate mode + the
+        call-count scope only (no `$` ceiling, no headroom). Emit it at the admission spot, BEFORE
+        the first spawn."""
+        budget = self.budget if self.budget is not None else ConstructionBudget(None, 1, 0)
+        if self.plan.mode != MODE_APIKEY or self.meter is None:
+            return TransportDisclosure(mode=MODE_SUBSCRIPTION, budget=budget)
+        # api-key: the caps ride the result; the week-to-date is read live off the same meter.
+        bucket_wtd = (
+            self.meter.bucket_week_to_date(self.scope, self.handle)
+            if self.scope is not None and self.handle is not None
+            else None
+        )
+        umbrella_wtd = self.meter.umbrella_week_to_date()
+        return TransportDisclosure(
+            mode=MODE_APIKEY,
+            budget=budget,
+            scope=self.scope,
+            handle=self.handle,
+            bucket_cap=self.bucket_cap,
+            bucket_week_to_date=bucket_wtd,
+            umbrella_cap=self.umbrella_cap,
+            umbrella_week_to_date=umbrella_wtd,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -251,19 +295,70 @@ def resolve_transport(
     resolved_store = load_store(framework_root) if store is None else store
     parsed = parse_override(override)
     accumulator = cost_accumulator if cost_accumulator is not None else CostAccumulator()
-    # The entitlement decision reads the SAME store the cascade uses (consistency — never a second
-    # disk read that could disagree): the caller IS entitled iff it is EXACTLY the single config-set
-    # subscription user (G5, ToS). `None`/mismatch/empty → not entitled.
-    entitled = (
-        isinstance(user, str) and user != "" and resolved_store.entitled_user == user
+    entitled = _is_entitled(resolved_store, user)
+
+    # The precedence (override → cascade → subscription-iff-entitled → refuse) is chosen ONCE, by
+    # the shared `_decide` — the SAME closed cascade the dry-run `preview_transport` reads, so a
+    # disclosure can never name a different mode than the spend that follows (one mode-chooser).
+    decision = _decide(resolved_store, user, zone, workspace, parsed, entitled=entitled)
+    if decision.mode == MODE_SUBSCRIPTION:
+        return _subscription(
+            user, accumulator, n_artifacts, n_deliverables, entitled=True
+        )
+    assert decision.assignment is not None  # _decide guarantees it for the api-key branch
+    return _apikey(
+        framework_root,
+        resolved_store,
+        decision.assignment,
+        accumulator,
+        meter=meter,
+        resolver=resolver,
+        run_id=run_id,
+        per_call_cap=per_call_cap,
+        n_artifacts=n_artifacts,
+        n_deliverables=n_deliverables,
     )
 
+
+def _is_entitled(store: AssignmentStore, user: object) -> bool:
+    """The caller IS entitled to the subscription iff it is EXACTLY the single config-set
+    subscription user (G5, ToS). Reads the SAME store the cascade uses (consistency — never a
+    second disk read that could disagree). `None`/mismatch/empty → not entitled."""
+    return isinstance(user, str) and user != "" and store.entitled_user == user
+
+
+@dataclass(frozen=True)
+class _Decision:
+    """The transport MODE choice WITHOUT any admit/secret/spawn — the pure precedence result shared
+    by `resolve_transport` (which then admits) and `preview_transport` (which discloses only).
+    `assignment` is the charged bucket for `mode == MODE_APIKEY`; `None` for subscription."""
+
+    mode: str
+    assignment: Assignment | None
+
+
+def _decide(
+    store: AssignmentStore,
+    user: str,
+    zone: str,
+    workspace: str | None,
+    parsed: Override | None,
+    *,
+    entitled: bool,
+) -> _Decision:
+    """Apply the closed precedence `override → cascade key → subscription IFF entitled → refuse` and
+    return the chosen `_Decision` — the ONLY place a transport mode is selected (G7). It admits
+    nothing, resolves no secret, and spawns nothing; it raises the SAME typed refusals a spend would
+    (`NotEntitledError` / `NoTransportError`), so a dry-run surfaces exactly the refusal a `--go`
+    would hit."""
     # (1) OVERRIDE — the per-run selection wins (I3: a MODE / a handle, never a user).
     if parsed is not None:
         if parsed.mode == "subscription":
-            return _subscription(user, accumulator, entitled=entitled)
+            if not entitled:
+                raise NotEntitledError(user)
+            return _Decision(MODE_SUBSCRIPTION, None)
         if parsed.mode == "api":
-            assignment = resolved_store.cascade_key(user, zone, workspace)
+            assignment = store.cascade_key(user, zone, workspace)
             if assignment is None:
                 raise NoTransportError(
                     f"no-transport: --transport api was forced but NO key is assigned to "
@@ -271,21 +366,10 @@ def resolve_transport(
                     "workspace→zone→user→global cascade found none) — assign one with "
                     "`transport assign-key` or drop the override. Refusing (no spend)."
                 )
-            return _apikey(
-                framework_root,
-                resolved_store,
-                assignment,
-                accumulator,
-                meter=meter,
-                resolver=resolver,
-                run_id=run_id,
-                per_call_cap=per_call_cap,
-                n_artifacts=n_artifacts,
-                n_deliverables=n_deliverables,
-            )
+            return _Decision(MODE_APIKEY, assignment)
         # mode == "key": a SPECIFIC assigned+capped handle (S3 — never an uncapped key).
         assert parsed.handle is not None  # parse_override guarantees it for mode == "key"
-        assignment = _assignment_for_handle(resolved_store, parsed.handle)
+        assignment = _assignment_for_handle(store, parsed.handle)
         if assignment is None:
             raise NoTransportError(
                 f"no-transport: --transport key:{parsed.handle.handle} was forced but that handle "
@@ -293,38 +377,16 @@ def resolve_transport(
                 "with `transport assign-key --handle … --weekly-cap …`, or drop the override. "
                 "Refusing (no spend)."
             )
-        return _apikey(
-            framework_root,
-            resolved_store,
-            assignment,
-            accumulator,
-            meter=meter,
-            resolver=resolver,
-            run_id=run_id,
-            per_call_cap=per_call_cap,
-            n_artifacts=n_artifacts,
-            n_deliverables=n_deliverables,
-        )
+        return _Decision(MODE_APIKEY, assignment)
 
     # (2) CASCADE KEY — the most-specific-wins assignment (workspace→zone→user→global).
-    assignment = resolved_store.cascade_key(user, zone, workspace)
+    assignment = store.cascade_key(user, zone, workspace)
     if assignment is not None:
-        return _apikey(
-            framework_root,
-            resolved_store,
-            assignment,
-            accumulator,
-            meter=meter,
-            resolver=resolver,
-            run_id=run_id,
-            per_call_cap=per_call_cap,
-            n_artifacts=n_artifacts,
-            n_deliverables=n_deliverables,
-        )
+        return _Decision(MODE_APIKEY, assignment)
 
     # (3) SUBSCRIPTION IFF entitled — the flat-rate fallback for the ONE entitled user (G5).
     if entitled:
-        return _subscription(user, accumulator, entitled=True)
+        return _Decision(MODE_SUBSCRIPTION, None)
 
     # (4) else — a LOUD typed refuse (money-safety-first; never a silent guess, §3.1).
     raise NoTransportError(
@@ -335,18 +397,88 @@ def resolve_transport(
     )
 
 
+def preview_transport(
+    framework_root: str | os.PathLike[str],
+    user: str,
+    zone: str,
+    workspace: str | None = None,
+    *,
+    override: object = None,
+    n_artifacts: int = 1,
+    n_deliverables: int = 0,
+    meter: WeeklyMeter | None = None,
+    per_call_cap: Decimal = DEFAULT_API_PER_CALL_CAP_USD,
+    store: AssignmentStore | None = None,
+) -> TransportDisclosure:
+    """Build the DRY-RUN cost disclosure WITHOUT admitting or spending (plan G8).
+
+    Runs the SAME closed precedence (`_decide`) `resolve_transport` runs — so the disclosed mode/
+    bucket can never disagree with the spend a `--go` would make — but stops at the DECISION: it
+    resolves NO secret, writes NO hold, spawns nothing. For an api-key decision it sizes the
+    worst-case `ConstructionBudget` ceiling at the finite `per_call_cap` and reads the LIVE headroom
+    (`cap − week-to-date`, settled + all live holds) off the meter via the sanctioned READ-ONLY
+    `bucket_week_to_date` / `umbrella_week_to_date` (no admit). It raises the SAME typed refusals a
+    spend would (`NotEntitledError` / `NoTransportError` / `TransportOverrideError`), so a dry-run
+    surfaces exactly the refusal a `--go` would hit. A dry-run never touches the secret, so it takes
+    no `SecretResolver`."""
+    resolved_store = load_store(framework_root) if store is None else store
+    parsed = parse_override(override)
+    entitled = _is_entitled(resolved_store, user)
+    decision = _decide(resolved_store, user, zone, workspace, parsed, entitled=entitled)
+    if decision.mode == MODE_SUBSCRIPTION:
+        budget = ConstructionBudget(
+            per_call_usd=None, n_artifacts=n_artifacts, n_deliverables=n_deliverables
+        )
+        return TransportDisclosure(mode=MODE_SUBSCRIPTION, budget=budget)
+
+    assignment = decision.assignment
+    assert assignment is not None  # _decide guarantees it for the api-key branch
+    the_meter = meter if meter is not None else WeeklyMeter(root=framework_root)
+    umbrella = resolved_store.umbrella_cap_usd
+    if umbrella is None:
+        umbrella = DEFAULT_UMBRELLA_CAP_USD
+    budget = ConstructionBudget(
+        per_call_usd=float(per_call_cap),
+        n_artifacts=n_artifacts,
+        n_deliverables=n_deliverables,
+    )
+    # READ-ONLY headroom reads — NO admit, NO hold written, NO spawn (spends nothing).
+    bucket_wtd = the_meter.bucket_week_to_date(assignment.scope, assignment.handle)
+    umbrella_wtd = the_meter.umbrella_week_to_date()
+    return TransportDisclosure(
+        mode=MODE_APIKEY,
+        budget=budget,
+        scope=assignment.scope,
+        handle=assignment.handle,
+        bucket_cap=assignment.weekly_cap_usd,
+        bucket_week_to_date=bucket_wtd,
+        umbrella_cap=umbrella,
+        umbrella_week_to_date=umbrella_wtd,
+    )
+
+
 def _subscription(
-    user: str, accumulator: CostAccumulator, *, entitled: bool
+    user: str,
+    accumulator: CostAccumulator,
+    n_artifacts: int,
+    n_deliverables: int,
+    *,
+    entitled: bool,
 ) -> AdmittedTransport:
     """Build the flat-rate SUBSCRIPTION result — IFF the caller is the single entitled user (ToS).
 
     A non-entitled subscription selection is a loud `NotEntitledError` (no spend). The subscription
     plan is `per_call_cap=None` (S-1: flat-rate, no finite cap → no artifact truncation); it carries
-    NO hold + NO meter (nothing to admit or settle — subscription is not metered here)."""
+    NO hold + NO meter (nothing to admit or settle — subscription is not metered here). The
+    `budget` rides for the G8 disclosure only — `per_call_usd=None` renders the flat-rate call-count
+    scope, never a `$` ceiling."""
     if not entitled:
         raise NotEntitledError(user)
     plan = TransportPlan.subscription(cost_accumulator=accumulator)
-    return AdmittedTransport(plan=plan, hold=None, meter=None)
+    budget = ConstructionBudget(
+        per_call_usd=None, n_artifacts=n_artifacts, n_deliverables=n_deliverables
+    )
+    return AdmittedTransport(plan=plan, hold=None, meter=None, budget=budget)
 
 
 def _apikey(
@@ -413,7 +545,18 @@ def _apikey(
         api_key_reveal=secret.reveal,  # the ONLY seam that exposes the bytes, at injection (I5)
         hold_expiry=hold.expiry,
     )
-    return AdmittedTransport(plan=plan, hold=hold, meter=the_meter)
+    return AdmittedTransport(
+        plan=plan,
+        hold=hold,
+        meter=the_meter,
+        # The G8 disclosure provenance — the worst-case budget + the charged bucket/handle/caps, so
+        # `disclose()` reflects the REAL admitted plan (the handle is a NON-secret SecretRef, I5).
+        budget=budget,
+        scope=assignment.scope,
+        handle=assignment.handle,
+        bucket_cap=assignment.weekly_cap_usd,
+        umbrella_cap=umbrella,
+    )
 
 
 def _assignment_for_handle(store: AssignmentStore, ref: SecretRef) -> Assignment | None:

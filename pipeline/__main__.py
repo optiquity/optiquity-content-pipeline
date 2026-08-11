@@ -964,8 +964,58 @@ def _print_dim(indent: str, label: str, view: dict) -> None:
     print(f"{indent}{label:<13}: {view.get('entry')}{tail}")
 
 
+def _print_cost_disclosure(
+    root: str,
+    user: str,
+    zone: str,
+    workspace: str,
+    override: "str | None",
+    n_artifacts: int,
+    n_deliverables: int,
+) -> None:
+    """G8: the pre-spend COST DISCLOSURE on the DRY-RUN preview — the resolved mode / charged bucket
+    / worst-case `construction-scope` ceiling / `cap − week-to-date` headroom, spending NOTHING (the
+    sources `_research_dry_run_lines` pattern). It fires ONLY once transport is ENFORCED (a config
+    exists, or a `--transport` override is given) — the SAME `_transport_enforced` predicate the
+    paid admission uses, so a dry-run discloses EXACTLY when a `--go` would meter (an unconfigured
+    subscription-only install previews byte-unchanged). `preview_transport` admits NOTHING and
+    resolves NO secret; a run that WOULD be refused on `--go` (no key + unentitled, a bad override,
+    a malformed config, a tampered ledger) is disclosed as a `would refuse` line, not a crash."""
+    from pathlib import Path
+
+    from pipeline.api.session import _transport_enforced
+    from pipeline.spend import resolve as resolve_mod
+    from pipeline.spend.assignment import AssignmentError
+    from pipeline.spend.meter import MeterError
+
+    if not _transport_enforced(Path(root), override):
+        return
+    try:
+        disclosure = resolve_mod.preview_transport(
+            root,
+            user,
+            zone,
+            workspace,
+            override=override,
+            n_artifacts=n_artifacts,
+            n_deliverables=n_deliverables,
+        )
+    except (resolve_mod.TransportResolutionError, MeterError, AssignmentError) as exc:
+        print(f"cost-disclosure: would refuse on --go — {exc}")
+        return
+    print(disclosure.line())
+
+
 def _print_plan_preview(
-    workspace: str, user: str, recipe: str, summary: dict, *, header: str, zone: str
+    workspace: str,
+    user: str,
+    recipe: str,
+    summary: dict,
+    *,
+    header: str,
+    zone: str,
+    root: str,
+    override: "str | None" = None,
 ) -> None:
     """Print the free preview (C3a): the effective compose+render settings (which cascade layer
     set each), the plan (artifact/deliverable ids + advisory warnings), and `spend-scope: N paid
@@ -1005,6 +1055,12 @@ def _print_plan_preview(
     print(f"  deliverable-ids: {deliverable_ids}")
     print(f"  warnings       : {warnings if warnings else 'none'}")
     print(f"spend-scope: {spend_scope} paid artifact(s)")
+    # G8: the pre-spend cost disclosure (resolved mode / bucket / ceiling / headroom), read-only —
+    # discloses what a `--go` WOULD meter and spends NOTHING (no admit, no secret). Silent unless
+    # transport is enforced, so an unconfigured preview is byte-unchanged.
+    _print_cost_disclosure(
+        root, user, zone, workspace, override, len(artifact_ids), len(deliverable_ids)
+    )
 
 
 def _print_refusal(prog: str, result: dict) -> None:
@@ -1029,6 +1085,7 @@ def _begin_and_preview(
     header: str,
     adapters: "object | None",
     zone: str,
+    override: "str | None" = None,
 ) -> "tuple[dict | None, int]":
     """Run the plan-only begin-session door via the DIRECT-HANDLER pattern and print the free
     preview. `zone` is the S4-resolved spend zone (§23/Z4) threaded into `invoke()` so the plan
@@ -1061,6 +1118,8 @@ def _begin_and_preview(
         result["results"][0],
         header=header,
         zone=zone,
+        root=root,
+        override=override,
     )
     return result, 0
 
@@ -1326,7 +1385,13 @@ def _run_friendly_generate(
             return code
     header = f"{prog} --go" if go else f"{prog} (dry-run)"
     result, code = _begin_and_preview(
-        normalized, args.root, prog, header=header, adapters=adapters, zone=zone
+        normalized,
+        args.root,
+        prog,
+        header=header,
+        adapters=adapters,
+        zone=zone,
+        override=getattr(args, "transport", None),
     )
     if result is None:
         return code  # a refusal — nothing to drive
