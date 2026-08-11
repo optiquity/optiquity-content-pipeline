@@ -77,6 +77,7 @@ This manual is self-contained, but the repo carries deeper references (also the 
 - **Public/private model + updates:** `docs/operating-model.md`
 - **The design SSOT:** `docs/design.md` — `docs/mission.md` is retained as product/PRD context, superseded on design specifics.
 - **Setup runbook:** `docs/bootstrap.md`
+- **Transport, keys & the weekly spend meter:** `docs/transport.md` — run generation on an **API key** (single- or multi-tenant) instead of, or alongside, the Claude subscription, with a hard weekly dollar cap. Store secret keys **outside the repo** under `$OPTIQUITY_SECRETS_DIR` (default `~/.optiquity/secrets/`, 0600 per handle); the transport config + spend ledgers live under `instance/ops/` (gitignored — nothing here is ever committed). Design home: `docs/design.md` §21.10.
 - **Claude Code usage:** `docs/claude-code-usage.md`
 - **Agents/skills sourcing & build manifest:** `docs/agents-and-skills-sourcing.md`
 

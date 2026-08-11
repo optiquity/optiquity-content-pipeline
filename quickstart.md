@@ -111,13 +111,20 @@ conforms to the axis's `_schema.yaml`.
 # See the plan + the exact paid count — spends nothing (--user is REQUIRED with --workspace):
 uv run pipeline preview --user <you> --topic <your-topic> --workspace self
 
-# Same plan as a free dry-run, then --go to actually compose (Claude SUBSCRIPTION quota, never an API key):
+# Same plan as a free dry-run, then --go to actually compose (defaults to the Claude SUBSCRIPTION):
 uv run pipeline generate --user <you> --topic <your-topic> --workspace self          # dry-run
 uv run pipeline generate --user <you> --topic <your-topic> --workspace self --go     # spends
 
 # Multi-zone? add --zone (single-zone users can omit it — it defaults to `default`):
 uv run pipeline generate --user <you> --zone work --topic <your-topic> --workspace self --go
 ```
+
+**Running on an API key instead?** By default `--go` uses the Claude subscription. To run on an
+**API key** with a hard weekly dollar cap (single- or multi-tenant), set it up once per
+`docs/transport.md` (store the key outside the repo under `$OPTIQUITY_SECRETS_DIR`, then
+`pipeline transport assign-key … --weekly-cap $C`); a per-run `--transport subscription|api|key:<handle>`
+overrides the choice for one run. The run prints a pre-spend `cost-disclosure` line (mode, bucket,
+ceiling, headroom) before it spends.
 
 `preview`/`generate` default to the `explainer-post` recipe; add `--persona/--format/--voice/--goals`
 to pick content axes and `--platform/--language/--output-type/--presentation` to route the output.

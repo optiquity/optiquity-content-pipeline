@@ -150,6 +150,14 @@ anchors, and commits — never secret values (§15); the serialize pass strips p
 from writer targets that would otherwise emit them (§17); operational telemetry is content-free
 (§22.5).
 
+The **transport keystore** (§21.10) applies the same discipline as a **two-layer split**: a
+NON-secret **handle** (`<namespace>:<name>`) is what lives in config, argv, and the ledger; the
+**secret value** lives only in the 0600-per-handle store under `$OPTIQUITY_SECRETS_DIR`, is resolved
+at use time, and NEVER enters argv, a log line, the spend ledger, or telemetry (I5). The **weekly
+spend meter** ledger obeys the same **no-secret rule** — it records the non-secret handle, the
+scope-id, the week-key, and dollar amounts only; a secret value never appears in a settled ledger
+line or a hold.
+
 ---
 
 # PART II — THE CONTENT MODEL
@@ -1027,8 +1035,9 @@ it, Appendix B):
   workspace lives, not which rung a value binds to — the cascade stays framework → instance-global →
   workspace (L1/L2/L3), never a `user` rung and **never a `zone` rung**. A zone GROUPS a user's
   workspaces (§23) and gives them store isolation; the separate **transport-credential zone rung**
-  (per-zone keys/weekly-caps, and therefore spend-bucket isolation between same-named zones) is a
-  **transport-build item**, not delivered by the restructure (§12.6).
+  (per-zone keys/weekly-caps, and therefore spend-bucket isolation between same-named zones) is
+  **now DELIVERED** by the transport-selection build (§21.10, `docs/transport.md`) — a credential
+  cascade orthogonal to this value cascade, so "never a `zone` rung in the value cascade" stands.
 
 The five interlocking rules (Q15, all normative):
 
@@ -2528,21 +2537,111 @@ should join the identity preimage is a registered maintainer question (§27.3), 
 
 ### §21.9 Transport & flags
 
-- **HARD, NON-NEGOTIABLE: the pipeline is a headless Claude Code CLI invocation authenticated on
-  the Claude SUBSCRIPTION — never API keys, never `ANTHROPIC_API_KEY`** (F10). The pipeline CORE is
-  not a long-running server: one synchronous invocation per verb (params + optional token in →
-  results + token out), no persistent process carrying LLM/session state across calls. An
-  OPTIONAL transport FRONT (the CLI door, or the DR-1 HTTP shim — `docs/known-issues.md` DR-1) MAY
-  be a persistent process, provided it holds no LLM/session/correctness state — all cross-request
-  correctness state lives on disk (the content-addressed output store + the claim/presence-lease
-  registries), and the front dispatches only to stateless per-verb invocations.
-- The transport's specifics are **unverified and gated before build** (G5, G3, G2 — §27.2):
-  subscription auth headless, per-call statelessness (no hidden conversation carry-over), the
-  exact n8n→headless mechanism, and the Graphify serve-MCP/output-path flags. The contract shape
-  is transport-agnostic; only literal invocation details wait on verification.
+- **F10 — STRENGTHENED, NOT REMOVED (was "never API keys").** The pipeline authenticates a
+  headless Claude Code CLI invocation on the Claude **SUBSCRIPTION by default**, and the
+  subscription path is now used **only for the single config-entitled user** (ToS), behind a
+  fail-closed **wall**: the widened env-strip (`ANTHROPIC_API_KEY` PLUS `ANTHROPIC_AUTH_TOKEN` +
+  the `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` provider switches) AND a pipeline-controlled
+  settings file proven to define no `apiKeyHelper` — refusing to spawn (loud, fail-closed) when the
+  wall cannot be proven, INCLUDING an enterprise/managed `apiKeyHelper` `--setting-sources` cannot
+  exclude. Alongside it, an **API-KEY transport** now runs, opt-in by **explicit per-scope key
+  assignment** and bounded by a HARD **weekly dollar cap** + an install **umbrella** cap, with the
+  key injected into the child env **only under a live spend reservation** (hold-gated disarm). So
+  `ANTHROPIC_API_KEY` still never rides a subscription spawn, and an api-key spawn is money-safe by
+  construction — F10 is tightened on both sides, not relaxed. The full mechanism (resolver,
+  entitlement, keystore, the explicit-scope cascade, the weekly meter + umbrella, the shared
+  chokepoint, the `$5`/`$50` defaults, identity-neutrality, and residual risks R1–R6) is **§21.10**;
+  the operator guide is `docs/transport.md`.
+- The pipeline CORE is not a long-running server: one synchronous invocation per verb (params +
+  optional token in → results + token out), no persistent process carrying LLM/session state across
+  calls. An OPTIONAL transport FRONT (the CLI door, or the DR-1 HTTP shim — `docs/known-issues.md`
+  DR-1) MAY be a persistent process, provided it holds no LLM/session/correctness state — all
+  cross-request correctness state lives on disk (the content-addressed output store + the
+  claim/presence-lease registries), and the front dispatches only to stateless per-verb invocations.
+- Subscription auth headless + per-call statelessness (no hidden conversation carry-over) are
+  **verified and DELIVERED** by the transport-selection build (§21.10, gate G0 on the pinned CLI).
+  The exact n8n→headless mechanism and the Graphify serve-MCP/output-path flags stay transport-
+  agnostic contract-shape items; only those literal invocation details still wait on verification.
 - The literal wire encodings are fixed by §13 (JSON payloads; the §13.2 operator wire forms).
 - **`scripts/migrate.sh` is NOT on this API** (§11.6): the API surfaces migration-related codes
   and points remediation at the out-of-band maintenance tool.
+
+### §21.10 Transport selection, the keystore & the weekly meter
+
+The single home for the AS-BUILT transport-selection system (the operator guide is
+`docs/transport.md`). Two transports run side by side, both enforced at ONE shared chokepoint so the
+money-safety rules fire identically for the CLI door and the served HTTP doors.
+
+**The two transports.** (1) **SUBSCRIPTION** — a headless subscription (OAuth) spawn, used ONLY for
+the single config-entitled user (§21.9 F10, ToS), behind the widened env-strip + controlled-settings
+**wall** that fails closed (including on an enterprise/managed `apiKeyHelper`). (2) **API-KEY** —
+single- or multi-tenant, opt-in by **explicit per-scope key assignment**, metered by a HARD weekly
+cap + an install umbrella, with the key injected only under a live spend reservation.
+
+**Resolution order (the resolver is the ONLY mode-selector).** For a spend verb: an explicit
+per-run **override** → else the **cascade** key → else **subscription IFF** the run's user is the
+entitled one → else a LOUD refusal (no key + not entitled = nothing spent). The override vocabulary
+is CLOSED — `subscription` | `api` | `key:<namespace>:<name>` — it names a *mode* or an *assigned
+handle*, **never a user** (so a run can never re-point who is subscription-entitled).
+
+**The keystore (two-layer, shared with sources).** Non-secret **handle assignments**
+(`<namespace>:<name>`) live in gitignored `instance/ops/transport/config.yaml`; the **secret value**
+lives in a 0600-per-handle store under `$OPTIQUITY_SECRETS_DIR` (default `~/.optiquity/secrets/`)
+behind a pluggable `SecretResolver`. The store **fails closed** on a relative or repo-relative
+secrets dir, and refuses any secret whose file perms are looser than 0600. The secret value is
+resolved only at use time and NEVER placed in argv, logs, the ledger, or telemetry (§3.3, I5).
+There is ONE keystore with two consumers — transport and the sources paid keys (FRED etc.).
+
+**Assignments + the explicit-scope cascade.** `transport assign-key --scope <global | user:<u> |
+zone:<u>/<z> | workspace:<u>/<z>/<w>> --handle <ns:name> --weekly-cap $C` — the weekly cap is
+HARD-REQUIRED (no silent default, no uncapped key). The cascade is **most-specific-wins:
+workspace → zone → user → global**; same-named zones under different users are DISTINCT scopes. The
+scope-id is parsed from `--scope`, **never derived from a `users/…` path** (M3, orthogonal to the
+§23 addressing/value cascade). `transport list-keys` / `clear-key` / `show` administer it.
+
+**Entitlement.** `transport set-subscription-user <u>` names exactly ONE entitled user (single-
+valued, swappable, config-only) — never a run parameter (I2/I3).
+
+**The weekly meter + umbrella.** An enforcing per-bucket weekly cap plus one install **umbrella**
+(default **$50/week** when unset, via `transport set-umbrella-cap`). A bucket is `(scope-level,
+scope-id, handle, week-key)`; the week-key is a calendar week (**Monday 00:00 UTC**, install-
+anchored, injectable clock). A **hash-chained, edit-EVIDENT** append-only settled ledger (detected
+tampering refuses admission — but a local `rm` reopens the cap, R2: edit-evident, not reset-proof)
+plus TTL holds, all under gitignored `instance/ops/spend/`. Admission is **admit-before-spend**:
+under an **inter-process lock** it reads (settled ledger + all live holds), reserves the worst-case
+**ConstructionBudget** ceiling for the bucket AND the umbrella in ONE critical section, and REFUSES
+pre-spend if either would be exceeded; the reservation is **settled to the real cost in a `finally`**
+and self-expires at full ceiling on a crash (never a leaked reservation).
+
+**The chokepoint (covers CLI + served HTTP doors).** Enforcement lives at the shared tiers both the
+CLI and the detached `jobrunner → invoke()` re-entry traverse — NOT the CLI handler. At the
+**run-admission tier** (`invoke()`/the session handler): resolve → admit → drive → settle. At the
+**per-call tier** (`build_child_env`, the lowest un-bypassable node): the api key injects and the
+widened strip disarms **only** under a live hold whose plan-embedded expiry passes an injected-clock
+check — absent/expired → fail-closed, no spawn; every api-key call is forced under
+`--max-budget-usd = min(caller, $5)` (the **$5 default per-call cap**; subscription stays
+`per_call_cap=None`, flat-rate, never truncated). The **multi-zone "name a zone or refuse"** guard
+(S4) now fires uniformly at this chokepoint, closing the zone restructure's CLI-only gap.
+
+**Disclosure.** A pre-spend line (mode + charged bucket + `≤ $C` worst-case ceiling + `cap −
+week-to-date` headroom for bucket AND umbrella) prints to stderr on a live run before the first
+spawn (off the stdout JSON envelope); a CLI dry-run/preview prints the same line to stdout and
+spends nothing.
+
+**Identity-neutrality.** Transport, mode, handle, and zone enter **no id preimage** (§7.2) — they
+are recorded as provenance only, so a run's ids are identical whether it spends on subscription or
+an api key, and across zones.
+
+**Residual risks v1 does NOT solve (honest).** **R1** `--user` is addressing, not authentication —
+the guarantee is a bounded blast radius via caps, not authenticated identity. **R2** a local `rm` of
+`instance/ops/spend/` reopens the cap (operator-bounds-own-bill; edit-evident, not reset-proof).
+**R3** single-writer-host — shared-host clock skew / non-locking NFS is out of scope. **R4** a
+hand-forged in-process `TransportPlan` is outside the trust boundary. **R5** the injected
+`ANTHROPIC_API_KEY` is visible via `/proc` to the same UID (an `apiKeyHelper`-resolver backend is
+deferred hardening). **R6** an assigned OAuth token on a metered plan would under-count (v1 states
+the flat-rate assumption). The **managed/enterprise-`apiKeyHelper`** host is an operator note, not a
+solved case: every subscription spawn there is refused (correct, loud, fail-closed) — run on an api
+key instead (`docs/transport.md`).
 
 ## §22 Parallelism & write-safety
 
@@ -2766,6 +2865,8 @@ users/<user>/zones/<zone>/workspaces/<workspace>/   # instance-side only (gitign
 instance/profile.md                     # instance goals/audiences (gitignored in public)
 instance/ops/                           # instance-scoped stores (§22.5): presence-lease registry,
                                         #   telemetry JSONL — mechanism framework, data instance
+  ops/transport/config.yaml             #   transport key assignments + entitlement + umbrella cap (§21.10)
+  ops/spend/                            #   weekly spend ledgers + holds, per bucket (§21.10)
 scripts/                                # incl. migrate.sh (§11.6), guards (§10, §11.7)
 .claude/{agents,skills}/                # framework-ops plane (product plane open, §27.4)
 ```
@@ -2804,13 +2905,19 @@ ids are **store-scoped** — resolved within one `(user, zone, workspace)` store
 global name index — so there is no collision to reject; the fully-qualifying key is the
 `(user, zone, workspace)` triple. The zone is **identity-neutral**: it is in no id preimage (§7.2),
 so relocating a workspace into a zone keeps every artifact/deliverable id (the migration is a pure
-relocation). Today this restructure buys **STORE isolation only** — per-zone spend/key isolation
-(same-named zones drawing on distinct transport keys and weekly caps) is a **transport-build item**,
-NOT delivered here (§10, §12.6).
+relocation). The restructure itself buys **STORE isolation**; per-zone **spend/key isolation**
+(same-named zones drawing on distinct transport keys and weekly caps) is **now DELIVERED** by the
+transport-selection build — assign a key + weekly cap per `zone:<u>/<z>` scope, and same-named zones
+under different users key DISTINCT spend buckets (§21.10, `docs/transport.md`).
 
 The **mechanism-public / data-instance split** (§10) governs every new store: the claim table,
-presence-lease registry, telemetry log, and the DR-1 `jobs/` record store are framework
-*mechanisms* whose *data* lives instance-side, gitignored in public. Registry directories are
+presence-lease registry, telemetry log, the DR-1 `jobs/` record store, and the transport-selection
+stores — `instance/ops/transport/` (key assignments + entitlement + umbrella cap) and
+`instance/ops/spend/` (weekly spend ledgers + holds) — are framework *mechanisms* whose *data* lives
+instance-side, gitignored in public (§21.10). The transport **credential cascade is explicit-scope**:
+an assignment is keyed by a `(scope-level, scope-id)` parsed from `--scope`, **never derived from the
+`users/…` store path** (M3), and it is **orthogonal to the value cascade** (§12) — it decides *which
+key/cap a run draws on*, not which rung a configured value binds to. Registry directories are
 mixed-provenance (§10); instance entries carry the `x-` prefix (§11.4).
 
 ## §24 Tracking & the SSOT

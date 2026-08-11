@@ -59,8 +59,9 @@ workspace and groups a user's workspaces (e.g. `work` vs. `personal`). It defaul
 single-zone setup never types it; when you want a second grouping, add `--zone <zone>` to
 `workspace new`/`list`/`delete` (a brand-new zone is auto-created and announced), or create it
 first with `pipeline zone new <zone> --user <user>`. Zones give **store isolation** (same-named
-workspaces in different zones are distinct); per-zone spend/key isolation is a later transport-build
-feature. Full per-door detail: the [Interfaces guide → Zones](guide/interfaces.md#zones-grouping-a-users-workspaces).
+workspaces in different zones are distinct); per-zone **spend/key isolation** (a key + weekly cap
+per `zone:<u>/<z>` scope) is now **delivered** by the transport-selection build — see
+`docs/transport.md`. Full per-door detail: the [Interfaces guide → Zones](guide/interfaces.md#zones-grouping-a-users-workspaces).
 
 > **Upgrading an EXISTING instance to the zoned layout — pull → migrate → use.** A pre-zone instance
 > (`users/<user>/workspaces/<workspace>/`) migrates in a fixed order: **(1) pull** the framework
@@ -72,6 +73,14 @@ feature. Full per-door detail: the [Interfaces guide → Zones](guide/interfaces
 > migrated from `user/workspace` to `user/zone/workspace` (a BREAKING config change — see the
 > [Operating model → Zone migration](operating-model.md#migrating-the-on-disk-layout-users-then-zones)).
 > A brand-new Phase-0 install skips all of this — `workspace new` writes the zoned layout directly.
+
+**Transport & spend safety (optional).** By default the pipeline runs on the Claude subscription
+(no extra setup). To run generation on an **API key** with a hard weekly dollar cap — single- or
+multi-tenant — follow `docs/transport.md`: store the secret key **outside the repo** under
+`$OPTIQUITY_SECRETS_DIR` (default `~/.optiquity/secrets/`, 0600 per handle; the store refuses a
+relative or in-repo path), then `pipeline transport assign-key --scope … --handle … --weekly-cap $C`.
+The transport config and the weekly spend ledgers live under `instance/ops/` — already covered by
+`.gitignore` (`instance/ops/`), so no key assignment, ledger, or secret is ever committed.
 
 Each client repo is checked out locally. Build its Graphify graph **in that checkout** — the
 `graphify-out/` is gitignored inside the client repo, so it never dirties it. The pipeline stores

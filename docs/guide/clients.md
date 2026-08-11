@@ -271,8 +271,8 @@ echoed_zone(body) -> string | null   // the zone the door resolved (envelope.zon
 ```
 
 Same-named workspaces in different zones are DISTINCT, store-isolated workspaces — the fully-qualifying
-key is the `(user, zone, workspace)` triple. (This is store isolation only; per-zone *spend* isolation
-is a transport-build item, not delivered here.)
+key is the `(user, zone, workspace)` triple. (This is store isolation; per-zone *spend* isolation
+— separate transport keys + weekly caps per zone — is now **delivered**: see `docs/transport.md`.)
 
 ### 2.3 The ergonomic async layer + the poll state machine
 
