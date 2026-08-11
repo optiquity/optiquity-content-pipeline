@@ -429,3 +429,25 @@ def test_keystore_imports_no_pipeline_machinery():
             if module.split(".")[0] == "pipeline":
                 offenders.append(module)
     assert offenders == [], f"keystore.py must import no pipeline machinery, found: {offenders}"
+
+
+# --- G9: the SOURCES subsystem resolves its paid keys via THIS shared resolver ----------------
+
+
+def test_the_sources_seam_resolves_a_fred_key_via_this_shared_backend(tmp_path: Path):
+    """G9 convergence, proven from the keystore's own home: the sources paid-key seam resolves a
+    `fred:*` handle through the SAME `FileSecretBackend` the transport path uses — ONE keystore
+    serving both `anthropic:*` (transport) and `fred:*` (sources). No spend; no store of its own."""
+    from pipeline.sources.keystore import resolve_source_secret
+
+    backend = _backend(tmp_path)
+    backend.store(SecretRef.parse("fred:default"), SECRET_VALUE)
+    # The sources seam hands back the SAME redacting ResolvedSecret this store produces.
+    resolved = resolve_source_secret("fred:default", resolver=backend)
+    assert resolved.reveal() == SECRET_VALUE
+    assert SECRET_VALUE not in repr(resolved)  # still redacts on the sources path (I5)
+    # And the sources seam's default resolver IS this FileSecretBackend class (the shared store).
+    from pipeline.sources.keystore import default_source_resolver
+
+    shared = default_source_resolver(env={SECRETS_DIR_ENV: str(tmp_path)})
+    assert isinstance(shared, FileSecretBackend)
