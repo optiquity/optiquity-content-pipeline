@@ -51,3 +51,6 @@ instance/ops/
 # the populated file holds the auth secret and is NEVER tracked in the public framework (CLAUDE.md
 # rule 4; check-no-content.sh flags a tracked non-template instance/ file). Only the template ships.
 instance/shim.yaml
+
+# Repo index output — derived, large, churns every build. Never commit.
+graphify-out/

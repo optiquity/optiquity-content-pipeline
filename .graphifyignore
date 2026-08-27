@@ -1,0 +1,78 @@
+# .graphifyignore (or your indexer's equivalent) — what the repo INDEX must not read.
+# Copy to your repo root and edit. This controls the index only; it never affects git.
+#
+# ── MATCHER ─────────────────────────────────────────────────────────────────
+# Read your indexer's CURRENT docs before trusting anything here: matcher syntax
+# and .gitignore interaction DIFFER BETWEEN VERSIONS of the same tool, and an
+# exclusion file written for an older version can silently change what is indexed
+# after an upgrade. The rules below are gitignore-pathspec, which is what most
+# indexers use today:
+#   · a pattern with NO slash matches a BASENAME at any depth  (.env, *.swp)
+#   · a pattern WITH a slash is anchored to this file's directory  (docs/private/)
+#   · a LEADING slash anchors to that root                        (/local.toml)
+#   · `**` is any-depth; `*` does NOT cross `/`
+#   · a TRAILING slash means directories only
+#   · `!` re-includes; LAST MATCH WINS, so negations must FOLLOW the broad exclude
+#
+# ── INTERACTION WITH .gitignore ─────────────────────────────────────────────
+# Most indexers now MERGE .gitignore (every directory's, nested ones included)
+# with this file, evaluating this file LAST so it wins conflicts — but it can only
+# ever EXCLUDE MORE. A `!` here CANNOT re-include something .gitignore already
+# excluded. Check any rescue with:  git check-ignore -v <path>
+# If git excludes it, your rescue is inert.
+#   Effective scope = whole repo − .gitignore − this file − the tool's built-ins.
+#
+# Your indexer almost certainly prunes deps/build/cache dirs (node_modules, .venv,
+# build, dist, target, its own output dir, caches) automatically. Don't re-list them.
+
+# ── Secrets and secrets-adjacent — the reason this file is not optional ──────
+# An index is a DERIVED ARTIFACT that can be read by an assistant, copied, or fed
+# to a hosted service. Keep credentials out of it even when they are gitignored.
+#
+# ⚠️ MATCH ON SHAPE AND PATH, NOT ON THE WORD. A pattern like `**/*secret*` or
+# `**/*token*` also excludes the file that DOCUMENTS secrets and the module that
+# HANDLES tokens — e.g. a `06-secrets.md` chapter, an `api/token.py`. You lose
+# exactly the architecture you most wanted indexed, and nothing tells you.
+# Prefer concrete filenames/extensions and real credential directories; add a
+# name-based pattern only after checking what it catches:
+#     git ls-files | grep -i secret
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.keystore
+.netrc
+.npmrc
+id_rsa*
+id_ed25519*
+# credential DIRECTORIES (paths, not name substrings):
+.aws/
+.ssh/
+.gnupg/
+secrets/
+
+# ── Local/machine state that is noise, not architecture ─────────────────────
+.DS_Store
+._*
+*.swp
+.idea/
+.vscode/
+
+# ── Vendored / generated code — usually noise, occasionally the point ────────
+# Exclude by default; if generated code IS what you need indexed, keep it and see
+# your indexer's flag for including git-ignored files.
+vendor/
+generated/
+
+# ── Archived or superseded content ───────────────────────────────────────────
+# Old material an assistant will otherwise cite as if current — a common source of
+# confidently-wrong answers. Case-insensitive, any depth:
+*[Aa][Rr][Cc][Hh][Ii][Vv][Ee]*
+
+# ── Large fixtures/data with no semantic value ───────────────────────────────
+# The keep-some-of-a-directory idiom: exclude the contents, then re-include what
+# matters. Works ONLY if .gitignore doesn't already exclude them (see above).
+# test-fixtures/*
+# !test-fixtures/README.md
+# !test-fixtures/manifest.txt
