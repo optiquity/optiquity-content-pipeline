@@ -538,8 +538,10 @@ mechanic documented in the mitigation block. Follow the mitigation block, not th
    - The coordinator (main session) NEVER plans, designs, or recommends — agents do; it coordinates.
    - Build pipeline per step: fresh coder agent → fresh reviewer agent → fresh coder applies EVERY
      reviewer fix. Fresh agents every time.
-   - Durable rules always binding: client repos read-only · client isolation · subscription transport,
-     NEVER API keys · no secrets · agents never commit · `CLAUDE.md` is maintainer-only (its pending
+   - Durable rules always binding: client repos read-only · client isolation · **transport: subscription
+     by DEFAULT; an API key only where one is explicitly assigned, bounded by the hard weekly cap +
+     install umbrella (design.md §21.10 · docs/transport.md — built 2026-08-11, G0–G10)** · no secrets ·
+     agents never commit · `CLAUDE.md` is maintainer-only (its pending
      proposed edits live at `_tmp .../ops-handoff/definitive-design/claude-md-proposed.diff`).
    - **TOOL INSTALLS (maintainer directive 2026-07-12): NEVER performed by this session or its agents.**
      Any system-level install (Homebrew, npm/npx, pkg installers, anything touching the machine outside

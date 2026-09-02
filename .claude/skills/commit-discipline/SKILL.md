@@ -1,6 +1,6 @@
 ---
 name: commit-discipline
-description: Use at the start of every framework-ops agent run. Codifies the agents-never-commit rule, the read-only git-verb whitelist, the absolute state-changing-git ban, and the work-in-the-main-checkout rule.
+description: Use at the start of every framework-ops agent run. Codifies the agents-never-commit rule, the read-only git-verb whitelist, the absolute state-changing-git ban, and the isolated-launch-worktree rule.
 allowed-tools: Read, Bash
 ---
 
@@ -21,7 +21,11 @@ git status
 ls
 ```
 
-You work in the **main repo checkout, not an isolated worktree.**
+You are spawned with an **isolated launch worktree** (the channel workaround for CLI bug #73647).
+A **read-only** agent ignores it: `cd` to the main checkout and do all reads there — the unused
+launch worktree auto-cleans. A **read-write** agent (coder) does all edits *and* verification
+**inside its launch worktree**, never the main checkout, and reports the worktree path + branch so
+the main session can transfer the diff back (`docs/ops-workflow.md`, "Coder diff-transfer").
 
 ## Absolute ban — state-changing git verbs
 

@@ -1,0 +1,69 @@
+# PREPARED, NOT APPLIED — CLAUDE.md rule-1 + .gitignore graph-storage wording update.
+#
+# The pipeline never edits framework instruction files (CLAUDE.md), so this diff is prepared rather
+# than applied (durable rule 5). The maintainer applies it by hand:
+#
+#     git apply docs/graphify-index-wording.patch
+#
+# WHY (verified 2026-09-01, after the first graphify build in this repo):
+#
+# 1. Rule 1 said "No graphs are stored in this pipeline repo." That sentence is now literally false:
+#    a `graphify-out/` index exists here. It is not a violation — this repo is graphed as its own
+#    client (the `self` workspace of rule 2), so its graph living in its own checkout, gitignored and
+#    read by path, IS the client-repo pattern rule 1 describes. What the rule actually protects is
+#    (a) never COMMITTING a graph and (b) never turning this repo into a central store of other
+#    repos' graphs. The new wording states those two guarantees directly instead of a blanket claim
+#    that the working tree now contradicts. Verified: `git ls-files graphify-out/` = 0 tracked files;
+#    `git check-ignore -v graphify-out/graph.json` -> .gitignore:56.
+#
+# 2. Rule 1's sources carve-out path was stale after the zone restructure — it read
+#    `users/<user>/workspaces/<workspace>/sources/cache/`, missing the `zones/<zone>/` segment that
+#    rule 2 mandates. The runtime is already zoned: `WorkspaceStore` carries `_zone` and Z4 deleted
+#    the legacy 3-level `zone=None` path, so the prose was the only thing behind.
+#
+# 3. The .gitignore header carried the same now-false "Nothing graph-related is stored here."
+#
+# Behaviour-neutral: prose only, no code and no ignore-rule changes (`graphify-out/` on line 56 is
+# untouched and still the only thing preventing a 16 MB index from being committed — note that CI and
+# scripts/check-no-content.sh contain zero graphify references, so that one line is the sole guard).
+#
+# NOT covered by this patch (reported separately, needs its own pass): the same pre-zone
+# `workspaces/<client>/` and `users/<user>/workspaces/<workspace>/` wording still appears in several
+# module docstrings — pipeline/store.py (lines ~3, 41, 58, 125, 188, 209, 218, 402, 422) and
+# pipeline/sources/cache.py (line ~38).
+diff --git a/.gitignore b/.gitignore
+index 2b00141..4e85cf2 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -5,8 +5,9 @@
+ # tracked, for durability and history. "Public stays empty of client content" is enforced by
+ # scripts/check-no-content.sh in CI (docs/operating-model.md), NOT by this file.
+ #
+-# NOTE: Graphify graphs do NOT live in this repo. They live in each client repo's local checkout
+-# (graphify-out/, gitignored there) and are read by path. Nothing graph-related is stored here.
++# NOTE: Graphify graphs are NEVER committed. Each client repo's graph lives in that repo's own local
++# checkout (graphify-out/, gitignored there) and is read by path — including this repo's own graph
++# when it is graphed as its own client (the `self` workspace). Nothing graph-related is ever tracked.
+ #
+ # state.md is derived from the tracking spreadsheet (the SSOT) but is still tracked in your
+ # instance for history. The spreadsheet remains authoritative on any disagreement.
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 8fcd07d..bcb5dc9 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -9,9 +9,13 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
+    any write/destructive command in any source or client repo. The pipeline only **reads** its
+    sources (the Graphify graph by path; feeds/web/research sources read-only). Each client repo is
+    checked out locally and graphed there; its `graphify-out/` is gitignored inside the client repo
+-   and read by path. **No graphs are stored in this pipeline repo.** **Carve-out (sources
++   and read by path. **No graph is ever committed, and this repo is never a central store of other
++   repos' graphs.** When the pipeline repo is itself a graphed client (its own `self` workspace), its
++   `graphify-out/` may exist locally under exactly that same rule — gitignored, never committed, read
++   by path. **Carve-out (sources
+    subsystem):** the pipeline MAY cache **acquired third-party content** (feeds, web/research
+-   extracts) under the owning workspace at `users/<user>/workspaces/<workspace>/sources/cache/` —
++   extracts) under the owning workspace at
++   `users/<user>/zones/<zone>/workspaces/<workspace>/sources/cache/` —
+    **gitignored, never committed**, and still read-only toward every upstream source. This is the
+    one sanctioned local acquired-content store; it never mutates a source and stores no graphs.
+ 2. **CLIENT ISOLATION VIA WORKSPACES.** Every client repo gets a workspace:

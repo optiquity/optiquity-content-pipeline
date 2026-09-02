@@ -21,7 +21,7 @@ Run `docs/bootstrap.md` step B1 (install prerequisites), plan-gated, on the targ
 - [ ] **P0.1** Prereqs installed + Claude Code verified — always-on host
 - [ ] **P0.2** Prereqs installed — workstation
 - [ ] **P0.3** Graphify installed + `graphify --help` verified (`extract` / `export wiki` / `query` / `graphify-mcp`)
-- [ ] **P0.4** First workspace created: `workspaces/________`
+- [ ] **P0.4** First workspace created: `users/____/zones/____/workspaces/________`
 - [ ] **P0.5** Client repo graphed in its checkout (`graphify extract .` → graphify-out/, gitignored); path in source.md
 - [ ] **P0.6** Read-only query smoke test passes
 - [ ] **P0.7** Instance repo initialized (upstream remote set), chezmoi-managed

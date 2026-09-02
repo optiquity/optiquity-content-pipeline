@@ -13,7 +13,8 @@ Two boundaries an edit in this repo can violate. Investigate both **before** edi
 - **Framework-owned** (upstream edits these): `CLAUDE.md`, `docs/`, `*.template.*`, `.claude/`,
   `scripts/`, `.github/`, `.gitignore`, `LICENSE`, `README.md`, `quickstart.md`.
 - **Instance-owned** (downstream adds these; upstream never touches): populated entries marked
-  `provenance: instance`, `instance/profile.md`, `workspaces/<client>/**`, `state.md`.
+  `provenance: instance`, `instance/profile.md`, `users/<user>/zones/<zone>/workspaces/<workspace>/**`,
+  `state.md`.
 - Downstream **extends by adding files** and **never edits framework files.** If a change wants to
   alter framework behavior, that's framework work (here), not an instance edit.
 
@@ -22,8 +23,8 @@ Two boundaries an edit in this repo can violate. Investigate both **before** edi
 - **Provenance** = `provenance: framework | instance` (metadata). Framework ships **generic default
   entries/recipes** marked `provenance: framework` — those are welcome in the public repo (rule 4,
   narrowed).
-- **Scope** = location: shared `<dimension>/` = global; `workspaces/<client>/<dimension>/` =
-  client-specific.
+- **Scope** = location: shared `<dimension>/` = global;
+  `users/<user>/zones/<zone>/workspaces/<workspace>/<dimension>/` = client-specific.
 
 ## STOP-and-report if an edit would…
 
