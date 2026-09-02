@@ -65,8 +65,10 @@ from pipeline.diagram import (
     DiagramGrammarError,
     DiagramGroundingError,
     DiagramNode,
+    DiagramRunOutcome,
     DiagramSpec,
     DiagramToolUnavailableError,
+    _tool_version,
     compile_diagram,
     gate_diagram,
     parse_diagram,
@@ -530,6 +532,33 @@ def test_compile_records_tool_and_version_provenance():
     # break on any other distro `dot`/`d2`). The version churns the SVG content hash, never an id.
     assert dot.tool == "dot" and dot.version[:1].isdigit() and "." in dot.version
     assert d2.tool == "d2" and d2.version[:1].isdigit() and "." in d2.version
+
+
+def test_tool_version_normalises_a_v_prefix_through_the_runner_seam():
+    """Version-SHAPE regression guard — deliberately UNGATED, unlike the test above.
+
+    d2 >= 0.8 prints ``v0.8.2``; 0.7.x printed ``0.7.1``. Both must record a bare, digit-leading
+    version, and `dot`'s longer banner must still reduce to the same shape. This drives the
+    `DiagramRunner` seam (no subprocess, no tool installed), which is the POINT: the gated
+    provenance test above is deselected in tool-less CI, so a tool's output-shape change reaches a
+    developer machine instead of a CI run. This one fails in CI the day the shape moves again.
+    """
+
+    def _runner(stdout: bytes = b"", stderr: str = "") -> object:
+        return lambda binary, args, stdin: DiagramRunOutcome(
+            returncode=0, stdout=stdout, stderr=stderr
+        )
+
+    # d2 >= 0.8: the `v` prefix is stripped
+    assert _tool_version("d2", "d2", _runner(stdout=b"v0.8.2\n")) == "0.8.2"
+    # d2 0.7.x: an already-bare version is untouched (no regression for older installs)
+    assert _tool_version("d2", "d2", _runner(stdout=b"0.7.1\n")) == "0.7.1"
+    # dot: the banner still reduces to the bare version
+    dot_banner = "dot - graphviz version 15.1.1 (20260805.0921)"
+    assert _tool_version("dot", "dot", _runner(stderr=dot_banner)) == "15.1.1"
+    # the best-effort raw fallback SURVIVES: a non-version shape is returned untouched, never
+    # mangled into "ersion unknown" by a naive lstrip("v")
+    assert _tool_version("d2", "d2", _runner(stdout=b"version unknown")) == "version unknown"
 
 
 @requires_dot

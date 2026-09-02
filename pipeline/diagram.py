@@ -672,21 +672,27 @@ def _subprocess_diagram(binary: str, args: tuple[str, ...], stdin: bytes) -> Dia
 
 
 _DOT_VERSION_RE = re.compile(r"version\s+(?P<v>\S+)")
+#: A leading ``v`` is stripped ONLY when a digit follows, so the best-effort raw-line fallback
+#: below survives intact (a non-version shape like ``version unknown`` is returned untouched).
+_LEADING_V_RE = re.compile(r"^v(?=\d)")
 
 
 def _tool_version(tool: str, binary: str, run: DiagramRunner) -> str:
     """The tool's version string — author-time provenance only (NOT identity-bearing, §O3).
 
-    ``dot -V`` prints ``dot - graphviz version 15.1.0 (...)`` to STDERR; ``d2 --version`` prints
-    ``0.7.1`` to STDOUT. Best-effort: falls back to the raw first line if the shape ever changes.
+    ``dot -V`` prints ``dot - graphviz version 15.1.1 (...)`` to STDERR; ``d2 --version`` prints a
+    bare version to STDOUT, ``v``-prefixed since 0.8 (``v0.8.2``; 0.7.x printed ``0.7.1``). BOTH are
+    normalised to a bare, digit-leading version so provenance reads the same whichever tool drew the
+    diagram. Best-effort: falls back to the raw first line if the shape ever changes again.
     """
     if tool == TOOL_DOT:
         out = run(binary, ("-V",), b"")
         text = out.stderr.strip() or out.stdout.decode("utf-8", "replace").strip()
         match = _DOT_VERSION_RE.search(text)
-        return match.group("v") if match else text
+        return _LEADING_V_RE.sub("", match.group("v") if match else text)
     out = run(binary, ("--version",), b"")
-    return out.stdout.decode("utf-8", "replace").strip() or out.stderr.strip()
+    raw = out.stdout.decode("utf-8", "replace").strip() or out.stderr.strip()
+    return _LEADING_V_RE.sub("", raw)
 
 
 def compile_diagram(
