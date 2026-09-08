@@ -88,3 +88,9 @@ This README is self-contained, but the repo carries deeper references:
 ## License
 
 MIT. See `LICENSE` for the full text.
+
+---
+
+Built and maintained by [David Shane](https://optiquity.com/about/) at
+[Optiquity, Inc.](https://optiquity.com) — applied AI strategy, software products,
+and value-market intelligence.
