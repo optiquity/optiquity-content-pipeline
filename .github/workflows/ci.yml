@@ -42,6 +42,12 @@ jobs:
       - name: Sync project venv from the lockfile
         run: uv sync --locked
       - name: Run tests (live-marked tests deselected by pyproject addopts)
+        # OPTIQUITY_PUBLIC_REPO gates the handful of assertions that are true only of the PUBLIC
+        # framework tree (a private instance deliberately tracks users/ content). Compared against
+        # `== false` rather than used bare, so a private repo yields '0' instead of the empty
+        # string that `private && '' || '1'` would wrongly turn back into '1'.
+        env:
+          OPTIQUITY_PUBLIC_REPO: ${{ github.event.repository.private == false && '1' || '0' }}
         run: uv run pytest -q
       - name: Lint
         run: uv run ruff check .

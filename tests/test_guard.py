@@ -19,6 +19,7 @@ All violation-shaped content lives in tests/fixtures/guard/ and is obviously syn
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -301,10 +302,19 @@ def test_instance_profile_md_is_a_leak(tmp_path):
 # -----------------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    os.environ.get("OPTIQUITY_PUBLIC_REPO") != "1",
+    reason="asserts a PUBLIC-framework invariant. A private instance deliberately tracks content "
+    "under users/ (docs/operating-model.md), so a clean guard run is false there. CI sets "
+    "OPTIQUITY_PUBLIC_REPO=1 only when the repo is public; guard.yml is the enforcement half.",
+)
 def test_current_repo_passes_in_default_tracked_mode():
     """The repo-root run (CI's exact invocation). This is ALSO the PA-1b proof: the
     violating fixture trees are tracked under tests/fixtures/guard/ right now, and none
-    self-flag — tests/ is structurally outside the scan scope."""
+    self-flag — tests/ is structurally outside the scan scope.
+
+    PUBLIC-ONLY (see skipif): this mirrors what `guard.yml` runs directly, so gating it costs
+    no enforcement — the workflow is what actually fails a public build."""
     proc = run_guard()
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "OK:" in proc.stdout

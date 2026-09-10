@@ -26,6 +26,14 @@ on:
   pull_request:
 jobs:
   guard:
+    # PUBLIC-REPO ONLY. This job's whole purpose is keeping the PUBLIC framework empty of
+    # instance/client content; a PRIVATE instance must commit that content freely, so the job
+    # would fail there for doing exactly what the instance exists to do. The workflow file ships
+    # downstream like every framework file, so the skip has to live HERE — an instance deleting
+    # it would be a framework-file edit and would conflict on every update-from-upstream.sh.
+    # Written `!= true` so it FAILS CLOSED: if the context field is ever absent the guard still
+    # runs, rather than silently skipping on a public repo.
+    if: github.event.repository.private != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -104,8 +104,12 @@ Enforced two ways, not willpower:
 1. `scripts/check-no-content.sh` fails if populated registries, a real `profile.md`, or any tracked
    client content under `users/*` appear. (The shared scaffold at `templates/workspace/` is
    framework, so it stays; its subtree is scanned for the `x-`/`provenance: instance` signals only.)
-2. `.github/workflows/guard.yml` runs that check on every push/PR to the public repo. The private
-   repo simply doesn't run it, so it tracks your content freely.
+2. `.github/workflows/guard.yml` runs that check on every push/PR to the public repo. A private
+   instance **skips the job**, so it tracks your content freely with green CI. That skip is an
+   explicit `if: github.event.repository.private != true` on the job — not an assumption that the
+   instance lacks the file, because the workflow ships downstream like every framework file. The
+   same reasoning gates the one pytest assertion that is true only of the public tree
+   (`OPTIQUITY_PUBLIC_REPO`, set by `ci.yml`).
 
 Do all content work in the **private** repo; push only framework changes to public.
 
