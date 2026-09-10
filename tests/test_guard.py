@@ -338,15 +338,47 @@ def test_all_mode_scans_untracked_files(tmp_path):
     assert "LEAK[workspace-content]" in proc.stdout
 
 
-def test_workspace_jobs_data_is_gitignored_and_a_tracked_leak_is_flagged(tmp_path):
-    """DR-1 Commit 2 — the two-part async-`jobs/` boundary story, proven end to end:
-    (1) job DATA is gitignored (`users/*/workspaces/` broadly ignores all per-user workspace
-        content, jobs/ included), so a job record is never tracked in the normal course; (2) IF
-        one were ever force-tracked, the guard's workspace-content class flags it — client
-        isolation holds regardless (CLAUDE.md rules 2/4)."""
-    # (1) the DATA-untracked half: the .gitignore broadly ignores users/ workspace content.
+def test_public_clone_ignore_is_per_clone_not_shipped_in_gitignore(tmp_path):
+    """The ignore for client content is PER-CLONE (`.git/info/exclude`), never the tracked
+    `.gitignore` — because `.gitignore` ships downstream (rule 5) and a PRIVATE instance must
+    VERSION that content (`docs/operating-model.md`, "Your content is tracked"). Shipping the
+    pattern silently defeated quickstart.md §B: the instance it told you to build left client
+    content untracked, which is the durability problem §B exists to solve.
+
+    Both halves are asserted here because each alone is a plausible-looking regression: putting
+    the pattern back in `.gitignore` re-breaks every private instance, and dropping the script
+    leaves a public clone with only the CI guard."""
+    # (a) the tracked file must NOT carry it — this is the half that ships downstream.
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert "users/*/workspaces/" in gitignore
+    assert "\nusers/*/workspaces/" not in gitignore
+    assert "\nusers/*/zones/" not in gitignore
+
+    # (b) the per-clone script must still produce the ignore, in a throwaway repo.
+    repo = tmp_path / "clone"
+    (repo / "users" / "acme" / "zones" / "default" / "workspaces" / "proj").mkdir(parents=True)
+    topic = repo / "users/acme/zones/default/workspaces/proj/topic.md"
+    topic.write_text("synthetic - never real client data\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+    rel = "users/acme/zones/default/workspaces/proj/topic.md"
+    before = subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", rel])
+    assert before.returncode != 0, "content must be TRACKED before the script runs (instance mode)"
+
+    script = REPO_ROOT / "scripts" / "protect-public-clone.sh"
+    subprocess.run(["bash", str(script), str(repo)], check=True, capture_output=True)
+    after = subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", rel])
+    assert after.returncode == 0, "content must be IGNORED after the script runs (public mode)"
+
+    # idempotent: a second run must not duplicate the block or change the outcome.
+    subprocess.run(["bash", str(script), str(repo)], check=True, capture_output=True)
+    exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert exclude.count("optiquity public-clone client-content ignore") == 1
+
+
+def test_workspace_jobs_data_leak_is_flagged(tmp_path):
+    """DR-1 Commit 2 — IF a job record under a client workspace were ever force-tracked, the
+    guard's workspace-content class flags it. This is the enforcement half and it holds in EVERY
+    clone, public or private, regardless of what any ignore file says (CLAUDE.md rules 2/4)."""
     # (2) the guard half: a planted job record under a client workspace is caught by PATH.
     root = tmp_path / "jobs-leak"
     (root / "users" / "acme" / "workspaces" / "proj" / "jobs").mkdir(parents=True)

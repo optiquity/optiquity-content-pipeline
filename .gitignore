@@ -30,15 +30,25 @@ __pycache__/
 # outlines/assets/ssot, AND the transient claims/lease + async job/idempotency runtime records
 # (design §13.3/§22.3/§22.7/§23). NEVER tracked in the public framework (CLAUDE.md rules 2/4);
 # check-no-content.sh fails on any tracked users/*/… file — the loud backstop for a force-add.
-# Broadly ignorable now that the shared blueprint lives at templates/workspace/, not among the
-# workspaces (pre-restructure the tracked template forced per-subdir ignores here).
-# BOTH patterns are kept ADDITIVELY (Z5, the zone restructure): `users/*/zones/` covers the
-# post-migration zoned layout, and `users/*/workspaces/` still covers the pre-migration layout —
-# so a downstream that pulls this update BEFORE running migrate-to-zones-layout.sh never has its
-# existing client content un-ignored (there is no un-ignore window; the old pattern is harmless
-# post-migration since nothing matches it once workspaces/ dirs move under zones/).
-users/*/workspaces/
-users/*/zones/
+# ...but that content is deliberately NOT ignored HERE, and the patterns that used to live on the
+# next two lines have moved. This file is FRAMEWORK-owned and ships downstream (durable rule 5), so
+# any pattern here is inherited by every PRIVATE instance — where the same content must be TRACKED
+# (docs/operating-model.md, "Your content is tracked"). Ignoring it in a shipped file silently broke
+# that promise: quickstart.md §B produced an instance whose client content was still untracked,
+# which is the exact durability problem §B exists to solve. Verified by cloning and testing, not by
+# reading — all three documents describing the behaviour agreed with each other and with none of it.
+#
+# The PUBLIC clone keeps the identical protection PER-CLONE instead, in .git/info/exclude:
+#
+#     bash scripts/protect-public-clone.sh      # once, in a public framework clone
+#
+# Nothing tracked then differs between the public framework and a private instance, so
+# scripts/update-from-upstream.sh stays conflict-free — which is why this could not simply be a
+# `!users/...` negation even setting aside that git will not descend into an excluded directory.
+#
+# Enforcement of "public stays empty of client content" is, and always was, the CI guard
+# scripts/check-no-content.sh (LEAK[workspace-content]) — see the header. The per-clone exclude is
+# the local belt; the guard is the braces, and it is the half that actually fails a build.
 
 # Instance-scoped ops state (design §22.5/§23; plan step 36): the presence-lease registry
 # and the append-only telemetry JSONL. Framework MECHANISM (pipeline/telemetry.py), instance

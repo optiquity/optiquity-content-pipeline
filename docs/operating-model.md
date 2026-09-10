@@ -153,10 +153,18 @@ improvements without disturbing that instance's tracked content and history.
 
 ## Your content is tracked (durability)
 
-Your private instance versions its **full** history: populated registries, `users/<user>/workspaces/<workspace>/`
-(topics, selection configs, and generated `output/`), `instance/profile.md`, and `state.md`.
-The framework `.gitignore` ignores only local cruft (`reference/`, OS/editor files) — never your
-content. Merges from upstream stay clean because upstream never has files under your workspaces.
+Your private instance versions its **full** history: populated registries,
+`users/<user>/zones/<zone>/workspaces/<workspace>/` (topics, selection configs, and generated
+`output/`), `instance/profile.md`, and `state.md`. The framework `.gitignore` ignores only local
+cruft (`reference/`, OS/editor files) — **never your content**, and that is deliberate rather than
+incidental: `.gitignore` is a framework file that ships downstream, so a client-content pattern in
+it would be inherited by your instance and would leave exactly the content §B exists to preserve
+silently untracked.
+
+The **public** framework clone takes that protection per-clone instead — `bash
+scripts/protect-public-clone.sh` writes it to `.git/info/exclude`. So no *tracked* file differs
+between public and private, and merges from upstream stay clean because upstream never has files
+under your workspaces.
 
 ## Why not the obvious alternatives
 

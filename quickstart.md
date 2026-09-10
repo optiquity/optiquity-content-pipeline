@@ -152,8 +152,16 @@ git remote add origin <YOUR_PRIVATE_REPO_URL>
 git push -u origin main
 ```
 
-Do all client work here (workspaces, populated registries, PROFILE). Pull framework updates
-non-destructively anytime:
+Do all client work here (workspaces, populated registries, PROFILE). **Your content is versioned
+from the first commit** — the framework `.gitignore` deliberately does not ignore `users/`, so
+topics, workspaces and generated output all get history, branches and review. That is the whole
+point of the private instance; nothing extra to switch on.
+
+*(In a **public** framework clone, run `bash scripts/protect-public-clone.sh` once. It writes the
+client-content ignore to that clone's `.git/info/exclude`, keeping the public repo clean without
+shipping a pattern that would follow you into the private instance and un-track your content.)*
+
+Pull framework updates non-destructively anytime:
 
 ```bash
 scripts/update-from-upstream.sh            # merges upstream, then runs `pipeline drift-report`
