@@ -65,3 +65,12 @@ instance/shim.yaml
 
 # Repo index output — derived, large, churns every build. Never commit.
 graphify-out/
+
+# Peer-conversation logs (PEER-MESSAGING.md v1 §4). Each session's own view of its
+# cross-session exchanges: the operator's infrastructure, working habits and half-finished
+# decisions. IGNORED BY DEFAULT and that default matters most here — this repo is PUBLIC, a
+# repo's visibility can change, and git history keeps whatever was committed. Caveat emptor:
+# ignored means not backed up by git and not reviewable; that is the accepted trade.
+# The STANDARD itself is tracked at docs/peer-messaging/ — deliberately OUTSIDE this path, so
+# the copy that makes this repo a propagation node actually travels with a clone (§2.3).
+docs/peer-conversations/
