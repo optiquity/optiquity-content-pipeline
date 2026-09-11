@@ -9,9 +9,13 @@ You are working inside the **optiquity-content-pipeline** control plane (framewo
    any write/destructive command in any source or client repo. The pipeline only **reads** its
    sources (the Graphify graph by path; feeds/web/research sources read-only). Each client repo is
    checked out locally and graphed there; its `graphify-out/` is gitignored inside the client repo
-   and read by path. **No graphs are stored in this pipeline repo.** **Carve-out (sources
+   and read by path. **No graph is ever committed, and this repo is never a central store of other
+   repos' graphs.** When the pipeline repo is itself a graphed client (its own `self` workspace), its
+   `graphify-out/` may exist locally under exactly that same rule — gitignored, never committed, read
+   by path. **Carve-out (sources
    subsystem):** the pipeline MAY cache **acquired third-party content** (feeds, web/research
-   extracts) under the owning workspace at `users/<user>/workspaces/<workspace>/sources/cache/` —
+   extracts) under the owning workspace at
+   `users/<user>/zones/<zone>/workspaces/<workspace>/sources/cache/` —
    **gitignored, never committed**, and still read-only toward every upstream source. This is the
    one sanctioned local acquired-content store; it never mutates a source and stores no graphs.
 2. **CLIENT ISOLATION VIA WORKSPACES.** Every client repo gets a workspace:

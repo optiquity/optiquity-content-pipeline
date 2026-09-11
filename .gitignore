@@ -5,8 +5,9 @@
 # tracked, for durability and history. "Public stays empty of client content" is enforced by
 # scripts/check-no-content.sh in CI (docs/operating-model.md), NOT by this file.
 #
-# NOTE: Graphify graphs do NOT live in this repo. They live in each client repo's local checkout
-# (graphify-out/, gitignored there) and are read by path. Nothing graph-related is stored here.
+# NOTE: Graphify graphs are NEVER committed. Each client repo's graph lives in that repo's own local
+# checkout (graphify-out/, gitignored there) and is read by path — including this repo's own graph
+# when it is graphed as its own client (the `self` workspace). Nothing graph-related is ever tracked.
 #
 # state.md is derived from the tracking spreadsheet (the SSOT) but is still tracked in your
 # instance for history. The spreadsheet remains authoritative on any disagreement.
